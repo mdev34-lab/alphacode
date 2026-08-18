@@ -3,6 +3,7 @@ import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
+import fs from "node:fs/promises"
 import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
@@ -86,6 +87,21 @@ Shell.acceptable.reset()
 const quote = (text: string) => `"${text}"`
 const squote = (text: string) => `'${text}'`
 const projectRoot = path.join(__dirname, "../..")
+
+const readPid = (file: string, timeout = 5_000) =>
+  Effect.promise(async () => {
+    const end = Date.now() + timeout
+    while (Date.now() < end) {
+      try {
+        const value = await fs.readFile(file, "utf-8")
+        if (value) return Number(value)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`Process did not write its pid to ${file}`)
+  })
 const bin = quote(process.execPath.replaceAll("\\", "/"))
 const bash = (() => {
   const shell = Shell.acceptable()
@@ -1128,6 +1144,46 @@ describe("tool.shell abort", () => {
         expect(updates.length).toBeGreaterThan(1)
       }),
     ),
+  )
+})
+
+describe("tool.shell detached children (issue #24731)", () => {
+  it.live(
+    "returns promptly when a command leaves a detached child holding stdio open",
+    () =>
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const dir = yield* tmpdirScoped()
+        const pidFile = path.join(dir, "daemon.pid")
+        // Spawn a long-lived detached child that inherits stdio (keeps the shell's
+        // stdout pipe open), record its pid, print output, then exit immediately.
+        const code =
+          'const cp=require("node:child_process");const fs=require("node:fs");' +
+          'const d=cp.spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{detached:true,stdio:"inherit"});' +
+          'd.unref();fs.writeFileSync(Bun.argv[1],String(d.pid));process.stdout.write("STARTED");process.exit(0)'
+        const command = `${bin} -e ${squote(code)} ${squote(pidFile)}`
+
+        const start = Date.now()
+        const result = yield* runIn(projectRoot, run({ command, timeout: 30_000 }))
+        const elapsed = Date.now() - start
+
+        // Reap the detached daemon so the pipe closes and it does not leak.
+        const pid = yield* readPid(pidFile)
+        yield* Effect.sync(() => {
+          try {
+            process.kill(pid, "SIGKILL")
+          } catch {}
+        })
+
+        expect(result.output).toContain("STARTED")
+        expect(result.metadata.exit).toBe(0)
+        expect(result.output).not.toContain("exceeding timeout")
+        // Returned after a bounded post-exit idle window, not by waiting on the
+        // daemon's inherited pipe (60s) or the command timeout (30s).
+        expect(elapsed).toBeLessThan(10_000)
+      }),
+    40_000,
   )
 })
 

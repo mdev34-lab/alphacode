@@ -26,6 +26,21 @@ const waitForFile = (file: string) =>
     }
   })
 
+const readPid = (file: string, timeout = 5_000) =>
+  Effect.promise(async () => {
+    const end = Date.now() + timeout
+    while (Date.now() < end) {
+      try {
+        const value = await fs.readFile(file, "utf8")
+        if (value) return Number(value)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`Process did not write its pid to ${file}`)
+  })
+
 describe("AppProcess", () => {
   describe("run", () => {
     it.effect(
@@ -148,6 +163,67 @@ describe("AppProcess", () => {
         const svc = yield* AppProcess.Service
         const result = yield* svc.run(cmd("-e", "process.stdout.write('hi')"))
         expect(result.command).toBe(`${NODE} -e process.stdout.write('hi')`)
+      }),
+    )
+
+    it.live(
+      "returns promptly when a command leaves a detached child holding stdio open",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const svc = yield* AppProcess.Service
+        const directory = yield* Effect.acquireRelease(
+          Effect.promise(() => fs.mkdtemp(path.join(tmpdir(), "opencode-process-detached-"))),
+          (dir) => Effect.promise(() => fs.rm(dir, { recursive: true, force: true })),
+        )
+        const pidFile = path.join(directory, "daemon.pid")
+
+        // Spawn a long-lived detached child that inherits stdio (keeps the shell's
+        // stdout pipe write end open), record its pid, print output, then exit.
+        const code = [
+          'const cp = require("node:child_process")',
+          'const fs = require("node:fs")',
+          'const daemon = cp.spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { detached: true, stdio: "inherit" })',
+          "daemon.unref()",
+          "fs.writeFileSync(process.argv[1], String(daemon.pid))",
+          'process.stdout.write("started")',
+          "process.exit(0)",
+        ].join("\n")
+
+        const start = Date.now()
+        const result = yield* svc.run(cmd("-e", code, pidFile), { combineOutput: true })
+        const elapsed = Date.now() - start
+
+        // Reap the detached daemon so it does not leak and the inherited pipe closes.
+        const pid = yield* readPid(pidFile)
+        yield* Effect.sync(() => {
+          try {
+            process.kill(pid, "SIGKILL")
+          } catch {}
+        })
+
+        expect(result.exitCode).toBe(0)
+        expect(result.output?.toString("utf8")).toContain("started")
+        // Returned on process exit (plus a bounded quiet window), not by waiting for
+        // the daemon's inherited pipe (which never closes) or the run timeout.
+        expect(elapsed).toBeLessThan(10_000)
+      }),
+      20_000,
+    )
+
+    it.live(
+      "returns promptly for a normal command without the post-exit idle delay",
+      Effect.gen(function* () {
+        const svc = yield* AppProcess.Service
+        const start = Date.now()
+        const result = yield* svc.run(cmd("-e", "process.stdout.write('hi')"), { combineOutput: true })
+        const elapsed = Date.now() - start
+        expect(result.exitCode).toBe(0)
+        expect(result.output?.toString("utf8")).toBe("hi")
+        // A normal command closes its pipe right after exiting, so the 500ms
+        // quiet window must never be entered: it returns on stream close, not on
+        // the idle timer.
+        expect(elapsed).toBeLessThan(400)
       }),
     )
 

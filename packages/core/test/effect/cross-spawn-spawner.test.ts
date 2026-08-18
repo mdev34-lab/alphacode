@@ -59,6 +59,20 @@ async function gone(pid: number, timeout = 5_000) {
   return !alive(pid)
 }
 
+async function readPid(file: string, timeout = 5_000) {
+  const end = Date.now() + timeout
+  while (Date.now() < end) {
+    try {
+      const value = await fs.readFile(file, "utf-8")
+      if (value) return Number(value)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error(`Process did not write its pid to ${file}`)
+}
+
 describe("cross-spawn spawner", () => {
   describe("basic spawning", () => {
     fx.effect(
@@ -284,6 +298,94 @@ describe("cross-spawn spawner", () => {
         const running = yield* handle.isRunning
         expect(running).toBe(false)
       }),
+    )
+  })
+
+  describe("detached children (issue #24731)", () => {
+    fx.live(
+      "exitCode resolves when the main process exits even if a detached child keeps stdio open",
+      Effect.gen(function* () {
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const pidFile = path.join(tmp.path, "daemon.pid")
+
+        // Mimics playwright-cli / a backgrounded server: spawn a long-lived detached
+        // child that inherits stdio (keeping the parent's stdout pipe write end open),
+        // then exit the main process immediately.
+        const code = [
+          'const cp = require("node:child_process")',
+          'const fs = require("node:fs")',
+          'const daemon = cp.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "inherit" })',
+          "daemon.unref()",
+          "fs.writeFileSync(process.argv[1], String(daemon.pid))",
+          'process.stdout.write("started")',
+          "process.exit(0)",
+        ].join("\n")
+
+        const handle = yield* ChildProcess.make(process.execPath, ["-e", code, pidFile])
+
+        const result = yield* Effect.raceAll([
+          handle.exitCode.pipe(Effect.map((exit) => ({ kind: "exit" as const, code: exit }))),
+          Effect.sleep("5 seconds").pipe(Effect.as({ kind: "timeout" as const, code: null })),
+        ])
+
+        // Reap the detached daemon so it does not leak and so the spawner's
+        // "close" can fire during scope teardown.
+        const pid = yield* Effect.promise(() => readPid(pidFile))
+        yield* Effect.sync(() => {
+          try {
+            process.kill(pid, "SIGKILL")
+          } catch {}
+        })
+
+        expect(result.kind).toBe("exit")
+        expect(result.code).toBe(ChildProcessSpawner.ExitCode(0))
+      }),
+      15_000,
+    )
+
+    fx.live(
+      "kill without forceKillAfter returns when the parent exits even if a detached child keeps stdio open",
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const pidFile = path.join(tmp.path, "daemon.pid")
+
+        // The parent keeps running after spawning a detached child that inherits
+        // stdio, so the parent's stdio pipe stays open after the parent dies.
+        // kill() must return on the parent's exit, not hang on its `close`.
+        const code = [
+          'const cp = require("node:child_process")',
+          'const fs = require("node:fs")',
+          'const daemon = cp.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "inherit" })',
+          "daemon.unref()",
+          "fs.writeFileSync(process.argv[1], String(daemon.pid))",
+          "setInterval(() => {}, 1000)",
+        ].join("\n")
+
+        const handle = yield* ChildProcess.make(process.execPath, ["-e", code, pidFile])
+        const pid = yield* Effect.promise(() => readPid(pidFile))
+
+        const start = Date.now()
+        yield* handle.kill()
+        const elapsed = Date.now() - start
+
+        // Reap the detached daemon so it does not leak.
+        yield* Effect.sync(() => {
+          try {
+            process.kill(pid, "SIGKILL")
+          } catch {}
+        })
+
+        expect(elapsed).toBeLessThan(5_000)
+      }),
+      15_000,
     )
   })
 
