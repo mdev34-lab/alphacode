@@ -850,6 +850,67 @@ it.instance("loop continues when finish is tool-calls", () =>
   }),
 )
 
+const toolNames = (body: Record<string, unknown> | undefined) => {
+  const tools = (body?.tools ?? []) as { function?: { name?: string } }[]
+  return tools.map((entry) => entry.function?.name).filter((name): name is string => !!name)
+}
+
+it.instance("defers non-core tools until tool_search discovers them", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Tool search",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "download a webpage" }],
+    })
+    yield* llm.tool("tool_search", { query: "fetch a url webpage" })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: session.id })
+
+    const hits = yield* llm.hits
+    const first = toolNames(hits[0]?.body)
+    expect(first).toContain("tool_search")
+    expect(first).toContain("read")
+    expect(first).not.toContain("webfetch")
+
+    const second = toolNames(hits[1]?.body)
+    expect(second).toContain("webfetch")
+  }),
+)
+
+it.instance("keeps every tool loaded when tool search is disabled", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), tool_search: { enabled: false } }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Tool search off",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "download a webpage" }],
+    })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: session.id })
+
+    const names = toolNames((yield* llm.hits)[0]?.body)
+    expect(names).toContain("webfetch")
+    expect(names).not.toContain("tool_search")
+  }),
+)
+
 it.instance("glob tool keeps instance context during prompt runs", () =>
   Effect.gen(function* () {
     const { dir, llm } = yield* useServerConfig(providerCfg)

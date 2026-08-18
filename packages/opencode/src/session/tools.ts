@@ -8,6 +8,8 @@ import { Permission } from "@/permission"
 import { Tool } from "@/tool/tool"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
+import { ToolCatalog } from "@/tool/catalog"
+import { Config } from "@/config/config"
 import { Truncate } from "@/tool/truncate"
 
 import { Plugin } from "@/plugin"
@@ -55,6 +57,15 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
+  const config = yield* Config.Service
+  const catalog = yield* ToolCatalog.Service
+
+  // Deferred tool loading: tools flagged as deferred stay out of the request until the
+  // model finds them with tool_search. See specs/tool-search.md.
+  const toolSearch = ToolCatalog.options((yield* config.get()).tool_search)
+  const discovered = yield* catalog.discovered(input.session.id)
+  const entries: ToolCatalog.Entry[] = []
+  const hidden = (entry: ToolCatalog.Entry) => entry.deferred && !discovered.has(entry.id)
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -95,7 +106,17 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     agent: input.agent,
     permission: input.session.permission,
   })) {
-    const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
+    const definition = ToolJsonSchema.fromTool(item)
+    const entry: ToolCatalog.Entry = {
+      id: item.id,
+      description: item.description,
+      parameters: Object.keys(definition.properties ?? {}),
+      source: "builtin",
+      deferred: ToolCatalog.deferred({ id: item.id, source: "builtin", options: toolSearch }),
+    }
+    entries.push(entry)
+    if (hidden(entry)) continue
+    const schema = ProviderTransform.schema(input.model, definition)
     tools[item.id] = tool({
       description: item.description,
       inputSchema: jsonSchema(schema),
@@ -385,9 +406,24 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  if (flags.experimentalCodeMode) return tools
+  if (flags.experimentalCodeMode) {
+    yield* catalog.sync(entries)
+    return tools
+  }
+
+  const servers = Object.keys(yield* mcp.clients()).map((name) => ({ name, prefix: McpCatalog.sanitize(name) + "_" }))
 
   for (const [key, entry] of Object.entries(yield* mcp.tools())) {
+    const catalogEntry: ToolCatalog.Entry = {
+      id: key,
+      description: entry.def.description ?? "",
+      parameters: Object.keys(entry.def.inputSchema?.properties ?? {}),
+      source: "mcp",
+      server: servers.find((server) => key.startsWith(server.prefix))?.name,
+      deferred: ToolCatalog.deferred({ id: key, source: "mcp", options: toolSearch }),
+    }
+    entries.push(catalogEntry)
+    if (hidden(catalogEntry)) continue
     const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
     const execute = item.execute
     if (!execute) continue
@@ -488,6 +524,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       )
     tools[key] = item
   }
+
+  yield* catalog.sync(entries)
 
   return tools
 })

@@ -127,6 +127,25 @@ export const Info = Schema.Struct({
   layout: Schema.optional(ConfigLayoutV1.Layout).annotate({ description: "@deprecated Always uses stretch layout." }),
   permission: Schema.optional(ConfigPermissionV1.Info),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
+  tool_search: Schema.optional(
+    Schema.Struct({
+      enabled: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Defer non-core tools until the model finds them with tool_search. Enabled by default; set to false to always send every tool definition.",
+      }),
+      always_load: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+        description: 'Tool ID patterns that are never deferred, e.g. "github_*"',
+      }),
+      defer: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+        description: "Additional tool ID patterns that are always deferred, even if they are core tools",
+      }),
+      limit: Schema.optional(PositiveInt).annotate({
+        description: "Maximum number of tools returned by a single tool_search call. Defaults to 5.",
+      }),
+    }),
+  ).annotate({
+    description: "Deferred tool loading, see https://opencode.ai/docs/tools#tool-search",
+  }),
   attachment: Schema.optional(ConfigAttachmentV1.Info).annotate({
     description: "Attachment processing configuration, including image size limits and resizing behavior",
   }),

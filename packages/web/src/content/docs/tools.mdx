@@ -310,6 +310,62 @@ Each question includes a header, the question text, and a list of options. Users
 
 ---
 
+## Tool search
+
+Every tool definition — its name, description and JSON schema — is sent to the model on every
+request. A couple of MCP servers can easily add tens of thousands of tokens to each turn, and most
+of those tools are never used.
+
+Tool search fixes that. Core tools (`bash`, `read`, `edit`, `write`, `glob`, `grep`, `todowrite`,
+`task`, `skill`, `apply_patch`, …) are always loaded. Everything else — the remaining built-ins,
+custom tools and all MCP tools — is **deferred**: kept out of the request until the model looks it
+up with one of two discovery tools.
+
+### tool_search
+
+Keyword search (BM25) over the names and descriptions of every available tool.
+
+```text
+tool_search({ query: "find issues" })
+```
+
+### tool_search_regex
+
+Regex search over the same catalog, matched case-insensitively against names and descriptions.
+
+```text
+tool_search_regex({ pattern: "github.*issue" })
+```
+
+Both tools accept an optional `category` (`all`, `builtin` or `mcp`). Tools returned by a search
+become available on the model's next step and stay available for the rest of the session.
+
+### Configure
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "tool_search": {
+    "enabled": true,
+    "always_load": ["github_*"],
+    "defer": ["websearch"],
+    "limit": 5
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `enabled` | Defer non-core tools. Defaults to `true`. Set to `false` to always send every tool definition. |
+| `always_load` | Tool ID patterns that are never deferred. Supports `*` wildcards. |
+| `defer` | Extra tool ID patterns that are always deferred, even core tools. |
+| `limit` | Maximum number of tools returned by a single search. Defaults to `5`. |
+
+`always_load` wins over `defer`. When `enabled` is `false`, the `tool_search` tools are not
+registered at all.
+
+---
+
 ## Custom tools
 
 Custom tools let you define your own functions that the LLM can call. These are defined in your config file and can execute arbitrary code.

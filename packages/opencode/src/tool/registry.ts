@@ -16,6 +16,9 @@ import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
+import { ToolSearchTool } from "./tool-search"
+import { ToolSearchRegexTool } from "./tool-search-regex"
+import { ToolCatalog } from "./catalog"
 import * as Tool from "./tool"
 import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
@@ -114,6 +117,8 @@ const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const skilltool = yield* SkillTool
+    const toolsearch = yield* ToolSearchTool
+    const toolsearchregex = yield* ToolSearchRegexTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -203,7 +208,8 @@ const layer = Layer.effect(
           }
         }
 
-        yield* config.get()
+        const cfg = yield* config.get()
+        const toolSearch = ToolCatalog.options(cfg.tool_search)
         const questionEnabled = ["app", "cli", "desktop"].includes(flags.client) || flags.enableQuestionTool
 
         const tool = yield* Effect.all({
@@ -219,6 +225,8 @@ const layer = Layer.effect(
           todo: Tool.init(todo),
           search: Tool.init(websearch),
           skill: Tool.init(skilltool),
+          toolSearch: Tool.init(toolsearch),
+          toolSearchRegex: Tool.init(toolsearchregex),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
@@ -243,6 +251,7 @@ const layer = Layer.effect(
             tool.search,
             tool.skill,
             tool.patch,
+            ...(toolSearch.enabled ? [tool.toolSearch, tool.toolSearchRegex] : []),
             ...(tool.execute ? [tool.execute] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
@@ -449,6 +458,7 @@ export const node = LayerNode.make({
     MCP.node,
     Database.node,
     Ripgrep.node,
+    ToolCatalog.node,
   ],
 })
 
