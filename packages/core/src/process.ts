@@ -173,9 +173,11 @@ const collectUntilQuiet = (
       ),
     )
     yield* exit
-    // Wait until the stream has been quiet for POST_EXIT_QUIET. Always sleep at
-    // least once so output buffered at process exit can still be observed.
-    const settle = Effect.gen(function* () {
+    // Prefer the stream closing: a normal command closes its pipe right after
+    // exiting, so `Fiber.join(output)` wins the race and we return immediately
+    // (no idle delay on the happy path). The quiet window only kicks in when the
+    // stream stays open after exit — a detached descendant holding the pipe.
+    const quiet = Effect.gen(function* () {
       let last = activity
       while (true) {
         yield* Effect.sleep(POST_EXIT_QUIET)
@@ -184,7 +186,7 @@ const collectUntilQuiet = (
         last = current
       }
     })
-    yield* Effect.raceFirst(Fiber.join(output), settle)
+    yield* Effect.raceFirst(Fiber.join(output), quiet)
     return { buffer: Buffer.concat(acc.chunks), truncated: acc.truncated }
   })
 

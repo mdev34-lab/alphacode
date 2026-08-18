@@ -330,23 +330,26 @@ export const make = Effect.gen(function* () {
   const terminate = (
     command: ChildProcess.StandardCommand,
     proc: NodeChildProcess.ChildProcess,
-    closed: ExitSignal,
+    exited: ExitSignal,
     opts?: ChildProcess.KillOptions,
   ) => {
     const sig = opts?.killSignal ?? "SIGTERM"
     const send = (s: NodeJS.Signals) => Effect.catch(killGroup(command, proc, s), () => killOne(command, proc, s))
-    const attempt = send(sig).pipe(Effect.andThen(Deferred.await(closed)), Effect.asVoid)
+    // Wait for the process to exit, not for its stdio to close: a detached
+    // descendant can keep the inherited stdio open long after the process is
+    // gone, so waiting on `closed` here would hang kill()/teardown forever.
+    const attempt = send(sig).pipe(Effect.andThen(Deferred.await(exited)), Effect.asVoid)
     const grace = opts?.forceKillAfter
     if (!grace) return attempt
     return Effect.timeoutOrElse(attempt, {
       duration: grace,
-      // SIGKILL is the last resort: signal the group, then wait for `closed`
-      // only up to the same grace. A descendant that escaped the group keeps
-      // the inherited stdio open, so `closed` may never fire even now.
+      // SIGKILL is the last resort: signal the group, then wait for the process
+      // to exit only up to the same grace. The process should die immediately on
+      // SIGKILL, but never block teardown if it somehow does not.
       orElse: () =>
         send("SIGKILL").pipe(
           Effect.andThen(
-            Effect.timeoutOrElse(Deferred.await(closed), {
+            Effect.timeoutOrElse(Deferred.await(exited), {
               duration: grace,
               orElse: () => Effect.void,
             }),
@@ -409,7 +412,7 @@ export const make = Effect.gen(function* () {
           const extra = fds(command.options)
           const dir = yield* cwd(command.options)
 
-          const [proc, exited, closed] = yield* Effect.acquireRelease(
+          const [proc, exited] = yield* Effect.acquireRelease(
             spawn(command, {
               cwd: dir,
               env: env(command.options),
@@ -427,7 +430,7 @@ export const make = Effect.gen(function* () {
                   return yield* Effect.ignore(reap(command, proc, closed, command.options))
                 return yield* Effect.void
               }
-              return yield* Effect.ignore(terminate(command, proc, closed, command.options))
+              return yield* Effect.ignore(terminate(command, proc, exited, command.options))
             }),
           )
 
@@ -453,7 +456,7 @@ export const make = Effect.gen(function* () {
                 ),
               )
             }),
-            kill: (opts?: ChildProcess.KillOptions) => terminate(command, proc, closed, opts),
+            kill: (opts?: ChildProcess.KillOptions) => terminate(command, proc, exited, opts),
             unref: Effect.sync(() => {
               if (ref) {
                 proc.unref()

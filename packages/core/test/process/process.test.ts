@@ -26,6 +26,21 @@ const waitForFile = (file: string) =>
     }
   })
 
+const readPid = (file: string, timeout = 5_000) =>
+  Effect.promise(async () => {
+    const end = Date.now() + timeout
+    while (Date.now() < end) {
+      try {
+        const value = await fs.readFile(file, "utf8")
+        if (value) return Number(value)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`Process did not write its pid to ${file}`)
+  })
+
 describe("AppProcess", () => {
   describe("run", () => {
     it.effect(
@@ -180,14 +195,12 @@ describe("AppProcess", () => {
         const elapsed = Date.now() - start
 
         // Reap the detached daemon so it does not leak and the inherited pipe closes.
-        const pid = Number(yield* Effect.promise(() => fs.readFile(pidFile, "utf-8").catch(() => "0")))
-        if (pid) {
-          yield* Effect.sync(() => {
-            try {
-              process.kill(pid, "SIGKILL")
-            } catch {}
-          })
-        }
+        const pid = yield* readPid(pidFile)
+        yield* Effect.sync(() => {
+          try {
+            process.kill(pid, "SIGKILL")
+          } catch {}
+        })
 
         expect(result.exitCode).toBe(0)
         expect(result.output?.toString("utf8")).toContain("started")
@@ -196,6 +209,22 @@ describe("AppProcess", () => {
         expect(elapsed).toBeLessThan(10_000)
       }),
       20_000,
+    )
+
+    it.live(
+      "returns promptly for a normal command without the post-exit idle delay",
+      Effect.gen(function* () {
+        const svc = yield* AppProcess.Service
+        const start = Date.now()
+        const result = yield* svc.run(cmd("-e", "process.stdout.write('hi')"), { combineOutput: true })
+        const elapsed = Date.now() - start
+        expect(result.exitCode).toBe(0)
+        expect(result.output?.toString("utf8")).toBe("hi")
+        // A normal command closes its pipe right after exiting, so the 500ms
+        // quiet window must never be entered: it returns on stream close, not on
+        // the idle timer.
+        expect(elapsed).toBeLessThan(400)
+      }),
     )
 
     if (process.platform !== "win32") {

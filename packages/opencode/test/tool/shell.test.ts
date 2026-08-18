@@ -3,6 +3,7 @@ import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
+import fs from "node:fs/promises"
 import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
@@ -86,6 +87,21 @@ Shell.acceptable.reset()
 const quote = (text: string) => `"${text}"`
 const squote = (text: string) => `'${text}'`
 const projectRoot = path.join(__dirname, "../..")
+
+const readPid = (file: string, timeout = 5_000) =>
+  Effect.promise(async () => {
+    const end = Date.now() + timeout
+    while (Date.now() < end) {
+      try {
+        const value = await fs.readFile(file, "utf-8")
+        if (value) return Number(value)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    throw new Error(`Process did not write its pid to ${file}`)
+  })
 const bin = quote(process.execPath.replaceAll("\\", "/"))
 const bash = (() => {
   const shell = Shell.acceptable()
@@ -1153,15 +1169,12 @@ describe("tool.shell detached children (issue #24731)", () => {
         const elapsed = Date.now() - start
 
         // Reap the detached daemon so the pipe closes and it does not leak.
-        const fsvc = yield* FSUtil.Service
-        const pid = Number((yield* fsvc.readFileStringSafe(pidFile)) ?? "0")
-        if (pid) {
-          yield* Effect.sync(() => {
-            try {
-              process.kill(pid, "SIGKILL")
-            } catch {}
-          })
-        }
+        const pid = yield* readPid(pidFile)
+        yield* Effect.sync(() => {
+          try {
+            process.kill(pid, "SIGKILL")
+          } catch {}
+        })
 
         expect(result.output).toContain("STARTED")
         expect(result.metadata.exit).toBe(0)
