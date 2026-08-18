@@ -134,7 +134,7 @@ export function Header(props: { githubStars: string; links?: readonly HeaderLink
             <span>[{props.githubStars}]</span>
           </a>
           <a data-slot="header-button" data-variant="contrast" href="https://opencode.ai/">
-            <strong>{i18n.t("header.tryOpenCode")}</strong>
+            <strong>{i18n.t("header.tryalphacode")}</strong>
           </a>
           <button
             data-slot="menu-button"
@@ -434,7 +434,7 @@ function SubscribeModal(props: { onClose: () => void }) {
       <div data-slot="modal-scrim" aria-hidden="true" onClick={props.onClose} />
       <div data-slot="modal-panel">
         <div data-slot="modal-brand">
-          <img data-slot="modal-logo" src={opencodeWordmarkDark} alt="OpenCode" />
+          <img data-slot="modal-logo" src={opencodeWordmarkDark} alt="alphacode" />
           <button
             data-slot="modal-close"
             type="button"
