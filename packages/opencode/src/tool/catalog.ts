@@ -41,6 +41,12 @@ export interface SearchOptions {
   source?: Source
 }
 
+/** Longest regex we are willing to compile from model input */
+export const MAX_PATTERN_LENGTH = 200
+
+/** Longest slice of a description a regex is matched against */
+const MAX_MATCH_LENGTH = 2000
+
 export class InvalidPatternError extends Data.TaggedError("ToolCatalog.InvalidPatternError")<{
   pattern: string
   detail: string
@@ -102,15 +108,54 @@ export function deferred(input: { id: string; source: Source; options: Options }
   return !CORE.has(input.id)
 }
 
+/**
+ * Regexes come straight from the model, so a valid-but-pathological pattern (nested or
+ * alternating quantifiers, backreferences) could pin the event loop with catastrophic
+ * backtracking. JavaScript cannot interrupt a running regex, so the only defence is to
+ * refuse the shapes that cause it before compiling.
+ *
+ * Returns the reason a pattern is rejected, or undefined when it is safe to compile.
+ */
+export function unsafePattern(pattern: string): string | undefined {
+  if (pattern.length > MAX_PATTERN_LENGTH) return `pattern is longer than ${MAX_PATTERN_LENGTH} characters`
+  if (/\\[1-9]/.test(pattern)) return "backreferences are not supported"
+
+  // A group followed by a quantifier, where the group itself contains a quantifier or an
+  // alternation, is the classic exponential-backtracking shape: (a+)+ , (a|a)* , (x*)*
+  const open: number[] = []
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i]
+    if (char === "\\") {
+      i++
+      continue
+    }
+    if (char === "(") {
+      open.push(i)
+      continue
+    }
+    if (char !== ")") continue
+    const start = open.pop()
+    if (start === undefined) continue
+    const rest = pattern.slice(i + 1)
+    if (!/^(?:[*+?]|\{\d+(?:,\d*)?\})/.test(rest)) continue
+    const body = pattern.slice(start + 1, i).replace(/\\./g, "")
+    if (/[*+?]|\{\d+(?:,\d*)?\}/.test(body)) return "nested quantifiers are not supported"
+    if (body.includes("|")) return "a quantified group with alternation is not supported"
+  }
+
+  return undefined
+}
+
 type State = {
   entries: Entry[]
   index: BM25.Index<Entry> | undefined
+  limit: number
   discovered: Map<string, Set<string>>
 }
 
 export interface Interface {
   /** Replace the catalog contents. Called once per agent step. */
-  readonly sync: (entries: Entry[]) => Effect.Effect<void>
+  readonly sync: (entries: Entry[], options?: Options) => Effect.Effect<void>
   readonly list: () => Effect.Effect<Entry[]>
   readonly get: (id: string) => Effect.Effect<Entry | undefined>
   readonly search: (query: string, options?: SearchOptions) => Effect.Effect<Entry[]>
@@ -126,26 +171,21 @@ export const use = serviceUse(Service)
 
 const EMPTY: ReadonlySet<string> = new Set<string>()
 
-function signature(entries: Entry[]) {
-  return entries.map((entry) => `${entry.id}\u0000${entry.description.length}`).join("\u0001")
-}
-
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolCatalog.state")(() =>
-        Effect.succeed<State>({ entries: [], index: undefined, discovered: new Map() }),
+        Effect.succeed<State>({ entries: [], index: undefined, limit: DEFAULT_LIMIT, discovered: new Map() }),
       ),
     )
 
-    const sync: Interface["sync"] = Effect.fn("ToolCatalog.sync")(function* (entries) {
+    const sync: Interface["sync"] = Effect.fn("ToolCatalog.sync")(function* (entries, options) {
       const s = yield* InstanceState.get(state)
-      if (s.index && signature(s.entries) === signature(entries)) {
-        s.entries = entries
-        return
-      }
       s.entries = entries
+      s.limit = options?.limit ?? DEFAULT_LIMIT
+      // Indexing a few hundred short documents costs microseconds — orders of magnitude less
+      // than the request it saves — so rebuild rather than guess whether anything changed.
       s.index = BM25.createIndex(entries, (entry) => [entry.id, entry.description])
     })
 
@@ -163,11 +203,13 @@ const layer = Layer.effect(
       return BM25.search(s.index, query, s.entries.length)
         .map((result) => result.item)
         .filter((entry) => !options?.source || entry.source === options.source)
-        .slice(0, options?.limit ?? DEFAULT_LIMIT)
+        .slice(0, options?.limit ?? s.limit)
     })
 
     const searchRegex: Interface["searchRegex"] = Effect.fn("ToolCatalog.searchRegex")(function* (pattern, options) {
       const s = yield* InstanceState.get(state)
+      const unsafe = unsafePattern(pattern)
+      if (unsafe) return yield* Effect.fail(new InvalidPatternError({ pattern, detail: unsafe }))
       const regex = yield* Effect.try({
         try: () => new RegExp(pattern, "i"),
         catch: (error) =>
@@ -175,8 +217,8 @@ const layer = Layer.effect(
       })
       return s.entries
         .filter((entry) => !options?.source || entry.source === options.source)
-        .filter((entry) => regex.test(entry.id) || regex.test(entry.description))
-        .slice(0, options?.limit ?? DEFAULT_LIMIT)
+        .filter((entry) => regex.test(entry.id) || regex.test(entry.description.slice(0, MAX_MATCH_LENGTH)))
+        .slice(0, options?.limit ?? s.limit)
     })
 
     const discover: Interface["discover"] = Effect.fn("ToolCatalog.discover")(function* (sessionID, ids) {

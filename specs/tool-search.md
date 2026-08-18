@@ -12,13 +12,13 @@ before the conversation even starts. Most of those tools are never used in a giv
 
 ## Solution
 
-Keep a small set of *core* tools always loaded. Everything else is **deferred**: it lives in a
+Keep a small set of _core_ tools always loaded. Everything else is **deferred**: it lives in a
 searchable catalog instead of the request payload. The model gets two cheap discovery tools:
 
 - `tool_search` — BM25 keyword/semantic-ish search over tool names and descriptions.
 - `tool_search_regex` — regex search over the same corpus, for precise lookups.
 
-When a search returns hits, those tool IDs are recorded as *discovered* for that session. Tools are
+When a search returns hits, those tool IDs are recorded as _discovered_ for that session. Tools are
 resolved on every agent step, so discovered tools appear in the very next model call and stay
 available for the rest of the session.
 
@@ -47,40 +47,51 @@ the catalog trivially testable.
 
 ## Deferral policy
 
-| Kind | Default |
-| --- | --- |
+| Kind                                                                                                                                                                         | Default       |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
 | Core builtins (`shell`, `read`, `edit`, `write`, `apply_patch`, `glob`, `grep`, `todowrite`, `task`, `skill`, `question`, `invalid`, `plan_exit`, `execute`, `tool_search*`) | always loaded |
-| Other builtins (`webfetch`, `websearch`, `lsp`) | deferred |
-| Custom `.opencode/tool/*` and plugin tools | deferred |
-| MCP tools | deferred |
+| Other builtins (`webfetch`, `websearch`, `lsp`)                                                                                                                              | deferred      |
+| Custom `.opencode/tool/*` and plugin tools                                                                                                                                   | deferred      |
+| MCP tools                                                                                                                                                                    | deferred      |
 
 Configurable via `tool_search` in `opencode.json`:
 
 ```jsonc
 {
   "tool_search": {
-    "enabled": true,          // false restores the classic "load everything" behaviour
+    "enabled": true, // false restores the classic "load everything" behaviour
     "always_load": ["github_*"], // wildcard patterns never deferred
-    "defer": ["websearch"],      // extra wildcard patterns always deferred
-    "limit": 5                   // max results per search
-  }
+    "defer": ["websearch"], // extra wildcard patterns always deferred
+    "limit": 5, // max results per search
+  },
 }
 ```
 
 ## Plan (TDD)
 
-1. `search/bm25.ts` — pure BM25 index/search. Tests first (`test/search/bm25.test.ts`).
-2. `tool/catalog.ts` — pure deferral helpers (`resolveConfig`, `shouldDefer`) + `ToolCatalog`
-   service (sync/search/searchRegex/get/discover/discovered/forget). Tests first
-   (`test/tool/catalog.test.ts`).
+1. `search/bm25.ts` — pure BM25 index/search, Unicode tokenization, conservative plural folding.
+   Tests first (`test/search/bm25.test.ts`).
+2. `tool/catalog.ts` — pure deferral helpers (`options`, `deferred`) and the regex safety guard
+   (`unsafePattern`) + `ToolCatalog` service (sync/search/searchRegex/get/discover/discovered/
+   forget). `sync` carries the configured result limit and rebuilds the index every step —
+   indexing a few hundred short documents is far cheaper than reasoning about staleness. Tests
+   first (`test/tool/catalog.test.ts`, `test/tool/catalog-retrieval.test.ts`).
 3. `tool/tool-search.ts` + `tool/tool-search-regex.ts` with `.txt` descriptions, registered as
    builtins in `tool/registry.ts`.
 4. `session/tools.ts` — build entries, sync catalog, filter deferred/undiscovered tools.
 5. `core/v1/config/config.ts` — `tool_search` schema.
 6. Docs: `packages/web/src/content/docs/docs/tools.mdx` (or config page) section.
 
+## Retrieval quality
+
+With deferred loading, a false negative from the search is an invisible tool, so retrieval quality
+is part of the agent's reliability. `test/tool/catalog-retrieval.test.ts` keeps a battery of
+paraphrased capability queries ("open PR", "take screenshot", "query database", "run tests", …)
+against a catalog written in the style of real MCP servers, asserting the expected tool lands in
+the top 3. Add a case whenever a real-world query misses.
+
 ## Verification
 
-- `bun test test/search test/tool/catalog.test.ts test/tool/registry.test.ts`
+- `bun test test/search test/tool/catalog.test.ts test/tool/catalog-retrieval.test.ts test/tool/registry.test.ts`
 - `bun turbo typecheck --filter=opencode`
 - `bunx oxlint`

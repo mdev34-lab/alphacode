@@ -85,6 +85,18 @@ describe("tool.tool_search", () => {
     }),
   )
 
+  it.instance("respects the configured result limit", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries, ToolCatalog.options({ limit: 1 }))
+
+      const tool = yield* Tool.init(yield* ToolSearchTool)
+      const result = yield* tool.execute({ query: "github issue repository file" }, ctx)
+
+      expect(result.metadata.tools).toHaveLength(1)
+    }),
+  )
+
   it.instance("filters by category", () =>
     Effect.gen(function* () {
       const catalog = yield* ToolCatalog.Service

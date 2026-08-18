@@ -318,8 +318,11 @@ of those tools are never used.
 
 Tool search fixes that. Core tools (`bash`, `read`, `edit`, `write`, `glob`, `grep`, `todowrite`,
 `task`, `skill`, `apply_patch`, …) are always loaded. Everything else — the remaining built-ins,
-custom tools and all MCP tools — is **deferred**: kept out of the request until the model looks it
-up with one of two discovery tools.
+custom tools and every MCP tool call — is **deferred**: kept out of the request until the model
+looks it up with one of two discovery tools. The MCP _resource_ helpers
+(`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) are not deferred; they
+are only registered when a connected server exposes resources, and they are the entry point for
+discovering those resources.
 
 ### tool_search
 
@@ -337,8 +340,17 @@ Regex search over the same catalog, matched case-insensitively against names and
 tool_search_regex({ pattern: "github.*issue" })
 ```
 
-Both tools accept an optional `category` (`all`, `builtin` or `mcp`). Tools returned by a search
-become available on the model's next step and stay available for the rest of the session.
+Patterns come from the model, so a few shapes are rejected before they are compiled: patterns
+longer than 200 characters, backreferences, and quantified groups that contain a quantifier or an
+alternation (`(a+)+`, `(a|a)*`). Those are the shapes that cause catastrophic backtracking, and a
+running regex cannot be interrupted in JavaScript.
+
+Both tools accept an optional `category` (`all`, `builtin` or `mcp`) and return at most
+`tool_search.limit` results. Tools returned by a search become available on the model's next step
+and stay available for the rest of the session.
+
+Search is BM25 over tool names and descriptions, with Unicode-aware tokenization and regular
+plural folding, so `find issues` also matches a tool described as "list the issue tracker".
 
 ### Configure
 
@@ -354,12 +366,12 @@ become available on the model's next step and stay available for the rest of the
 }
 ```
 
-| Field | Description |
-| --- | --- |
-| `enabled` | Defer non-core tools. Defaults to `true`. Set to `false` to always send every tool definition. |
-| `always_load` | Tool ID patterns that are never deferred. Supports `*` wildcards. |
-| `defer` | Extra tool ID patterns that are always deferred, even core tools. |
-| `limit` | Maximum number of tools returned by a single search. Defaults to `5`. |
+| Field         | Description                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| `enabled`     | Defer non-core tools. Defaults to `true`. Set to `false` to always send every tool definition. |
+| `always_load` | Tool ID patterns that are never deferred. Supports `*` wildcards.                              |
+| `defer`       | Extra tool ID patterns that are always deferred, even core tools.                              |
+| `limit`       | Maximum number of tools returned by a single search. Defaults to `5`.                          |
 
 `always_load` wins over `defer`. When `enabled` is `false`, the `tool_search` tools are not
 registered at all.

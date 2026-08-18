@@ -43,13 +43,38 @@ const DEFAULT_CONFIG: Config = {
   b: 0.4,
 }
 
-/** Tokenize text into normalized terms */
+/**
+ * Tokenize text into normalized terms.
+ *
+ * Unicode aware: letters and digits from any script survive, everything else becomes a
+ * separator. Tool names and descriptions are not guaranteed to be English.
+ */
 export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .split(/\s+/)
     .filter((term) => term.length > 0)
+}
+
+/**
+ * Fold a term to a canonical form so that a plural query still matches a singular
+ * description (and the other way around). Deliberately conservative: only regular plural
+ * suffixes, never verb forms, and never words short enough to be acronyms.
+ */
+export function fold(term: string): string {
+  if (term.length <= 3) return term
+  if (term.endsWith("ies")) return term.slice(0, -3) + "y"
+  if (term.endsWith("sses") || term.endsWith("shes") || term.endsWith("ches") || term.endsWith("xes"))
+    return term.slice(0, -2)
+  if (term.endsWith("ss") || term.endsWith("us") || term.endsWith("is")) return term
+  if (term.endsWith("s")) return term.slice(0, -1)
+  return term
+}
+
+/** Tokenize and fold, the form used for both indexing and querying */
+export function terms(text: string): string[] {
+  return tokenize(text).map(fold)
 }
 
 function buildTermFrequency(terms: string[]): Map<string, number> {
@@ -73,14 +98,14 @@ export function createIndex<T>(items: T[], getFields: (item: T) => string[], con
   const documentFrequency = new Map<string, number>()
 
   for (let i = 0; i < items.length; i++) {
-    const terms = getFields(items[i]).flatMap((field) => tokenize(field))
-    const termFrequency = buildTermFrequency(terms)
+    const documentTerms = getFields(items[i]).flatMap((field) => terms(field))
+    const termFrequency = buildTermFrequency(documentTerms)
 
     for (const term of termFrequency.keys()) {
       documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1)
     }
 
-    documents.push({ id: String(i), terms, termFrequency, length: terms.length })
+    documents.push({ id: String(i), terms: documentTerms, termFrequency, length: documentTerms.length })
   }
 
   const totalLength = documents.reduce((sum, doc) => sum + doc.length, 0)
@@ -128,7 +153,7 @@ function scoreDocument(document: Document, queryTerms: string[], index: Index<un
 export function search<T>(index: Index<T>, query: string, limit = 10): SearchResult<T>[] {
   if (index.documentCount === 0) return []
 
-  const queryTerms = tokenize(query)
+  const queryTerms = terms(query)
   if (queryTerms.length === 0) return []
 
   const results: SearchResult<T>[] = []
@@ -145,14 +170,19 @@ export function search<T>(index: Index<T>, query: string, limit = 10): SearchRes
  * Add a single item to an existing index. Less efficient than rebuilding for bulk additions.
  */
 export function addItem<T>(index: Index<T>, item: T, getFields: (item: T) => string[]): void {
-  const terms = getFields(item).flatMap((field) => tokenize(field))
-  const termFrequency = buildTermFrequency(terms)
+  const itemTerms = getFields(item).flatMap((field) => terms(field))
+  const termFrequency = buildTermFrequency(itemTerms)
 
   for (const term of termFrequency.keys()) {
     index.documentFrequency.set(term, (index.documentFrequency.get(term) ?? 0) + 1)
   }
 
-  index.documents.push({ id: String(index.documents.length), terms, termFrequency, length: terms.length })
+  index.documents.push({
+    id: String(index.documents.length),
+    terms: itemTerms,
+    termFrequency,
+    length: itemTerms.length,
+  })
   index.items.push(item)
 
   const totalLength = index.documents.reduce((sum, doc) => sum + doc.length, 0)

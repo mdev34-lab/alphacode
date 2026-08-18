@@ -194,6 +194,51 @@ describe("ToolCatalog service", () => {
     }),
   )
 
+  it.instance("uses the configured limit as the default for both searches", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries, ToolCatalog.options({ limit: 2 }))
+
+      expect(yield* catalog.search("issue repository github file")).toHaveLength(2)
+      expect(yield* catalog.searchRegex("e")).toHaveLength(2)
+      expect(yield* catalog.search("issue repository github file", { limit: 1 })).toHaveLength(1)
+    }),
+  )
+
+  it.instance("rejects patterns that can blow up the regex engine", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      for (const pattern of ["(a+)+$", "(a|a)*b", "(x*)*y", "((a+))+", "(\\w+\\s?)*$", "(x)\\1+", "a".repeat(300)]) {
+        const result = yield* catalog.searchRegex(pattern).pipe(Effect.result)
+        expect(result._tag).toBe("Failure")
+      }
+    }),
+  )
+
+  it.instance("still accepts ordinary patterns", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      expect((yield* catalog.searchRegex("(github|linear)_")).length).toBeGreaterThan(0)
+      expect((yield* catalog.searchRegex("^github_[a-z_]+$")).length).toBeGreaterThan(0)
+      expect((yield* catalog.searchRegex("issues?")).length).toBeGreaterThan(0)
+    }),
+  )
+
+  it.instance("reindexes when a description changes without changing length", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync([entry({ id: "tool_a", description: "Search GitHub issues" })])
+      yield* catalog.sync([entry({ id: "tool_a", description: "Create GitHub ticket" })])
+
+      expect((yield* catalog.search("ticket")).map((r) => r.id)).toEqual(["tool_a"])
+      expect(yield* catalog.search("issues")).toEqual([])
+    }),
+  )
+
   it.instance("replaces the index when the catalog is re-synced", () =>
     Effect.gen(function* () {
       const catalog = yield* ToolCatalog.Service

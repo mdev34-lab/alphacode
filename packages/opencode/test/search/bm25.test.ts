@@ -22,6 +22,44 @@ describe("BM25", () => {
     test("keeps numbers", () => {
       expect(BM25.tokenize("file123 test")).toEqual(["file123", "test"])
     })
+    test("keeps non-ascii letters and digits", () => {
+      expect(BM25.tokenize("Edição de Conteúdo")).toEqual(["edição", "de", "conteúdo"])
+      expect(BM25.tokenize("Añadir imágenes")).toEqual(["añadir", "imágenes"])
+      expect(BM25.tokenize("Дерево файлов")).toEqual(["дерево", "файлов"])
+    })
+
+    test("still strips punctuation around non-ascii words", () => {
+      expect(BM25.tokenize("gestão, de arquivos!")).toEqual(["gestão", "de", "arquivos"])
+    })
+  })
+
+  describe("fold", () => {
+    test("folds regular plurals to their singular form", () => {
+      expect(BM25.fold("errors")).toBe("error")
+      expect(BM25.fold("issues")).toBe("issue")
+      expect(BM25.fold("repositories")).toBe("repository")
+      expect(BM25.fold("matches")).toBe("match")
+    })
+
+    test("leaves short words and non-plurals alone", () => {
+      expect(BM25.fold("ls")).toBe("ls")
+      expect(BM25.fold("css")).toBe("css")
+      expect(BM25.fold("status")).toBe("status")
+      expect(BM25.fold("read")).toBe("read")
+    })
+  })
+
+  describe("plural and singular queries", () => {
+    test("a plural query matches a singular document and vice versa", () => {
+      const docs = [
+        { id: "sentry", text: "List error events reported to Sentry for a project" },
+        { id: "glob", text: "Find files by name pattern" },
+      ]
+      const index = BM25.createIndex(docs, (doc) => [doc.id, doc.text])
+
+      expect(BM25.search(index, "errors")[0]?.item.id).toBe("sentry")
+      expect(BM25.search(index, "file")[0]?.item.id).toBe("glob")
+    })
   })
 
   describe("createIndex", () => {
@@ -76,7 +114,10 @@ describe("BM25", () => {
     })
 
     test("finds exact match", () => {
-      const items = [{ id: 1, text: "hello world" }, { id: 2, text: "goodbye moon" }]
+      const items = [
+        { id: 1, text: "hello world" },
+        { id: 2, text: "goodbye moon" },
+      ]
       const index = BM25.createIndex(items, (item) => [item.text])
       const results = BM25.search(index, "hello")
 
@@ -127,7 +168,10 @@ describe("BM25", () => {
     })
 
     test("excludes documents with zero score", () => {
-      const items = [{ id: 1, text: "hello world" }, { id: 2, text: "foo bar" }]
+      const items = [
+        { id: 1, text: "hello world" },
+        { id: 2, text: "foo bar" },
+      ]
       const index = BM25.createIndex(items, (item) => [item.text])
       const results = BM25.search(index, "hello")
 
@@ -207,10 +251,7 @@ describe("BM25", () => {
 
   describe("getStats", () => {
     test("returns correct statistics", () => {
-      const items = [
-        { text: "hello world" },
-        { text: "hello there friend" },
-      ]
+      const items = [{ text: "hello world" }, { text: "hello there friend" }]
       const index = BM25.createIndex(items, (item) => [item.text])
       const stats = BM25.getStats(index)
 

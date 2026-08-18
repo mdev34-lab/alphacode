@@ -407,7 +407,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   }
 
   if (flags.experimentalCodeMode) {
-    yield* catalog.sync(entries)
+    yield* catalog.sync(entries, toolSearch)
     return tools
   }
 
@@ -525,7 +525,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     tools[key] = item
   }
 
-  yield* catalog.sync(entries)
+  yield* catalog.sync(entries, toolSearch)
 
   return tools
 })
