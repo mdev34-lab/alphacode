@@ -226,7 +226,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "Tasti API",
   "provider.connect.apiKey.required": "Kërkohet çelësi API",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen ju jep akses në një grup të kuruar modelesh të optimizuara të besueshme për agjentët e kodimit.",
+    "opencode Zen ju jep akses në një grup të kuruar modelesh të optimizuara të besueshme për agjentët e kodimit.",
   "provider.connect.opencodeZen.line2":
     "Me një çelës të vetëm API do të keni akses në modele të tilla si Claude, GPT, Gemini, GLM dhe më shumë.",
   "provider.connect.opencodeZen.visit.prefix": "Vizitoni ",

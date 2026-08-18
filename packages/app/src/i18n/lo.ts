@@ -225,7 +225,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "ລະຫັດ API",
   "provider.connect.apiKey.required": "ຕ້ອງການລະຫັດ API",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen ໃຫ້ທ່ານເຂົ້າເຖິງຊຸດຮູບແບບການປັບແຕ່ງທີ່ໜ້າເຊື່ອຖືໄດ້ສຳລັບຕົວແທນການເຂົ້າລະຫັດ.",
+    "opencode Zen ໃຫ້ທ່ານເຂົ້າເຖິງຊຸດຮູບແບບການປັບແຕ່ງທີ່ໜ້າເຊື່ອຖືໄດ້ສຳລັບຕົວແທນການເຂົ້າລະຫັດ.",
   "provider.connect.opencodeZen.line2":
     "ດ້ວຍລະຫັດ API ດຽວເຈົ້າຈະໄດ້ຮັບການເຂົ້າເຖິງຕົວແບບເຊັ່ນ: Claude, GPT, Gemini, GLM ແລະອື່ນໆ.",
   "provider.connect.opencodeZen.visit.prefix": "ຢ້ຽມຢາມ",

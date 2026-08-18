@@ -225,7 +225,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "Kunci API",
   "provider.connect.apiKey.required": "Kunci API diperlukan",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen memberi anda akses kepada set model terpilih yang boleh dipercayai dan dioptimumkan untuk ejen pengekodan.",
+    "opencode Zen memberi anda akses kepada set model terpilih yang boleh dipercayai dan dioptimumkan untuk ejen pengekodan.",
   "provider.connect.opencodeZen.line2":
     "Dengan satu kunci API, anda akan mendapat akses kepada model seperti Claude, GPT, Gemini, GLM dan banyak lagi.",
   "provider.connect.opencodeZen.visit.prefix": "Layari",

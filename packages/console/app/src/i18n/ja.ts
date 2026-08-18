@@ -87,7 +87,7 @@ export const dict = {
 
   "temp.title": "alphacode | ターミナル向けに構築されたAIコーディングエージェント",
   "temp.hero.title": "ターミナル向けに構築されたAIコーディングエージェント",
-  "temp.zen": "alphacode Zen",
+  "temp.zen": "opencode Zen",
   "temp.getStarted": "はじめる",
   "temp.feature.native.title": "ネイティブ TUI",
   "temp.feature.native.body": "レスポンシブでネイティブ、テーマ変更可能なターミナルUI",
@@ -192,12 +192,12 @@ export const dict = {
     "Zenは、alphacodeがコーディングエージェント向けにテスト・ベンチマーク済みのAIモデルを厳選して提供します。プロバイダー間の性能・品質のブレを気にせず、検証済みのモデルを利用できます。",
   "home.zenCta.link": "Zenについて知る",
 
-  "zen.title": "alphacode Zen | コーディングエージェント向けの信頼できる最適化モデル",
+  "zen.title": "opencode Zen | コーディングエージェント向けの信頼できる最適化モデル",
   "zen.hero.title": "コーディングエージェント向けの信頼できる最適化モデル",
   "zen.hero.body":
     "Zenは、alphacodeがコーディングエージェント向けにテスト・ベンチマーク済みのAIモデルを厳選して提供します。プロバイダー間の性能・品質のブレを気にせず、検証済みのモデルを利用できます。",
 
-  "zen.faq.q1": "alphacode Zenとは？",
+  "zen.faq.q1": "opencode Zenとは？",
   "zen.faq.a1":
     "Zenは、alphacodeのチームが作成した、コーディングエージェント向けにテスト・ベンチマークされたAIモデルの厳選セットです。",
   "zen.faq.q2": "Zenはなぜ精度が高いのですか？",
@@ -252,7 +252,7 @@ export const dict = {
     "すべてのZenモデルは米国でホストされています。プロバイダーはゼロ保持ポリシーに従い、モデルのトレーニングにデータを使用しません（",
   "zen.privacy.exceptionsLink": "以下の例外",
 
-  "go.title": "alphacode Go | すべての人のための低価格なコーディングモデル",
+  "go.title": "opencode Go | すべての人のための低価格なコーディングモデル",
   "go.meta.description":
     "Goは最初の月$5、その後$10/月で、主要なコーディングモデルへのゆとりある利用上限と安定したアクセスを提供します。",
   "go.hero.title": "すべての人のための低価格なコーディングモデル",
@@ -297,7 +297,7 @@ export const dict = {
   "go.testimonials.frank.quote": "まだNvidiaにいられたらよかったのに。",
   "go.problem.title": "Goはどのような問題を解決していますか？",
   "go.problem.body":
-    "私たちはalphacodeの体験をできるだけ多くの人に届けることに注力しています。alphacode Goは低価格のサブスクリプションで、最初の月は$5、その後は$10/月です。ゆとりある上限と、最も高性能なオープンソースモデルへの信頼できるアクセスを提供します。",
+    "私たちはalphacodeの体験をできるだけ多くの人に届けることに注力しています。opencode Goは低価格のサブスクリプションで、最初の月は$5、その後は$10/月です。ゆとりある上限と、最も高性能なオープンソースモデルへの信頼できるアクセスを提供します。",
   "go.problem.subtitle": " ",
   "go.problem.item1": "低価格なサブスクリプション料金",
   "go.problem.item2": "十分な制限と安定したアクセス",
@@ -320,7 +320,7 @@ export const dict = {
   "go.privacy.beforeExceptions":
     "Goのモデルは米国でホストされています。プロバイダーはゼロ保持ポリシーに従い、モデルのトレーニングにデータを使用しません（",
   "go.privacy.exceptionsLink": "以下の例外",
-  "go.faq.q1": "alphacode Goとは？",
+  "go.faq.q1": "opencode Goとは？",
   "go.faq.a1":
     "Goは、エージェント型コーディングのための有能なオープンソースモデルへの安定したアクセスを提供する低価格なサブスクリプションです。",
   "go.faq.q2": "Goにはどのモデルが含まれますか？",
@@ -390,7 +390,7 @@ export const dict = {
   "zen.api.error.regionNotAllowed":
     "このモデルの最新バージョンは中国でのみホスト提供されており、利用するには明示的なオプトインが必要です: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
-    "{{model}} の無料プロモーションは終了しました。alphacode Go を購読するとモデルを引き続き使用できます - {{link}}",
+    "{{model}} の無料プロモーションは終了しました。opencode Go を購読するとモデルを引き続き使用できます - {{link}}",
 
   "black.meta.title": "alphacode Black | 世界最高峰のコーディングモデルすべてにアクセス",
   "black.meta.description": "alphacode Black サブスクリプションプランで、Claude、GPT、Gemini などにアクセス。",
@@ -660,7 +660,7 @@ export const dict = {
   "workspace.lite.time.minute": "分",
   "workspace.lite.time.minutes": "分",
   "workspace.lite.time.fewSeconds": "数秒",
-  "workspace.lite.subscription.message": "あなたは alphacode Go を購読しています。",
+  "workspace.lite.subscription.message": "あなたは opencode Go を購読しています。",
   "workspace.lite.subscription.manage": "サブスクリプションの管理",
   "workspace.lite.subscription.rollingUsage": "ローリング利用量",
   "workspace.lite.subscription.weeklyUsage": "週間利用量",
@@ -668,16 +668,16 @@ export const dict = {
   "workspace.lite.subscription.resetsIn": "リセットまで",
   "workspace.lite.subscription.useBalance": "利用限度額に達したら利用可能な残高を使用する",
   "workspace.lite.subscription.selectProvider":
-    "Go モデルを使用するには、opencode の設定で「alphacode Go」をプロバイダーとして選択してください。",
+    "Go モデルを使用するには、opencode の設定で「opencode Go」をプロバイダーとして選択してください。",
   "workspace.lite.providers.title": "プロバイダー",
   "workspace.lite.providers.description": "ルーティングに使用するプロバイダーを管理します。",
   "workspace.lite.providers.useChina": "中国でホストされているモデルを有効にする",
   "workspace.lite.black.message":
     "現在 alphacode Black を購読中、またはウェイティングリストに登録されています。Go に切り替える場合は、先に登録を解除してください。",
   "workspace.lite.other.message":
-    "このワークスペースの別のメンバーが既に alphacode Go を購読しています。ワークスペースにつき1人のメンバーのみが購読できます。",
+    "このワークスペースの別のメンバーが既に opencode Go を購読しています。ワークスペースにつき1人のメンバーのみが購読できます。",
   "workspace.lite.promo.description":
-    "alphacode Goは{{price}}で始まり、その後は$10/月で、人気の高いオープンコーディングモデルへの安定したアクセスと余裕のある利用枠を提供します。",
+    "opencode Goは{{price}}で始まり、その後は$10/月で、人気の高いオープンコーディングモデルへの安定したアクセスと余裕のある利用枠を提供します。",
   "workspace.lite.promo.price": "初月$5",
   "workspace.lite.promo.modelsTitle": "含まれるもの",
   "workspace.lite.promo.footer":

@@ -45,6 +45,9 @@
 
 ### Installation
 
+> [!NOTE]
+> **This is the alphacode fork** — it is not published to package registries, so the quick-start below builds from source. The package-manager one-liners are placeholders for a future alphacode distribution; until then they install the upstream [opencode](https://github.com/anomalyco/opencode) project this fork tracks.
+
 ```bash
 # YOLO
 git clone https://github.com/mdev34-lab/alphacode.git

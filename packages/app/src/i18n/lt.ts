@@ -229,7 +229,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API raktas",
   "provider.connect.apiKey.required": "Reikalingas API raktas",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen suteikia prieigą prie kuruojamo patikimų optimizuotų kodavimo agentų modelių rinkinio.",
+    "opencode Zen suteikia prieigą prie kuruojamo patikimų optimizuotų kodavimo agentų modelių rinkinio.",
   "provider.connect.opencodeZen.line2":
     "Su vienu API raktu galėsite pasiekti tokius modelius kaip Claude, GPT, Gemini, GLM ir kt.",
   "provider.connect.opencodeZen.visit.prefix": "Aplankykite",

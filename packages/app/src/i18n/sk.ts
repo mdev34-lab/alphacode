@@ -225,7 +225,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API kľúč",
   "provider.connect.apiKey.required": "API kľúč je povinný",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen vám poskytuje prístup k vybraným spoľahlivým optimalizovaným modelom pre kódovacích agentov.",
+    "opencode Zen vám poskytuje prístup k vybraným spoľahlivým optimalizovaným modelom pre kódovacích agentov.",
   "provider.connect.opencodeZen.line2":
     "S jediným API kľúčom získate prístup k modelom ako Claude, GPT, Gemini, GLM a ďalším.",
   "provider.connect.opencodeZen.visit.prefix": "Navštívte",

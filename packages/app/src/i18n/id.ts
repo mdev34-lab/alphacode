@@ -246,7 +246,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "Kunci API",
   "provider.connect.apiKey.required": "Kunci API diperlukan",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen memberi Anda akses ke serangkaian model andal yang dioptimalkan untuk agen pengodean.",
+    "opencode Zen memberi Anda akses ke serangkaian model andal yang dioptimalkan untuk agen pengodean.",
   "provider.connect.opencodeZen.line2":
     "Dengan satu kunci API, Anda akan mendapatkan akses ke model seperti Claude, GPT, Gemini, GLM dan lainnya.",
   "provider.connect.opencodeZen.visit.prefix": "Kunjungi ",

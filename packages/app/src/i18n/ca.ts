@@ -227,7 +227,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "tecla API.",
   "provider.connect.apiKey.required": "La clau API és necessària",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen us ofereix accés a un conjunt seleccionat de models optimitzats fiables per a agents de codificació.",
+    "opencode Zen us ofereix accés a un conjunt seleccionat de models optimitzats fiables per a agents de codificació.",
   "provider.connect.opencodeZen.line2":
     "Amb una sola tecla API tindreu accés a models com ara Claude, GPT, Gemini, GLM i més.",
   "provider.connect.opencodeZen.visit.prefix": "Visita ",

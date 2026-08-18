@@ -47,7 +47,7 @@ By default, `bun dev` runs alphacode in the `packages/opencode` directory. To ru
 bun dev <directory>
 ```
 
-To run alphacode in the root of the opencode repo itself:
+To run alphacode in the root of this repo itself:
 
 ```bash
 bun dev .

@@ -88,7 +88,7 @@ export const dict = {
 
   "temp.title": "alphacode | 专为终端打造的 AI 编程代理",
   "temp.hero.title": "专为终端打造的 AI 编程代理",
-  "temp.zen": "alphacode Zen",
+  "temp.zen": "opencode Zen",
   "temp.getStarted": "开始使用",
   "temp.feature.native.title": "原生 TUI",
   "temp.feature.native.body": "响应迅速、原生的、可定制主题的终端 UI",
@@ -188,12 +188,12 @@ export const dict = {
     "Zen 为您提供一组精选的 AI 模型，这些模型经过 alphacode 专门针对编程代理的测试和基准测试。无需担心不同提供商之间不稳定的性能和质量，直接使用行之有效的验证模型。",
   "home.zenCta.link": "了解 Zen",
 
-  "zen.title": "alphacode Zen | 为编程代理精选的可靠、优化模型",
+  "zen.title": "opencode Zen | 为编程代理精选的可靠、优化模型",
   "zen.hero.title": "为编程代理打造的可靠、优化模型",
   "zen.hero.body":
     "Zen 为您提供一组精选的 AI 模型，这些模型经过 alphacode 专门针对编程代理的测试和基准测试。无需担心不稳定的性能和质量，直接使用行之有效的验证模型。",
 
-  "zen.faq.q1": "什么是 alphacode Zen？",
+  "zen.faq.q1": "什么是 opencode Zen？",
   "zen.faq.a1": "Zen 是一组由 alphacode 团队创建的，专门针对编程代理进行测试和基准测试的 AI 模型精选集。",
   "zen.faq.q2": "为什么 Zen 更准确？",
   "zen.faq.a2":
@@ -243,7 +243,7 @@ export const dict = {
   "zen.privacy.beforeExceptions": "所有 Zen 模型均托管在美国。提供商遵循零留存政策，不使用您的数据进行模型训练，",
   "zen.privacy.exceptionsLink": "以下例外情况除外",
 
-  "go.title": "alphacode Go | 人人可用的低成本编程模型",
+  "go.title": "opencode Go | 人人可用的低成本编程模型",
   "go.meta.description": "Go 首月 $5，之后 $10/月，提供充裕的使用限额，并可可靠访问领先的编程模型。",
   "go.hero.title": "人人可用的低成本编程模型",
   "go.hero.body":
@@ -285,7 +285,7 @@ export const dict = {
   "go.testimonials.frank.quote": "我希望我还在 Nvidia。",
   "go.problem.title": "Go 解决了什么问题？",
   "go.problem.body":
-    "我们致力于将 alphacode 体验带给尽可能多的人。alphacode Go 是一款低成本订阅服务：首月 $5，之后 $10/月。它提供充裕的额度，并让您能可靠地使用最强大的开源模型。",
+    "我们致力于将 alphacode 体验带给尽可能多的人。opencode Go 是一款低成本订阅服务：首月 $5，之后 $10/月。它提供充裕的额度，并让您能可靠地使用最强大的开源模型。",
   "go.problem.subtitle": " ",
   "go.problem.item1": "低成本订阅定价",
   "go.problem.item2": "充裕的限额和可靠的访问",
@@ -306,7 +306,7 @@ export const dict = {
   "go.privacy.contactAfter": "如果您有任何问题。",
   "go.privacy.beforeExceptions": "Go 模型托管在美国。提供商遵循零留存政策，不使用您的数据进行模型训练，",
   "go.privacy.exceptionsLink": "以下例外情况除外",
-  "go.faq.q1": "什么是 alphacode Go？",
+  "go.faq.q1": "什么是 opencode Go？",
   "go.faq.a1": "Go 是一项低成本订阅服务，为您提供对强大的开源模型的可靠访问，用于代理编程。",
   "go.faq.q2": "Go 包含哪些模型？",
   "go.faq.a2": "Go 包含下方列出的模型，提供充足的限额和可靠的访问。",
@@ -368,7 +368,7 @@ export const dict = {
   "zen.api.error.userMonthlyLimitReached": "您已达到每月支出限额 ${{amount}}。请在此处管理您的限额：{{membersUrl}}",
   "zen.api.error.modelDisabled": "模型已禁用",
   "zen.api.error.regionNotAllowed": "该模型的最新版本仅在中国提供托管服务，需明确选择启用：{{consoleGoUrl}}",
-  "zen.api.error.trialEnded": "{{model}} 的限免活动已结束。您可以订阅 alphacode Go 继续使用该模型 - {{link}}",
+  "zen.api.error.trialEnded": "{{model}} 的限免活动已结束。您可以订阅 opencode Go 继续使用该模型 - {{link}}",
 
   "black.meta.title": "alphacode Black | 访问全球顶尖编程模型",
   "black.meta.description": "通过 alphacode Black 订阅计划使用 Claude, GPT, Gemini 等模型。",
@@ -634,7 +634,7 @@ export const dict = {
   "workspace.lite.time.minute": "分钟",
   "workspace.lite.time.minutes": "分钟",
   "workspace.lite.time.fewSeconds": "几秒钟",
-  "workspace.lite.subscription.message": "您已订阅 alphacode Go。",
+  "workspace.lite.subscription.message": "您已订阅 opencode Go。",
   "workspace.lite.subscription.manage": "管理订阅",
   "workspace.lite.subscription.rollingUsage": "滚动用量",
   "workspace.lite.subscription.weeklyUsage": "每周用量",
@@ -642,14 +642,14 @@ export const dict = {
   "workspace.lite.subscription.resetsIn": "重置于",
   "workspace.lite.subscription.useBalance": "达到使用限额后使用您的可用余额",
   "workspace.lite.subscription.selectProvider":
-    "在你的 opencode 配置中选择「alphacode Go」作为提供商，即可使用 Go 模型。",
+    "在你的 opencode 配置中选择「opencode Go」作为提供商，即可使用 Go 模型。",
   "workspace.lite.providers.title": "提供商",
   "workspace.lite.providers.description": "控制用于路由的提供商。",
   "workspace.lite.providers.useChina": "启用部署在中国的模型",
   "workspace.lite.black.message": "您当前已订阅 alphacode Black 或在候补名单中。如需切换到 Go，请先取消订阅。",
-  "workspace.lite.other.message": "此工作区中的另一位成员已经订阅了 alphacode Go。每个工作区只有一名成员可以订阅。",
+  "workspace.lite.other.message": "此工作区中的另一位成员已经订阅了 opencode Go。每个工作区只有一名成员可以订阅。",
   "workspace.lite.promo.description":
-    "alphacode Go 起价为 {{price}}，之后 $10/月，并提供对流行开放编码模型的可靠访问，同时享有充裕的使用限额。",
+    "opencode Go 起价为 {{price}}，之后 $10/月，并提供对流行开放编码模型的可靠访问，同时享有充裕的使用限额。",
   "workspace.lite.promo.price": "首月 $5",
   "workspace.lite.promo.modelsTitle": "包含模型",
   "workspace.lite.promo.footer":

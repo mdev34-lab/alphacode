@@ -193,12 +193,12 @@ export const dict = {
     "Zen daje dostęp do wyselekcjonowanego zestawu modeli AI, które alphacode przetestował i sprawdził (benchmark) specjalnie dla agentów kodujących. Nie musisz martwić się o niespójną wydajność i jakość u różnych dostawców, używaj sprawdzonych modeli, które działają.",
   "home.zenCta.link": "Dowiedz się więcej o Zen",
 
-  "zen.title": "alphacode Zen | Wyselekcjonowany zestaw niezawodnych, zoptymalizowanych modeli dla agentów kodujących",
+  "zen.title": "opencode Zen | Wyselekcjonowany zestaw niezawodnych, zoptymalizowanych modeli dla agentów kodujących",
   "zen.hero.title": "Niezawodne, zoptymalizowane modele dla agentów kodujących",
   "zen.hero.body":
     "Zen daje dostęp do wyselekcjonowanego zestawu modeli AI, które alphacode przetestował i sprawdził (benchmark) specjalnie dla agentów kodujących. Nie musisz martwić się o niespójną wydajność i jakość, używaj sprawdzonych modeli, które działają.",
 
-  "zen.faq.q1": "Czym jest alphacode Zen?",
+  "zen.faq.q1": "Czym jest opencode Zen?",
   "zen.faq.a1":
     "Zen to wyselekcjonowany zestaw modeli AI przetestowanych i sprawdzonych pod kątem agentów kodujących, stworzony przez zespół stojący za alphacode.",
   "zen.faq.q2": "Co sprawia, że Zen jest bardziej precyzyjny?",
@@ -254,7 +254,7 @@ export const dict = {
     "Wszystkie modele Zen są hostowane w USA. Dostawcy stosują politykę zerowej retencji i nie wykorzystują Twoich danych do trenowania modeli, z",
   "zen.privacy.exceptionsLink": "następującymi wyjątkami",
 
-  "go.title": "alphacode Go | Niskokosztowe modele do kodowania dla każdego",
+  "go.title": "opencode Go | Niskokosztowe modele do kodowania dla każdego",
   "go.meta.description":
     "Go kosztuje $5 za pierwszy miesiąc, a następnie $10/miesiąc, oferując hojne limity użycia i niezawodny dostęp do wiodących modeli do kodowania.",
   "go.hero.title": "Niskokosztowe modele do kodowania dla każdego",
@@ -298,7 +298,7 @@ export const dict = {
   "go.testimonials.frank.quote": "Chciałbym wciąż być w Nvidia.",
   "go.problem.title": "Jaki problem rozwiązuje Go?",
   "go.problem.body":
-    "Skupiamy się na udostępnieniu doświadczenia alphacode jak największej liczbie osób. alphacode Go to tania subskrypcja: $5 za pierwszy miesiąc, potem $10/miesiąc. Zapewnia hojne limity i niezawodny dostęp do najbardziej wydajnych modeli open source.",
+    "Skupiamy się na udostępnieniu doświadczenia alphacode jak największej liczbie osób. opencode Go to tania subskrypcja: $5 za pierwszy miesiąc, potem $10/miesiąc. Zapewnia hojne limity i niezawodny dostęp do najbardziej wydajnych modeli open source.",
   "go.problem.subtitle": " ",
   "go.problem.item1": "Niskokosztowa cena subskrypcji",
   "go.problem.item2": "Hojne limity i niezawodny dostęp",
@@ -322,7 +322,7 @@ export const dict = {
   "go.privacy.beforeExceptions":
     "Modele Go są hostowane w USA. Dostawcy stosują politykę zerowej retencji i nie używają Twoich danych do trenowania modeli, z",
   "go.privacy.exceptionsLink": "następującymi wyjątkami",
-  "go.faq.q1": "Czym jest alphacode Go?",
+  "go.faq.q1": "Czym jest opencode Go?",
   "go.faq.a1":
     "Go to niskokosztowa subskrypcja, która daje niezawodny dostęp do zdolnych modeli open source dla agentów kodujących.",
   "go.faq.q2": "Jakie modele zawiera Go?",
@@ -393,7 +393,7 @@ export const dict = {
   "zen.api.error.regionNotAllowed":
     "Najnowsza wersja tego modelu jest dostępna wyłącznie jako usługa hostowana w Chinach i wymaga jawnej zgody użytkownika: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
-    "Bezpłatna promocja {{model}} dobiegła końca. Możesz dalej korzystać z modelu, subskrybując alphacode Go - {{link}}",
+    "Bezpłatna promocja {{model}} dobiegła końca. Możesz dalej korzystać z modelu, subskrybując opencode Go - {{link}}",
 
   "black.meta.title": "alphacode Black | Dostęp do najlepszych na świecie modeli kodujących",
   "black.meta.description": "Uzyskaj dostęp do Claude, GPT, Gemini i innych dzięki planom subskrypcji alphacode Black.",
@@ -662,7 +662,7 @@ export const dict = {
   "workspace.lite.time.minute": "minuta",
   "workspace.lite.time.minutes": "minut(y)",
   "workspace.lite.time.fewSeconds": "kilka sekund",
-  "workspace.lite.subscription.message": "Subskrybujesz alphacode Go.",
+  "workspace.lite.subscription.message": "Subskrybujesz opencode Go.",
   "workspace.lite.subscription.manage": "Zarządzaj subskrypcją",
   "workspace.lite.subscription.rollingUsage": "Użycie kroczące",
   "workspace.lite.subscription.weeklyUsage": "Użycie tygodniowe",
@@ -670,16 +670,16 @@ export const dict = {
   "workspace.lite.subscription.resetsIn": "Resetuje się za",
   "workspace.lite.subscription.useBalance": "Użyj dostępnego salda po osiągnięciu limitów użycia",
   "workspace.lite.subscription.selectProvider":
-    'Wybierz "alphacode Go" jako dostawcę w konfiguracji opencode, aby używać modeli Go.',
+    'Wybierz "opencode Go" jako dostawcę w konfiguracji opencode, aby używać modeli Go.',
   "workspace.lite.providers.title": "Dostawcy",
   "workspace.lite.providers.description": "Kontroluj, którzy dostawcy są używani do routingu.",
   "workspace.lite.providers.useChina": "Włącz modele hostowane w Chinach",
   "workspace.lite.black.message":
     "Obecnie subskrybujesz alphacode Black lub jesteś na liście oczekujących. Jeśli chcesz przejść na Go, najpierw anuluj subskrypcję.",
   "workspace.lite.other.message":
-    "Inny członek tego obszaru roboczego już subskrybuje alphacode Go. Tylko jeden członek na obszar roboczy może subskrybować.",
+    "Inny członek tego obszaru roboczego już subskrybuje opencode Go. Tylko jeden członek na obszar roboczy może subskrybować.",
   "workspace.lite.promo.description":
-    "alphacode Go zaczyna się od {{price}}, potem $10/miesiąc, i zapewnia niezawodny dostęp do popularnych otwartych modeli kodowania z hojnymi limitami użycia.",
+    "opencode Go zaczyna się od {{price}}, potem $10/miesiąc, i zapewnia niezawodny dostęp do popularnych otwartych modeli kodowania z hojnymi limitami użycia.",
   "workspace.lite.promo.price": "$5 za pierwszy miesiąc",
   "workspace.lite.promo.modelsTitle": "Co zawiera",
   "workspace.lite.promo.footer":

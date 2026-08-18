@@ -11,9 +11,9 @@ export default function TermsOfService() {
   const language = useLanguage()
   return (
     <main data-page="legal">
-      <Title>alphacode | Terms of Service</Title>
+      <Title>OpenCode | Terms of Service</Title>
       <LocaleLinks path="/legal/terms-of-service" />
-      <Meta name="description" content="alphacode terms of service" />
+      <Meta name="description" content="OpenCode terms of service" />
       <div data-component="container">
         <Header />
 
@@ -35,7 +35,7 @@ export default function TermsOfService() {
 
               <p>
                 These Terms of Use (the "Terms") are a binding contract between you and{" "}
-                <strong>ANOMALY INNOVATIONS, INC.</strong> ("alphacode," "we" and "us"). Your use of the Services in any
+                <strong>ANOMALY INNOVATIONS, INC.</strong> ("OpenCode," "we" and "us"). Your use of the Services in any
                 way means that you agree to all of these Terms, and these Terms will remain in effect while you use the
                 Services. These Terms include the provisions in this document as well as those in the Privacy Policy{" "}
                 <a href={language.route("/legal/privacy-policy")}>https://opencode.ai/legal/privacy-policy</a>.{" "}
@@ -71,7 +71,7 @@ export default function TermsOfService() {
                 RIGHT TO PARTICIPATE IN A CLASS ACTION LAWSUIT OR CLASS-WIDE ARBITRATION.
               </p>
 
-              <h2 id="what-is-opencode">What is alphacode?</h2>
+              <h2 id="what-is-opencode">What is OpenCode?</h2>
               <p>
                 OpenCode is an AI-powered coding agent that helps you write, understand, and modify code using large
                 language models. Certain of these large language models are provided by third parties ("Third Party
@@ -117,7 +117,7 @@ export default function TermsOfService() {
                 us personal information, please contact us at <a href="mailto:help@anoma.ly">help@anoma.ly</a>.
               </p>
 
-              <h2 id="what-are-the-basics">What are the basics of using alphacode?</h2>
+              <h2 id="what-are-the-basics">What are the basics of using OpenCode?</h2>
               <p>
                 You represent and warrant that you are an individual of legal age to form a binding contract (or if not,
                 you've received your parent's or guardian's permission to use the Services and have gotten your parent
@@ -246,7 +246,7 @@ export default function TermsOfService() {
                 any Third Party Model.
               </p>
 
-              <h2 id="will-opencode-ever-change-the-services">Will alphacode ever change the Services?</h2>
+              <h2 id="will-opencode-ever-change-the-services">Will OpenCode ever change the Services?</h2>
               <p>
                 We're always trying to improve our Services, so they may change over time. We may suspend or discontinue
                 any part of the Services, or we may introduce new features or impose limits on certain features or
@@ -346,7 +346,7 @@ export default function TermsOfService() {
                 OpenCode and its licensors, suppliers, partners, parent, subsidiaries or affiliated entities, and each
                 of their respective officers, directors, members, employees, consultants, contract employees,
                 representatives and agents, and each of their respective successors and assigns (OpenCode and all such
-                parties together, the "alphacode Parties") make no representations or warranties concerning the Services,
+                parties together, the "OpenCode Parties") make no representations or warranties concerning the Services,
                 including without limitation regarding any Content contained in or accessed through the Services, and
                 the OpenCode Parties will not be responsible or liable for the accuracy, copyright compliance, legality,
                 or decency of material contained in or accessed through the Services or any claims, actions, suits

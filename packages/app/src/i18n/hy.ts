@@ -227,7 +227,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API բանալի",
   "provider.connect.apiKey.required": "API բանալի է պահանջվում",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen-ը թույլ է տալիս մուտք գործել կոդավորման գործակալների համար հուսալի օպտիմիզացված մոդելների հավաքածու։",
+    "opencode Zen-ը թույլ է տալիս մուտք գործել կոդավորման գործակալների համար հուսալի օպտիմիզացված մոդելների հավաքածու։",
   "provider.connect.opencodeZen.line2":
     "Մեկ API բանալիով դուք մուտք կունենաք այնպիսի մոդելների, ինչպիսիք են՝ Claude, GPT, Gemini, GLM և ավելին:",
   "provider.connect.opencodeZen.visit.prefix": "Այցելություն ",

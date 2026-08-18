@@ -225,7 +225,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API atslēga",
   "provider.connect.apiKey.required": "Nepieciešama API atslēga",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen nodrošina piekļuvi atlasītiem uzticamiem optimizētiem modeļiem kodēšanas aģentiem.",
+    "opencode Zen nodrošina piekļuvi atlasītiem uzticamiem optimizētiem modeļiem kodēšanas aģentiem.",
   "provider.connect.opencodeZen.line2":
     "Ar vienu API atslēgu iegūsiet piekļuvi tādiem modeļiem kā Claude, GPT, Gemini, GLM un citiem.",
   "provider.connect.opencodeZen.visit.prefix": "Apmeklējiet",

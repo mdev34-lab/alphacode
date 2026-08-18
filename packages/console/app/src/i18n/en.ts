@@ -193,12 +193,12 @@ export const dict = {
     "Zen gives you access to a handpicked set of AI models that alphacode has tested and benchmarked specifically for coding agents. No need to worry about inconsistent performance and quality across providers, use validated models that work.",
   "home.zenCta.link": "Learn about Zen",
 
-  "zen.title": "alphacode Zen | A curated set of reliable optimized models for coding agents",
+  "zen.title": "opencode Zen | A curated set of reliable optimized models for coding agents",
   "zen.hero.title": "Reliable optimized models for coding agents",
   "zen.hero.body":
     "Zen gives you access to a curated set of AI models that alphacode has tested and benchmarked specifically for coding agents. No need to worry about inconsistent performance and quality, use validated models that work.",
 
-  "zen.faq.q1": "What is alphacode Zen?",
+  "zen.faq.q1": "What is opencode Zen?",
   "zen.faq.a1":
     "Zen is a curated set of AI models tested and benchmarked for coding agents created by the team behind alphacode.",
   "zen.faq.q2": "What makes Zen more accurate?",
@@ -252,7 +252,7 @@ export const dict = {
     "All Zen models are hosted in the US. Providers follow a zero-retention policy and do not use your data for model training, with the",
   "zen.privacy.exceptionsLink": "following exceptions",
 
-  "go.title": "alphacode Go | Low cost coding models for everyone",
+  "go.title": "opencode Go | Low cost coding models for everyone",
   "go.meta.description":
     "Go starts at $5 for your first month, then $10/month, with generous usage limits and reliable access to leading coding models.",
   "go.hero.title": "Low cost coding models for everyone",
@@ -296,7 +296,7 @@ export const dict = {
   "go.testimonials.frank.quote": "I wish I was still at Nvidia.",
   "go.problem.title": "What problem is Go solving?",
   "go.problem.body":
-    "We're focused on bringing the alphacode experience to as many people as possible. alphacode Go is a low cost subscription: $5 for your first month, then $10/month. It provides generous limits and reliable access to the most capable open source models.",
+    "We're focused on bringing the alphacode experience to as many people as possible. opencode Go is a low cost subscription: $5 for your first month, then $10/month. It provides generous limits and reliable access to the most capable open source models.",
   "go.problem.subtitle": " ",
   "go.problem.item1": "Low cost subscription pricing",
   "go.problem.item2": "Generous limits and reliable access",
@@ -319,7 +319,7 @@ export const dict = {
   "go.privacy.beforeExceptions":
     "Go models are hosted in the US. Providers follow a zero-retention policy and do not use your data for model training, with the",
   "go.privacy.exceptionsLink": "following exceptions",
-  "go.faq.q1": "What is alphacode Go?",
+  "go.faq.q1": "What is opencode Go?",
   "go.faq.a1":
     "Go is a low-cost subscription that gives you reliable access to capable open-source models for agentic coding.",
   "go.faq.q2": "What models does Go include?",
@@ -391,7 +391,7 @@ export const dict = {
   "zen.api.error.regionNotAllowed":
     "The latest version of this model is only available hosted in China and requires explicit opt in: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
-    "Free promotion has ended for {{model}}. You can continue using the model by subscribing to alphacode Go - {{link}}",
+    "Free promotion has ended for {{model}}. You can continue using the model by subscribing to opencode Go - {{link}}",
 
   "black.meta.title": "alphacode Black | Access all the world's best coding models",
   "black.meta.description": "Get access to Claude, GPT, Gemini and more with alphacode Black subscription plans.",
@@ -660,7 +660,7 @@ export const dict = {
   "workspace.lite.time.minute": "minute",
   "workspace.lite.time.minutes": "minutes",
   "workspace.lite.time.fewSeconds": "a few seconds",
-  "workspace.lite.subscription.message": "You are subscribed to alphacode Go.",
+  "workspace.lite.subscription.message": "You are subscribed to opencode Go.",
   "workspace.lite.subscription.manage": "Manage Subscription",
   "workspace.lite.subscription.rollingUsage": "Rolling Usage",
   "workspace.lite.subscription.weeklyUsage": "Weekly Usage",
@@ -668,16 +668,16 @@ export const dict = {
   "workspace.lite.subscription.resetsIn": "Resets in",
   "workspace.lite.subscription.useBalance": "Use your available balance after reaching the usage limits",
   "workspace.lite.subscription.selectProvider":
-    'Select "alphacode Go" as the provider in your opencode configuration to use Go models.',
+    'Select "opencode Go" as the provider in your opencode configuration to use Go models.',
   "workspace.lite.providers.title": "Providers",
   "workspace.lite.providers.description": "Control which providers are used for routing.",
   "workspace.lite.providers.useChina": "Enable models hosted in China",
   "workspace.lite.black.message":
     "You're currently subscribed to alphacode Black or on the waitlist. Please unsubscribe first if you'd like to switch to Go.",
   "workspace.lite.other.message":
-    "Another member in this workspace is already subscribed to alphacode Go. Only one member per workspace can subscribe.",
+    "Another member in this workspace is already subscribed to opencode Go. Only one member per workspace can subscribe.",
   "workspace.lite.promo.description":
-    "alphacode Go starts at {{price}}, then $10/month, and provides reliable access to popular open coding models with generous usage limits.",
+    "opencode Go starts at {{price}}, then $10/month, and provides reliable access to popular open coding models with generous usage limits.",
   "workspace.lite.promo.price": "$5 for your first month",
   "workspace.lite.promo.modelsTitle": "What's Included",
   "workspace.lite.promo.footer":

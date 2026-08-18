@@ -87,7 +87,7 @@ export const dict = {
 
   "temp.title": "alphacode | เอเจนต์เขียนโค้ด AI ที่สร้างมาเพื่อเทอร์มินัล",
   "temp.hero.title": "เอเจนต์เขียนโค้ด AI ที่สร้างมาเพื่อเทอร์มินัล",
-  "temp.zen": "alphacode Zen",
+  "temp.zen": "opencode Zen",
   "temp.getStarted": "เริ่มต้นใช้งาน",
   "temp.feature.native.title": "Native TUI",
   "temp.feature.native.body": "UI เทอร์มินัลแบบเนทีฟที่ตอบสนองไวและปรับแต่งธีมได้",
@@ -191,12 +191,12 @@ export const dict = {
     "Zen ให้คุณเข้าถึงชุดโมเดล AI ที่คัดสรรมาแล้ว ซึ่ง alphacode ได้ทดสอบและทำเบนช์มาร์กโดยเฉพาะสำหรับเอเจนต์เขียนโค้ด ไม่ต้องกังวลเรื่องประสิทธิภาพและคุณภาพที่ไม่สม่ำเสมอจากผู้ให้บริการ ใช้โมเดลที่ผ่านการตรวจสอบแล้วว่าใช้งานได้จริง",
   "home.zenCta.link": "เรียนรู้เกี่ยวกับ Zen",
 
-  "zen.title": "alphacode Zen | ชุดโมเดลที่คัดสรรมาอย่างดี เชื่อถือได้ และปรับแต่งแล้วสำหรับเอเจนต์เขียนโค้ด",
+  "zen.title": "opencode Zen | ชุดโมเดลที่คัดสรรมาอย่างดี เชื่อถือได้ และปรับแต่งแล้วสำหรับเอเจนต์เขียนโค้ด",
   "zen.hero.title": "โมเดลที่ปรับแต่งมาอย่างดีและเชื่อถือได้สำหรับเอเจนต์เขียนโค้ด",
   "zen.hero.body":
     "Zen ให้คุณเข้าถึงชุดโมเดล AI ที่คัดสรรมาแล้ว ซึ่ง alphacode ได้ทดสอบและทำเบนช์มาร์กโดยเฉพาะสำหรับเอเจนต์เขียนโค้ด ไม่ต้องกังวลเรื่องประสิทธิภาพและคุณภาพที่ไม่สม่ำเสมอ ใช้โมเดลที่ผ่านการตรวจสอบแล้วว่าใช้งานได้จริง",
 
-  "zen.faq.q1": "alphacode Zen คืออะไร?",
+  "zen.faq.q1": "opencode Zen คืออะไร?",
   "zen.faq.a1":
     "Zen คือชุดโมเดล AI ที่คัดสรรมาอย่างดี ผ่านการทดสอบและทำเบนช์มาร์กสำหรับเอเจนต์เขียนโค้ด สร้างโดยทีมงานผู้อยู่เบื้องหลัง alphacode",
   "zen.faq.q2": "อะไรทำให้ Zen แม่นยำกว่า?",
@@ -252,7 +252,7 @@ export const dict = {
     "โมเดล Zen ทั้งหมดโฮสต์ในสหรัฐอเมริกา ผู้ให้บริการปฏิบัติตามนโยบายไม่เก็บรักษาข้อมูล (zero-retention policy) และไม่ใช้ข้อมูลของคุณสำหรับการฝึกโมเดล โดยมี",
   "zen.privacy.exceptionsLink": "ข้อยกเว้นดังนี้",
 
-  "go.title": "alphacode Go | โมเดลเขียนโค้ดราคาประหยัดสำหรับทุกคน",
+  "go.title": "opencode Go | โมเดลเขียนโค้ดราคาประหยัดสำหรับทุกคน",
   "go.meta.description":
     "Go เริ่มต้นที่ $5 สำหรับเดือนแรก จากนั้น $10/เดือน พร้อมขีดจำกัดการใช้งานที่เอื้อเฟื้อและการเข้าถึงโมเดลเขียนโค้ดชั้นนำอย่างเชื่อถือได้",
   "go.hero.title": "โมเดลเขียนโค้ดราคาประหยัดสำหรับทุกคน",
@@ -295,7 +295,7 @@ export const dict = {
   "go.testimonials.frank.quote": "ผมหวังว่าผมจะยังอยู่ที่ Nvidia",
   "go.problem.title": "Go แก้ปัญหาอะไร?",
   "go.problem.body":
-    "เรามุ่งมั่นที่จะนำประสบการณ์ alphacode ไปสู่ผู้คนให้ได้มากที่สุด alphacode Go เป็นการสมัครสมาชิกราคาประหยัด: $5 สำหรับเดือนแรก จากนั้น $10/เดือน โดยมอบขีดจำกัดที่เอื้อเฟื้อและการเข้าถึงโมเดลโอเพนซอร์สที่มีความสามารถสูงสุดอย่างเชื่อถือได้",
+    "เรามุ่งมั่นที่จะนำประสบการณ์ alphacode ไปสู่ผู้คนให้ได้มากที่สุด opencode Go เป็นการสมัครสมาชิกราคาประหยัด: $5 สำหรับเดือนแรก จากนั้น $10/เดือน โดยมอบขีดจำกัดที่เอื้อเฟื้อและการเข้าถึงโมเดลโอเพนซอร์สที่มีความสามารถสูงสุดอย่างเชื่อถือได้",
   "go.problem.subtitle": " ",
   "go.problem.item1": "ราคาการสมัครสมาชิกที่ต่ำ",
   "go.problem.item2": "ขีดจำกัดที่กว้างขวางและการเข้าถึงที่เชื่อถือได้",
@@ -318,7 +318,7 @@ export const dict = {
   "go.privacy.beforeExceptions":
     "โมเดล Go โฮสต์ในสหรัฐอเมริกา ผู้ให้บริการปฏิบัติตามนโยบายไม่เก็บรักษาข้อมูล (zero-retention policy) และไม่ใช้ข้อมูลของคุณสำหรับการฝึกโมเดล โดยมี",
   "go.privacy.exceptionsLink": "ข้อยกเว้นดังนี้",
-  "go.faq.q1": "alphacode Go คืออะไร?",
+  "go.faq.q1": "opencode Go คืออะไร?",
   "go.faq.a1":
     "Go คือการสมัครสมาชิกราคาประหยัดที่ให้คุณเข้าถึงโมเดลโอเพนซอร์สที่มีความสามารถสำหรับการเขียนโค้ดแบบเอเจนต์ได้อย่างน่าเชื่อถือ",
   "go.faq.q2": "Go รวมโมเดลอะไรบ้าง?",
@@ -388,7 +388,7 @@ export const dict = {
   "zen.api.error.regionNotAllowed":
     "โมเดลเวอร์ชันล่าสุดนี้ให้บริการเฉพาะผ่านระบบที่โฮสต์ในประเทศจีน และต้องให้ความยินยอมอย่างชัดแจ้งก่อนใช้งาน: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
-    "โปรโมชันฟรีสำหรับ {{model}} สิ้นสุดแล้ว คุณสามารถใช้โมเดลต่อได้โดยสมัครสมาชิก alphacode Go - {{link}}",
+    "โปรโมชันฟรีสำหรับ {{model}} สิ้นสุดแล้ว คุณสามารถใช้โมเดลต่อได้โดยสมัครสมาชิก opencode Go - {{link}}",
 
   "black.meta.title": "alphacode Black | เข้าถึงโมเดลเขียนโค้ดที่ดีที่สุดในโลก",
   "black.meta.description": "เข้าถึง Claude, GPT, Gemini และอื่นๆ ด้วยแผนสมาชิก alphacode Black",
@@ -657,7 +657,7 @@ export const dict = {
   "workspace.lite.time.minute": "นาที",
   "workspace.lite.time.minutes": "นาที",
   "workspace.lite.time.fewSeconds": "ไม่กี่วินาที",
-  "workspace.lite.subscription.message": "คุณได้สมัครสมาชิก alphacode Go แล้ว",
+  "workspace.lite.subscription.message": "คุณได้สมัครสมาชิก opencode Go แล้ว",
   "workspace.lite.subscription.manage": "จัดการการสมัครสมาชิก",
   "workspace.lite.subscription.rollingUsage": "การใช้งานแบบหมุนเวียน",
   "workspace.lite.subscription.weeklyUsage": "การใช้งานรายสัปดาห์",
@@ -665,16 +665,16 @@ export const dict = {
   "workspace.lite.subscription.resetsIn": "รีเซ็ตใน",
   "workspace.lite.subscription.useBalance": "ใช้ยอดคงเหลือของคุณหลังจากถึงขีดจำกัดการใช้งาน",
   "workspace.lite.subscription.selectProvider":
-    'เลือก "alphacode Go" เป็นผู้ให้บริการในการตั้งค่า opencode ของคุณเพื่อใช้โมเดล Go',
+    'เลือก "opencode Go" เป็นผู้ให้บริการในการตั้งค่า opencode ของคุณเพื่อใช้โมเดล Go',
   "workspace.lite.providers.title": "ผู้ให้บริการ",
   "workspace.lite.providers.description": "ควบคุมผู้ให้บริการที่ใช้สำหรับการกำหนดเส้นทาง",
   "workspace.lite.providers.useChina": "เปิดใช้โมเดลที่โฮสต์ในจีน",
   "workspace.lite.black.message":
     "ขณะนี้คุณสมัครสมาชิก alphacode Black หรืออยู่ในรายการรอ โปรดยกเลิกการสมัครก่อนหากต้องการเปลี่ยนไปใช้ Go",
   "workspace.lite.other.message":
-    "สมาชิกคนอื่นใน Workspace นี้ได้สมัคร alphacode Go แล้ว สามารถสมัครได้เพียงหนึ่งคนต่อหนึ่ง Workspace เท่านั้น",
+    "สมาชิกคนอื่นใน Workspace นี้ได้สมัคร opencode Go แล้ว สามารถสมัครได้เพียงหนึ่งคนต่อหนึ่ง Workspace เท่านั้น",
   "workspace.lite.promo.description":
-    "alphacode Go เริ่มต้นที่ {{price}} จากนั้น $10/เดือน และมอบการเข้าถึงโมเดลการเขียนโค้ดแบบเปิดยอดนิยมอย่างเสถียรพร้อมขีดจำกัดการใช้งานที่ให้มาอย่างเหลือเฟือ",
+    "opencode Go เริ่มต้นที่ {{price}} จากนั้น $10/เดือน และมอบการเข้าถึงโมเดลการเขียนโค้ดแบบเปิดยอดนิยมอย่างเสถียรพร้อมขีดจำกัดการใช้งานที่ให้มาอย่างเหลือเฟือ",
   "workspace.lite.promo.price": "$5 สำหรับเดือนแรก",
   "workspace.lite.promo.modelsTitle": "สิ่งที่รวมอยู่ด้วย",
   "workspace.lite.promo.footer":

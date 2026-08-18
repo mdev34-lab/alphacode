@@ -225,7 +225,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "Cheie API",
   "provider.connect.apiKey.required": "Cheia API este obligatorie",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen îți oferă acces la un set selectat de modele optimizate și fiabile pentru agenți de programare.",
+    "opencode Zen îți oferă acces la un set selectat de modele optimizate și fiabile pentru agenți de programare.",
   "provider.connect.opencodeZen.line2":
     "Cu o singură cheie API ai acces la modele precum Claude, GPT, Gemini, GLM și altele.",
   "provider.connect.opencodeZen.visit.prefix": "Vizitează",

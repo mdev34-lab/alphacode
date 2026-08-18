@@ -246,7 +246,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "Ключ API",
   "provider.connect.apiKey.required": "Ключ API обов'язковий",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen надає доступ до відібраного набору надійних оптимізованих моделей для агентів кодування.",
+    "opencode Zen надає доступ до відібраного набору надійних оптимізованих моделей для агентів кодування.",
   "provider.connect.opencodeZen.line2":
     "З одним ключем API ви отримаєте доступ до таких моделей, як Claude, GPT, Gemini, GLM та інших.",
   "provider.connect.opencodeZen.visit.prefix": "Відвідайте ",

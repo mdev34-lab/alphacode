@@ -229,7 +229,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "API kulcs",
   "provider.connect.apiKey.required": "API kulcs szükséges",
   "provider.connect.opencodeZen.line1":
-    "A alphacode Zen hozzáférést biztosít a kódoló ügynökök számára megbízható, optimalizált modellek válogatott készletéhez.",
+    "A opencode Zen hozzáférést biztosít a kódoló ügynökök számára megbízható, optimalizált modellek válogatott készletéhez.",
   "provider.connect.opencodeZen.line2":
     "Egyetlen API kulccsal hozzáférhet olyan modellekhez, mint a Claude, GPT, Gemini, GLM és még sok más.",
   "provider.connect.opencodeZen.visit.prefix": "Látogatás",

@@ -234,7 +234,7 @@ export const dict = {
   "provider.connect.apiKey.placeholder": "Chave de API",
   "provider.connect.apiKey.required": "A chave de API é obrigatória",
   "provider.connect.opencodeZen.line1":
-    "alphacode Zen oferece acesso a um conjunto selecionado de modelos confiáveis otimizados para agentes de código.",
+    "opencode Zen oferece acesso a um conjunto selecionado de modelos confiáveis otimizados para agentes de código.",
   "provider.connect.opencodeZen.line2":
     "Com uma única chave de API você terá acesso a modelos como Claude, GPT, Gemini, GLM e mais.",
   "provider.connect.opencodeZen.visit.prefix": "Visite ",

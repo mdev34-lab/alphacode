@@ -11,9 +11,9 @@ export default function PrivacyPolicy() {
   const language = useLanguage()
   return (
     <main data-page="legal">
-      <Title>alphacode | Privacy Policy</Title>
+      <Title>OpenCode | Privacy Policy</Title>
       <LocaleLinks path="/legal/privacy-policy" />
-      <Meta name="description" content="alphacode privacy policy" />
+      <Meta name="description" content="OpenCode privacy policy" />
       <div data-component="container">
         <Header />
 

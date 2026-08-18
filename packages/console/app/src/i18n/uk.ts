@@ -194,12 +194,12 @@ export const dict = {
     "Zen дає доступ до добірки AI-моделей, які alphacode протестував спеціально для агентів кодування. Не турбуйтеся про нестабільну якість — використовуйте перевірені моделі.",
   "home.zenCta.link": "Дізнатися про Zen",
 
-  "zen.title": "alphacode Zen | Добірка надійних оптимізованих моделей для агентів кодування",
+  "zen.title": "opencode Zen | Добірка надійних оптимізованих моделей для агентів кодування",
   "zen.hero.title": "Надійні оптимізовані моделі для агентів кодування",
   "zen.hero.body":
     "Zen дає доступ до добірки AI-моделей, які alphacode протестував спеціально для агентів кодування. Не турбуйтеся про нестабільну якість — використовуйте перевірені моделі.",
 
-  "zen.faq.q1": "Що таке alphacode Zen?",
+  "zen.faq.q1": "Що таке opencode Zen?",
   "zen.faq.a1": "Zen — це добірка AI-моделей, протестованих для агентів кодування, створена командою alphacode.",
   "zen.faq.q2": "Чому Zen точніший?",
   "zen.faq.a2":
@@ -254,7 +254,7 @@ export const dict = {
     "Усі моделі Zen розміщені в США. Провайдери дотримуються політики нульового зберігання та не використовують ваші дані для навчання моделей, за",
   "zen.privacy.exceptionsLink": "такими винятками",
 
-  "go.title": "alphacode Go | Недорогі моделі кодування для всіх",
+  "go.title": "opencode Go | Недорогі моделі кодування для всіх",
   "go.meta.description":
     "Go починається від $5 за перший місяць, потім $10/місяць, зі щедрими лімітами використання та надійним доступом до провідних моделей для кодування.",
   "go.hero.title": "Недорогі моделі кодування для всіх",
@@ -298,7 +298,7 @@ export const dict = {
   "go.testimonials.frank.quote": "Хотів би я досі бути в Nvidia.",
   "go.problem.title": "Яку проблему вирішує Go?",
   "go.problem.body":
-    "Ми зосереджені на тому, щоб зробити досвід alphacode доступним для якомога більшої кількості людей. alphacode Go — це недорога підписка: $5 за перший місяць, потім $10/місяць. Вона надає щедрі ліміти та надійний доступ до найкращих моделей з відкритим кодом.",
+    "Ми зосереджені на тому, щоб зробити досвід alphacode доступним для якомога більшої кількості людей. opencode Go — це недорога підписка: $5 за перший місяць, потім $10/місяць. Вона надає щедрі ліміти та надійний доступ до найкращих моделей з відкритим кодом.",
   "go.problem.subtitle": " ",
   "go.problem.item1": "Недорога підписка",
   "go.problem.item2": "Щедрі ліміти та надійний доступ",
@@ -322,7 +322,7 @@ export const dict = {
   "go.privacy.beforeExceptions":
     "Моделі Go розміщені в США. Провайдери дотримуються політики нульового зберігання та не використовують ваші дані для навчання моделей, за",
   "go.privacy.exceptionsLink": "такими винятками",
-  "go.faq.q1": "Що таке alphacode Go?",
+  "go.faq.q1": "Що таке opencode Go?",
   "go.faq.a1":
     "Go — це недорога підписка, яка надає надійний доступ до найкращих моделей з відкритим кодом для агентного кодування.",
   "go.faq.q2": "Які моделі включає Go?",
@@ -392,7 +392,7 @@ export const dict = {
   "zen.api.error.regionNotAllowed":
     "Остання версія цієї моделі доступна лише на серверах у Китаї, і для її використання потрібно надати явну згоду: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
-    "Безкоштовна акція для {{model}} закінчилася. Ви можете продовжити використання, підписавшись на alphacode Go — {{link}}",
+    "Безкоштовна акція для {{model}} закінчилася. Ви можете продовжити використання, підписавшись на opencode Go — {{link}}",
 
   "black.meta.title": "alphacode Black | Доступ до найкращих моделей кодування",
   "black.meta.description": "Отримайте доступ до Claude, GPT, Gemini та інших із планами підписки alphacode Black.",
@@ -661,21 +661,21 @@ export const dict = {
   "workspace.lite.time.minute": "хвилина",
   "workspace.lite.time.minutes": "хвилин(и)",
   "workspace.lite.time.fewSeconds": "кілька секунд",
-  "workspace.lite.subscription.message": "Ви підписані на alphacode Go.",
+  "workspace.lite.subscription.message": "Ви підписані на opencode Go.",
   "workspace.lite.subscription.manage": "Керувати підпискою",
   "workspace.lite.subscription.rollingUsage": "Ковзне використання",
   "workspace.lite.subscription.weeklyUsage": "Тижневе використання",
   "workspace.lite.subscription.monthlyUsage": "Місячне використання",
   "workspace.lite.subscription.resetsIn": "Скидається через",
   "workspace.lite.subscription.useBalance": "Використовуйте доступний баланс після досягнення лімітів",
-  "workspace.lite.subscription.selectProvider": 'Виберіть "alphacode Go" як провайдера в конфігурації opencode.',
+  "workspace.lite.subscription.selectProvider": 'Виберіть "opencode Go" як провайдера в конфігурації opencode.',
   "workspace.lite.providers.title": "Провайдери",
   "workspace.lite.providers.description": "Керуйте провайдерами, які використовуються для маршрутизації.",
   "workspace.lite.providers.useChina": "Увімкнути моделі, розміщені в Китаї",
   "workspace.lite.black.message":
     "Ви вже підписані на alphacode Black або в списку очікування. Спочатку скасуйте підписку, якщо хочете перейти на Go.",
-  "workspace.lite.other.message": "Інший учасник цього робочого простору вже підписаний на alphacode Go.",
-  "workspace.lite.promo.description": "alphacode Go починається від {{price}}, потім $10/місяць, із щедрими лімітами.",
+  "workspace.lite.other.message": "Інший учасник цього робочого простору вже підписаний на opencode Go.",
+  "workspace.lite.promo.description": "opencode Go починається від {{price}}, потім $10/місяць, із щедрими лімітами.",
   "workspace.lite.promo.price": "$5 за перший місяць",
   "workspace.lite.promo.modelsTitle": "Що включено",
   "workspace.lite.promo.footer":
