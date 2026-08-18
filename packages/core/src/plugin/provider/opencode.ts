@@ -83,7 +83,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
     let connected = false
     let providers: typeof ConfigV1.Info.Type.provider | undefined
 
-    const load = Effect.fn("alphacodePlugin.load")(function* () {
+    const load = Effect.fn("OpencodePlugin.load")(function* () {
       const connection = yield* ctx.integration.connection.active("opencode")
       const credential = connection
         ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.catch(() => Effect.succeed(undefined)))
@@ -92,7 +92,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
       providers = credential
         ? yield* fetchProviders(http, credential).pipe(
             Effect.catch((cause) =>
-              Effect.logWarning("failed to load alphacode provider config", { cause }).pipe(Effect.as(undefined)),
+              Effect.logWarning("failed to load OpenCode provider config", { cause }).pipe(Effect.as(undefined)),
             ),
           )
         : undefined
