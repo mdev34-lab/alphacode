@@ -1131,6 +1131,49 @@ describe("tool.shell abort", () => {
   )
 })
 
+describe("tool.shell detached children (issue #24731)", () => {
+  it.live(
+    "returns promptly when a command leaves a detached child holding stdio open",
+    () =>
+      Effect.gen(function* () {
+        if (process.platform === "win32") return
+
+        const dir = yield* tmpdirScoped()
+        const pidFile = path.join(dir, "daemon.pid")
+        // Spawn a long-lived detached child that inherits stdio (keeps the shell's
+        // stdout pipe open), record its pid, print output, then exit immediately.
+        const code =
+          'const cp=require("node:child_process");const fs=require("node:fs");' +
+          'const d=cp.spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{detached:true,stdio:"inherit"});' +
+          'd.unref();fs.writeFileSync(Bun.argv[1],String(d.pid));process.stdout.write("STARTED");process.exit(0)'
+        const command = `${bin} -e ${squote(code)} ${squote(pidFile)}`
+
+        const start = Date.now()
+        const result = yield* runIn(projectRoot, run({ command, timeout: 30_000 }))
+        const elapsed = Date.now() - start
+
+        // Reap the detached daemon so the pipe closes and it does not leak.
+        const fsvc = yield* FSUtil.Service
+        const pid = Number((yield* fsvc.readFileStringSafe(pidFile)) ?? "0")
+        if (pid) {
+          yield* Effect.sync(() => {
+            try {
+              process.kill(pid, "SIGKILL")
+            } catch {}
+          })
+        }
+
+        expect(result.output).toContain("STARTED")
+        expect(result.metadata.exit).toBe(0)
+        expect(result.output).not.toContain("exceeding timeout")
+        // Returned after a bounded post-exit idle window, not by waiting on the
+        // daemon's inherited pipe (60s) or the command timeout (30s).
+        expect(elapsed).toBeLessThan(10_000)
+      }),
+    40_000,
+  )
+})
+
 describe("tool.shell truncation", () => {
   it.live("truncates output exceeding line limit", () =>
     runIn(

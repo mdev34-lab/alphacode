@@ -1,7 +1,9 @@
 import { Context, Duration, Effect, Fiber, Layer, Schema, Stream } from "effect"
 import type { PlatformError } from "effect/PlatformError"
+import type * as Scope from "effect/Scope"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import type { ExitCode } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "./cross-spawn-spawner"
 import { makeGlobalNode } from "./effect/app-node"
 
@@ -136,6 +138,56 @@ export const collectStream = (stream: Stream.Stream<Uint8Array, PlatformError>, 
     },
   ).pipe(Effect.map((x) => ({ buffer: Buffer.concat(x.chunks), truncated: x.truncated })))
 
+const POST_EXIT_QUIET = Duration.millis(500)
+
+/**
+ * Collects a child process output stream without waiting for it to close.
+ *
+ * A detached descendant can inherit the child's stdio and keep the pipe open
+ * after the child exits, so waiting for EOF/`close` hangs forever. Instead,
+ * once the process exits, keep draining until the stream has been quiet for
+ * `POST_EXIT_QUIET`, then stop even if the stream never closes.
+ */
+const collectUntilQuiet = (
+  stream: Stream.Stream<Uint8Array, PlatformError>,
+  maxOutputBytes: number | undefined,
+  exit: Effect.Effect<ExitCode, PlatformError>,
+): Effect.Effect<{ buffer: Buffer; truncated: boolean }, PlatformError, Scope.Scope> =>
+  Effect.gen(function* () {
+    const acc = { chunks: [] as Uint8Array[], bytes: 0, truncated: false }
+    let activity = -1
+    const output = yield* Effect.forkScoped(
+      Stream.runForEach(stream, (chunk) =>
+        Effect.sync(() => {
+          activity++
+          if (maxOutputBytes === undefined) {
+            acc.chunks.push(chunk)
+            acc.bytes += chunk.length
+            return
+          }
+          const remaining = maxOutputBytes - acc.bytes
+          if (remaining > 0) acc.chunks.push(remaining >= chunk.length ? chunk : chunk.slice(0, remaining))
+          acc.bytes += chunk.length
+          acc.truncated = acc.truncated || acc.bytes > maxOutputBytes
+        }),
+      ),
+    )
+    yield* exit
+    // Wait until the stream has been quiet for POST_EXIT_QUIET. Always sleep at
+    // least once so output buffered at process exit can still be observed.
+    const settle = Effect.gen(function* () {
+      let last = activity
+      while (true) {
+        yield* Effect.sleep(POST_EXIT_QUIET)
+        const current = activity
+        if (current === last) return
+        last = current
+      }
+    })
+    yield* Effect.raceFirst(Fiber.join(output), settle)
+    return { buffer: Buffer.concat(acc.chunks), truncated: acc.truncated }
+  })
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -148,7 +200,7 @@ const layer = Layer.effect(
           const handle = yield* spawner.spawn(command)
           if (options?.combineOutput) {
             const [output, exitCode] = yield* Effect.all(
-              [collectStream(handle.all, options.maxOutputBytes), handle.exitCode],
+              [collectUntilQuiet(handle.all, options.maxOutputBytes, handle.exitCode), handle.exitCode],
               { concurrency: "unbounded" },
             )
             return {
@@ -164,8 +216,8 @@ const layer = Layer.effect(
           }
           const [stdout, stderr, exitCode] = yield* Effect.all(
             [
-              collectStream(handle.stdout, options?.maxOutputBytes),
-              collectStream(handle.stderr, options?.maxErrorBytes),
+              collectUntilQuiet(handle.stdout, options?.maxOutputBytes, handle.exitCode),
+              collectUntilQuiet(handle.stderr, options?.maxErrorBytes, handle.exitCode),
               handle.exitCode,
             ],
             { concurrency: "unbounded" },

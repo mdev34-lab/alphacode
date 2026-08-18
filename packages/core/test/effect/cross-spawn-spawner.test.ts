@@ -287,6 +287,54 @@ describe("cross-spawn spawner", () => {
     )
   })
 
+  describe("detached children (issue #24731)", () => {
+    fx.live(
+      "exitCode resolves when the main process exits even if a detached child keeps stdio open",
+      Effect.gen(function* () {
+        const tmp = yield* Effect.acquireRelease(
+          Effect.promise(() => tmpdir()),
+          (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+        )
+        const pidFile = path.join(tmp.path, "daemon.pid")
+
+        // Mimics playwright-cli / a backgrounded server: spawn a long-lived detached
+        // child that inherits stdio (keeping the parent's stdout pipe write end open),
+        // then exit the main process immediately.
+        const code = [
+          'const cp = require("node:child_process")',
+          'const fs = require("node:fs")',
+          'const daemon = cp.spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "inherit" })',
+          "daemon.unref()",
+          "fs.writeFileSync(process.argv[1], String(daemon.pid))",
+          'process.stdout.write("started")',
+          "process.exit(0)",
+        ].join("\n")
+
+        const handle = yield* ChildProcess.make(process.execPath, ["-e", code, pidFile])
+
+        const result = yield* Effect.raceAll([
+          handle.exitCode.pipe(Effect.map((exit) => ({ kind: "exit" as const, code: exit }))),
+          Effect.sleep("5 seconds").pipe(Effect.as({ kind: "timeout" as const, code: null })),
+        ])
+
+        // Reap the detached daemon so it does not leak and so the spawner's
+        // "close" can fire during scope teardown.
+        const pid = Number(yield* Effect.promise(() => fs.readFile(pidFile, "utf-8").catch(() => "0")))
+        if (pid) {
+          yield* Effect.sync(() => {
+            try {
+              process.kill(pid, "SIGKILL")
+            } catch {}
+          })
+        }
+
+        expect(result.kind).toBe("exit")
+        expect(result.code).toBe(ChildProcessSpawner.ExitCode(0))
+      }),
+      15_000,
+    )
+  })
+
   describe("error handling", () => {
     fx.effect(
       "fails for invalid command",
