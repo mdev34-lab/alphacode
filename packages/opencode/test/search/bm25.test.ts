@@ -47,6 +47,54 @@ describe("BM25", () => {
       expect(BM25.fold("status")).toBe("status")
       expect(BM25.fold("read")).toBe("read")
     })
+
+    test("does not mangle singular words that end in s", () => {
+      for (const word of [
+        "alias",
+        "atlas",
+        "canvas",
+        "bias",
+        "chaos",
+        "lens",
+        "news",
+        "series",
+        "species",
+        "analysis",
+        "basis",
+        "address",
+        "process",
+        "class",
+        "bus",
+        "gas",
+        "https",
+        "dns",
+      ]) {
+        expect(BM25.fold(word)).toBe(word)
+      }
+    })
+
+    test("folds the plural of those words back onto them", () => {
+      expect(BM25.fold("aliases")).toBe("alias")
+      expect(BM25.fold("canvases")).toBe("canvas")
+      expect(BM25.fold("addresses")).toBe("address")
+      expect(BM25.fold("processes")).toBe("process")
+      expect(BM25.fold("classes")).toBe("class")
+      expect(BM25.fold("buses")).toBe("bus")
+    })
+
+    test("still folds ordinary plurals that end in as or es", () => {
+      expect(BM25.fold("schemas")).toBe("schema")
+      expect(BM25.fold("databases")).toBe("database")
+      expect(BM25.fold("areas")).toBe("area")
+      expect(BM25.fold("boxes")).toBe("box")
+      expect(BM25.fold("branches")).toBe("branch")
+    })
+
+    test("is idempotent", () => {
+      for (const word of ["issues", "repositories", "matches", "alias", "schemas", "status", "files"]) {
+        expect(BM25.fold(BM25.fold(word))).toBe(BM25.fold(word))
+      }
+    })
   })
 
   describe("plural and singular queries", () => {

@@ -58,13 +58,40 @@ export function tokenize(text: string): string[] {
 }
 
 /**
+ * Singular words that end in `s`. Suffix rules alone cannot tell `alias` from `schemas`,
+ * so the handful of words that break the rules are listed explicitly.
+ */
+const IRREGULAR = new Set([
+  "alias",
+  "analysis",
+  "atlas",
+  "basis",
+  "bias",
+  "bus",
+  "canvas",
+  "chaos",
+  "css",
+  "dns",
+  "gas",
+  "https",
+  "lens",
+  "news",
+  "series",
+  "species",
+  "status",
+])
+
+/**
  * Fold a term to a canonical form so that a plural query still matches a singular
  * description (and the other way around). Deliberately conservative: only regular plural
  * suffixes, never verb forms, and never words short enough to be acronyms.
  */
 export function fold(term: string): string {
+  if (IRREGULAR.has(term)) return term
   if (term.length <= 3) return term
   if (term.endsWith("ies")) return term.slice(0, -3) + "y"
+  // aliases -> alias, canvases -> canvas: only for the words we know are singular
+  if (term.endsWith("es") && IRREGULAR.has(term.slice(0, -2))) return term.slice(0, -2)
   if (term.endsWith("sses") || term.endsWith("shes") || term.endsWith("ches") || term.endsWith("xes"))
     return term.slice(0, -2)
   if (term.endsWith("ss") || term.endsWith("us") || term.endsWith("is")) return term

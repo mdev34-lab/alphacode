@@ -90,6 +90,16 @@ paraphrased capability queries ("open PR", "take screenshot", "query database", 
 against a catalog written in the style of real MCP servers, asserting the expected tool lands in
 the top 3. Add a case whenever a real-world query misses.
 
+The same battery is measured as Recall@K, since `tool_search.limit` decides how deep the model
+gets to look — a tool ranked #4 is invisible at limit 3. Current floors, enforced by the tests:
+
+| K   | Recall                   |
+| --- | ------------------------ |
+| 1   | >= 80% (measured 86%)    |
+| 3   | 100%                     |
+| 5   | 100% (the default limit) |
+| 10  | 100%                     |
+
 ## Verification
 
 - `bun test test/search test/tool/catalog.test.ts test/tool/catalog-retrieval.test.ts test/tool/registry.test.ts`

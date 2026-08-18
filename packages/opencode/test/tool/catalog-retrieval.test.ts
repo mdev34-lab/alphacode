@@ -86,4 +86,29 @@ describe("ToolCatalog retrieval quality", () => {
       }),
     )
   }
+
+  // Recall@K, because `tool_search.limit` is the knob that decides how deep the model gets to
+  // look. A tool ranked #4 is invisible at limit 3. These floors are the contract for the
+  // default limit of 5; if a change drops them, the deferred tools stop being findable.
+  const floors: Record<number, number> = { 1: 0.8, 3: 1, 5: 1, 10: 1 }
+
+  for (const [k, floor] of Object.entries(floors)) {
+    it.instance(`recall@${k} is at least ${(floor * 100).toFixed(0)}%`, () =>
+      Effect.gen(function* () {
+        const catalog = yield* ToolCatalog.Service
+        yield* catalog.sync(catalogEntries)
+
+        const misses: string[] = []
+        for (const item of cases) {
+          const results = yield* catalog.search(item.query, { limit: Number(k) })
+          if (!results.some((entry) => entry.id === item.expect)) misses.push(item.query)
+        }
+
+        const recall = (cases.length - misses.length) / cases.length
+        // Name the misses in the failure output, otherwise a regression is just a number
+        if (recall < floor) throw new Error(`recall@${k} = ${recall.toFixed(2)}, missed: ${misses.join(" | ")}`)
+        expect(recall).toBeGreaterThanOrEqual(floor)
+      }),
+    )
+  }
 })
