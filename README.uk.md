@@ -1,17 +1,17 @@
 <p align="center">
-  <a href="https://opencode.ai">
+  <a href="https://github.com/mdev34-lab/alphacode">
     <picture>
       <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
       <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
+      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="alphacode logo">
     </picture>
   </a>
 </p>
 <p align="center">AI-агент для програмування з відкритим кодом.</p>
 <p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
+  <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
+  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
+  <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
   <a href="README.vi.md">Tiếng Việt</a>
 </p>
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+[![alphacode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://github.com/mdev34-lab/alphacode)
 
 ---
 
@@ -47,18 +47,21 @@
 
 ```bash
 # YOLO
-curl -fsSL https://opencode.ai/install | bash
+git clone https://github.com/mdev34-lab/alphacode.git
+cd alphacode
+bun install
+./packages/opencode/script/build.ts --single
 
 # Менеджери пакетів
-npm i -g opencode-ai@latest        # або bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS і Linux (рекомендовано, завжди актуально)
-brew install opencode              # macOS і Linux (офіційна формула Homebrew, оновлюється рідше)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Будь-яка ОС
-nix run nixpkgs#opencode           # або github:anomalyco/opencode для найновішої dev-гілки
+npm i -g alphacode-ai@latest        # або bun/pnpm/yarn
+scoop install alphacode             # Windows
+choco install alphacode             # Windows
+brew install mdev34-lab/alphacode/alphacode # macOS і Linux (рекомендовано, завжди актуально)
+brew install alphacode              # macOS і Linux (офіційна формула Homebrew, оновлюється рідше)
+sudo pacman -S alphacode            # Arch Linux (Stable)
+paru -S alphacode-bin               # Arch Linux (Latest from AUR)
+mise use -g alphacode               # Будь-яка ОС
+nix run nixpkgs#alphacode           # або github:mdev34-lab/alphacode для найновішої dev-гілки
 ```
 
 > [!TIP]
@@ -66,40 +69,46 @@ nix run nixpkgs#opencode           # або github:anomalyco/opencode для н�
 
 ### Десктопний застосунок (BETA)
 
-OpenCode також доступний як десктопний застосунок. Завантажуйте напряму зі [сторінки релізів](https://github.com/anomalyco/opencode/releases) або [opencode.ai/download](https://opencode.ai/download).
+alphacode також доступний як десктопний застосунок. Завантажуйте напряму зі [сторінки релізів](https://github.com/mdev34-lab/alphacode/releases) або [alphacode.ai/download](https://github.com/mdev34-lab/alphacode).
 
 | Платформа             | Завантаження                       |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
+| Windows               | `alphacode-desktop-windows-x64.exe` |
 | Linux                 | `.deb`, `.rpm` або AppImage        |
 
 ```bash
 # macOS (Homebrew)
-brew install --cask opencode-desktop
+brew install --cask alphacode-desktop
 # Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+scoop bucket add extras; scoop install extras/alphacode-desktop
 ```
 
 #### Каталог встановлення
 
 Скрипт встановлення дотримується такого порядку пріоритету для шляху встановлення:
 
-1. `$OPENCODE_INSTALL_DIR` - Користувацький каталог встановлення
+1. `$ALPHACODE_INSTALL_DIR` - Користувацький каталог встановлення
 2. `$XDG_BIN_DIR` - Шлях, сумісний зі специфікацією XDG Base Directory
 3. `$HOME/bin` - Стандартний каталог користувацьких бінарників (якщо існує або його можна створити)
-4. `$HOME/.opencode/bin` - Резервний варіант за замовчуванням
+4. `$HOME/.alphacode/bin` - Резервний варіант за замовчуванням
 
 ```bash
 # Приклади
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git
+cd alphacode
+bun install
+./packages/opencode/script/build.ts --single
+XDG_BIN_DIR=$HOME/.local/bin git clone https://github.com/mdev34-lab/alphacode.git
+cd alphacode
+bun install
+./packages/opencode/script/build.ts --single
 ```
 
 ### Агенти
 
-OpenCode містить два вбудовані агенти, між якими можна перемикатися клавішею `Tab`.
+alphacode містить два вбудовані агенти, між якими можна перемикатися клавішею `Tab`.
 
 - **build** - Агент за замовчуванням із повним доступом для завдань розробки
 - **plan** - Агент лише для читання для аналізу та дослідження коду
@@ -110,20 +119,20 @@ OpenCode містить два вбудовані агенти, між яким�
 Також доступний допоміжний агент **general** для складного пошуку та багатокрокових завдань.
 Він використовується всередині системи й може бути викликаний у повідомленнях через `@general`.
 
-Дізнайтеся більше про [agents](https://opencode.ai/docs/agents).
+Дізнайтеся більше про [agents](https://github.com/mdev34-lab/alphacode).
 
 ### Документація
 
-Щоб дізнатися більше про налаштування OpenCode, [**перейдіть до нашої документації**](https://opencode.ai/docs).
+Щоб дізнатися більше про налаштування alphacode, [**перейдіть до нашої документації**](https://github.com/mdev34-lab/alphacode).
 
 ### Внесок
 
-Якщо ви хочете зробити внесок в OpenCode, будь ласка, прочитайте нашу [документацію для контриб'юторів](./CONTRIBUTING.md) перед надсиланням pull request.
+Якщо ви хочете зробити внесок в alphacode, будь ласка, прочитайте нашу [документацію для контриб'юторів](./CONTRIBUTING.md) перед надсиланням pull request.
 
-### Проєкти на базі OpenCode
+### Проєкти на базі alphacode
 
-Якщо ви працюєте над проєктом, пов'язаним з OpenCode, і використовуєте "opencode" у назві, наприклад "opencode-dashboard" або "opencode-mobile", додайте примітку до свого README.
-Уточніть, що цей проєкт не створений командою OpenCode і жодним чином не афілійований із нами.
+Якщо ви працюєте над проєктом, пов'язаним з alphacode, і використовуєте "alphacode" у назві, наприклад "alphacode-dashboard" або "alphacode-mobile", додайте примітку до свого README.
+Уточніть, що цей проєкт не створений командою alphacode і жодним чином не афілійований із нами.
 
 ---
 
