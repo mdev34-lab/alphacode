@@ -73,6 +73,34 @@ describe("BM25", () => {
       }
     })
 
+    test("does not truncate technical words that end in ss", () => {
+      for (const word of [
+        "access",
+        "address",
+        "success",
+        "business",
+        "class",
+        "express",
+        "process",
+        "progress",
+        "compress",
+        "loss",
+        "pass",
+        "cross",
+      ]) {
+        expect(BM25.fold(word)).toBe(word)
+      }
+    })
+
+    test("folds the plurals of ss words back onto the singular", () => {
+      expect(BM25.fold("accesses")).toBe("access")
+      expect(BM25.fold("addresses")).toBe("address")
+      expect(BM25.fold("successes")).toBe("success")
+      expect(BM25.fold("businesses")).toBe("business")
+      expect(BM25.fold("classes")).toBe("class")
+      expect(BM25.fold("processes")).toBe("process")
+    })
+
     test("folds the plural of those words back onto them", () => {
       expect(BM25.fold("aliases")).toBe("alias")
       expect(BM25.fold("canvases")).toBe("canvas")

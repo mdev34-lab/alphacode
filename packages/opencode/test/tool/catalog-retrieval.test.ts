@@ -87,6 +87,23 @@ describe("ToolCatalog retrieval quality", () => {
     )
   }
 
+  // The ranking must not change shape with the limit: a smaller limit is a prefix of a
+  // bigger one, never a different set. This is what makes tool_search.limit safe to tune.
+  for (const limit of [1, 3, 5]) {
+    it.instance(`limit ${limit} returns the top ${limit} of the full ranking`, () =>
+      Effect.gen(function* () {
+        const catalog = yield* ToolCatalog.Service
+        yield* catalog.sync(catalogEntries)
+
+        const full = yield* catalog.search("github issue repository", { limit: catalogEntries.length })
+        const limited = yield* catalog.search("github issue repository", { limit })
+
+        expect(limited).toHaveLength(Math.min(limit, full.length))
+        expect(limited.map((entry) => entry.id)).toEqual(full.slice(0, limit).map((entry) => entry.id))
+      }),
+    )
+  }
+
   // Recall@K, because `tool_search.limit` is the knob that decides how deep the model gets to
   // look. A tool ranked #4 is invisible at limit 3. These floors are the contract for the
   // default limit of 5; if a change drops them, the deferred tools stop being findable.
