@@ -95,21 +95,43 @@ const IRREGULAR_PLURALS = new Map([
 
 /**
  * Fold a term to a canonical form so that a plural query still matches a singular
- * description (and the other way around). Deliberately conservative: only regular plural
- * suffixes, never verb forms, and never words short enough to be acronyms.
+ * description (and the other way around).
+ *
+ * The goal is agreement between query and document, not the dictionary singular: `y`, `ie`
+ * and `ies` all collapse to `i`, which unifies repository/repositories and cookie/cookies
+ * without having to know which of the two spellings a word uses. Beyond that it stays
+ * conservative: only regular plural suffixes, never verb forms, and never words short
+ * enough to be acronyms.
  */
 export function fold(term: string): string {
   if (IRREGULAR.has(term)) return term
   const irregular = IRREGULAR_PLURALS.get(term)
   if (irregular) return irregular
-  if (term.length <= 3) return term
-  if (term.endsWith("ies")) return term.slice(0, -3) + "y"
-  // aliases -> alias, canvases -> canvas: only for the words we know are singular
-  if (term.endsWith("es") && IRREGULAR.has(term.slice(0, -2))) return term.slice(0, -2)
+  return normalize(term.length <= 3 ? term : singular(term))
+}
+
+/** Strip a regular plural suffix. Words this cannot classify come back unchanged. */
+function singular(term: string): string {
+  // repositories -> repositori (normalize turns the y-family into i as well)
+  if (term.endsWith("ies")) return term.slice(0, -3) + "i"
   if (term.endsWith("sses") || term.endsWith("shes") || term.endsWith("ches") || term.endsWith("xes"))
     return term.slice(0, -2)
+  // aliases -> alias, canvases -> canvas: only for the words we know are singular
+  if (term.endsWith("es") && IRREGULAR.has(term.slice(0, -2))) return term.slice(0, -2)
   if (term.endsWith("ss") || term.endsWith("us") || term.endsWith("is")) return term
   if (term.endsWith("s")) return term.slice(0, -1)
+  return term
+}
+
+/**
+ * Collapse the y/ie family onto i, so repository/repositories and cookie/cookies meet at the
+ * same term. Applied to singulars and stripped plurals alike, which is what keeps `key` and
+ * `keys` in agreement.
+ */
+function normalize(term: string): string {
+  if (term.length < 3) return term
+  if (term.endsWith("ie")) return term.slice(0, -2) + "i"
+  if (term.endsWith("y")) return term.slice(0, -1) + "i"
   return term
 }
 

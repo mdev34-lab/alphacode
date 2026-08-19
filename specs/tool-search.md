@@ -84,7 +84,7 @@ Configurable via `tool_search` in `opencode.json`:
    builtins in `tool/registry.ts`.
 4. `session/tools.ts` — build entries, sync catalog, filter deferred/undiscovered tools.
 5. `core/v1/config/config.ts` — `tool_search` schema.
-6. Docs: `packages/web/src/content/docs/docs/tools.mdx` (or config page) section.
+6. Docs: `packages/web/src/content/docs/tools.mdx`, section "Tool search".
 
 ## Retrieval quality
 

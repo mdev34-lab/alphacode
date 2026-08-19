@@ -37,8 +37,34 @@ describe("BM25", () => {
     test("folds regular plurals to their singular form", () => {
       expect(BM25.fold("errors")).toBe("error")
       expect(BM25.fold("issues")).toBe("issue")
-      expect(BM25.fold("repositories")).toBe("repository")
       expect(BM25.fold("matches")).toBe("match")
+    })
+
+    // What matters for retrieval is that both spellings land on the same term, not that the
+    // term is the dictionary singular.
+    test("plural and singular agree for -y and -ie words", () => {
+      for (const [plural, singular] of [
+        ["repositories", "repository"],
+        ["queries", "query"],
+        ["policies", "policy"],
+        ["categories", "category"],
+        ["dependencies", "dependency"],
+        ["identities", "identity"],
+        ["utilities", "utility"],
+        ["services", "service"],
+        ["cookies", "cookie"],
+        ["movies", "movie"],
+        ["directories", "directory"],
+        ["keys", "key"],
+      ]) {
+        expect(BM25.fold(plural)).toBe(BM25.fold(singular))
+      }
+    })
+
+    test("does not collide unrelated words while folding y", () => {
+      expect(BM25.fold("cookies")).not.toBe(BM25.fold("cook"))
+      expect(BM25.fold("policies")).not.toBe(BM25.fold("police"))
+      expect(BM25.fold("queries")).not.toBe(BM25.fold("queue"))
     })
 
     test("leaves short words and non-plurals alone", () => {
@@ -139,7 +165,7 @@ describe("BM25", () => {
     })
 
     test("is idempotent", () => {
-      for (const word of ["issues", "repositories", "matches", "alias", "schemas", "status", "files"]) {
+      for (const word of ["issues", "repositories", "matches", "alias", "schemas", "status", "files", "cookies"]) {
         expect(BM25.fold(BM25.fold(word))).toBe(BM25.fold(word))
       }
     })
