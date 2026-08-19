@@ -422,11 +422,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       server: servers.find((server) => key.startsWith(server.prefix))?.name,
       deferred: ToolCatalog.deferred({ id: key, source: "mcp", options: toolSearch }),
     }
-    entries.push(catalogEntry)
-    if (hidden(catalogEntry)) continue
     const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
     const execute = item.execute
+    // Catalog only what can actually be called: an entry the model could discover but not
+    // execute would be a phantom tool. convertTool always wires execute today, so this is
+    // belt and braces, kept local rather than relying on a guarantee two modules away.
     if (!execute) continue
+    entries.push(catalogEntry)
+    if (hidden(catalogEntry)) continue
 
     const schema = yield* Effect.promise(() => Promise.resolve(asSchema(item.inputSchema).jsonSchema))
     const transformed = ProviderTransform.schema(input.model, { ...schema, properties: schema.properties ?? {} })

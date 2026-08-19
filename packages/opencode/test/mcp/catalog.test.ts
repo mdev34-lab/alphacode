@@ -37,6 +37,12 @@ describe("McpCatalog.convertTool", () => {
     expect(output).toMatchObject({ content, structuredContent })
   })
 
+  test("always produces an executable tool", () => {
+    // SessionTools only puts an MCP tool in the search catalog once it knows the tool can be
+    // called; that check relies on convertTool always wiring an execute.
+    expect(McpCatalog.convertTool(mcpTool(), clientReturning({ content: [] })).execute).toBeFunction()
+  })
+
   test("falls back to structuredContent only when content is absent", async () => {
     const structuredContent = { results: [{ title: "one" }] }
     const converted = McpCatalog.convertTool(mcpTool(), clientReturning({ content: [], structuredContent }))
