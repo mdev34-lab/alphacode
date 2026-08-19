@@ -22,7 +22,9 @@ export const ToolSearchRegexTool = Tool.define(
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const source = params.category && params.category !== "all" ? params.category : undefined
-          const results = yield* catalog.searchRegex(params.pattern, { source }).pipe(Effect.result)
+          const results = yield* catalog
+            .searchRegex(params.pattern, { source, session: ctx.sessionID })
+            .pipe(Effect.result)
 
           if (results._tag === "Failure")
             return {
@@ -34,7 +36,7 @@ export const ToolSearchRegexTool = Tool.define(
           const matched = results.success
           if (matched.length === 0) {
             const loaded = yield* catalog
-              .searchRegex(params.pattern, { source, includeLoaded: true })
+              .searchRegex(params.pattern, { source, session: ctx.sessionID, includeLoaded: true })
               .pipe(Effect.orElseSucceed(() => []))
             const metadata = { query: params.pattern, count: 0, tools: [] } satisfies Metadata
             if (loaded.length === 0)

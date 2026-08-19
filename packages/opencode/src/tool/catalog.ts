@@ -43,6 +43,12 @@ export interface SearchOptions {
   limit?: number
   source?: Source
   /**
+   * The session doing the search. Tools it already discovered are in its next request, so
+   * they are filtered out for the same reason loaded tools are — they would burn a result
+   * slot on something the model already has.
+   */
+  session?: string
+  /**
    * Include tools that are already loaded into the request. Off by default: the point of a
    * tool search is to surface what the model cannot see, and a loaded tool would just burn
    * a result slot.
@@ -195,6 +201,11 @@ export const use = serviceUse(Service)
 
 const EMPTY: ReadonlySet<string> = new Set<string>()
 
+function session(state: State, options?: SearchOptions): ReadonlySet<string> {
+  if (!options?.session) return EMPTY
+  return state.discovered.get(options.session) ?? EMPTY
+}
+
 /**
  * The searchable text of an entry, as a list of fields. Both searches read exactly this:
  * the keyword index is built from it and the regex is tested against each field, so
@@ -206,9 +217,12 @@ export function corpus(entry: Entry): string[] {
   return [entry.id, entry.description.slice(0, MAX_DESCRIPTION_LENGTH), ...entry.parameters]
 }
 
-function discoverable(entry: Entry, options?: SearchOptions) {
+function discoverable(entry: Entry, options: SearchOptions | undefined, discovered: ReadonlySet<string>) {
   if (options?.source && entry.source !== options.source) return false
-  return entry.deferred || options?.includeLoaded === true
+  if (options?.includeLoaded === true) return true
+  // Deferred but already discovered means the session has it: hidden to the catalog,
+  // visible to the model.
+  return entry.deferred && !discovered.has(entry.id)
 }
 
 const layer = Layer.effect(
@@ -241,9 +255,10 @@ const layer = Layer.effect(
     const search: Interface["search"] = Effect.fn("ToolCatalog.search")(function* (query, options) {
       const s = yield* InstanceState.get(state)
       if (!s.index) return []
+      const held = session(s, options)
       return BM25.search(s.index, query, s.entries.length)
         .map((result) => result.item)
-        .filter((entry) => discoverable(entry, options))
+        .filter((entry) => discoverable(entry, options, held))
         .slice(0, options?.limit ?? s.limit)
     })
 
@@ -256,8 +271,9 @@ const layer = Layer.effect(
         catch: (error) =>
           new InvalidPatternError({ pattern, detail: error instanceof Error ? error.message : String(error) }),
       })
+      const held = session(s, options)
       return s.entries
-        .filter((entry) => discoverable(entry, options))
+        .filter((entry) => discoverable(entry, options, held))
         .filter((entry) => corpus(entry).some((field) => regex.test(field)))
         .slice(0, options?.limit ?? s.limit)
     })

@@ -30,9 +30,9 @@ export const ToolSearchTool = Tool.define(
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const source = params.category && params.category !== "all" ? params.category : undefined
-          const results = yield* catalog.search(params.query, { source })
+          const results = yield* catalog.search(params.query, { source, session: ctx.sessionID })
 
-          if (results.length === 0) return yield* nothingHidden(catalog, params.query, source)
+          if (results.length === 0) return yield* nothingHidden(catalog, params.query, source, ctx.sessionID)
 
           const ids = results.map((entry) => entry.id)
           yield* catalog.discover(ctx.sessionID, ids)
@@ -56,9 +56,14 @@ export const ToolSearchTool = Tool.define(
  * already loaded — telling the model "you already have `read`" is far more useful than
  * letting it conclude the capability does not exist.
  */
-export function nothingHidden(catalog: ToolCatalog.Interface, query: string, source?: ToolCatalog.Source) {
+export function nothingHidden(
+  catalog: ToolCatalog.Interface,
+  query: string,
+  source: ToolCatalog.Source | undefined,
+  sessionID: string,
+) {
   return Effect.gen(function* () {
-    const loaded = yield* catalog.search(query, { source, includeLoaded: true })
+    const loaded = yield* catalog.search(query, { source, session: sessionID, includeLoaded: true })
     const metadata = { query, count: 0, tools: [] } satisfies Metadata
 
     if (loaded.length === 0)

@@ -268,6 +268,48 @@ describe("ToolCatalog service", () => {
     }),
   )
 
+  it.instance("does not return tools this session already discovered", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      const session = SessionID.make("ses_repeat")
+      const other = SessionID.make("ses_other")
+
+      const first = (yield* catalog.search("github issue repository", { session })).map((item) => item.id)
+      expect(first).toContain("github_list_issues")
+      yield* catalog.discover(session, first)
+
+      // second search: what the session already holds must not burn a result slot
+      const second = (yield* catalog.search("github issue repository", { session })).map((item) => item.id)
+      expect(second).not.toContain("github_list_issues")
+      for (const id of first) expect(second).not.toContain(id)
+
+      // another session is unaffected
+      expect((yield* catalog.search("github issue repository", { session: other })).map((item) => item.id)).toContain(
+        "github_list_issues",
+      )
+      // and includeLoaded still shows everything
+      expect(
+        (yield* catalog.search("github issue repository", { session, includeLoaded: true })).map((item) => item.id),
+      ).toContain("github_list_issues")
+    }),
+  )
+
+  it.instance("regex search is session aware too", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      const session = SessionID.make("ses_repeat_regex")
+      yield* catalog.discover(session, ["github_list_issues"])
+
+      const ids = (yield* catalog.searchRegex("^github_", { session })).map((item) => item.id)
+      expect(ids).not.toContain("github_list_issues")
+      expect(ids).toContain("github_create_issue")
+    }),
+  )
+
   it.instance("can include loaded tools when the caller asks for them", () =>
     Effect.gen(function* () {
       const catalog = yield* ToolCatalog.Service

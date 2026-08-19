@@ -347,10 +347,12 @@ that cause catastrophic backtracking, and a running regex cannot be interrupted 
 This is a mitigation, not a sandbox: it rejects the known-explosive shapes and bounds the input,
 it does not prove that whatever is left runs in polynomial time.
 
-Both tools only return **hidden** tools — a tool that is already loaded would just burn a result
-slot. When a query matches nothing hidden but does match something loaded, the answer says so
-("these tools are already available to you") instead of claiming the capability does not exist.
-Discovery can only ever unlock a deferred tool.
+Both tools only return **hidden** tools — anything the session already has, whether it was always
+loaded or discovered by an earlier search, would just burn a result slot. So repeating a search
+surfaces what is still missing rather than the same tools again. When a query matches nothing
+hidden but does match something the session already has, the answer says so ("these tools are
+already available to you") instead of claiming the capability does not exist. Discovery can only
+ever unlock a deferred tool.
 
 Both tools accept an optional `category` (`all`, `builtin` or `mcp`) and return at most
 `tool_search.limit` results. Tools returned by a search become available on the model's next step

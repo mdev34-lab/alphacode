@@ -131,6 +131,21 @@ describe("tool.tool_search", () => {
       expect([...(yield* catalog.discovered(sessionID))]).toEqual([])
     }),
   )
+
+  it.instance("a repeated search does not spend slots on what it already found", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      const tool = yield* Tool.init(yield* ToolSearchTool)
+      const first = yield* tool.execute({ query: "github issue repository" }, ctx)
+      expect(first.metadata.tools).not.toHaveLength(0)
+
+      const second = yield* tool.execute({ query: "github issue repository" }, ctx)
+      for (const id of first.metadata.tools as string[]) expect(second.metadata.tools).not.toContain(id)
+      expect(second.output).toContain("already available")
+    }),
+  )
 })
 
 describe("tool.tool_search_regex", () => {

@@ -116,8 +116,9 @@ pattern like `^github_` still means "the id starts with".
 ## Discovery boundary
 
 Being in the catalog and being discoverable are different things. `search` and `searchRegex`
-return only entries with `deferred: true` unless the caller passes `includeLoaded`, and `discover`
-silently drops anything that is not a deferred catalog entry. A search can therefore never grant
+return only entries that are `deferred` **and** not already discovered by the calling session
+(pass `session`; `includeLoaded` opts out of both filters), and `discover` silently drops anything
+that is not a deferred catalog entry. A search can therefore never grant
 access to something the deferral policy did not hide in the first place, and a loaded tool never
 consumes one of the `limit` result slots.
 
