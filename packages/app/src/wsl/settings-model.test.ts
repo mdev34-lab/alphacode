@@ -37,7 +37,7 @@ describe("WSL server settings presentation", () => {
     expect(wslRuntimeRetryable({ kind: "stopped" })).toBe(true)
   })
 
-  test("offers install and update only when OpenCode needs attention", () => {
+  test("offers install and update only when alphacode needs attention", () => {
     expect(wslOpencodeAction(undefined)).toBeUndefined()
     expect(
       wslOpencodeAction({
@@ -48,7 +48,7 @@ describe("WSL server settings presentation", () => {
         matchesDesktop: null,
         error: null,
       }),
-    ).toBe("wsl.onboarding.installOpencode")
+    ).toBe("wsl.onboarding.installalphacode")
     expect(
       wslOpencodeAction({
         distro: "Debian",
@@ -58,7 +58,7 @@ describe("WSL server settings presentation", () => {
         matchesDesktop: false,
         error: null,
       }),
-    ).toBe("wsl.onboarding.updateOpencode")
+    ).toBe("wsl.onboarding.updatealphacode")
     expect(
       wslOpencodeAction({
         distro: "Debian",
@@ -179,7 +179,7 @@ describe("WSL server settings presentation", () => {
     expect(model.busy).toBe(true)
   })
 
-  test("does not report ready when OpenCode is present but cannot run", () => {
+  test("does not report ready when alphacode is present but cannot run", () => {
     const model = addServerViewModel({
       state: {
         ...readyWslState,
@@ -208,7 +208,7 @@ describe("WSL server settings presentation", () => {
     })
 
     expect(model.distroStatuses.Debian).toEqual({
-      label: { key: "wsl.onboarding.installOpencode" },
+      label: { key: "wsl.onboarding.installalphacode" },
       tone: "warning",
     })
     expect(model.primaryButton.action).toBe("install-opencode")

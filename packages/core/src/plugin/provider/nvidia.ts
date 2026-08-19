@@ -13,7 +13,9 @@ export const NvidiaPlugin = define({
           evt.provider.update(item.provider.id, (provider) => {
             provider.request.headers["HTTP-Referer"] = "https://opencode.ai/"
             provider.request.headers["X-Title"] = "opencode"
-            provider.request.headers["X-BILLING-INVOKE-ORIGIN"] ??= "OpenCode"
+            // fork: upstream defaults X-BILLING-INVOKE-ORIGIN here for external
+            // billing/attribution. This fork is not that origin and does not
+            // set the header; explicit user-configured headers still apply.
           })
         }
       }),

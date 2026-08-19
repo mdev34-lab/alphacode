@@ -40,7 +40,7 @@ function oauth(http: HttpClient.HttpClient) {
     method: {
       id: methodID,
       type: "oauth",
-      label: "OpenCode Console account",
+      label: "alphacode Console account",
     },
     authorize: () =>
       Effect.gen(function* () {
@@ -100,7 +100,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | EventV2.Service | S
 
     yield* ctx.integration.transform((draft) => {
       draft.update("opencode", (integration) => {
-        integration.name = "OpenCode"
+        integration.name = "alphacode"
       })
       draft.method.update(oauth(http))
       draft.method.update({ integrationID: "opencode", method: { type: "key", label: "API key (service account)" } })
