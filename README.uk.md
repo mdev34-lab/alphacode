@@ -55,6 +55,8 @@ bun install
 # binary: ./packages/opencode/dist/opencode-<platform>/bin/opencode (e.g. linux-x64, darwin-arm64)
 ```
 
+> **Note:** the executable is still named `opencode` for compatibility — this rebrand does not rename the CLI binary, package names, or config paths (`~/.opencode`) at this stage.
+
 ### Десктопний застосунок (BETA)
 
 > Desktop builds of this fork are not yet published — see `packages/desktop` to build from source.
