@@ -39,6 +39,12 @@ export interface Options {
 export interface SearchOptions {
   limit?: number
   source?: Source
+  /**
+   * Include tools that are already loaded into the request. Off by default: the point of a
+   * tool search is to surface what the model cannot see, and a loaded tool would just burn
+   * a result slot.
+   */
+  includeLoaded?: boolean
 }
 
 /** Longest regex we are willing to compile from model input */
@@ -46,6 +52,9 @@ export const MAX_PATTERN_LENGTH = 200
 
 /** Longest slice of a description a regex is matched against */
 const MAX_MATCH_LENGTH = 2000
+
+/** Largest repetition count accepted in a bounded quantifier */
+const MAX_REPETITION = 1000
 
 export class InvalidPatternError extends Data.TaggedError("ToolCatalog.InvalidPatternError")<{
   pattern: string
@@ -110,15 +119,23 @@ export function deferred(input: { id: string; source: Source; options: Options }
 
 /**
  * Regexes come straight from the model, so a valid-but-pathological pattern (nested or
- * alternating quantifiers, backreferences) could pin the event loop with catastrophic
- * backtracking. JavaScript cannot interrupt a running regex, so the only defence is to
- * refuse the shapes that cause it before compiling.
+ * alternating quantifiers, backreferences, huge repetition counts) could pin the event loop
+ * with catastrophic backtracking. JavaScript cannot interrupt a running regex, so the only
+ * defence is to refuse the shapes that cause it before compiling.
+ *
+ * This is a mitigation, not a sandbox: it rejects the known-explosive shapes and bounds the
+ * input, it does not prove that what is left runs in polynomial time.
  *
  * Returns the reason a pattern is rejected, or undefined when it is safe to compile.
  */
 export function unsafePattern(pattern: string): string | undefined {
   if (pattern.length > MAX_PATTERN_LENGTH) return `pattern is longer than ${MAX_PATTERN_LENGTH} characters`
   if (/\\[1-9]/.test(pattern)) return "backreferences are not supported"
+  for (const repetition of pattern.matchAll(/\{(\d+)(?:,(\d*))?\}/g)) {
+    const bounds = [repetition[1], repetition[2]].filter(Boolean).map(Number)
+    if (bounds.some((bound) => bound > MAX_REPETITION))
+      return `repetition counts above ${MAX_REPETITION} are not supported`
+  }
 
   // A group followed by a quantifier, where the group itself contains a quantifier or an
   // alternation, is the classic exponential-backtracking shape: (a+)+ , (a|a)* , (x*)*
@@ -171,6 +188,11 @@ export const use = serviceUse(Service)
 
 const EMPTY: ReadonlySet<string> = new Set<string>()
 
+function discoverable(entry: Entry, options?: SearchOptions) {
+  if (options?.source && entry.source !== options.source) return false
+  return entry.deferred || options?.includeLoaded === true
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -186,7 +208,9 @@ const layer = Layer.effect(
       s.limit = options?.limit ?? DEFAULT_LIMIT
       // Indexing a few hundred short documents costs microseconds — orders of magnitude less
       // than the request it saves — so rebuild rather than guess whether anything changed.
-      s.index = BM25.createIndex(entries, (entry) => [entry.id, entry.description])
+      // Parameter names carry real signal ("owner", "repo", "sql"), and measurably improve
+      // recall@1 on the retrieval battery without hurting recall@3.
+      s.index = BM25.createIndex(entries, (entry) => [entry.id, entry.description, ...entry.parameters])
     })
 
     const list: Interface["list"] = Effect.fn("ToolCatalog.list")(function* () {
@@ -202,7 +226,7 @@ const layer = Layer.effect(
       if (!s.index) return []
       return BM25.search(s.index, query, s.entries.length)
         .map((result) => result.item)
-        .filter((entry) => !options?.source || entry.source === options.source)
+        .filter((entry) => discoverable(entry, options))
         .slice(0, options?.limit ?? s.limit)
     })
 
@@ -216,7 +240,7 @@ const layer = Layer.effect(
           new InvalidPatternError({ pattern, detail: error instanceof Error ? error.message : String(error) }),
       })
       return s.entries
-        .filter((entry) => !options?.source || entry.source === options.source)
+        .filter((entry) => discoverable(entry, options))
         .filter((entry) => regex.test(entry.id) || regex.test(entry.description.slice(0, MAX_MATCH_LENGTH)))
         .slice(0, options?.limit ?? s.limit)
     })
@@ -224,7 +248,12 @@ const layer = Layer.effect(
     const discover: Interface["discover"] = Effect.fn("ToolCatalog.discover")(function* (sessionID, ids) {
       const s = yield* InstanceState.get(state)
       const existing = s.discovered.get(sessionID) ?? new Set<string>()
-      for (const id of ids) existing.add(id)
+      for (const id of ids) {
+        // Discovery only ever unlocks a deferred tool. Anything else — a loaded tool, or an
+        // id that is not in the catalog at all — is not something a search may grant.
+        if (!s.entries.some((entry) => entry.id === id && entry.deferred)) continue
+        existing.add(id)
+      }
       s.discovered.set(sessionID, existing)
     })
 

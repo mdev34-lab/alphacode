@@ -37,8 +37,8 @@ SessionTools.resolve
   4. skip deferred entries that the session has not discovered
 
 tool_search / tool_search_regex
-  → catalog.search / catalog.searchRegex
-  → catalog.discover(sessionID, ids)
+  → catalog.search / catalog.searchRegex   (hidden tools only, by default)
+  → catalog.discover(sessionID, ids)       (only ever unlocks a deferred tool)
 ```
 
 `ToolCatalog` deliberately does **not** depend on `ToolRegistry` or `MCP` — the caller pushes
@@ -99,6 +99,14 @@ gets to look — a tool ranked #4 is invisible at limit 3. Current floors, enfor
 | 3   | 100%                     |
 | 5   | 100% (the default limit) |
 | 10  | 100%                     |
+
+## Discovery boundary
+
+Being in the catalog and being discoverable are different things. `search` and `searchRegex`
+return only entries with `deferred: true` unless the caller passes `includeLoaded`, and `discover`
+silently drops anything that is not a deferred catalog entry. A search can therefore never grant
+access to something the deferral policy did not hide in the first place, and a loaded tool never
+consumes one of the `limit` result slots.
 
 ## Verification
 

@@ -33,6 +33,13 @@ const entries: ToolCatalog.Entry[] = [
     deferred: false,
   },
   {
+    id: "webfetch",
+    description: "Fetch a URL and return its contents as text or markdown",
+    parameters: ["url", "format"],
+    source: "builtin",
+    deferred: true,
+  },
+  {
     id: "github_list_issues",
     description: "List issues in a GitHub repository",
     parameters: ["owner", "repo"],
@@ -103,9 +110,25 @@ describe("tool.tool_search", () => {
       yield* catalog.sync(entries)
 
       const tool = yield* Tool.init(yield* ToolSearchTool)
-      const result = yield* tool.execute({ query: "file repository", category: "builtin" }, ctx)
+      const result = yield* tool.execute({ query: "fetch a url repository", category: "builtin" }, ctx)
 
-      expect(result.metadata.tools).toEqual(["read"])
+      expect(result.metadata.tools).toEqual(["webfetch"])
+    }),
+  )
+
+  it.instance("points at already loaded tools instead of discovering them", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      const tool = yield* Tool.init(yield* ToolSearchTool)
+      const result = yield* tool.execute({ query: "filesystem" }, ctx)
+
+      expect(result.metadata.count).toBe(0)
+      expect(result.metadata.tools).toEqual([])
+      expect(result.output).toContain("already available")
+      expect(result.output).toContain("read")
+      expect([...(yield* catalog.discovered(sessionID))]).toEqual([])
     }),
   )
 })

@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { ToolCatalog } from "./catalog"
-import { Categories, describe as describeEntry, type Metadata } from "./tool-search"
+import { alreadyAvailable, Categories, describe as describeEntry, type Metadata } from "./tool-search"
 import DESCRIPTION from "./tool-search-regex.txt"
 
 export const Parameters = Schema.Struct({
@@ -21,11 +21,8 @@ export const ToolSearchRegexTool = Tool.define(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const results = yield* catalog
-            .searchRegex(params.pattern, {
-              source: params.category && params.category !== "all" ? params.category : undefined,
-            })
-            .pipe(Effect.result)
+          const source = params.category && params.category !== "all" ? params.category : undefined
+          const results = yield* catalog.searchRegex(params.pattern, { source }).pipe(Effect.result)
 
           if (results._tag === "Failure")
             return {
@@ -35,12 +32,23 @@ export const ToolSearchRegexTool = Tool.define(
             }
 
           const matched = results.success
-          if (matched.length === 0)
+          if (matched.length === 0) {
+            const loaded = yield* catalog
+              .searchRegex(params.pattern, { source, includeLoaded: true })
+              .pipe(Effect.orElseSucceed(() => []))
+            const metadata = { query: params.pattern, count: 0, tools: [] } satisfies Metadata
+            if (loaded.length === 0)
+              return {
+                title: "No tools found",
+                metadata,
+                output: `No tools found matching /${params.pattern}/i. Try a looser pattern, or tool_search for a keyword search.`,
+              }
             return {
-              title: "No tools found",
-              metadata: { query: params.pattern, count: 0, tools: [] } satisfies Metadata,
-              output: `No tools found matching /${params.pattern}/i. Try a looser pattern, or tool_search for a keyword search.`,
+              title: "Already available",
+              metadata,
+              output: alreadyAvailable(`/${params.pattern}/i`, loaded),
             }
+          }
 
           const ids = matched.map((entry) => entry.id)
           yield* catalog.discover(ctx.sessionID, ids)

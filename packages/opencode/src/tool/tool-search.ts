@@ -29,16 +29,10 @@ export const ToolSearchTool = Tool.define(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const results = yield* catalog.search(params.query, {
-            source: params.category && params.category !== "all" ? params.category : undefined,
-          })
+          const source = params.category && params.category !== "all" ? params.category : undefined
+          const results = yield* catalog.search(params.query, { source })
 
-          if (results.length === 0)
-            return {
-              title: "No tools found",
-              metadata: { query: params.query, count: 0, tools: [] } satisfies Metadata,
-              output: `No tools found matching "${params.query}". Try different keywords, or tool_search_regex for a pattern match.`,
-            }
+          if (results.length === 0) return yield* nothingHidden(catalog, params.query, source)
 
           const ids = results.map((entry) => entry.id)
           yield* catalog.discover(ctx.sessionID, ids)
@@ -56,6 +50,36 @@ export const ToolSearchTool = Tool.define(
     }
   }),
 )
+
+/**
+ * Nothing hidden matched. Before saying "no tools found", check whether the capability is
+ * already loaded — telling the model "you already have `read`" is far more useful than
+ * letting it conclude the capability does not exist.
+ */
+export function nothingHidden(catalog: ToolCatalog.Interface, query: string, source?: ToolCatalog.Source) {
+  return Effect.gen(function* () {
+    const loaded = yield* catalog.search(query, { source, includeLoaded: true })
+    const metadata = { query, count: 0, tools: [] } satisfies Metadata
+
+    if (loaded.length === 0)
+      return {
+        title: "No tools found",
+        metadata,
+        output: `No tools found matching "${query}". Try different keywords, or tool_search_regex for a pattern match.`,
+      }
+
+    return { title: "Already available", metadata, output: alreadyAvailable(`"${query}"`, loaded) }
+  })
+}
+
+/** Shared wording for "the capability exists, you just already have it" */
+export function alreadyAvailable(label: string, loaded: ToolCatalog.Entry[]) {
+  return [
+    `No hidden tools matched ${label}. These tools are already available to you:`,
+    "",
+    ...loaded.map(describe),
+  ].join("\n")
+}
 
 export function describe(entry: ToolCatalog.Entry) {
   const description = entry.description.split("\n")[0]?.trim() ?? ""

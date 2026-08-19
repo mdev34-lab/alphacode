@@ -18,6 +18,7 @@ const entry = (input: Partial<ToolCatalog.Entry> & { id: string }): ToolCatalog.
 const entries: ToolCatalog.Entry[] = [
   entry({ id: "read", description: "Read the contents of a file from the filesystem", deferred: false }),
   entry({ id: "glob", description: "Find files by name pattern in a directory", deferred: false }),
+  entry({ id: "webfetch", description: "Fetch a URL and return the file contents as markdown" }),
   entry({
     id: "github_list_issues",
     description: "List issues in a GitHub repository",
@@ -144,8 +145,7 @@ describe("ToolCatalog service", () => {
       expect(yield* catalog.search("issue repository", { limit: 1 })).toHaveLength(1)
 
       const builtin = yield* catalog.search("file", { source: "builtin" })
-      expect(builtin.length).toBeGreaterThan(0)
-      expect(builtin.every((item) => item.source === "builtin")).toBe(true)
+      expect(builtin.map((item) => item.id)).toEqual(["webfetch"])
 
       expect(yield* catalog.search("file", { source: "mcp" })).toEqual([])
     }),
@@ -171,6 +171,54 @@ describe("ToolCatalog service", () => {
 
       const result = yield* catalog.searchRegex("(unclosed").pipe(Effect.result)
       expect(result._tag).toBe("Failure")
+    }),
+  )
+
+  it.instance("only surfaces deferred tools, since loaded ones are already in the request", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      const ids = (yield* catalog.search("file contents pattern directory")).map((item) => item.id)
+      expect(ids).not.toContain("read")
+      expect(ids).not.toContain("glob")
+      expect(ids).toContain("webfetch")
+
+      expect((yield* catalog.searchRegex("^(read|glob|webfetch)$")).map((item) => item.id)).toEqual(["webfetch"])
+    }),
+  )
+
+  it.instance("can include loaded tools when the caller asks for them", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      const ids = (yield* catalog.search("file contents", { includeLoaded: true })).map((item) => item.id)
+      expect(ids).toContain("read")
+
+      const regex = yield* catalog.searchRegex("^(read|glob)$", { includeLoaded: true })
+      expect(regex.map((item) => item.id).sort()).toEqual(["glob", "read"])
+    }),
+  )
+
+  it.instance("indexes parameter names", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      expect((yield* catalog.search("owner repo")).map((item) => item.id)).toContain("github_list_issues")
+    }),
+  )
+
+  it.instance("never records a loaded tool as discovered", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(entries)
+
+      const session = SessionID.make("ses_boundary")
+      yield* catalog.discover(session, ["read", "github_list_issues", "unknown_tool"])
+
+      expect([...(yield* catalog.discovered(session))]).toEqual(["github_list_issues"])
     }),
   )
 
@@ -210,7 +258,18 @@ describe("ToolCatalog service", () => {
       const catalog = yield* ToolCatalog.Service
       yield* catalog.sync(entries)
 
-      for (const pattern of ["(a+)+$", "(a|a)*b", "(x*)*y", "((a+))+", "(\\w+\\s?)*$", "(x)\\1+", "a".repeat(300)]) {
+      for (const pattern of [
+        "(a+)+$",
+        "(a|a)*b",
+        "(a|aa)+",
+        "(x*)*y",
+        "((a+))+",
+        "(\\w+\\s?)*$",
+        "(x)\\1+",
+        "a{1,50000}",
+        "(ab){2000,}",
+        "a".repeat(300),
+      ]) {
         const result = yield* catalog.searchRegex(pattern).pipe(Effect.result)
         expect(result._tag).toBe("Failure")
       }

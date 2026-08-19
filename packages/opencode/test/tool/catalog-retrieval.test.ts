@@ -14,23 +14,38 @@ import { testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(ToolCatalog.node))
 
-const tool = (id: string, description: string, source: ToolCatalog.Source = "mcp"): ToolCatalog.Entry => ({
+const tool = (
+  id: string,
+  description: string,
+  parameters: string[] = [],
+  source: ToolCatalog.Source = "mcp",
+): ToolCatalog.Entry => ({
   id,
   description,
-  parameters: [],
+  parameters,
   source,
-  deferred: source === "mcp",
+  // The battery measures ranking, so everything is hidden: a loaded tool is filtered out of
+  // a search by design.
+  deferred: true,
 })
 
 const catalogEntries: ToolCatalog.Entry[] = [
-  tool("read", "Read the contents of a file from the filesystem", "builtin"),
-  tool("write", "Write content to a file, creating it if it does not exist", "builtin"),
-  tool("grep", "Search file contents for a regular expression across the project", "builtin"),
-  tool("shell", "Run a shell command in the project directory", "builtin"),
-  tool("webfetch", "Fetch a URL and return its contents as text, markdown or html", "builtin"),
-  tool("github_create_pull_request", "Create a new pull request (PR) in a GitHub repository"),
-  tool("github_list_pull_requests", "List pull requests (PRs) in a GitHub repository"),
-  tool("github_list_issues", "List issues in a GitHub repository, filtered by state, label or assignee"),
+  tool("read", "Read the contents of a file from the filesystem", ["filePath", "offset"], "builtin"),
+  tool("write", "Write content to a file, creating it if it does not exist", ["filePath", "content"], "builtin"),
+  tool("grep", "Search file contents for a regular expression across the project", ["pattern", "path"], "builtin"),
+  tool("shell", "Run a shell command in the project directory", ["command"], "builtin"),
+  tool("webfetch", "Fetch a URL and return its contents as text, markdown or html", ["url", "format"], "builtin"),
+  tool("github_create_pull_request", "Create a new pull request (PR) in a GitHub repository", [
+    "owner",
+    "repo",
+    "title",
+  ]),
+  tool("github_list_pull_requests", "List pull requests (PRs) in a GitHub repository", ["owner", "repo", "state"]),
+  tool("github_list_issues", "List issues in a GitHub repository, filtered by state, label or assignee", [
+    "owner",
+    "repo",
+    "labels",
+  ]),
   tool("github_create_issue", "Create a new issue in a GitHub repository"),
   tool("github_merge_pull_request", "Merge an open pull request in a GitHub repository"),
   tool("linear_search_issues", "Search Linear issues and tickets by keyword, team or status"),
@@ -39,7 +54,7 @@ const catalogEntries: ToolCatalog.Entry[] = [
   tool("playwright_screenshot", "Take a screenshot of the current browser page and return it as an image"),
   tool("playwright_snapshot", "Inspect the browser page and return an accessibility snapshot of the DOM"),
   tool("playwright_click", "Click an element on the current browser page"),
-  tool("postgres_query", "Run a read-only SQL query against the connected PostgreSQL database"),
+  tool("postgres_query", "Run a read-only SQL query against the connected PostgreSQL database", ["sql", "params"]),
   tool("postgres_list_tables", "List the tables and schemas available in the connected database"),
   tool("context7_search_docs", "Search library documentation and return the matching pages"),
   tool("image_edit", "Edit or transform an image: crop, resize, rotate and apply filters"),
@@ -72,6 +87,8 @@ const cases: { query: string; expect: string }[] = [
   { query: "search linear tickets", expect: "linear_search_issues" },
   { query: "read a file", expect: "read" },
   { query: "fetch a webpage", expect: "webfetch" },
+  { query: "list issues for owner and repo", expect: "github_list_issues" },
+  { query: "run sql with params", expect: "postgres_query" },
 ]
 
 describe("ToolCatalog retrieval quality", () => {
@@ -123,6 +140,8 @@ describe("ToolCatalog retrieval quality", () => {
 
         const recall = (cases.length - misses.length) / cases.length
         // Name the misses in the failure output, otherwise a regression is just a number
+        if (process.env.RECALL_REPORT)
+          console.log(`recall@${k} = ${(recall * 100).toFixed(1)}% (${cases.length} queries)`)
         if (recall < floor) throw new Error(`recall@${k} = ${recall.toFixed(2)}, missed: ${misses.join(" | ")}`)
         expect(recall).toBeGreaterThanOrEqual(floor)
       }),

@@ -341,16 +341,24 @@ tool_search_regex({ pattern: "github.*issue" })
 ```
 
 Patterns come from the model, so a few shapes are rejected before they are compiled: patterns
-longer than 200 characters, backreferences, and quantified groups that contain a quantifier or an
-alternation (`(a+)+`, `(a|a)*`). Those are the shapes that cause catastrophic backtracking, and a
-running regex cannot be interrupted in JavaScript.
+longer than 200 characters, backreferences, repetition counts above 1000, and quantified groups
+that contain a quantifier or an alternation (`(a+)+`, `(a|a)*`, `(a|aa)+`). Those are the shapes
+that cause catastrophic backtracking, and a running regex cannot be interrupted in JavaScript.
+This is a mitigation, not a sandbox: it rejects the known-explosive shapes and bounds the input,
+it does not prove that whatever is left runs in polynomial time.
+
+Both tools only return **hidden** tools — a tool that is already loaded would just burn a result
+slot. When a query matches nothing hidden but does match something loaded, the answer says so
+("these tools are already available to you") instead of claiming the capability does not exist.
+Discovery can only ever unlock a deferred tool.
 
 Both tools accept an optional `category` (`all`, `builtin` or `mcp`) and return at most
 `tool_search.limit` results. Tools returned by a search become available on the model's next step
 and stay available for the rest of the session.
 
-Search is BM25 over tool names and descriptions, with Unicode-aware tokenization and regular
-plural folding, so `find issues` also matches a tool described as "list the issue tracker".
+Search is BM25 over tool names, descriptions and parameter names, with Unicode-aware tokenization
+and regular plural folding, so `find issues` also matches a tool described as "list the issue
+tracker", and `owner repo` matches a tool that takes those arguments.
 
 ### Configure
 
