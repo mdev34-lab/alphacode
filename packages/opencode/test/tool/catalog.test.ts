@@ -352,6 +352,36 @@ describe("ToolCatalog service", () => {
     }),
   )
 
+  it.instance("regex search reads parameter names too, like the keyword search", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync([
+        entry({
+          id: "postgres_query",
+          description: "Run a read-only query against the connected database",
+          parameters: ["sql", "params"],
+        }),
+        entry({ id: "notion_search", description: "Search Notion pages", parameters: ["query"] }),
+      ])
+
+      expect((yield* catalog.search("sql")).map((item) => item.id)).toEqual(["postgres_query"])
+      expect((yield* catalog.searchRegex("sql")).map((item) => item.id)).toEqual(["postgres_query"])
+    }),
+  )
+
+  it.instance("anchored patterns still apply per field", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync([
+        entry({ id: "postgres_query", description: "Run a query", parameters: ["sql"] }),
+        entry({ id: "notion_search", description: "mentions postgres in the middle", parameters: ["query"] }),
+      ])
+
+      expect((yield* catalog.searchRegex("^postgres")).map((item) => item.id)).toEqual(["postgres_query"])
+      expect((yield* catalog.searchRegex("^sql$")).map((item) => item.id)).toEqual(["postgres_query"])
+    }),
+  )
+
   it.instance("rejects patterns that can blow up the regex engine", () =>
     Effect.gen(function* () {
       const catalog = yield* ToolCatalog.Service

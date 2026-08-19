@@ -360,9 +360,11 @@ Both searches read the same corpus — tool name, the first 2000 characters of t
 parameter names — so `tool_search` and `tool_search_regex` never disagree about whether a tool
 matches.
 
-Search is BM25 over tool names, descriptions and parameter names, with Unicode-aware tokenization
-and regular plural folding, so `find issues` also matches a tool described as "list the issue
-tracker", and `owner repo` matches a tool that takes those arguments.
+Search is BM25 over that corpus, with Unicode-aware tokenization and _agreement folding_: regular
+plurals and the `y`/`ie` family are collapsed onto a common term so that a query and a description
+that spell the same word differently still meet (`find issues` matches "list the issue tracker",
+`repositories` matches "repository"). The folded term is not always a real word — the goal is
+agreement between query and document, not correct English morphology.
 
 ### Configure
 

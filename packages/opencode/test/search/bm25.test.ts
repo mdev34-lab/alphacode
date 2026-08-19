@@ -61,10 +61,23 @@ describe("BM25", () => {
       }
     })
 
+    // Collapsing y/ie/ies onto i is agreement folding, not linguistics: it can in principle
+    // merge unrelated words, so the pairs that share a prefix are pinned here.
     test("does not collide unrelated words while folding y", () => {
-      expect(BM25.fold("cookies")).not.toBe(BM25.fold("cook"))
-      expect(BM25.fold("policies")).not.toBe(BM25.fold("police"))
-      expect(BM25.fold("queries")).not.toBe(BM25.fold("queue"))
+      for (const [a, b] of [
+        ["cookies", "cook"],
+        ["policies", "police"],
+        ["queries", "queue"],
+        ["directories", "direct"],
+        ["identities", "identify"],
+        ["copies", "cope"],
+        ["dependencies", "depend"],
+        ["libraries", "librarian"],
+        ["histories", "host"],
+        ["registry", "register"],
+      ]) {
+        expect(BM25.fold(a)).not.toBe(BM25.fold(b))
+      }
     })
 
     test("leaves short words and non-plurals alone", () => {

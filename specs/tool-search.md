@@ -73,8 +73,9 @@ Configurable via `tool_search` in `opencode.json`:
 
 ## Plan (TDD)
 
-1. `search/bm25.ts` — pure BM25 index/search, Unicode tokenization, conservative plural folding.
-   Tests first (`test/search/bm25.test.ts`).
+1. `search/bm25.ts` — pure BM25 index/search, Unicode tokenization, and agreement folding
+   (regular plurals plus the `y`/`ie` family collapsed onto a common term; the result is not
+   necessarily a real word). Tests first (`test/search/bm25.test.ts`).
 2. `tool/catalog.ts` — pure deferral helpers (`options`, `deferred`) and the regex safety guard
    (`unsafePattern`) + `ToolCatalog` service (sync/search/searchRegex/get/discover/discovered/
    forget). `sync` carries the configured result limit and rebuilds the index every step —
@@ -106,9 +107,11 @@ gets to look — a tool ranked #4 is invisible at limit 3. Current floors, enfor
 
 ## One corpus
 
-Keyword and regex search index the same text: tool id, the first 2000 characters of the
-description, and parameter names. A term past the cut is invisible to both, so the two tools can
-never contradict each other about whether a tool matches.
+Keyword and regex search read the same text, produced by a single `ToolCatalog.corpus(entry)`:
+tool id, the first 2000 characters of the description, and parameter names. The keyword index is
+built from it and the regex is tested against each field of it, so the two tools cannot
+contradict each other about whether a tool matches. Fields stay separate so that an anchored
+pattern like `^github_` still means "the id starts with".
 
 ## Discovery boundary
 

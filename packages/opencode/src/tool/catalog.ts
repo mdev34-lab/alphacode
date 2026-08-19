@@ -195,6 +195,17 @@ export const use = serviceUse(Service)
 
 const EMPTY: ReadonlySet<string> = new Set<string>()
 
+/**
+ * The searchable text of an entry, as a list of fields. Both searches read exactly this:
+ * the keyword index is built from it and the regex is tested against each field, so
+ * `tool_search` and `tool_search_regex` can never disagree about whether a tool matches.
+ * Fields stay separate so an anchored pattern like `^github_` still means "the id starts
+ * with", not "somewhere in a concatenation".
+ */
+export function corpus(entry: Entry): string[] {
+  return [entry.id, entry.description.slice(0, MAX_DESCRIPTION_LENGTH), ...entry.parameters]
+}
+
 function discoverable(entry: Entry, options?: SearchOptions) {
   if (options?.source && entry.source !== options.source) return false
   return entry.deferred || options?.includeLoaded === true
@@ -216,11 +227,7 @@ const layer = Layer.effect(
       // Parameter names carry real signal ("owner", "repo", "sql"), and measurably improve
       // recall@1 on the retrieval battery without hurting recall@3. Rebuilding beats trying
       // to detect what changed: the catalog is small and the index is only read per search.
-      s.index = BM25.createIndex(entries, (entry) => [
-        entry.id,
-        entry.description.slice(0, MAX_DESCRIPTION_LENGTH),
-        ...entry.parameters,
-      ])
+      s.index = BM25.createIndex(entries, corpus)
     })
 
     const list: Interface["list"] = Effect.fn("ToolCatalog.list")(function* () {
@@ -251,7 +258,7 @@ const layer = Layer.effect(
       })
       return s.entries
         .filter((entry) => discoverable(entry, options))
-        .filter((entry) => regex.test(entry.id) || regex.test(entry.description.slice(0, MAX_DESCRIPTION_LENGTH)))
+        .filter((entry) => corpus(entry).some((field) => regex.test(field)))
         .slice(0, options?.limit ?? s.limit)
     })
 
