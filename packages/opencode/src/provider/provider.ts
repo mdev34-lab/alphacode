@@ -481,7 +481,9 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           headers: {
             "HTTP-Referer": "https://opencode.ai/",
             "X-Title": "opencode",
-            "X-BILLING-INVOKE-ORIGIN": "alphacode",
+            // fork: upstream sends X-BILLING-INVOKE-ORIGIN here for external
+            // billing/attribution. This fork is not that origin, so it does
+            // not send the header (user-configured headers still pass through).
           },
         },
       }),
