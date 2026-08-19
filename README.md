@@ -10,7 +10,6 @@
 <p align="center">The open source AI coding agent.</p>
 <p align="center">
   <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
   <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
@@ -46,25 +45,13 @@
 ### Installation
 
 > [!NOTE]
-> **This is the alphacode fork** — it is not published to package registries, so the quick-start below builds from source. The package-manager one-liners are placeholders for a future alphacode distribution; until then they install the upstream [opencode](https://github.com/anomalyco/opencode) project this fork tracks.
-
+> **This is the alphacode fork** — it is not published to any package registry, so the only supported install is building from source as shown below. (Looking for the published [opencode](https://github.com/anomalyco/opencode) project this fork tracks? Use its own install channels.)
 ```bash
-# YOLO
+# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-
-# Package managers
-npm i -g alphacode-ai@latest        # or bun/pnpm/yarn
-scoop install alphacode             # Windows
-choco install alphacode             # Windows
-brew install mdev34-lab/alphacode/alphacode # macOS and Linux (recommended, always up to date)
-brew install alphacode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S alphacode            # Arch Linux (Stable)
-paru -S alphacode-bin               # Arch Linux (Latest from AUR)
-mise use -g alphacode               # Any OS
-nix run nixpkgs#alphacode           # or github:mdev34-lab/alphacode for latest dev branch
 ```
 
 > [!TIP]
@@ -72,20 +59,16 @@ nix run nixpkgs#alphacode           # or github:mdev34-lab/alphacode for latest 
 
 ### Desktop App (BETA)
 
-alphacode is also available as a desktop application. Download directly from the [releases page](https://github.com/mdev34-lab/alphacode/releases) or [alphacode.ai/download](https://github.com/mdev34-lab/alphacode).
+alphacode is also available as a desktop application. Download directly from the [releases page](https://github.com/mdev34-lab/alphacode/releases) or [GitHub](https://github.com/mdev34-lab/alphacode).
 
 | Platform              | Download                           |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
-| Windows               | `alphacode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
+| Windows               | `opencode-desktop-windows-x64.exe` |
 | Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
-
 ```bash
-# macOS (Homebrew)
-brew install --cask alphacode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/alphacode-desktop
+# Desktop packages for this fork are not yet published - build from `packages/desktop`
 ```
 
 #### Installation Directory
@@ -96,7 +79,6 @@ The install script respects the following priority order for the installation pa
 2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
 3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
 4. `$HOME/.alphacode/bin` - Default fallback
-
 ```bash
 # Examples
 ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git

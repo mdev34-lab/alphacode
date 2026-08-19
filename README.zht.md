@@ -10,7 +10,6 @@
 <p align="center">開源的 AI Coding Agent。</p>
 <p align="center">
   <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
   <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
@@ -44,24 +43,12 @@
 ---
 
 ### 安裝
-
 ```bash
 # 直接安裝 (YOLO)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-
-# 套件管理員
-npm i -g alphacode-ai@latest        # 也可使用 bun/pnpm/yarn
-scoop install alphacode             # Windows
-choco install alphacode             # Windows
-brew install mdev34-lab/alphacode/alphacode # macOS 與 Linux（推薦，始終保持最新）
-brew install alphacode              # macOS 與 Linux（官方 brew formula，更新頻率較低）
-sudo pacman -S alphacode            # Arch Linux (Stable)
-paru -S alphacode-bin               # Arch Linux (Latest from AUR)
-mise use -g alphacode               # 任何作業系統
-nix run nixpkgs#alphacode           # 或使用 github:mdev34-lab/alphacode 以取得最新開發分支
 ```
 
 > [!TIP]
@@ -69,20 +56,16 @@ nix run nixpkgs#alphacode           # 或使用 github:mdev34-lab/alphacode 以�
 
 ### 桌面應用程式 (BETA)
 
-alphacode 也提供桌面版應用程式。您可以直接從 [發佈頁面 (releases page)](https://github.com/mdev34-lab/alphacode/releases) 或 [alphacode.ai/download](https://github.com/mdev34-lab/alphacode) 下載。
+alphacode 也提供桌面版應用程式。您可以直接從 [發佈頁面 (releases page)](https://github.com/mdev34-lab/alphacode/releases) 或 [GitHub](https://github.com/mdev34-lab/alphacode) 下載。
 
 | 平台                  | 下載連結                           |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
-| Windows               | `alphacode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
+| Windows               | `opencode-desktop-windows-x64.exe` |
 | Linux                 | `.deb`, `.rpm`, 或 AppImage        |
-
 ```bash
-# macOS (Homebrew Cask)
-brew install --cask alphacode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/alphacode-desktop
+# Desktop packages for this fork are not yet published - build from `packages/desktop`
 ```
 
 #### 安裝目錄
@@ -93,7 +76,6 @@ scoop bucket add extras; scoop install extras/alphacode-desktop
 2. `$XDG_BIN_DIR` - 符合 XDG 基礎目錄規範的路徑
 3. `$HOME/bin` - 標準使用者執行檔目錄 (若存在或可建立)
 4. `$HOME/.alphacode/bin` - 預設備用路徑
-
 ```bash
 # 範例
 ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git

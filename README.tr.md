@@ -10,7 +10,6 @@
 <p align="center">Açık kaynaklı yapay zeka kodlama asistanı.</p>
 <p align="center">
   <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
   <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
@@ -44,24 +43,12 @@
 ---
 
 ### Kurulum
-
 ```bash
-# YOLO
+# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-
-# Paket yöneticileri
-npm i -g alphacode-ai@latest        # veya bun/pnpm/yarn
-scoop install alphacode             # Windows
-choco install alphacode             # Windows
-brew install mdev34-lab/alphacode/alphacode # macOS ve Linux (önerilir, her zaman güncel)
-brew install alphacode              # macOS ve Linux (resmi brew formülü, daha az güncellenir)
-sudo pacman -S alphacode            # Arch Linux (Stable)
-paru -S alphacode-bin               # Arch Linux (Latest from AUR)
-mise use -g alphacode               # Tüm işletim sistemleri
-nix run nixpkgs#alphacode           # veya en güncel geliştirme dalı için github:mdev34-lab/alphacode
 ```
 
 > [!TIP]
@@ -69,20 +56,16 @@ nix run nixpkgs#alphacode           # veya en güncel geliştirme dalı için gi
 
 ### Masaüstü Uygulaması (BETA)
 
-alphacode ayrıca masaüstü uygulaması olarak da mevcuttur. Doğrudan [sürüm sayfasından](https://github.com/mdev34-lab/alphacode/releases) veya [alphacode.ai/download](https://github.com/mdev34-lab/alphacode) adresinden indirebilirsiniz.
+alphacode ayrıca masaüstü uygulaması olarak da mevcuttur. Doğrudan [sürüm sayfasından](https://github.com/mdev34-lab/alphacode/releases) veya [GitHub](https://github.com/mdev34-lab/alphacode) adresinden indirebilirsiniz.
 
 | Platform              | İndirme                            |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
-| Windows               | `alphacode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
+| Windows               | `opencode-desktop-windows-x64.exe` |
 | Linux                 | `.deb`, `.rpm` veya AppImage       |
-
 ```bash
-# macOS (Homebrew)
-brew install --cask alphacode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/alphacode-desktop
+# Desktop packages for this fork are not yet published - build from `packages/desktop`
 ```
 
 #### Kurulum Dizini (Installation Directory)
@@ -93,7 +76,6 @@ Kurulum betiği (install script), kurulum yolu (installation path) için aşağ�
 2. `$XDG_BIN_DIR` - XDG Base Directory Specification uyumlu yol
 3. `$HOME/bin` - Standart kullanıcı binary dizini (varsa veya oluşturulabiliyorsa)
 4. `$HOME/.alphacode/bin` - Varsayılan yedek konum
-
 ```bash
 # Örnekler
 ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git

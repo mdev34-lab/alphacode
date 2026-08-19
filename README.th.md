@@ -10,7 +10,6 @@
 <p align="center">เอเจนต์การเขียนโค้ดด้วย AI แบบโอเพนซอร์ส</p>
 <p align="center">
   <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
   <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="สถานะการสร้าง" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
@@ -44,24 +43,12 @@
 ---
 
 ### การติดตั้ง
-
 ```bash
-# YOLO
+# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-
-# ตัวจัดการแพ็กเกจ
-npm i -g alphacode-ai@latest        # หรือ bun/pnpm/yarn
-scoop install alphacode             # Windows
-choco install alphacode             # Windows
-brew install mdev34-lab/alphacode/alphacode # macOS และ Linux (แนะนำ อัปเดตเสมอ)
-brew install alphacode              # macOS และ Linux (brew formula อย่างเป็นทางการ อัปเดตน้อยกว่า)
-sudo pacman -S alphacode            # Arch Linux (Stable)
-paru -S alphacode-bin               # Arch Linux (Latest from AUR)
-mise use -g alphacode               # ระบบปฏิบัติการใดก็ได้
-nix run nixpkgs#alphacode           # หรือ github:mdev34-lab/alphacode สำหรับสาขาพัฒนาล่าสุด
 ```
 
 > [!TIP]
@@ -69,20 +56,16 @@ nix run nixpkgs#alphacode           # หรือ github:mdev34-lab/alphacode �
 
 ### แอปพลิเคชันเดสก์ท็อป (เบต้า)
 
-alphacode มีให้ใช้งานเป็นแอปพลิเคชันเดสก์ท็อป ดาวน์โหลดโดยตรงจาก [หน้ารุ่น](https://github.com/mdev34-lab/alphacode/releases) หรือ [alphacode.ai/download](https://github.com/mdev34-lab/alphacode)
+alphacode มีให้ใช้งานเป็นแอปพลิเคชันเดสก์ท็อป ดาวน์โหลดโดยตรงจาก [หน้ารุ่น](https://github.com/mdev34-lab/alphacode/releases) หรือ [GitHub](https://github.com/mdev34-lab/alphacode)
 
 | แพลตฟอร์ม             | ดาวน์โหลด                          |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
-| Windows               | `alphacode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
+| Windows               | `opencode-desktop-windows-x64.exe` |
 | Linux                 | `.deb`, `.rpm`, หรือ AppImage      |
-
 ```bash
-# macOS (Homebrew)
-brew install --cask alphacode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/alphacode-desktop
+# Desktop packages for this fork are not yet published - build from `packages/desktop`
 ```
 
 #### ไดเรกทอรีการติดตั้ง
@@ -93,7 +76,6 @@ scoop bucket add extras; scoop install extras/alphacode-desktop
 2. `$XDG_BIN_DIR` - เส้นทางที่สอดคล้องกับ XDG Base Directory Specification
 3. `$HOME/bin` - ไดเรกทอรีไบนารีผู้ใช้มาตรฐาน (หากมีอยู่หรือสามารถสร้างได้)
 4. `$HOME/.alphacode/bin` - ค่าสำรองเริ่มต้น
-
 ```bash
 # ตัวอย่าง
 ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git

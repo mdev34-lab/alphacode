@@ -10,7 +10,6 @@
 <p align="center">وكيل برمجة بالذكاء الاصطناعي مفتوح المصدر.</p>
 <p align="center">
   <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
   <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
@@ -44,24 +43,12 @@
 ---
 
 ### التثبيت
-
 ```bash
-# YOLO
+# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-
-# مديري الحزم
-npm i -g alphacode-ai@latest        # او bun/pnpm/yarn
-scoop install alphacode             # Windows
-choco install alphacode             # Windows
-brew install mdev34-lab/alphacode/alphacode # macOS و Linux (موصى به، دائما محدث)
-brew install alphacode              # macOS و Linux (صيغة brew الرسمية، تحديث اقل)
-sudo pacman -S alphacode            # Arch Linux (Stable)
-paru -S alphacode-bin               # Arch Linux (Latest from AUR)
-mise use -g alphacode               # اي نظام
-nix run nixpkgs#alphacode           # او github:mdev34-lab/alphacode لاحدث فرع dev
 ```
 
 > [!TIP]
@@ -69,20 +56,16 @@ nix run nixpkgs#alphacode           # او github:mdev34-lab/alphacode لاحد�
 
 ### تطبيق سطح المكتب (BETA)
 
-يتوفر alphacode ايضا كتطبيق سطح مكتب. قم بالتنزيل مباشرة من [صفحة الاصدارات](https://github.com/mdev34-lab/alphacode/releases) او من [alphacode.ai/download](https://github.com/mdev34-lab/alphacode).
+يتوفر alphacode ايضا كتطبيق سطح مكتب. قم بالتنزيل مباشرة من [صفحة الاصدارات](https://github.com/mdev34-lab/alphacode/releases) او من [GitHub](https://github.com/mdev34-lab/alphacode).
 
 | المنصة                | التنزيل                            |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
-| Windows               | `alphacode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
+| Windows               | `opencode-desktop-windows-x64.exe` |
 | Linux                 | `.deb` او `.rpm` او AppImage       |
-
 ```bash
-# macOS (Homebrew)
-brew install --cask alphacode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/alphacode-desktop
+# Desktop packages for this fork are not yet published - build from `packages/desktop`
 ```
 
 #### مجلد التثبيت
@@ -93,7 +76,6 @@ scoop bucket add extras; scoop install extras/alphacode-desktop
 2. `$XDG_BIN_DIR` - مسار متوافق مع مواصفات XDG Base Directory
 3. `$HOME/bin` - مجلد الثنائيات القياسي للمستخدم (ان وجد او امكن انشاؤه)
 4. `$HOME/.alphacode/bin` - المسار الافتراضي الاحتياطي
-
 ```bash
 # امثلة
 ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git

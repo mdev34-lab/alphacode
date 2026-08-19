@@ -10,7 +10,6 @@
 <p align="center">Открытый AI-агент для программирования.</p>
 <p align="center">
   <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
   <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
@@ -44,24 +43,12 @@
 ---
 
 ### Установка
-
 ```bash
-# YOLO
+# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-
-# Менеджеры пакетов
-npm i -g alphacode-ai@latest        # или bun/pnpm/yarn
-scoop install alphacode             # Windows
-choco install alphacode             # Windows
-brew install mdev34-lab/alphacode/alphacode # macOS и Linux (рекомендуем, всегда актуально)
-brew install alphacode              # macOS и Linux (официальная формула brew, обновляется реже)
-sudo pacman -S alphacode            # Arch Linux (Stable)
-paru -S alphacode-bin               # Arch Linux (Latest from AUR)
-mise use -g alphacode               # любая ОС
-nix run nixpkgs#alphacode           # или github:mdev34-lab/alphacode для самой свежей ветки dev
 ```
 
 > [!TIP]
@@ -69,20 +56,16 @@ nix run nixpkgs#alphacode           # или github:mdev34-lab/alphacode для 
 
 ### Десктопное приложение (BETA)
 
-alphacode также доступен как десктопное приложение. Скачайте его со [страницы релизов](https://github.com/mdev34-lab/alphacode/releases) или с [alphacode.ai/download](https://github.com/mdev34-lab/alphacode).
+alphacode также доступен как десктопное приложение. Скачайте его со [страницы релизов](https://github.com/mdev34-lab/alphacode/releases) или с [GitHub](https://github.com/mdev34-lab/alphacode).
 
 | Платформа             | Загрузка                           |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
-| Windows               | `alphacode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
+| Windows               | `opencode-desktop-windows-x64.exe` |
 | Linux                 | `.deb`, `.rpm` или AppImage        |
-
 ```bash
-# macOS (Homebrew)
-brew install --cask alphacode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/alphacode-desktop
+# Desktop packages for this fork are not yet published - build from `packages/desktop`
 ```
 
 #### Каталог установки
@@ -93,7 +76,6 @@ scoop bucket add extras; scoop install extras/alphacode-desktop
 2. `$XDG_BIN_DIR` - Путь, совместимый со спецификацией XDG Base Directory
 3. `$HOME/bin` - Стандартный каталог пользовательских бинарников (если существует или можно создать)
 4. `$HOME/.alphacode/bin` - Fallback по умолчанию
-
 ```bash
 # Примеры
 ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git

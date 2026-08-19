@@ -70,7 +70,7 @@ Then run it with:
 Replace `<platform>` with your platform (e.g., `darwin-arm64`, `linux-x64`).
 
 - Core pieces:
-  - `packages/opencode`: alphacode core business logic & server.
+  - `packages/opencode`: alphacode core business logic & server. The directory name stays `opencode` (legacy, kept for compatibility with imports, scripts, and CI — do not rename).
   - `packages/opencode/src/cli/cmd/tui/`: The TUI code, written in SolidJS with [opentui](https://github.com/sst/opentui)
   - `packages/app`: The shared web UI components, written in SolidJS
   - `packages/desktop`: The native desktop app, built with Electron (wraps `packages/app`)

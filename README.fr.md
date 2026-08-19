@@ -10,7 +10,6 @@
 <p align="center">L'agent de codage IA open source.</p>
 <p align="center">
   <a href="https://github.com/mdev34-lab/alphacode"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/alphacode-ai"><img alt="npm" src="https://img.shields.io/npm/v/alphacode-ai?style=flat-square" /></a>
   <a href="https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev" /></a>
 </p>
 
@@ -44,24 +43,12 @@
 ---
 
 ### Installation
-
 ```bash
-# YOLO
+# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-
-# Gestionnaires de paquets
-npm i -g alphacode-ai@latest        # ou bun/pnpm/yarn
-scoop install alphacode             # Windows
-choco install alphacode             # Windows
-brew install mdev34-lab/alphacode/alphacode # macOS et Linux (recommandé, toujours à jour)
-brew install alphacode              # macOS et Linux (formule officielle brew, mise à jour moins fréquente)
-sudo pacman -S alphacode            # Arch Linux (Stable)
-paru -S alphacode-bin               # Arch Linux (Latest from AUR)
-mise use -g alphacode               # n'importe quel OS
-nix run nixpkgs#alphacode           # ou github:mdev34-lab/alphacode pour la branche dev la plus récente
 ```
 
 > [!TIP]
@@ -69,20 +56,16 @@ nix run nixpkgs#alphacode           # ou github:mdev34-lab/alphacode pour la bra
 
 ### Application de bureau (BETA)
 
-alphacode est aussi disponible en application de bureau. Téléchargez-la directement depuis la [page des releases](https://github.com/mdev34-lab/alphacode/releases) ou [alphacode.ai/download](https://github.com/mdev34-lab/alphacode).
+alphacode est aussi disponible en application de bureau. Téléchargez-la directement depuis la [page des releases](https://github.com/mdev34-lab/alphacode/releases) ou [GitHub](https://github.com/mdev34-lab/alphacode).
 
 | Plateforme            | Téléchargement                     |
 | --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `alphacode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `alphacode-desktop-mac-x64.dmg`     |
-| Windows               | `alphacode-desktop-windows-x64.exe` |
+| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
+| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
+| Windows               | `opencode-desktop-windows-x64.exe` |
 | Linux                 | `.deb`, `.rpm`, ou AppImage        |
-
 ```bash
-# macOS (Homebrew)
-brew install --cask alphacode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/alphacode-desktop
+# Desktop packages for this fork are not yet published - build from `packages/desktop`
 ```
 
 #### Répertoire d'installation
@@ -93,7 +76,6 @@ Le script d'installation respecte l'ordre de priorité suivant pour le chemin d'
 2. `$XDG_BIN_DIR` - Chemin conforme à la spécification XDG Base Directory
 3. `$HOME/bin` - Répertoire binaire utilisateur standard (s'il existe ou peut être créé)
 4. `$HOME/.alphacode/bin` - Repli par défaut
-
 ```bash
 # Exemples
 ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git
