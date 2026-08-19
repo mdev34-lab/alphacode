@@ -144,7 +144,8 @@ export const Info = Schema.Struct({
       }),
     }),
   ).annotate({
-    description: "Deferred tool loading, see https://opencode.ai/docs/tools#tool-search",
+    description:
+      "Deferred tool loading: keep non-core tools out of the request until the model finds them with tool_search",
   }),
   attachment: Schema.optional(ConfigAttachmentV1.Info).annotate({
     description: "Attachment processing configuration, including image size limits and resizing behavior",

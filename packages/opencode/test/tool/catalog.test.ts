@@ -3,9 +3,22 @@ import { Effect } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolCatalog } from "@/tool/catalog"
 import { SessionID } from "@/session/schema"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 
-const it = testEffect(LayerNode.compile(ToolCatalog.node))
+const it = testEffect(LayerNode.compile(LayerNode.group([ToolCatalog.node, EventV2Bridge.node])))
+
+const sessionInfo = (id: string) =>
+  ({
+    id,
+    slug: "test-session",
+    projectID: "prj_test",
+    directory: "/tmp",
+    title: "test",
+    version: "0.0.0",
+    time: { created: 1, updated: 1 },
+  }) as unknown as SessionV1.SessionInfo
 
 const entry = (input: Partial<ToolCatalog.Entry> & { id: string }): ToolCatalog.Entry => ({
   description: "",
@@ -295,6 +308,31 @@ describe("ToolCatalog service", () => {
 
       expect((yield* catalog.search("ticket")).map((r) => r.id)).toEqual(["tool_a"])
       expect(yield* catalog.search("issues")).toEqual([])
+    }),
+  )
+
+  it.instance("forgets a session's discoveries when the session is deleted", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      const events = yield* EventV2Bridge.Service
+      yield* catalog.sync(entries)
+
+      const session = SessionID.make("ses_deleted")
+      const other = SessionID.make("ses_kept")
+      yield* catalog.discover(session, ["github_list_issues"])
+      yield* catalog.discover(other, ["github_list_issues"])
+
+      yield* events.publish(SessionV1.Event.Deleted, { sessionID: session, info: sessionInfo(session) })
+
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const discovered = yield* catalog.discovered(session)
+          return discovered.size === 0 ? true : undefined
+        }),
+        "discovered tools were not forgotten after session.deleted",
+        "3 seconds",
+      )
+      expect([...(yield* catalog.discovered(other))]).toEqual(["github_list_issues"])
     }),
   )
 

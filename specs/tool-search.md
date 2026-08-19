@@ -41,6 +41,10 @@ tool_search / tool_search_regex
   → catalog.discover(sessionID, ids)       (only ever unlocks a deferred tool)
 ```
 
+Discovery is per session and dies with it: `ToolCatalog` listens for `session.deleted` and drops
+that session's set, so a long-running server does not accumulate one `Set` per session that ever
+ran a search.
+
 `ToolCatalog` deliberately does **not** depend on `ToolRegistry` or `MCP` — the caller pushes
 entries in. That avoids a layer cycle (`registry -> tool_search -> catalog -> registry`) and keeps
 the catalog trivially testable.

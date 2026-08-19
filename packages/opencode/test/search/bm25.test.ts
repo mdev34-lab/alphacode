@@ -110,6 +110,26 @@ describe("BM25", () => {
       expect(BM25.fold("buses")).toBe("bus")
     })
 
+    test("folds latin -is plurals onto their singular", () => {
+      expect(BM25.fold("analyses")).toBe("analysis")
+      expect(BM25.fold("diagnoses")).toBe("diagnosis")
+      expect(BM25.fold("hypotheses")).toBe("hypothesis")
+      expect(BM25.fold("parentheses")).toBe("parenthesis")
+      expect(BM25.fold("crises")).toBe("crisis")
+    })
+
+    test("the reviewer battery: plural query and singular document agree", () => {
+      for (const [plural, singular] of [
+        ["aliases", "alias"],
+        ["analyses", "analysis"],
+        ["statuses", "status"],
+        ["classes", "class"],
+        ["processes", "process"],
+      ]) {
+        expect(BM25.fold(plural)).toBe(BM25.fold(singular))
+      }
+    })
+
     test("still folds ordinary plurals that end in as or es", () => {
       expect(BM25.fold("schemas")).toBe("schema")
       expect(BM25.fold("databases")).toBe("database")

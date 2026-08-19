@@ -82,12 +82,26 @@ const IRREGULAR = new Set([
 ])
 
 /**
+ * Latin plurals that no suffix rule recovers: the singular ends in -is, the plural in -es.
+ */
+const IRREGULAR_PLURALS = new Map([
+  ["analyses", "analysis"],
+  ["crises", "crisis"],
+  ["diagnoses", "diagnosis"],
+  ["hypotheses", "hypothesis"],
+  ["parentheses", "parenthesis"],
+  ["theses", "thesis"],
+])
+
+/**
  * Fold a term to a canonical form so that a plural query still matches a singular
  * description (and the other way around). Deliberately conservative: only regular plural
  * suffixes, never verb forms, and never words short enough to be acronyms.
  */
 export function fold(term: string): string {
   if (IRREGULAR.has(term)) return term
+  const irregular = IRREGULAR_PLURALS.get(term)
+  if (irregular) return irregular
   if (term.length <= 3) return term
   if (term.endsWith("ies")) return term.slice(0, -3) + "y"
   // aliases -> alias, canvases -> canvas: only for the words we know are singular

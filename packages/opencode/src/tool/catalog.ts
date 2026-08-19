@@ -2,6 +2,9 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Context, Data, Effect, Layer } from "effect"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { EventV2Bridge } from "@/event-v2-bridge"
+import { isRecord } from "@/util/record"
 import { InstanceState } from "@/effect/instance-state"
 import { BM25 } from "@/search/bm25"
 import { Wildcard } from "@/util/wildcard"
@@ -267,10 +270,22 @@ const layer = Layer.effect(
       s.discovered.delete(sessionID)
     })
 
+    // Discovery is per session, so it has to die with the session: otherwise a long-running
+    // server accumulates one Set per session that ever ran a search.
+    const events = yield* EventV2Bridge.Service
+    yield* events.listen((event) => {
+      if (event.type !== SessionV1.Event.Deleted.type) return Effect.void
+      const data = event.data
+      if (!isRecord(data) || typeof data.sessionID !== "string") return Effect.void
+      return forget(data.sessionID).pipe(
+        Effect.catchCause((cause) => Effect.logError("tool catalog cleanup failed", { cause })),
+      )
+    })
+
     return Service.of({ sync, list, get, search, searchRegex, discover, discovered, forget })
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer, deps: [] })
+export const node = LayerNode.make({ service: Service, layer, deps: [EventV2Bridge.node] })
 
 export * as ToolCatalog from "./catalog"
