@@ -43,50 +43,21 @@
 ---
 
 ### Installation
+
+> [!NOTE]
+> **This is the alphacode fork** — it is not published to any package registry; the only supported install is building from source. (Looking for the published [opencode](https://github.com/anomalyco/opencode) project this fork tracks? Use its own install channels.)
+
 ```bash
-# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
+# binary: ./packages/opencode/dist/opencode-<platform>/bin/opencode (e.g. linux-x64, darwin-arm64)
 ```
 
-> [!TIP]
-> Supprimez les versions antérieures à 0.1.x avant d'installer.
+### Desktop App (BETA)
 
-### Application de bureau (BETA)
-
-alphacode est aussi disponible en application de bureau. Téléchargez-la directement depuis la [page des releases](https://github.com/mdev34-lab/alphacode/releases) ou [GitHub](https://github.com/mdev34-lab/alphacode).
-
-| Plateforme            | Téléchargement                     |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, ou AppImage        |
-```bash
-# Desktop packages for this fork are not yet published - build from `packages/desktop`
-```
-
-#### Répertoire d'installation
-
-Le script d'installation respecte l'ordre de priorité suivant pour le chemin d'installation :
-
-1. `$ALPHACODE_INSTALL_DIR` - Répertoire d'installation personnalisé
-2. `$XDG_BIN_DIR` - Chemin conforme à la spécification XDG Base Directory
-3. `$HOME/bin` - Répertoire binaire utilisateur standard (s'il existe ou peut être créé)
-4. `$HOME/.alphacode/bin` - Repli par défaut
-```bash
-# Exemples
-ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-XDG_BIN_DIR=$HOME/.local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-```
+> Desktop builds of this fork are not yet published — see `packages/desktop` to build from source.
 
 ### Agents
 

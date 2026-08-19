@@ -43,50 +43,21 @@
 ---
 
 ### 安装
+
+> [!NOTE]
+> **This is the alphacode fork** — it is not published to any package registry; the only supported install is building from source. (Looking for the published [opencode](https://github.com/anomalyco/opencode) project this fork tracks? Use its own install channels.)
+
 ```bash
-# 直接安装 (YOLO)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
+# binary: ./packages/opencode/dist/opencode-<platform>/bin/opencode (e.g. linux-x64, darwin-arm64)
 ```
 
-> [!TIP]
-> 安装前请先移除 0.1.x 之前的旧版本。
+### Desktop App (BETA)
 
-### 桌面应用程序 (BETA)
-
-alphacode 也提供桌面版应用。可直接从 [发布页 (releases page)](https://github.com/mdev34-lab/alphacode/releases) 或 [GitHub](https://github.com/mdev34-lab/alphacode) 下载。
-
-| 平台                  | 下载文件                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`、`.rpm` 或 AppImage         |
-```bash
-# Desktop packages for this fork are not yet published - build from `packages/desktop`
-```
-
-#### 安装目录
-
-安装脚本按照以下优先级决定安装路径：
-
-1. `$ALPHACODE_INSTALL_DIR` - 自定义安装目录
-2. `$XDG_BIN_DIR` - 符合 XDG 基础目录规范的路径
-3. `$HOME/bin` - 如果存在或可创建的用户二进制目录
-4. `$HOME/.alphacode/bin` - 默认备用路径
-```bash
-# 示例
-ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-XDG_BIN_DIR=$HOME/.local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-```
+> Desktop builds of this fork are not yet published — see `packages/desktop` to build from source.
 
 ### Agents
 

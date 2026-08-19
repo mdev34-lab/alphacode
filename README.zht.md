@@ -43,50 +43,21 @@
 ---
 
 ### 安裝
+
+> [!NOTE]
+> **This is the alphacode fork** — it is not published to any package registry; the only supported install is building from source. (Looking for the published [opencode](https://github.com/anomalyco/opencode) project this fork tracks? Use its own install channels.)
+
 ```bash
-# 直接安裝 (YOLO)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
+# binary: ./packages/opencode/dist/opencode-<platform>/bin/opencode (e.g. linux-x64, darwin-arm64)
 ```
 
-> [!TIP]
-> 安裝前請先移除 0.1.x 以前的舊版本。
+### Desktop App (BETA)
 
-### 桌面應用程式 (BETA)
-
-alphacode 也提供桌面版應用程式。您可以直接從 [發佈頁面 (releases page)](https://github.com/mdev34-lab/alphacode/releases) 或 [GitHub](https://github.com/mdev34-lab/alphacode) 下載。
-
-| 平台                  | 下載連結                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, 或 AppImage        |
-```bash
-# Desktop packages for this fork are not yet published - build from `packages/desktop`
-```
-
-#### 安裝目錄
-
-安裝腳本會依據以下優先順序決定安裝路徑：
-
-1. `$ALPHACODE_INSTALL_DIR` - 自定義安裝目錄
-2. `$XDG_BIN_DIR` - 符合 XDG 基礎目錄規範的路徑
-3. `$HOME/bin` - 標準使用者執行檔目錄 (若存在或可建立)
-4. `$HOME/.alphacode/bin` - 預設備用路徑
-```bash
-# 範例
-ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-XDG_BIN_DIR=$HOME/.local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-```
+> Desktop builds of this fork are not yet published — see `packages/desktop` to build from source.
 
 ### Agents
 

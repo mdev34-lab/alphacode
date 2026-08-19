@@ -43,50 +43,21 @@
 ---
 
 ### ইনস্টলেশন (Installation)
+
+> [!NOTE]
+> **This is the alphacode fork** — it is not published to any package registry; the only supported install is building from source. (Looking for the published [opencode](https://github.com/anomalyco/opencode) project this fork tracks? Use its own install channels.)
+
 ```bash
-# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
+# binary: ./packages/opencode/dist/opencode-<platform>/bin/opencode (e.g. linux-x64, darwin-arm64)
 ```
-
-> [!TIP]
-> ইনস্টল করার আগে ০.১.x এর চেয়ে পুরোনো ভার্সনগুলো মুছে ফেলুন।
 
 ### ডেস্কটপ অ্যাপ (BETA)
 
-alphacode ডেস্কটপ অ্যাপ্লিকেশন হিসেবেও উপলব্ধ। সরাসরি [রিলিজ পেজ](https://github.com/mdev34-lab/alphacode/releases) অথবা [GitHub](https://github.com/mdev34-lab/alphacode) থেকে ডাউনলোড করুন।
-
-| প্ল্যাটফর্ম           | ডাউনলোড                            |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
-```bash
-# Desktop packages for this fork are not yet published - build from `packages/desktop`
-```
-
-#### ইনস্টলেশন ডিরেক্টরি (Installation Directory)
-
-ইনস্টল স্ক্রিপ্টটি ইনস্টলেশন পাতের জন্য নিম্নলিখিত অগ্রাধিকার ক্রম মেনে চলে:
-
-1. `$ALPHACODE_INSTALL_DIR` - কাস্টম ইনস্টলেশন ডিরেক্টরি
-2. `$XDG_BIN_DIR` - XDG বেস ডিরেক্টরি স্পেসিফিকেশন সমর্থিত পাথ
-3. `$HOME/bin` - সাধারণ ব্যবহারকারী বাইনারি ডিরেক্টরি (যদি বিদ্যমান থাকে বা তৈরি করা যায়)
-4. `$HOME/.alphacode/bin` - ডিফল্ট ফলব্যাক
-```bash
-# উদাহরণ
-ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-XDG_BIN_DIR=$HOME/.local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-```
+> Desktop builds of this fork are not yet published — see `packages/desktop` to build from source.
 
 ### এজেন্টস (Agents)
 

@@ -43,78 +43,19 @@
 ---
 
 ### Installation
+
+> [!NOTE]
+> **This is the alphacode fork** — it is not published to any package registry; the only supported install is building from source. (Looking for the published [opencode](https://github.com/anomalyco/opencode) project this fork tracks? Use its own install channels.)
+
 ```bash
-# From source (requires bun)
 git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
+# binary: ./packages/opencode/dist/opencode-<platform>/bin/opencode (e.g. linux-x64, darwin-arm64)
 ```
-
-> [!TIP]
-> Fjern versioner ældre end 0.1.x før installation.
 
 ### Desktop-app (BETA)
 
-alphacode findes også som desktop-app. Download direkte fra [releases-siden](https://github.com/mdev34-lab/alphacode/releases) eller [GitHub](https://github.com/mdev34-lab/alphacode).
+> Desktop builds of this fork are not yet published — see `packages/desktop` to build from source.
 
-| Platform              | Download                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, eller AppImage     |
-```bash
-# Desktop packages for this fork are not yet published - build from `packages/desktop`
-```
-
-#### Installationsmappe
-
-Installationsscriptet bruger følgende prioriteringsrækkefølge for installationsstien:
-
-1. `$ALPHACODE_INSTALL_DIR` - Tilpasset installationsmappe
-2. `$XDG_BIN_DIR` - Sti der følger XDG Base Directory Specification
-3. `$HOME/bin` - Standard bruger-bin-mappe (hvis den findes eller kan oprettes)
-4. `$HOME/.alphacode/bin` - Standard fallback
-```bash
-# Eksempler
-ALPHACODE_INSTALL_DIR=/usr/local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-XDG_BIN_DIR=$HOME/.local/bin git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
-bun install
-./packages/opencode/script/build.ts --single
-```
-
-### Agents
-
-alphacode har to indbyggede agents, som du kan skifte mellem med `Tab`-tasten.
-
-- **build** - Standard, agent med fuld adgang til udviklingsarbejde
-- **plan** - Skrivebeskyttet agent til analyse og kodeudforskning
-  - Afviser filredigering som standard
-  - Spørger om tilladelse før bash-kommandoer
-  - Ideel til at udforske ukendte kodebaser eller planlægge ændringer
-
-Derudover findes der en **general**-subagent til komplekse søgninger og flertrinsopgaver.
-Den bruges internt og kan kaldes via `@general` i beskeder.
-
-Læs mere om [agents](https://github.com/mdev34-lab/alphacode).
-
-### Dokumentation
-
-For mere info om konfiguration af alphacode, [**se vores docs**](https://github.com/mdev34-lab/alphacode).
-
-### Bidrag
-
-Hvis du vil bidrage til alphacode, så læs vores [contributing docs](./CONTRIBUTING.md) før du sender en pull request.
-
-### Bygget på alphacode
-
-Hvis du arbejder på et projekt der er relateret til alphacode og bruger "alphacode" som en del af navnet; f.eks. "alphacode-dashboard" eller "alphacode-mobile", så tilføj en note i din README, der tydeliggør at projektet ikke er bygget af alphacode-teamet og ikke er tilknyttet os på nogen måde.
-
----
-
-**Bliv en del af vores community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
