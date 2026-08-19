@@ -356,6 +356,10 @@ Both tools accept an optional `category` (`all`, `builtin` or `mcp`) and return 
 `tool_search.limit` results. Tools returned by a search become available on the model's next step
 and stay available for the rest of the session.
 
+Both searches read the same corpus — tool name, the first 2000 characters of the description, and
+parameter names — so `tool_search` and `tool_search_regex` never disagree about whether a tool
+matches.
+
 Search is BM25 over tool names, descriptions and parameter names, with Unicode-aware tokenization
 and regular plural folding, so `find issues` also matches a tool described as "list the issue
 tracker", and `owner repo` matches a tool that takes those arguments.

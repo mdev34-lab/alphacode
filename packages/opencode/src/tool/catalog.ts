@@ -53,8 +53,12 @@ export interface SearchOptions {
 /** Longest regex we are willing to compile from model input */
 export const MAX_PATTERN_LENGTH = 200
 
-/** Longest slice of a description a regex is matched against */
-const MAX_MATCH_LENGTH = 2000
+/**
+ * Longest slice of a description that is searchable. Both searches use it, so a term past
+ * the cut is invisible to both: `tool_search` and `tool_search_regex` must never disagree
+ * about whether a tool matches.
+ */
+export const MAX_DESCRIPTION_LENGTH = 2000
 
 /** Largest repetition count accepted in a bounded quantifier */
 const MAX_REPETITION = 1000
@@ -209,11 +213,14 @@ const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       s.entries = entries
       s.limit = options?.limit ?? DEFAULT_LIMIT
-      // Indexing a few hundred short documents costs microseconds — orders of magnitude less
-      // than the request it saves — so rebuild rather than guess whether anything changed.
       // Parameter names carry real signal ("owner", "repo", "sql"), and measurably improve
-      // recall@1 on the retrieval battery without hurting recall@3.
-      s.index = BM25.createIndex(entries, (entry) => [entry.id, entry.description, ...entry.parameters])
+      // recall@1 on the retrieval battery without hurting recall@3. Rebuilding beats trying
+      // to detect what changed: the catalog is small and the index is only read per search.
+      s.index = BM25.createIndex(entries, (entry) => [
+        entry.id,
+        entry.description.slice(0, MAX_DESCRIPTION_LENGTH),
+        ...entry.parameters,
+      ])
     })
 
     const list: Interface["list"] = Effect.fn("ToolCatalog.list")(function* () {
@@ -244,7 +251,7 @@ const layer = Layer.effect(
       })
       return s.entries
         .filter((entry) => discoverable(entry, options))
-        .filter((entry) => regex.test(entry.id) || regex.test(entry.description.slice(0, MAX_MATCH_LENGTH)))
+        .filter((entry) => regex.test(entry.id) || regex.test(entry.description.slice(0, MAX_DESCRIPTION_LENGTH)))
         .slice(0, options?.limit ?? s.limit)
     })
 

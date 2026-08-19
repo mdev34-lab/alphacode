@@ -127,6 +127,73 @@ describe("ToolCatalog.deferred", () => {
   )
 })
 
+describe("ToolCatalog.deferred precedence", () => {
+  const cases: {
+    name: string
+    config: Parameters<typeof ToolCatalog.options>[0]
+    id: string
+    source: ToolCatalog.Source
+    deferred: boolean
+  }[] = [
+    { name: "core builtin, no config", config: undefined, id: "read", source: "builtin", deferred: false },
+    { name: "other builtin, no config", config: undefined, id: "websearch", source: "builtin", deferred: true },
+    { name: "mcp, no config", config: undefined, id: "github_x", source: "mcp", deferred: true },
+    {
+      name: "disabled beats everything",
+      config: { enabled: false, defer: ["*"] },
+      id: "github_x",
+      source: "mcp",
+      deferred: false,
+    },
+    {
+      name: "always_load beats mcp default",
+      config: { always_load: ["github_*"] },
+      id: "github_x",
+      source: "mcp",
+      deferred: false,
+    },
+    {
+      name: "always_load beats defer",
+      config: { always_load: ["websearch"], defer: ["web*"] },
+      id: "websearch",
+      source: "builtin",
+      deferred: false,
+    },
+    { name: "defer beats core", config: { defer: ["read"] }, id: "read", source: "builtin", deferred: true },
+    {
+      name: "defer beats core via wildcard",
+      config: { defer: ["re*"] },
+      id: "read",
+      source: "builtin",
+      deferred: true,
+    },
+    {
+      name: "unmatched pattern leaves core alone",
+      config: { defer: ["nope*"] },
+      id: "read",
+      source: "builtin",
+      deferred: false,
+    },
+    {
+      name: "always_load on an unrelated tool",
+      config: { always_load: ["nope*"] },
+      id: "websearch",
+      source: "builtin",
+      deferred: true,
+    },
+  ]
+
+  for (const item of cases) {
+    it.effect(`${item.name}: ${item.id} -> ${item.deferred ? "deferred" : "loaded"}`, () =>
+      Effect.sync(() => {
+        expect(
+          ToolCatalog.deferred({ id: item.id, source: item.source, options: ToolCatalog.options(item.config) }),
+        ).toBe(item.deferred)
+      }),
+    )
+  }
+})
+
 describe("ToolCatalog service", () => {
   it.instance("returns nothing before any sync", () =>
     Effect.gen(function* () {
@@ -263,6 +330,25 @@ describe("ToolCatalog service", () => {
       expect(yield* catalog.search("issue repository github file")).toHaveLength(2)
       expect(yield* catalog.searchRegex("e")).toHaveLength(2)
       expect(yield* catalog.search("issue repository github file", { limit: 1 })).toHaveLength(1)
+    }),
+  )
+
+  it.instance("keyword and regex search see exactly the same corpus", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      const filler = "lorem ipsum ".repeat(400)
+      yield* catalog.sync([
+        entry({ id: "verbose_tool", description: `${filler} zzzbeyond` }),
+        entry({ id: "short_tool", description: "zzznear the start" }),
+      ])
+
+      // A term past the truncation point is invisible to both, never to just one of them
+      const keyword = (yield* catalog.search("zzzbeyond")).map((item) => item.id)
+      const regex = (yield* catalog.searchRegex("zzzbeyond")).map((item) => item.id)
+      expect(keyword).toEqual(regex)
+
+      expect((yield* catalog.search("zzznear")).map((item) => item.id)).toEqual(["short_tool"])
+      expect((yield* catalog.searchRegex("zzznear")).map((item) => item.id)).toEqual(["short_tool"])
     }),
   )
 

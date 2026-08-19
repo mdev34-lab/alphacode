@@ -104,6 +104,12 @@ gets to look — a tool ranked #4 is invisible at limit 3. Current floors, enfor
 | 5   | 100% (the default limit) |
 | 10  | 100%                     |
 
+## One corpus
+
+Keyword and regex search index the same text: tool id, the first 2000 characters of the
+description, and parameter names. A term past the cut is invisible to both, so the two tools can
+never contradict each other about whether a tool matches.
+
 ## Discovery boundary
 
 Being in the catalog and being discoverable are different things. `search` and `searchRegex`
