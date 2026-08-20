@@ -109,14 +109,28 @@ function errorTool(parts: SessionV1.Part[]) {
   return part?.state.status === "error" ? (part as ErrorToolPart) : undefined
 }
 
-function makeMcp(instructions: MCP.ServerInstructions[] = []) {
+// Minimal MCP tool wired to a stub client, enough for SessionTools to convert and call it.
+function mcpTool(name: string, description: string) {
+  return {
+    def: {
+      name,
+      description,
+      inputSchema: { type: "object", properties: { query: { type: "string" } }, additionalProperties: false },
+    },
+    client: {
+      callTool: async () => ({ content: [{ type: "text", text: "note: buy milk" }] }),
+    },
+  } as unknown as MCP.McpTool
+}
+
+function makeMcp(instructions: MCP.ServerInstructions[] = [], tools: Record<string, MCP.McpTool> = {}) {
   return Layer.succeed(
     MCP.Service,
     MCP.Service.of({
       status: () => Effect.succeed({}),
       clients: () => Effect.succeed({}),
       instructions: () => Effect.succeed(instructions),
-      tools: () => Effect.succeed({}),
+      tools: () => Effect.succeed(tools),
       prompts: () => Effect.succeed({}),
       resources: () => Effect.succeed({}),
       resourceTemplates: () => Effect.succeed({}),
@@ -221,12 +235,16 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
   return LayerNode.compile(promptRoot, replacements)
 }
 
-function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttp(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  mcpTools?: Record<string, MCP.McpTool>
+  processor?: "blocking"
+}) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
-    [MCP.node, makeMcp(input?.mcpInstructions)],
+    [MCP.node, makeMcp(input?.mcpInstructions, input?.mcpTools)],
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
@@ -251,6 +269,13 @@ const withMcpInstructions = testEffect(
         tools: ["guide-server_lookup"],
       },
     ],
+  }),
+)
+const withMcpTools = testEffect(
+  makeHttp({
+    mcpTools: {
+      notes_search_notes: mcpTool("search_notes", "Search the user's notes and return matching entries"),
+    },
   }),
 )
 const unix = process.platform !== "win32" ? it.instance : it.instance.skip
@@ -848,6 +873,111 @@ it.instance("loop continues when finish is tool-calls", () =>
       expect(result.info.finish).toBe("stop")
     }
   }),
+)
+
+const toolNames = (body: Record<string, unknown> | undefined) => {
+  const tools = (body?.tools ?? []) as { function?: { name?: string } }[]
+  return tools.map((entry) => entry.function?.name).filter((name): name is string => !!name)
+}
+
+it.instance("defers non-core tools until tool_search discovers them", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Tool search",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "download a webpage" }],
+    })
+    yield* llm.tool("tool_search", { query: "fetch a url webpage" })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: session.id })
+
+    const hits = yield* llm.hits
+    const first = toolNames(hits[0]?.body)
+    expect(first).toContain("tool_search")
+    expect(first).toContain("read")
+    expect(first).not.toContain("webfetch")
+
+    const second = toolNames(hits[1]?.body)
+    expect(second).toContain("webfetch")
+  }),
+)
+
+it.instance("keeps every tool loaded when tool search is disabled", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), tool_search: { enabled: false } }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Tool search off",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "download a webpage" }],
+    })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: session.id })
+
+    const names = toolNames((yield* llm.hits)[0]?.body)
+    expect(names).toContain("webfetch")
+    expect(names).not.toContain("tool_search")
+  }),
+)
+
+withMcpTools.instance(
+  "an MCP tool discovered by tool_search is callable on the next step",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "MCP discovery",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "what is in my notes?" }],
+      })
+      yield* llm.tool("tool_search", { query: "search notes" })
+      yield* llm.tool("notes_search_notes", { query: "milk" })
+      yield* llm.text("you need milk")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      const hits = yield* llm.hits
+
+      // step 1: the MCP tool is not in the request at all
+      expect(toolNames(hits[0]?.body)).not.toContain("notes_search_notes")
+      // step 2: discovery made it visible
+      expect(toolNames(hits[1]?.body)).toContain("notes_search_notes")
+
+      // and it actually ran, rather than just appearing in the schema
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const call = messages
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "notes_search_notes")
+      expect(call).toBeDefined()
+      if (call?.type === "tool") {
+        expect(call.state.status).toBe("completed")
+        if (call.state.status === "completed") expect(call.state.output).toContain("buy milk")
+      }
+      expect(result.info.role).toBe("assistant")
+    }),
+  20_000,
 )
 
 it.instance("glob tool keeps instance context during prompt runs", () =>

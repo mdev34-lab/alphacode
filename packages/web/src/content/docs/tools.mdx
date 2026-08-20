@@ -310,6 +310,90 @@ Each question includes a header, the question text, and a list of options. Users
 
 ---
 
+## Tool search
+
+Every tool definition — its name, description and JSON schema — is sent to the model on every
+request. A couple of MCP servers can easily add tens of thousands of tokens to each turn, and most
+of those tools are never used.
+
+Tool search fixes that. Core tools (`bash`, `read`, `edit`, `write`, `glob`, `grep`, `todowrite`,
+`task`, `skill`, `apply_patch`, …) are always loaded. Everything else — the remaining built-ins,
+custom tools and every MCP tool call — is **deferred**: kept out of the request until the model
+looks it up with one of two discovery tools. The MCP _resource_ helpers
+(`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`) are not deferred; they
+are only registered when a connected server exposes resources, and they are the entry point for
+discovering those resources.
+
+### tool_search
+
+Keyword search (BM25) over the names and descriptions of every available tool.
+
+```text
+tool_search({ query: "find issues" })
+```
+
+### tool_search_regex
+
+Regex search over the same catalog, matched case-insensitively against names and descriptions.
+
+```text
+tool_search_regex({ pattern: "github.*issue" })
+```
+
+Patterns come from the model, so a few shapes are rejected before they are compiled: patterns
+longer than 200 characters, backreferences, repetition counts above 1000, and quantified groups
+that contain a quantifier or an alternation (`(a+)+`, `(a|a)*`, `(a|aa)+`). Those are the shapes
+that cause catastrophic backtracking, and a running regex cannot be interrupted in JavaScript.
+This is a mitigation, not a sandbox: it rejects the known-explosive shapes and bounds the input,
+it does not prove that whatever is left runs in polynomial time.
+
+Both tools only return **hidden** tools — anything the session already has, whether it was always
+loaded or discovered by an earlier search, would just burn a result slot. So repeating a search
+surfaces what is still missing rather than the same tools again. When a query matches nothing
+hidden but does match something the session already has, the answer says so ("these tools are
+already available to you") instead of claiming the capability does not exist. Discovery can only
+ever unlock a deferred tool.
+
+Both tools accept an optional `category` (`all`, `builtin` or `mcp`) and return at most
+`tool_search.limit` results. Tools returned by a search become available on the model's next step
+and stay available for the rest of the session.
+
+Both searches read the same corpus — tool name, the first 2000 characters of the description, and
+parameter names — so `tool_search` and `tool_search_regex` never disagree about whether a tool
+matches.
+
+Search is BM25 over that corpus, with Unicode-aware tokenization and _agreement folding_: regular
+plurals and the `y`/`ie` family are collapsed onto a common term so that a query and a description
+that spell the same word differently still meet (`find issues` matches "list the issue tracker",
+`repositories` matches "repository"). The folded term is not always a real word — the goal is
+agreement between query and document, not correct English morphology.
+
+### Configure
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "tool_search": {
+    "enabled": true,
+    "always_load": ["github_*"],
+    "defer": ["websearch"],
+    "limit": 5
+  }
+}
+```
+
+| Field         | Description                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------- |
+| `enabled`     | Defer non-core tools. Defaults to `true`. Set to `false` to always send every tool definition. |
+| `always_load` | Tool ID patterns that are never deferred. Supports `*` wildcards.                              |
+| `defer`       | Extra tool ID patterns that are always deferred, even core tools.                              |
+| `limit`       | Maximum number of tools returned by a single search. Defaults to `5`.                          |
+
+`always_load` wins over `defer`. When `enabled` is `false`, the `tool_search` tools are not
+registered at all.
+
+---
+
 ## Custom tools
 
 Custom tools let you define your own functions that the LLM can call. These are defined in your config file and can execute arbitrary code.
