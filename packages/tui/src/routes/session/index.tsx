@@ -1769,6 +1769,15 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={display() === "execute"}>
           <Execute {...toolprops} />
         </Match>
+        <Match when={display() === "tool_search" || display() === "tool_search_regex"}>
+          <ToolSearch {...toolprops} />
+        </Match>
+        <Match when={display() === "lsp"}>
+          <Lsp {...toolprops} />
+        </Match>
+        <Match when={display() === "plan_exit"}>
+          <PlanExit {...toolprops} />
+        </Match>
         <Match when={display() === "apply_patch"}>
           <ApplyPatch {...toolprops} />
         </Match>
@@ -2393,6 +2402,92 @@ function Execute(props: ToolProps) {
   )
 }
 
+function ToolSearch(props: ToolProps) {
+  const { theme } = useTheme()
+  const regex = props.tool === "tool_search_regex"
+  const query = createMemo(() => stringValue(regex ? props.input.pattern : props.input.query))
+  const count = createMemo(() => numberValue(props.metadata.count))
+  const tools = createMemo(() => {
+    if (props.part.state.status !== "completed") return []
+    const value = props.metadata.tools
+    if (!Array.isArray(value)) return []
+    return value.filter((tool): tool is string => typeof tool === "string")
+  })
+
+  return (
+    <>
+      <InlineTool icon="?" pending="Searching tools..." complete={query()} part={props.part}>
+        Tool search {regex ? `/${query()}` : `"${query()}"`}
+        <Show when={count() !== undefined}>
+          {" "}
+          ({count()} {count() === 1 ? "tool found" : "tools found"})
+        </Show>
+      </InlineTool>
+      <Show when={tools().length}>
+        <box paddingLeft={3}>
+          <For each={tools()}>
+            {(tool) => (
+              <text paddingLeft={3} fg={theme.textMuted}>
+                ↳ Loaded {tool}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+    </>
+  )
+}
+
+const lspOperationLabels: Record<string, string> = {
+  goToDefinition: "Go to definition",
+  findReferences: "Find references",
+  hover: "Hover",
+  documentSymbol: "Document symbols",
+  workspaceSymbol: "Workspace symbols",
+  goToImplementation: "Go to implementation",
+  prepareCallHierarchy: "Prepare call hierarchy",
+  incomingCalls: "Incoming calls",
+  outgoingCalls: "Outgoing calls",
+}
+
+function Lsp(props: ToolProps) {
+  const pathFormatter = usePathFormatter()
+  const operation = createMemo(() => {
+    const value = stringValue(props.input.operation)
+    if (!value) return undefined
+    return lspOperationLabels[value] ?? value
+  })
+  const location = createMemo(() => {
+    const filePath = stringValue(props.input.filePath)
+    if (!filePath) return ""
+    const line = numberValue(props.input.line)
+    const character = numberValue(props.input.character)
+    const position = line !== undefined ? `:${line}${character !== undefined ? `:${character}` : ""}` : ""
+    return `${pathFormatter.format(filePath)}${position}`
+  })
+
+  return (
+    <InlineTool
+      icon="◎"
+      pending="Running LSP operation..."
+      complete={stringValue(props.input.operation)}
+      part={props.part}
+    >
+      LSP {operation() ?? "operation"}
+      <Show when={location()}> {location()}</Show>
+    </InlineTool>
+  )
+}
+
+function PlanExit(props: ToolProps) {
+  const declined = createMemo(() => props.part.state.status === "error")
+  return (
+    <InlineTool icon="✓" pending="Requesting plan approval..." complete={true} part={props.part}>
+      {declined() ? "Plan approval declined — staying in plan mode" : "Plan complete — switching to Work agent"}
+    </InlineTool>
+  )
+}
+
 function Edit(props: ToolProps) {
   const ctx = use()
   const { theme, syntax } = useTheme()
@@ -2650,6 +2745,10 @@ const toolDisplays = new Set([
   "question",
   "skill",
   "execute",
+  "tool_search",
+  "tool_search_regex",
+  "lsp",
+  "plan_exit",
 ])
 
 export function toolDisplay(tool: string) {
