@@ -138,8 +138,8 @@ const layer = Layer.effect(
         const user = Permission.fromConfig(cfg.permission ?? {})
 
         const agents: Record<string, Info> = {
-          build: {
-            name: "build",
+          work: {
+            name: "work",
             description: "The default agent. Executes tools based on configured permissions.",
             options: {},
             permission: Permission.merge(
@@ -152,6 +152,7 @@ const layer = Layer.effect(
             ),
             mode: "primary",
             native: true,
+            color: "#FFFFFF",
           },
           plan: {
             name: "plan",
@@ -319,7 +320,7 @@ const layer = Layer.effect(
             agents,
             values(),
             sortBy(
-              [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "build"), "desc"],
+              [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "work"), "desc"],
               [(x) => x.name, "asc"],
             ),
           )

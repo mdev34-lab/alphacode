@@ -1,13 +1,13 @@
 const defaults: Record<string, string> = {
   ask: "var(--icon-agent-ask-base)",
-  build: "var(--icon-agent-build-base)",
+  work: "#FFFFFF",
   docs: "var(--icon-agent-docs-base)",
   plan: "var(--icon-agent-plan-base)",
 }
 
 const palette = [
   "var(--icon-agent-ask-base)",
-  "var(--icon-agent-build-base)",
+  "var(--icon-agent-work-base)",
   "var(--icon-agent-docs-base)",
   "var(--icon-agent-plan-base)",
   "var(--syntax-info)",
