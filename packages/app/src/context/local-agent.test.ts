@@ -24,11 +24,11 @@ describe("resolveAgent", () => {
   })
 
   test("resolves the legacy build id onto work", () => {
-    expect(resolveAgent(agents, "work")?.name).toBe("work")
+    expect(resolveAgent(agents, "build")?.name).toBe("work")
   })
 
   test("prefers a real agent named build over the alias", () => {
-    expect(resolveAgent([{ name: "work" }, { name: "work" }], "work")?.name).toBe("work")
+    expect(resolveAgent([{ name: "work" }, { name: "build" }], "build")?.name).toBe("build")
   })
 
   test("uses the first agent when work is unavailable", () => {
