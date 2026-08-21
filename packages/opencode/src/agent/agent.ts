@@ -227,7 +227,6 @@ const layer = Layer.effect(
                 grep: "allow",
                 glob: "allow",
                 list: "allow",
-                bash: "allow",
                 webfetch: "allow",
               }),
               user,

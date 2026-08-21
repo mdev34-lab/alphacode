@@ -1266,12 +1266,16 @@ const layer = Layer.effect(
               sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
+            const isDefaultPrimary = yield* agents
+              .defaultInfo()
+              .pipe(Effect.map((info) => info.name === agent.name && agent.mode !== "subagent"))
+              .pipe(Effect.catchCause(() => Effect.succeed(false)))
             const system = [
               ...env,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
               ...(skills ? [skills] : []),
-              ...(agent.name === "build" && agent.mode === "primary" ? [PROMPT_REVIEW_LOOP] : []),
+              ...(isDefaultPrimary ? [PROMPT_REVIEW_LOOP] : []),
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

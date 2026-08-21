@@ -140,19 +140,20 @@ it.instance("review agent is a read-only code reviewer subagent", () =>
     expect(review?.mode).toBe("subagent")
     expect(review?.native).toBe(true)
     expect(review?.prompt).toContain("read-only")
-    // Read-only: no mutation, no delegation, no user interaction
+    // Read-only by construction: no mutation, no shell, no delegation, no user interaction
     expect(evalPerm(review, "edit")).toBe("deny")
     expect(evalPerm(review, "write")).toBe("deny")
     expect(evalPerm(review, "apply_patch")).toBe("deny")
+    expect(evalPerm(review, "bash")).toBe("deny")
     expect(evalPerm(review, "task")).toBe("deny")
     expect(evalPerm(review, "todowrite")).toBe("deny")
     expect(evalPerm(review, "question")).toBe("deny")
-    // Can inspect code and verify claims with commands
+    // Can inspect code and files
     expect(evalPerm(review, "read")).toBe("allow")
     expect(evalPerm(review, "grep")).toBe("allow")
     expect(evalPerm(review, "glob")).toBe("allow")
     expect(evalPerm(review, "list")).toBe("allow")
-    expect(evalPerm(review, "bash")).toBe("allow")
+    expect(evalPerm(review, "webfetch")).toBe("allow")
   }),
 )
 
