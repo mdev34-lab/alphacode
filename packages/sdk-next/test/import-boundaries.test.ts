@@ -24,7 +24,7 @@ async function bundleInputs() {
     const child = Bun.spawn(
       [
         process.execPath,
-        "build",
+        "work",
         entrypoint,
         "--target=bun",
         "--format=esm",

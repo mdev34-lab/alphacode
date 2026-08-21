@@ -361,9 +361,9 @@ const TOOL_SAMPLES = {
   },
   "task build": {
     tool: "task",
-    input: { description: "Implement the settings page", subagent_type: "build", prompt: "Build it" },
+    input: { description: "Implement the settings page", subagent_type: "work", prompt: "Build it" },
     output: "Implemented the settings page.",
-    title: "Agent (Build)",
+    title: "Agent (Work)",
     metadata: { sessionId: "sub-session-2" },
   },
   "task plan": {
@@ -1244,7 +1244,7 @@ function Playground() {
 
   const data = createMemo(() => ({
     session: [session()],
-    agent: [{ name: "build" }, { name: "plan" }, { name: "explore" }, { name: "review" }],
+    agent: [{ name: "work" }, { name: "plan" }, { name: "explore" }, { name: "review" }],
     session_status: {},
     session_diff: {},
     message: { [session().id]: state.messages },

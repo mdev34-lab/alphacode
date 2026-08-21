@@ -7,7 +7,14 @@ import { State } from "./state"
 
 export const ID = Agent.ID
 export type ID = typeof ID.Type
-export const defaultID = ID.make("build")
+export const defaultID = Agent.DEFAULT_ID
+
+/** Identity color of the default agent; mirrored by the `--icon-agent-work-base` token. */
+export const defaultColor = Agent.DEFAULT_COLOR
+
+/** Legacy agent ids kept resolvable for old configs, sessions and clients. */
+export const legacyIDs = Agent.LEGACY_IDS
+export const canonicalID = Agent.canonicalID
 
 export const Color = Agent.Color
 
@@ -66,12 +73,13 @@ const layer = Layer.effect(
     })
     const selectable = (agent: Info | undefined) =>
       agent && agent.mode !== "subagent" && !agent.hidden ? agent : undefined
+    const lookup = (id: string) => Agent.withLegacyID(id, (name) => state.get().agents.get(ID.make(name)))
     const selectedDefault = () => {
       const data = state.get()
-      const configured = data.default ? selectable(data.agents.get(data.default)) : undefined
+      const configured = data.default ? selectable(lookup(data.default)) : undefined
       if (configured) return configured
-      const build = selectable(data.agents.get(ID.make("build")))
-      if (build) return build
+      const fallbackDefault = selectable(lookup(defaultID))
+      if (fallbackDefault) return fallbackDefault
       for (const agent of data.agents.values()) {
         const fallback = selectable(agent)
         if (fallback) return fallback
@@ -82,19 +90,21 @@ const layer = Layer.effect(
       transform: state.transform,
       reload: state.reload,
       get: Effect.fn("AgentV2.get")(function* (id) {
-        return state.get().agents.get(id)
+        return lookup(id)
       }),
       default: Effect.fn("AgentV2.default")(function* () {
         return selectedDefault()
       }),
       resolve: Effect.fn("AgentV2.resolve")(function* (id) {
-        if (id !== undefined) return state.get().agents.get(ID.make(id))
+        if (id !== undefined) return lookup(id)
         return selectedDefault()
       }),
       select: Effect.fn("AgentV2.select")(function* (id) {
         if (id !== undefined) {
-          const selected = ID.make(id)
-          return { id: selected, info: state.get().agents.get(selected) }
+          const info = lookup(id)
+          // Legacy ids resolve onto the canonical agent so sessions started by
+          // older clients keep pointing at a real agent.
+          return { id: info?.id ?? ID.make(id), info }
         }
         const info = selectedDefault()
         return { id: info?.id ?? defaultID, info }

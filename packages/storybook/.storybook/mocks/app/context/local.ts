@@ -7,7 +7,7 @@ const model = {
   variants: { fast: {}, thinking: {} },
 }
 
-const agents = [{ name: "build" }, { name: "review" }, { name: "plan" }]
+const agents = [{ name: "work" }, { name: "review" }, { name: "plan" }]
 
 const [agent, setAgent] = createSignal(agents[0].name)
 const [variant, setVariant] = createSignal<string | undefined>(undefined)

@@ -590,7 +590,7 @@ describe("SessionRunnerLLM", () => {
       expect(contexts).toEqual([
         {
           sessionID,
-          agent: AgentV2.ID.make("build"),
+          agent: AgentV2.ID.make("work"),
           assistantMessageID: expect.stringMatching(/^msg_/),
           toolCallID: "call-application",
         },
@@ -777,7 +777,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const agent = yield* AgentV2.Service
       yield* agent.transform((editor) =>
-        editor.update(AgentV2.ID.make("build"), (agent) => {
+        editor.update(AgentV2.ID.make("work"), (agent) => {
           agent.system = "Build agent instructions"
           agent.mode = "primary"
         }),
@@ -798,7 +798,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const agent = yield* AgentV2.Service
       yield* agent.transform((editor) => {
-        editor.update(AgentV2.ID.make("build"), (agent) => {
+        editor.update(AgentV2.ID.make("work"), (agent) => {
           agent.system = "Build agent instructions"
           agent.mode = "primary"
         })
@@ -854,7 +854,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const session = yield* SessionV2.Service
       const events = yield* EventV2.Service
-      skillBaselines.set(AgentV2.ID.make("build"), "Build skills")
+      skillBaselines.set(AgentV2.ID.make("work"), "Build skills")
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "First" }), resume: false })
 
       requests.length = 0
@@ -883,7 +883,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const session = yield* SessionV2.Service
       const events = yield* EventV2.Service
-      skillBaselines.set(AgentV2.ID.make("build"), "Build skills")
+      skillBaselines.set(AgentV2.ID.make("work"), "Build skills")
       skillBaselines.set(AgentV2.ID.make("reviewer"), "Reviewer skills")
       let switched = false
       systemLoadHook = Effect.suspend(() => {
@@ -2271,7 +2271,7 @@ describe("SessionRunnerLLM", () => {
         sessionID,
         assistantMessageID,
         timestamp: yield* DateTime.now,
-        agent: "build",
+        agent: "work",
         model: { id: ModelV2.ID.make("fake-model"), providerID: ProviderV2.ID.make("fake") },
       })
       yield* events.publish(SessionEvent.Tool.Input.Started, {
@@ -2335,7 +2335,7 @@ describe("SessionRunnerLLM", () => {
         sessionID,
         assistantMessageID,
         timestamp: yield* DateTime.now,
-        agent: "build",
+        agent: "work",
         model: { id: ModelV2.ID.make("fake-model"), providerID: ProviderV2.ID.make("fake") },
       })
       yield* events.publish(SessionEvent.Tool.Input.Started, {
@@ -2395,7 +2395,7 @@ describe("SessionRunnerLLM", () => {
         sessionID,
         assistantMessageID,
         timestamp: yield* DateTime.now,
-        agent: "build",
+        agent: "work",
         model: { id: ModelV2.ID.make("fake-model"), providerID: ProviderV2.ID.make("fake") },
       })
       yield* events.publish(SessionEvent.Tool.Input.Started, {
@@ -3057,7 +3057,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const agents = yield* AgentV2.Service
       yield* agents.transform((editor) =>
-        editor.update(AgentV2.ID.make("build"), (agent) => {
+        editor.update(AgentV2.ID.make("work"), (agent) => {
           agent.steps = 2
         }),
       )
@@ -3105,7 +3105,7 @@ describe("SessionRunnerLLM", () => {
       yield* setup
       const agents = yield* AgentV2.Service
       yield* agents.transform((editor) =>
-        editor.update(AgentV2.ID.make("build"), (agent) => {
+        editor.update(AgentV2.ID.make("work"), (agent) => {
           agent.steps = 2
         }),
       )

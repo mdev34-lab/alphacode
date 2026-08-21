@@ -79,7 +79,7 @@ export const Info = Schema.Struct({
   }),
   default_agent: Schema.optional(Schema.String).annotate({
     description:
-      "Default agent to use when none is specified. Must be a primary agent. Falls back to 'build' if not set or if the specified agent is invalid.",
+      "Default agent to use when none is specified. Must be a primary agent. Falls back to 'work' if not set or if the specified agent is invalid. The legacy id 'build' is still accepted and resolves to 'work'.",
   }),
   subagent_depth: Schema.optional(NonNegativeInt).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
@@ -89,7 +89,12 @@ export const Info = Schema.Struct({
   }),
   mode: Schema.optional(
     Schema.StructWithRest(
-      Schema.Struct({ build: Schema.optional(ConfigAgentV1.Info), plan: Schema.optional(ConfigAgentV1.Info) }),
+      Schema.Struct({
+        work: Schema.optional(ConfigAgentV1.Info),
+        /** @deprecated legacy id for `work`, still accepted. */
+        build: Schema.optional(ConfigAgentV1.Info),
+        plan: Schema.optional(ConfigAgentV1.Info),
+      }),
       [Schema.Record(Schema.String, ConfigAgentV1.Info)],
     ),
   ).annotate({ description: "@deprecated Use `agent` field instead." }),
@@ -97,6 +102,8 @@ export const Info = Schema.Struct({
     Schema.StructWithRest(
       Schema.Struct({
         plan: Schema.optional(ConfigAgentV1.Info),
+        work: Schema.optional(ConfigAgentV1.Info),
+        /** @deprecated legacy id for `work`, still accepted and applied to it. */
         build: Schema.optional(ConfigAgentV1.Info),
         general: Schema.optional(ConfigAgentV1.Info),
         explore: Schema.optional(ConfigAgentV1.Info),

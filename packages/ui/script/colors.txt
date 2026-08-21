@@ -173,7 +173,7 @@
 --icon-agent-plan-base: var(--purple-light-9);
 --icon-agent-docs-base: var(--amber-light-9);
 --icon-agent-ask-base: var(--cyan-light-9);
---icon-agent-build-base: var(--cobalt-light-9);
+--icon-agent-work-base: #ffffff;
 --icon-on-success-base: var(--apple-light-alpha-9);
 --icon-on-success-hover: var(--apple-light-alpha-10);
 --icon-on-success-selected: var(--apple-light-alpha-11);

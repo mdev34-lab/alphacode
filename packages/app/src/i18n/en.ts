@@ -942,7 +942,7 @@ export const dict = {
     "Place the title bar and session tabs at the bottom of the screen on mobile",
   "settings.general.row.showCustomAgents.title": "Show agent",
   "settings.general.row.showCustomAgents.description":
-    "Switch between agents in the composer. When hidden, defaults to Build agent.",
+    "Switch between agents in the composer. When hidden, defaults to Work agent.",
   "settings.general.row.reasoningSummaries.title": "Show reasoning summaries",
   "settings.general.row.reasoningSummaries.description": "Display model reasoning summaries in the timeline",
   "settings.general.row.shellToolPartsExpanded.title": "Expand shell tool parts",

@@ -317,7 +317,9 @@ export function resolveThemeVariant(variant: ThemeVariant, isDark: boolean): Res
   tokens["icon-agent-plan-base"] = info[8]
   tokens["icon-agent-docs-base"] = amber[8]
   tokens["icon-agent-ask-base"] = blue[8]
-  tokens["icon-agent-build-base"] = interactive[isDark ? 10 : 8]
+  // Work keeps its brand white regardless of palette; must match theme.css
+  // and the v2 mapping, which also pin it.
+  tokens["icon-agent-work-base"] = "#ffffff"
 
   tokens["icon-on-success-base"] = on(succb)
   tokens["icon-on-success-hover"] = on(succs)

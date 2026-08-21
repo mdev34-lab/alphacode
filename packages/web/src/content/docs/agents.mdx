@@ -21,13 +21,13 @@ There are two types of agents in OpenCode; primary agents and subagents.
 
 ### Primary agents
 
-Primary agents are the main assistants you interact with directly. You can cycle through them using the **Tab** key, or your configured `switch_agent` keybind. These agents handle your main conversation. Tool access is configured via permissions — for example, Build has all tools enabled while Plan is restricted.
+Primary agents are the main assistants you interact with directly. You can cycle through them using the **Tab** key, or your configured `switch_agent` keybind. These agents handle your main conversation. Tool access is configured via permissions — for example, Work has all tools enabled while Plan is restricted.
 
 :::tip
 You can use the **Tab** key to switch between primary agents during a session.
 :::
 
-OpenCode comes with two built-in primary agents, **Build** and **Plan**. We'll
+OpenCode comes with two built-in primary agents, **Work** and **Plan**. We'll
 look at these below.
 
 ---
@@ -46,11 +46,11 @@ OpenCode comes with two built-in primary agents and three built-in subagents.
 
 ---
 
-### Use build
+### Use work
 
 _Mode_: `primary`
 
-Build is the **default** primary agent with all tools enabled. This is the standard agent for development work where you need full access to file operations and system commands.
+Work is the **default** primary agent with all tools enabled. This is the standard agent for development work where you need full access to file operations and system commands.
 
 ---
 
@@ -153,10 +153,10 @@ Configure agents in your `opencode.json` config file:
 {
   "$schema": "https://opencode.ai/config.json",
   "agent": {
-    "build": {
+    "work": {
       "mode": "primary",
       "model": "anthropic/claude-sonnet-4-20250514",
-      "prompt": "{file:./prompts/build.txt}",
+      "prompt": "{file:./prompts/work.txt}",
       "permission": {
         "edit": "allow",
         "bash": "allow"
@@ -273,7 +273,7 @@ Temperature values typically range from 0.0 to 1.0:
       "temperature": 0.1,
       "prompt": "{file:./prompts/analysis.txt}"
     },
-    "build": {
+    "work": {
       "temperature": 0.3
     },
     "brainstorm": {
@@ -471,7 +471,7 @@ You can override these permissions per agent.
     "edit": "deny"
   },
   "agent": {
-    "build": {
+    "work": {
       "permission": {
         "edit": "ask"
       }
@@ -505,7 +505,7 @@ You can set permissions for specific bash commands.
 {
   "$schema": "https://opencode.ai/config.json",
   "agent": {
-    "build": {
+    "work": {
       "permission": {
         "bash": {
           "git push": "ask",
@@ -523,7 +523,7 @@ This can take a glob pattern.
 {
   "$schema": "https://opencode.ai/config.json",
   "agent": {
-    "build": {
+    "work": {
       "permission": {
         "bash": {
           "git *": "ask"
@@ -541,7 +541,7 @@ Since the last matching rule takes precedence, put the `*` wildcard first and sp
 {
   "$schema": "https://opencode.ai/config.json",
   "agent": {
-    "build": {
+    "work": {
       "permission": {
         "bash": {
           "*": "ask",
@@ -719,7 +719,7 @@ This interactive command will:
 
 Here are some common use cases for different agents.
 
-- **Build agent**: Full development work with all tools enabled
+- **Work agent**: Full development work with all tools enabled
 - **Plan agent**: Analysis and planning without making changes
 - **Review agent**: Code review with read-only access plus documentation tools
 - **Debug agent**: Focused on investigation with bash and read tools enabled

@@ -48,9 +48,9 @@ describe("ConfigAgentPlugin.Plugin", () => {
   it.effect("applies all global permissions before agent-specific permissions", () =>
     Effect.gen(function* () {
       const agents = yield* AgentV2.Service
-      const build = AgentV2.ID.make("build")
+      const work = AgentV2.ID.make("work")
       yield* agents.transform((editor) =>
-        editor.update(build, (agent) => {
+        editor.update(work, (agent) => {
           agent.mode = "primary"
           agent.permissions.push({ action: "bash", resource: "*", effect: "allow" })
         }),
@@ -64,7 +64,7 @@ describe("ConfigAgentPlugin.Plugin", () => {
               info: decode({
                 permissions: [{ action: "bash", resource: "*", effect: "ask" }],
                 agents: {
-                  build: {
+                  work: {
                     permissions: [{ action: "bash", resource: "git *", effect: "allow" }],
                   },
                   reviewer: {
@@ -100,16 +100,16 @@ describe("ConfigAgentPlugin.Plugin", () => {
         Effect.provideService(Config.Service, config),
       )
 
-      const buildAgent = yield* agents.get(build)
-      if (!buildAgent) throw new Error("expected configured build agent")
-      expect(buildAgent.permissions).toEqual([
+      const workAgent = yield* agents.get(work)
+      if (!workAgent) throw new Error("expected configured work agent")
+      expect(workAgent.permissions).toEqual([
         { action: "bash", resource: "*", effect: "allow" },
         { action: "bash", resource: "*", effect: "ask" },
         { action: "read", resource: "*", effect: "allow" },
         { action: "bash", resource: "git *", effect: "allow" },
       ])
-      expect(PermissionV2.evaluate("bash", "git status", buildAgent.permissions).effect).toBe("allow")
-      expect(PermissionV2.evaluate("bash", "bun test", buildAgent.permissions).effect).toBe("ask")
+      expect(PermissionV2.evaluate("bash", "git status", workAgent.permissions).effect).toBe("allow")
+      expect(PermissionV2.evaluate("bash", "bun test", workAgent.permissions).effect).toBe("ask")
 
       const reviewer = yield* agents.get(AgentV2.ID.make("reviewer"))
       if (!reviewer) throw new Error("expected configured reviewer agent")
@@ -202,15 +202,15 @@ describe("ConfigAgentPlugin.Plugin", () => {
   it.effect("removes a built-in agent disabled by configuration", () =>
     Effect.gen(function* () {
       const agents = yield* AgentV2.Service
-      const build = AgentV2.ID.make("build")
-      yield* agents.transform((editor) => editor.update(build, () => {}))
+      const work = AgentV2.ID.make("work")
+      yield* agents.transform((editor) => editor.update(work, () => {}))
 
       const config = Config.Service.of({
         entries: () =>
           Effect.succeed([
             new Config.Document({
               type: "document",
-              info: decode({ agents: { build: { disabled: true } } }),
+              info: decode({ agents: { work: { disabled: true } } }),
             }),
           ]),
       })
@@ -219,7 +219,61 @@ describe("ConfigAgentPlugin.Plugin", () => {
         Effect.provideService(Config.Service, config),
       )
 
-      expect(yield* agents.get(build)).toBeUndefined()
+      expect(yield* agents.get(work)).toBeUndefined()
+    }),
+  )
+
+  it.effect("applies a legacy `build` config block to the renamed `work` agent", () =>
+    Effect.gen(function* () {
+      const agents = yield* AgentV2.Service
+      const work = AgentV2.ID.make("work")
+      yield* agents.transform((editor) => editor.update(work, () => {}))
+
+      const config = Config.Service.of({
+        entries: () =>
+          Effect.succeed([
+            new Config.Document({
+              type: "document",
+              info: decode({ agents: { build: { description: "Configured by a pre-rename config" } } }),
+            }),
+          ]),
+      })
+
+      yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provideService(Config.Service, config),
+      )
+
+      expect((yield* agents.get(work))?.description).toBe("Configured by a pre-rename config")
+      expect(yield* agents.get(AgentV2.ID.make("build"))).toMatchObject({ id: work })
+    }),
+  )
+
+  it.effect("keeps a user-defined `build` agent separate from `work`", () =>
+    Effect.gen(function* () {
+      const agents = yield* AgentV2.Service
+      const work = AgentV2.ID.make("work")
+      const build = AgentV2.ID.make("build")
+      yield* agents.transform((editor) => {
+        editor.update(work, () => {})
+        editor.update(build, () => {})
+      })
+
+      const config = Config.Service.of({
+        entries: () =>
+          Effect.succeed([
+            new Config.Document({
+              type: "document",
+              info: decode({ agents: { build: { description: "My own build agent" } } }),
+            }),
+          ]),
+      })
+
+      yield* ConfigAgentPlugin.Plugin.effect(host({ agent: agentHost(agents) })).pipe(
+        Effect.provideService(Config.Service, config),
+      )
+
+      expect((yield* agents.get(build))?.description).toBe("My own build agent")
+      expect((yield* agents.get(work))?.description).toBeUndefined()
     }),
   )
 
@@ -303,8 +357,8 @@ Use native v2 fields.`,
 function loadHomePermissions(home: string) {
   return Effect.gen(function* () {
     const agents = yield* AgentV2.Service
-    const build = AgentV2.ID.make("build")
-    yield* agents.transform((editor) => editor.update(build, () => {}))
+    const work = AgentV2.ID.make("work")
+    yield* agents.transform((editor) => editor.update(work, () => {}))
     const config = Config.Service.of({
       entries: () =>
         Effect.succeed([
@@ -323,7 +377,7 @@ function loadHomePermissions(home: string) {
                   },
                 },
                 agent: {
-                  build: {
+                  work: {
                     permission: {
                       external_directory: {
                         "$HOME/cache/**": "deny",
@@ -342,8 +396,8 @@ function loadHomePermissions(home: string) {
       Effect.provideService(Global.Service, Global.Service.of({ ...Global.make(), home })),
     )
 
-    const agent = yield* agents.get(build)
-    if (!agent) throw new Error("expected configured build agent")
+    const agent = yield* agents.get(work)
+    if (!agent) throw new Error("expected configured work agent")
     return agent.permissions
   })
 }
