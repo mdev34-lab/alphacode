@@ -579,6 +579,100 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+it.instance(
+  "review loop targets the default primary agent regardless of its name",
+  () =>
+    Effect.gen(function* () {
+      // Simulate the default agent being renamed away from "build" (e.g. build -> work):
+      // the review loop must follow the default primary agent, not the legacy name.
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        default_agent: "work",
+        agent: {
+          work: {
+            name: "work",
+            mode: "all",
+            description: "The default agent",
+          },
+        },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        agent: "work",
+        model: { providerID: ref.providerID, id: ref.modelID },
+      })
+      yield* llm.hang
+      const session = yield* Session.Service
+      const msg = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: msg.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "hello",
+      })
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(1), "timed out waiting for the model request", "10 seconds")
+
+      const hits = yield* llm.hits
+      const body = JSON.stringify(hits[0]?.body)
+      expect(body).toContain("Mandatory Review Loop")
+      yield* Fiber.interrupt(fiber)
+    }),
+  15_000,
+)
+
+it.instance(
+  "review loop is not injected for a non-default primary agent",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        agent: "plan",
+        model: { providerID: ref.providerID, id: ref.modelID },
+      })
+      yield* llm.hang
+      const session = yield* Session.Service
+      const msg = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "plan",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: msg.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "hello",
+      })
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(1), "timed out waiting for the model request", "10 seconds")
+
+      const hits = yield* llm.hits
+      const body = JSON.stringify(hits[0]?.body)
+      expect(body).not.toContain("Mandatory Review Loop")
+      yield* Fiber.interrupt(fiber)
+    }),
+  15_000,
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>

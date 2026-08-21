@@ -52,6 +52,7 @@ it.instance("returns default native agents when no config", () =>
     expect(names).toContain("plan")
     expect(names).toContain("general")
     expect(names).toContain("explore")
+    expect(names).toContain("review")
     expect(names).toContain("compaction")
     expect(names).toContain("title")
     expect(names).toContain("summary")
@@ -130,6 +131,30 @@ it.instance("explore agent asks for external directories and allows whitelisted 
     expect(
       Permission.evaluate("external_directory", path.join(Global.Path.tmp, "agent-work"), explore!.permission).action,
     ).toBe("allow")
+  }),
+)
+
+it.instance("review agent is a read-only code reviewer subagent", () =>
+  Effect.gen(function* () {
+    const review = yield* load((svc) => svc.get("review"))
+    expect(review).toBeDefined()
+    expect(review?.mode).toBe("subagent")
+    expect(review?.native).toBe(true)
+    expect(review?.prompt).toContain("read-only")
+    // Read-only by construction: no mutation, no shell, no delegation, no user interaction
+    expect(evalPerm(review, "edit")).toBe("deny")
+    expect(evalPerm(review, "write")).toBe("deny")
+    expect(evalPerm(review, "apply_patch")).toBe("deny")
+    expect(evalPerm(review, "bash")).toBe("deny")
+    expect(evalPerm(review, "task")).toBe("deny")
+    expect(evalPerm(review, "todowrite")).toBe("deny")
+    expect(evalPerm(review, "question")).toBe("deny")
+    // Can inspect code and files
+    expect(evalPerm(review, "read")).toBe("allow")
+    expect(evalPerm(review, "grep")).toBe("allow")
+    expect(evalPerm(review, "glob")).toBe("allow")
+    expect(evalPerm(review, "list")).toBe("allow")
+    expect(evalPerm(review, "webfetch")).toBe("allow")
   }),
 )
 
