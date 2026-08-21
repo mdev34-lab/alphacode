@@ -507,7 +507,7 @@ export function fromV1(v1: Message.Info): MessageWithParts {
       sessionID: v1.metadata.sessionID,
       role: "assistant",
       parentID: "",
-      agent: "build",
+      agent: "work",
       time: {
         created: v1.metadata.time.created,
         completed: v1.metadata.time.completed,
@@ -526,7 +526,7 @@ export function fromV1(v1: Message.Info): MessageWithParts {
       },
       modelID: v1.metadata.assistant!.modelID,
       providerID: v1.metadata.assistant!.providerID,
-      mode: "build",
+      mode: "work",
       error: v1.metadata.error,
       parts: v1.parts.flatMap((part, index): MessageV2.Part[] => {
         const base = {

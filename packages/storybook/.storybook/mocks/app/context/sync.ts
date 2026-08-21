@@ -10,7 +10,7 @@ const [data, setData] = createStore({
   } as Record<string, Array<{ id: string; role: string }>>,
   session_status: {} as Record<string, { type: "idle" | "busy" }>,
   session_working: () => false,
-  agent: [{ name: "build", mode: "task", hidden: false }],
+  agent: [{ name: "work", mode: "task", hidden: false }],
   command: [{ name: "fix", description: "Run fix command", source: "project" }],
   reference: [],
   mcp_resource: {},

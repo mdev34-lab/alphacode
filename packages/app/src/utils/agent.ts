@@ -1,8 +1,10 @@
 const defaults: Record<string, string> = {
   ask: "var(--icon-agent-ask-base)",
-  work: "#FFFFFF",
+  work: "var(--icon-agent-work-base)",
   docs: "var(--icon-agent-docs-base)",
   plan: "var(--icon-agent-plan-base)",
+  // legacy id of `work`, still present in older recorded messages
+  build: "var(--icon-agent-work-base)",
 }
 
 const palette = [

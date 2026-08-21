@@ -67,7 +67,7 @@ describe("transcript", () => {
       id: "msg_123",
       sessionID: "ses_123",
       role: "assistant",
-      agent: "build",
+      agent: "work",
       modelID: "claude-sonnet-4-20250514",
       providerID: "anthropic",
       mode: "",
@@ -262,7 +262,7 @@ describe("transcript", () => {
         id: "msg_123",
         sessionID: "ses_123",
         role: "user",
-        agent: "build",
+        agent: "work",
         model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
         time: { created: 1000000 },
       }
@@ -277,7 +277,7 @@ describe("transcript", () => {
         id: "msg_123",
         sessionID: "ses_123",
         role: "assistant",
-        agent: "build",
+        agent: "work",
         modelID: "claude-sonnet-4-20250514",
         providerID: "anthropic",
         mode: "",
@@ -307,7 +307,7 @@ describe("transcript", () => {
             id: "msg_1",
             sessionID: "ses_abc123",
             role: "user" as const,
-            agent: "build",
+            agent: "work",
             model: { providerID: "anthropic", modelID: "claude-sonnet-4-20250514" },
             time: { created: 1000000000000 },
           },
@@ -318,7 +318,7 @@ describe("transcript", () => {
             id: "msg_2",
             sessionID: "ses_abc123",
             role: "assistant" as const,
-            agent: "build",
+            agent: "work",
             modelID: "claude-sonnet-4-20250514",
             providerID: "anthropic",
             mode: "",
@@ -355,7 +355,7 @@ describe("transcript", () => {
           id,
           sessionID: "ses_abc123",
           role: "user" as const,
-          agent: "build",
+          agent: "work",
           model: { providerID: "anthropic", modelID: "claude" },
           time: { created },
         },
@@ -389,7 +389,7 @@ describe("transcript", () => {
             id: "msg_1",
             sessionID: "ses_abc123",
             role: "assistant" as const,
-            agent: "build",
+            agent: "work",
             modelID: "claude-sonnet-4-20250514",
             providerID: "anthropic",
             mode: "",
@@ -424,7 +424,7 @@ describe("transcript", () => {
             id: "msg_1",
             sessionID: "ses_abc123",
             role: "assistant" as const,
-            agent: "build",
+            agent: "work",
             modelID: "claude-sonnet-4-20250514",
             providerID: "anthropic",
             mode: "",
@@ -442,7 +442,7 @@ describe("transcript", () => {
       const result = formatTranscript(session, messages, options)
 
       expect(result).toContain("## Assistant\n\n")
-      expect(result).not.toContain("Build")
+      expect(result).not.toContain("Work")
       expect(result).not.toContain("claude-sonnet-4-20250514")
     })
   })

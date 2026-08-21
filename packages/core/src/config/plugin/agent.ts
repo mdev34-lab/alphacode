@@ -79,7 +79,7 @@ export const Plugin = define({
 
         for (const document of documents) {
           for (const [id, item] of Object.entries(document.info.agents ?? {})) {
-            const agentID = AgentV2.ID.make(id)
+            const agentID = configuredID(draft, id)
             if (item.disabled) {
               draft.remove(agentID)
               continue
@@ -115,6 +115,22 @@ export const Plugin = define({
     )
   }),
 })
+
+/**
+ * Resolves the agent an `agents: { <id>: ... }` block configures.
+ *
+ * A legacy id (`build`) is redirected onto its canonical agent (`work`) so
+ * existing configs keep configuring the same agent after the rename, unless an
+ * agent literally answers to the legacy id.
+ */
+function configuredID(draft: AgentV2.Draft, id: string) {
+  const direct = AgentV2.ID.make(id)
+  if (draft.get(direct) !== undefined) return direct
+  const canonical = AgentV2.canonicalID(id)
+  if (canonical === id) return direct
+  const aliased = AgentV2.ID.make(canonical)
+  return draft.get(aliased) !== undefined ? aliased : direct
+}
 
 function expandPermissions(rules: PermissionV2.Ruleset, home: string): PermissionV2.Ruleset {
   // Expand only resources tools resolve as filesystem paths. Bash resources are raw shell text:

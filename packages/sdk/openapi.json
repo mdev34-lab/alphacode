@@ -21286,6 +21286,9 @@
           "mode": {
             "type": "object",
             "properties": {
+              "work": {
+                "$ref": "#/components/schemas/AgentConfig"
+              },
               "build": {
                 "$ref": "#/components/schemas/AgentConfig"
               },
@@ -21301,6 +21304,9 @@
             "type": "object",
             "properties": {
               "plan": {
+                "$ref": "#/components/schemas/AgentConfig"
+              },
+              "work": {
                 "$ref": "#/components/schemas/AgentConfig"
               },
               "build": {

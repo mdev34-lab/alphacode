@@ -380,13 +380,17 @@ function agentTitle(i18n: UiI18n, type?: string) {
 
 const agentTones: Record<string, string> = {
   ask: "var(--icon-agent-ask-base)",
-  work: "#FFFFFF",
+  work: "var(--icon-agent-work-base)",
   docs: "var(--icon-agent-docs-base)",
   plan: "var(--icon-agent-plan-base)",
+  // legacy id of `work`, still present in older recorded messages
+  build: "var(--icon-agent-work-base)",
 }
 
 const v2AgentTones: Record<string, string> = {
-  work: "#FFFFFF",
+  work: "var(--v2-agent-work-solid)",
+  // legacy id of `work`, still present in older recorded messages
+  build: "var(--v2-agent-work-solid)",
   explore: "var(--v2-agent-explore-solid)",
   plan: "var(--v2-agent-plan-solid)",
   review: "var(--v2-agent-review-solid)",

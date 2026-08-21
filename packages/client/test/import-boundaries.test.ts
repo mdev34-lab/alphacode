@@ -39,7 +39,7 @@ async function bundleInputs(specifier: string, target: "browser" | "bun") {
     const child = Bun.spawn(
       [
         process.execPath,
-        "build",
+        "work",
         entrypoint,
         `--target=${target}`,
         "--format=esm",

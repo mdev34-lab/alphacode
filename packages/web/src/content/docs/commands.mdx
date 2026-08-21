@@ -22,7 +22,7 @@ Create `.opencode/commands/test.md`:
 ```md title=".opencode/commands/test.md"
 ---
 description: Run tests with coverage
-agent: build
+agent: work
 model: anthropic/claude-3-5-sonnet-20241022
 ---
 
@@ -60,7 +60,7 @@ Use the `command` option in your OpenCode [config](/docs/config):
       "template": "Run the full test suite with coverage report and show any failures.\nFocus on the failing tests and suggest fixes.",
       // This is shown as the description in the TUI
       "description": "Run tests with coverage",
-      "agent": "build",
+      "agent": "work",
       "model": "anthropic/claude-3-5-sonnet-20241022"
     }
   }
@@ -85,7 +85,7 @@ You can also define commands using markdown files. Place them in:
 ```markdown title="~/.config/opencode/commands/test.md"
 ---
 description: Run tests with coverage
-agent: build
+agent: work
 model: anthropic/claude-3-5-sonnet-20241022
 ---
 

@@ -111,7 +111,10 @@ describe("DatabaseMigration", () => {
     ).rejects.toThrow("Database is not empty and has no session table")
   })
 
-  test("backfills existing Context Epoch rows to the build agent", async () => {
+  // The historical migration must keep writing the value it originally wrote.
+  // The builtin agent is now `work`, but rewriting this literal would silently
+  // skip databases that already applied the migration.
+  test("backfills existing Context Epoch rows to the historical build agent", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* makeDb

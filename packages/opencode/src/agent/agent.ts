@@ -31,6 +31,7 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { Agent as AgentSchema } from "@opencode-ai/schema/agent"
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -152,7 +153,9 @@ const layer = Layer.effect(
             ),
             mode: "primary",
             native: true,
-            color: "#FFFFFF",
+            // Rendered by clients without design tokens (TUI); token-based
+            // surfaces resolve `--icon-agent-work-base` to the same value.
+            color: AgentSchema.DEFAULT_COLOR,
           },
           plan: {
             name: "plan",
@@ -265,7 +268,11 @@ const layer = Layer.effect(
           },
         }
 
-        for (const [key, value] of Object.entries(cfg.agent ?? {})) {
+        for (const [rawKey, value] of Object.entries(cfg.agent ?? {})) {
+          // `agent: { build: ... }` from an existing config still configures the
+          // renamed `work` agent, unless the user really defined their own
+          // agent under the legacy name.
+          const key = agents[rawKey] ? rawKey : AgentSchema.canonicalID(rawKey)
           if (value.disable) {
             delete agents[key]
             continue
@@ -311,25 +318,31 @@ const layer = Layer.effect(
         }
 
         const get = Effect.fnUntraced(function* (agent: string) {
-          return agents[agent]
+          // Unknown agents already resolved to `undefined` here; the signature
+          // keeps lying about it so callers stay unchanged.
+          return AgentSchema.withLegacyID(agent, (name) => agents[name]) as Info
         })
 
         const list = Effect.fnUntraced(function* () {
           const cfg = yield* config.get()
+          const preferred = cfg.default_agent
+            ? agents[cfg.default_agent]
+              ? cfg.default_agent
+              : AgentSchema.canonicalID(cfg.default_agent)
+            : (AgentSchema.DEFAULT_ID as string)
           return pipe(
             agents,
             values(),
-            sortBy(
-              [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "work"), "desc"],
-              [(x) => x.name, "asc"],
-            ),
+            sortBy([(x) => x.name === preferred, "desc"], [(x) => x.name, "asc"]),
           )
         })
 
         const defaultInfo = Effect.fnUntraced(function* () {
           const c = yield* config.get()
           if (c.default_agent) {
-            const agent = agents[c.default_agent]
+            // Accept legacy ids (e.g. `default_agent: "build"`) so existing
+            // configs keep working after the rename.
+            const agent = AgentSchema.withLegacyID(c.default_agent, (name) => agents[name])
             if (!agent) throw new Error(`default agent "${c.default_agent}" not found`)
             if (agent.mode === "subagent") throw new Error(`default agent "${c.default_agent}" is a subagent`)
             if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
