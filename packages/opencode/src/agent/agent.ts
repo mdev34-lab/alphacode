@@ -270,8 +270,10 @@ const layer = Layer.effect(
 
         for (const [rawKey, value] of Object.entries(cfg.agent ?? {})) {
           // `agent: { build: ... }` from an existing config still configures the
-          // renamed `work` agent, unless the user really defined their own
-          // agent under the legacy name.
+          // renamed `work` agent. Unlike lookups (which prefer a real `build`
+          // agent when one already exists), this config key is always treated
+          // as the legacy alias — an independent agent literally named `build`
+          // can only come from plugins or the API, not from this key.
           const key = agents[rawKey] ? rawKey : AgentSchema.canonicalID(rawKey)
           if (value.disable) {
             delete agents[key]
