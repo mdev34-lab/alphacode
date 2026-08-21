@@ -123,7 +123,7 @@ export const Plugin = define({
  * existing configs keep configuring the same agent after the rename, unless an
  * agent literally answers to the legacy id.
  */
-function configuredID(draft: AgentV2.Draft, id: string) {
+function configuredID(draft: { get: (id: string) => unknown }, id: string) {
   const direct = AgentV2.ID.make(id)
   if (draft.get(direct) !== undefined) return direct
   const canonical = AgentV2.canonicalID(id)
