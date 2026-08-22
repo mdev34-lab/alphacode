@@ -91,7 +91,7 @@ const layer = Layer.effectDiscard(
                         : output.attachments
                             .map(
                               (item) =>
-                                `- managed_id=${item.managed_id} ${item.name ?? ""} (${item.mime}, ${item.unavailable ? "unavailable" : item.path})`,
+                                 `- managed_id=${item.managed_id} ${item.name ?? ""} (${item.mime}, ${item.unavailable ? "unavailable" : "available"})`,
                             )
                             .join("\n"),
                   },

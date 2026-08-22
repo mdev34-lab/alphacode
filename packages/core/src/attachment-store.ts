@@ -64,7 +64,7 @@ const finalMime = (uri: string, declared: string, name?: string) => {
   const parsed = parseDataUri(uri)
   if (parsed) return parsed.mime
   if (declared && declared !== "application/octet-stream") return declared.toLowerCase()
-  const target = URL.canParse(uri) ? fileURLToPath(uri) : (name ?? uri)
+  const target = uri.startsWith("file://") ? fileURLToPath(uri) : (name ?? uri)
   return FSUtil.mimeType(target)
 }
 
@@ -249,7 +249,7 @@ const layer = Layer.effect(
       const entries = yield* fs.readDirectoryEntries(path.join(directory, input.sessionID)).pipe(
         Effect.catch(() => Effect.succeed([])),
       )
-      const match = entries.find((entry) => entry.name.startsWith(`${input.id}.`))
+      const match = entries.find((entry) => entry.name === `${input.id}${path.extname(entry.name)}`)
       if (!match) return yield* Effect.fail(new Error(`Attachment ${input.id} not found in managed store`))
       const bytes = yield* fs
         .readFile(path.join(directory, input.sessionID, match.name))
