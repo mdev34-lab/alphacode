@@ -56,6 +56,53 @@ export interface SearchOptions {
   includeLoaded?: boolean
 }
 
+/**
+ * Collapse tool ids into the lines of the `<available_tools>` overview block.
+ *
+ * Tools are grouped by their first underscore-separated segment. A family of three or more
+ * collapses to its longest common segment prefix plus a wildcard and a member count
+ * (`playwright_* (12)`); smaller groups are listed by name on a single line, sorted
+ * alphabetically. Collapsed families come first, ordered by count descending (label
+ * ascending for ties). Names only — descriptions stay the job of tool_search.
+ */
+export function collapseToolNames(ids: string[]): string[] {
+  if (ids.length === 0) return []
+  const families = new Map<string, string[]>()
+  for (const id of ids) {
+    const key = id.split("_")[0] ?? id
+    const members = families.get(key) ?? []
+    members.push(id)
+    families.set(key, members)
+  }
+
+  const collapsed: { label: string; count: number }[] = []
+  const nominal: string[] = []
+  for (const members of families.values()) {
+    members.sort()
+    if (members.length >= 3) collapsed.push({ label: `${commonSegmentPrefix(members)}_*`, count: members.length })
+    else nominal.push(...members)
+  }
+
+  collapsed.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+  const lines = collapsed.map(({ label, count }) => `${label} (${count})`)
+  if (nominal.length > 0) lines.push(nominal.sort().join(", "))
+  return lines
+}
+
+/** Longest prefix of `ids` at underscore-segment granularity, joined back with `_`. */
+function commonSegmentPrefix(ids: string[]): string {
+  const segments = ids.map((id) => id.split("_"))
+  const first = segments[0]
+  let shared = 0
+  outer: for (let i = 0; i < first.length; i++) {
+    for (const parts of segments) {
+      if (parts[i] !== first[i]) break outer
+    }
+    shared = i + 1
+  }
+  return first.slice(0, shared).join("_")
+}
+
 /** Longest regex we are willing to compile from model input */
 export const MAX_PATTERN_LENGTH = 200
 
@@ -193,6 +240,13 @@ export interface Interface {
   readonly discover: (sessionID: string, ids: string[]) => Effect.Effect<void>
   readonly discovered: (sessionID: string) => Effect.Effect<ReadonlySet<string>>
   readonly forget: (sessionID: string) => Effect.Effect<void>
+  /**
+   * Names of the tools hidden from a session right now (deferred and not yet discovered),
+   * rendered as a `<available_tools>` block with families collapsed by prefix. The block
+   * tells the model what exists so it can decide to look one up with tool_search; it is
+   * `undefined` when nothing is hidden.
+   */
+  readonly overview: (sessionID: string) => Effect.Effect<string | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolCatalog") {}
@@ -300,6 +354,16 @@ const layer = Layer.effect(
       s.discovered.delete(sessionID)
     })
 
+    const overview: Interface["overview"] = Effect.fn("ToolCatalog.overview")(function* (sessionID) {
+      const s = yield* InstanceState.get(state)
+      const held = s.discovered.get(sessionID) ?? EMPTY
+      const hidden = s.entries.filter((entry) => entry.deferred && !held.has(entry.id))
+      if (hidden.length === 0) return undefined
+      return ["<available_tools>", ...collapseToolNames(hidden.map((entry) => entry.id)), "</available_tools>"].join(
+        "\n",
+      )
+    })
+
     // Discovery is per session, so it has to die with the session: otherwise a long-running
     // server accumulates one Set per session that ever ran a search.
     const events = yield* EventV2Bridge.Service
@@ -312,7 +376,7 @@ const layer = Layer.effect(
       )
     })
 
-    return Service.of({ sync, list, get, search, searchRegex, discover, discovered, forget })
+    return Service.of({ sync, list, get, search, searchRegex, discover, discovered, forget, overview })
   }),
 )
 

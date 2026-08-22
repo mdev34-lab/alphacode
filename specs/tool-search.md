@@ -122,8 +122,29 @@ that is not a deferred catalog entry. A search can therefore never grant
 access to something the deferral policy did not hide in the first place, and a loaded tool never
 consumes one of the `limit` result slots.
 
+## Tool names overview
+
+The model cannot search for what it does not know exists, and a deferred tool called by name used
+to bounce off the generic `invalid` repair ("arguments provided are invalid") with no hint that
+the tool is real. Two additions close that gap:
+
+- **`ToolCatalog.overview(sessionID)`** renders the names of everything hidden from a session
+  (deferred and not yet discovered) as an `<available_tools>` block, injected into the system
+  prompt on every step alongside the skills/MCP blocks. Families of three or more collapse to
+  their longest common underscore-segment prefix plus a member count (`playwright_* (12)`),
+  smaller groups are listed by name on one line, and the block is names only — descriptions stay
+  the job of `tool_search`. It is `undefined` when nothing is hidden, which is exactly when
+  `tool_search.enabled` is `false` (nothing is deferred then), so no new config is needed.
+- **Direct-call repair** in `experimental_repairToolCall` (`session/llm.ts`): when the model calls
+  a tool by its exact name and it is not loaded but exists in the catalog as deferred, the call is
+  repaired by discovering it for the session and routing to `invalid` with
+  "`<name> exists and has been loaded — call it again`". The tool is in the very next request, so
+  the dead end becomes a one-retry recovery. Any catalog failure falls through to the generic
+  repair, so a broken lookup can never make a call worse.
+
 ## Verification
 
 - `bun test test/search test/tool/catalog.test.ts test/tool/catalog-retrieval.test.ts test/tool/registry.test.ts`
+- `bun test test/session/prompt.test.ts`
 - `bun turbo typecheck --filter=opencode`
 - `bunx oxlint`

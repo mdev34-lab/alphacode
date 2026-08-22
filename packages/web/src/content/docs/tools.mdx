@@ -358,6 +358,12 @@ Both tools accept an optional `category` (`all`, `builtin` or `mcp`) and return 
 `tool_search.limit` results. Tools returned by a search become available on the model's next step
 and stay available for the rest of the session.
 
+The system prompt lists the names of everything deferred in an `<available_tools>` block so the
+model knows what exists without paying for descriptions up front. Families of three or more
+collapse to a prefix (`playwright_* (12)`); smaller groups are listed by name. If the model calls
+a deferred tool directly by its exact name, the call is repaired: the tool is discovered for the
+session and the model is told it has been loaded, so the same call succeeds on the next step.
+
 Both searches read the same corpus — tool name, the first 2000 characters of the description, and
 parameter names — so `tool_search` and `tool_search_regex` never disagree about whether a tool
 matches.
