@@ -1031,6 +1031,107 @@ it.instance("keeps every tool loaded when tool search is disabled", () =>
 )
 
 withMcpTools.instance(
+  "system prompt lists hidden tool names in an available_tools block",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool overview",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "what is in my notes?" }],
+      })
+      yield* llm.text("done")
+
+      yield* prompt.loop({ sessionID: session.id })
+
+      const body = JSON.stringify((yield* llm.hits)[0]?.body)
+      expect(body).toContain("<available_tools>")
+      expect(body).toContain("notes_search_notes")
+      expect(body).toContain("</available_tools>")
+    }),
+  20_000,
+)
+
+it.instance(
+  "omits the available_tools block when tool search is disabled",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), tool_search: { enabled: false } }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Tool overview off",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "download a webpage" }],
+      })
+      yield* llm.text("done")
+
+      yield* prompt.loop({ sessionID: session.id })
+
+      const body = JSON.stringify((yield* llm.hits)[0]?.body)
+      expect(body).not.toContain("<available_tools>")
+    }),
+  20_000,
+)
+
+withMcpTools.instance(
+  "calling a deferred tool by name discovers it and reports it is now loaded",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Deferred by name",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "list my notes" }],
+      })
+      // The model calls the deferred MCP tool directly, by exact name, without tool_search.
+      yield* llm.tool("notes_search_notes", { query: "milk" })
+      yield* llm.text("done")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      const hits = yield* llm.hits
+
+      // the repair routed to `invalid` with a message that the tool now exists
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const call = messages
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "invalid")
+      expect(call).toBeDefined()
+      if (call?.type === "tool") {
+        expect(call.state.status).toBe("completed")
+        if (call.state.status === "completed") {
+          expect(call.state.output).toContain("notes_search_notes exists and has been loaded")
+        }
+      }
+
+      // the repair discovered the tool, so the next request carries it
+      expect(toolNames(hits[0]?.body)).not.toContain("notes_search_notes")
+      expect(toolNames(hits[1]?.body)).toContain("notes_search_notes")
+      expect(result.info.role).toBe("assistant")
+    }),
+  20_000,
+)
+
+withMcpTools.instance(
   "an MCP tool discovered by tool_search is callable on the next step",
   () =>
     Effect.gen(function* () {
@@ -1944,9 +2045,7 @@ it.instance(
       })
       yield* llm.text("after-shell")
 
-      const sh = yield* prompt
-        .shell({ sessionID: chat.id, agent: "work", command: "sleep 0.2" })
-        .pipe(Effect.forkChild)
+      const sh = yield* prompt.shell({ sessionID: chat.id, agent: "work", command: "sleep 0.2" }).pipe(Effect.forkChild)
       yield* waitForBusy(chat.id)
 
       const loop = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
@@ -1981,9 +2080,7 @@ it.instance(
       })
       yield* llm.text("done")
 
-      const sh = yield* prompt
-        .shell({ sessionID: chat.id, agent: "work", command: "sleep 0.2" })
-        .pipe(Effect.forkChild)
+      const sh = yield* prompt.shell({ sessionID: chat.id, agent: "work", command: "sleep 0.2" }).pipe(Effect.forkChild)
       yield* waitForBusy(chat.id)
 
       const a = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
@@ -2214,9 +2311,7 @@ unixNoLLMServer(
       Effect.gen(function* () {
         const { prompt, chat } = yield* boot()
 
-        const a = yield* prompt
-          .shell({ sessionID: chat.id, agent: "work", command: "sleep 30" })
-          .pipe(Effect.forkChild)
+        const a = yield* prompt.shell({ sessionID: chat.id, agent: "work", command: "sleep 30" }).pipe(Effect.forkChild)
         yield* waitForBusy(chat.id)
 
         const exit = yield* prompt.shell({ sessionID: chat.id, agent: "work", command: "echo hi" }).pipe(Effect.exit)

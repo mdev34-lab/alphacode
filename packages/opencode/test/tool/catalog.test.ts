@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolCatalog } from "@/tool/catalog"
@@ -503,6 +503,148 @@ describe("ToolCatalog service", () => {
       expect(yield* catalog.get("github_list_issues")).toBeUndefined()
       expect((yield* catalog.search("notion")).map((r) => r.id)).toEqual(["notion_page"])
       expect(yield* catalog.list()).toHaveLength(1)
+    }),
+  )
+})
+
+describe("ToolCatalog.collapseToolNames", () => {
+  test("returns no lines for an empty list", () => {
+    expect(ToolCatalog.collapseToolNames([])).toEqual([])
+  })
+
+  test("lists a single tool by name", () => {
+    expect(ToolCatalog.collapseToolNames(["read"])).toEqual(["read"])
+  })
+
+  test("lists tools without an underscore nominally", () => {
+    expect(ToolCatalog.collapseToolNames(["read", "write", "edit"])).toEqual(["edit, read, write"])
+  })
+
+  test("collapses a family of three or more into a prefix wildcard", () => {
+    expect(ToolCatalog.collapseToolNames(["playwright_click", "playwright_fill", "playwright_screenshot"])).toEqual([
+      "playwright_* (3)",
+    ])
+  })
+
+  test("collapses each family with its member count", () => {
+    const playwright = Array.from({ length: 12 }, (_, i) => `playwright_${i}`)
+    const github = Array.from({ length: 7 }, (_, i) => `github_${i}`)
+    expect(ToolCatalog.collapseToolNames([...playwright, ...github])).toEqual(["playwright_* (12)", "github_* (7)"])
+  })
+
+  test("uses the longest common segment prefix, not just the first segment", () => {
+    expect(ToolCatalog.collapseToolNames(["github_create_issue", "github_create_pr", "github_create_branch"])).toEqual([
+      "github_create_* (3)",
+    ])
+  })
+
+  test("falls back to the family prefix when siblings diverge at the second segment", () => {
+    expect(ToolCatalog.collapseToolNames(["github_pr_get", "github_actions_run", "github_create_issue"])).toEqual([
+      "github_* (3)",
+    ])
+  })
+
+  test("lists pairs nominally even when they share a prefix", () => {
+    expect(ToolCatalog.collapseToolNames(["sentry_create_issue", "sentry_list_projects"])).toEqual([
+      "sentry_create_issue, sentry_list_projects",
+    ])
+    expect(ToolCatalog.collapseToolNames(["github_create_issue", "github_create_pr"])).toEqual([
+      "github_create_issue, github_create_pr",
+    ])
+  })
+
+  test("orders collapsed families by count descending, then label ascending", () => {
+    expect(ToolCatalog.collapseToolNames(["b_one", "b_two", "b_three", "a_one", "a_two", "a_three"])).toEqual([
+      "a_* (3)",
+      "b_* (3)",
+    ])
+  })
+
+  test("puts collapsed families before the nominal line", () => {
+    expect(
+      ToolCatalog.collapseToolNames(["github_pr_get", "github_actions_run", "github_create_issue", "z_solo", "read"]),
+    ).toEqual(["github_* (3)", "read, z_solo"])
+  })
+
+  test("renders the user-facing example exactly", () => {
+    const playwright = Array.from({ length: 12 }, (_, i) => `playwright_${i}`)
+    const github = [
+      "github_create_issue",
+      "github_list_projects",
+      "github_get_issue",
+      "github_actions_run",
+      "github_pr_get",
+      "github_pr_merge",
+      "github_repo",
+    ]
+    expect(
+      ToolCatalog.collapseToolNames([...playwright, ...github, "sentry_create_issue", "sentry_list_projects"]),
+    ).toEqual(["playwright_* (12)", "github_* (7)", "sentry_create_issue, sentry_list_projects"])
+  })
+})
+
+describe("ToolCatalog.overview", () => {
+  const family = (prefix: string, count: number) =>
+    Array.from({ length: count }, (_, i) => entry({ id: `${prefix}_${i}`, source: "mcp", server: prefix }))
+
+  it.instance("returns nothing before any sync", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      expect(yield* catalog.overview(SessionID.make("ses_overview"))).toBeUndefined()
+    }),
+  )
+
+  it.instance("renders only deferred tools the session has not discovered", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync([
+        entry({ id: "read", deferred: false }),
+        entry({ id: "webfetch" }),
+        ...family("github", 3),
+        ...family("playwright", 3),
+      ])
+
+      expect(yield* catalog.overview(SessionID.make("ses_overview"))).toBe(
+        ["<available_tools>", "github_* (3)", "playwright_* (3)", "webfetch", "</available_tools>"].join("\n"),
+      )
+    }),
+  )
+
+  it.instance("drops discovered tools and re-collapses the remaining family", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync(family("github", 4))
+      const session = SessionID.make("ses_overview")
+
+      expect(yield* catalog.overview(session)).toContain("github_* (4)")
+
+      yield* catalog.discover(session, ["github_0", "github_1"])
+      expect(yield* catalog.overview(session)).toBe(
+        ["<available_tools>", "github_2, github_3", "</available_tools>"].join("\n"),
+      )
+
+      yield* catalog.discover(session, ["github_2", "github_3"])
+      expect(yield* catalog.overview(session)).toBeUndefined()
+    }),
+  )
+
+  it.instance("never lists loaded tools", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync([entry({ id: "read", deferred: false }), entry({ id: "webfetch" })])
+
+      const block = yield* catalog.overview(SessionID.make("ses_overview"))
+      expect(block).not.toContain("read")
+      expect(block).toContain("webfetch")
+    }),
+  )
+
+  it.instance("returns nothing when every entry is loaded", () =>
+    Effect.gen(function* () {
+      const catalog = yield* ToolCatalog.Service
+      yield* catalog.sync([entry({ id: "read", deferred: false }), entry({ id: "glob", deferred: false })])
+
+      expect(yield* catalog.overview(SessionID.make("ses_overview"))).toBeUndefined()
     }),
   )
 })

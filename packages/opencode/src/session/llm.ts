@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { ToolCatalog } from "@/tool/catalog"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -70,6 +71,7 @@ const live: Layer.Layer<
   | EventV2Bridge.Service
   | LLMClientService
   | RuntimeFlags.Service
+  | ToolCatalog.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -81,6 +83,7 @@ const live: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const llmClient = yield* LLMClient.Service
     const flags = yield* RuntimeFlags.Service
+    const catalog = yield* ToolCatalog.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       yield* Effect.logInfo("stream", {
@@ -301,6 +304,25 @@ const live: Layer.Layer<
                 toolName: lower,
               }
             }
+            // A deferred tool called by its exact name: the tool exists but was never loaded,
+            // so the model has no way to know it is available. Discover it for this session
+            // and tell the model to retry — it is in the very next request. Any catalog
+            // failure falls through to the generic repair, so this can never make a call
+            // worse than it was.
+            if (!prepared.tools[failed.toolCall.toolName]) {
+              const entry = await bridge.promise(catalog.get(failed.toolCall.toolName)).catch(() => undefined)
+              if (entry?.deferred) {
+                await bridge.promise(catalog.discover(input.sessionID, [entry.id])).catch(() => undefined)
+                return {
+                  ...failed.toolCall,
+                  input: JSON.stringify({
+                    tool: failed.toolCall.toolName,
+                    error: `${entry.id} exists and has been loaded — call it again`,
+                  }),
+                  toolName: "invalid",
+                }
+              }
+            }
             return {
               ...failed.toolCall,
               input: JSON.stringify({
@@ -398,6 +420,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     llmClient,
     RuntimeFlags.node,
+    ToolCatalog.node,
   ],
 })
 

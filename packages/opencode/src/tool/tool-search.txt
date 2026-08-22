@@ -14,4 +14,6 @@ How NOT to use it:
 - "list all the files in ../src" -> tool_search("../src")
 - "find all issues in repository xxx/yy" -> tool_search("xxx/yy")
 
+The names of every available tool are listed in the <available_tools> block of your system prompt; tool_search loads the description and parameters of the ones you need.
+
 Tools returned by a search stay available for the rest of the session, so you can call them directly on your next step.

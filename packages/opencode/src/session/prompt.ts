@@ -1259,11 +1259,12 @@ const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
+            const [skills, env, instructions, mcpInstructions, toolOverview, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
+              catalog.overview(session.id),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const isDefaultPrimary = yield* agents
@@ -1274,6 +1275,7 @@ const layer = Layer.effect(
               ...env,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
+              ...(toolOverview ? [toolOverview] : []),
               ...(skills ? [skills] : []),
               ...(isDefaultPrimary ? [PROMPT_REVIEW_LOOP] : []),
             ]
