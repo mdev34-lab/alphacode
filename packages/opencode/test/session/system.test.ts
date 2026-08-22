@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Shell } from "@opencode-ai/core/shell"
 import { Effect, Layer } from "effect"
 import os from "os"
 import type { Agent } from "../../src/agent/agent"
@@ -12,7 +11,10 @@ import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
 
-const configuredShell = process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : "/bin/sh"
+const shellFixture =
+  process.platform === "win32"
+    ? { configured: "powershell", expected: "powershell" }
+    : { configured: "/bin/bash", expected: "bash" }
 
 const skills: Skill.Info[] = [
   {
@@ -114,17 +116,17 @@ describe("session.system", () => {
   })
 
   it.instance(
-    "environment includes the OS release and configured shell on one line",
+    "environment reports an explicitly configured shell on one line",
     () =>
       Effect.gen(function* () {
         const prompt = yield* SystemPrompt.Service
         const output = (yield* prompt.environment({ providerID: "test", api: { id: "model" } } as Provider.Model))[0]
 
         expect(output.split("\n").filter((line) => line.includes("  OS:"))).toEqual([
-          `  OS: ${os.type()} ${os.release()}; Shell: ${Shell.name(Shell.acceptable(configuredShell))}`,
+          `  OS: ${os.type()} ${os.release()}; Shell: ${shellFixture.expected}`,
         ])
       }),
-    { config: { shell: configuredShell } },
+    { config: { shell: shellFixture.configured } },
   )
 
   it.effect("skills output is sorted by name and stable across calls", () =>
