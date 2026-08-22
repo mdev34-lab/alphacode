@@ -1,6 +1,9 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Shell } from "@opencode-ai/core/shell"
 import { Context, Effect, Layer } from "effect"
+import os from "os"
 
+import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
@@ -78,10 +81,12 @@ const layer = Layer.effect(
     const skill = yield* Skill.Service
     const mcp = yield* MCP.Service
     const locations = yield* LocationServiceMap.Service
+    const config = yield* Config.Service
 
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
         const ctx = yield* InstanceState.context
+        const shell = Shell.name(Shell.acceptable((yield* config.get()).shell))
         const references = yield* Effect.gen(function* () {
           return (yield* (yield* Reference.Service).list()).filter((reference) => reference.description !== undefined)
         }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))
@@ -93,7 +98,7 @@ const layer = Layer.effect(
             `  Working directory: ${ctx.directory}`,
             `  Workspace root folder: ${ctx.worktree}`,
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
-            `  Platform: ${process.platform}`,
+            `  OS: ${os.type()} ${os.release()}; Shell: ${shell}`,
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
@@ -162,7 +167,7 @@ const locationServiceMapNode = LayerNode.make({
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Skill.node, MCP.node, locationServiceMapNode],
+  deps: [Skill.node, MCP.node, Config.node, locationServiceMapNode],
 })
 
 export * as SystemPrompt from "./system"
