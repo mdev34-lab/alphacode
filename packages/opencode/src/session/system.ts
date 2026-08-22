@@ -13,6 +13,7 @@ import PROMPT_META from "./prompt/meta.txt"
 
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
+import PROMPT_STE_LITE from "./prompt/ste-lite.txt"
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
@@ -23,6 +24,21 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+
+export const STE_LITE = PROMPT_STE_LITE
+
+export function chat(input: { config?: boolean; hidden?: boolean; small?: boolean; format?: string }) {
+  if (input.config === false) return false
+  if (input.hidden === true) return false
+  if (input.small === true) return false
+  if (input.format === "json_schema") return false
+  return true
+}
+
+export function style(enabled: boolean) {
+  if (!enabled) return []
+  return [PROMPT_STE_LITE]
+}
 
 export function provider(model: Provider.Model) {
   if (model.api.id.includes("muse")) {

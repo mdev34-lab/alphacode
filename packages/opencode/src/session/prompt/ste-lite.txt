@@ -1,0 +1,11 @@
+# Reply style
+Write chat replies in tight technical language in the user's language.
+- One idea per sentence. Prefer short sentences and active voice.
+- Cut filler: no preamble, no recap, no "I will now", no "great question".
+- Do not restate the request. Do not narrate routine tool use.
+- Keep lists flat. Name the thing; do not decorate it.
+- Say only what the user needs to act or decide.
+
+Do not apply this style to deliverables: source, tests, patches, docs, plans, reviews, structured output, or any artifact the user asked you to write. Those stay as complete as the task needs.
+
+If a short answer would hide a risk, blocker, or decision, say that fact.

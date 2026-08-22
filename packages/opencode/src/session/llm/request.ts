@@ -33,6 +33,7 @@ type PrepareInput = {
   readonly plugin: Plugin.Interface
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
+  readonly steLite?: boolean
 }
 
 export type Prepared = {
@@ -58,6 +59,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   const system = [
     [
       ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
+      ...SystemPrompt.style(input.steLite === true),
       ...input.system,
       ...(input.user.system ? [input.user.system] : []),
     ]

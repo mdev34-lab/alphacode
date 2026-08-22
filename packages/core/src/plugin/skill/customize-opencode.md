@@ -143,7 +143,9 @@ Every field is optional.
 
   "tool_output": { "max_lines": 200, "max_bytes": 8192 },
 
-  "compaction": { "auto": true, "tail_turns": 15 }
+  "compaction": { "auto": true, "tail_turns": 15 },
+
+  "ste_lite": true
 }
 ```
 
@@ -157,6 +159,7 @@ Shape notes worth being explicit about:
 - `plugin` is an array of strings or `[name, options]` tuples, not an object.
 - `mcp[name].command` is an array of strings, never a single string. `type` is required.
 - `permission` is either a string action or an object keyed by tool name.
+- `ste_lite` is a boolean. Omit it or set `true` to inject the terse reply style on user-facing chat; set `false` to disable. Hidden agents, small-model helpers, and structured output never receive it.
 
 ## Skills
 

@@ -131,6 +131,10 @@ export const Info = Schema.Struct({
   instructions: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Additional instruction files or patterns to include",
   }),
+  ste_lite: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Inject STE-lite reply style into agent system prompts. Applies to chat only, not deliverables. Enabled by default; set to false to disable.",
+  }),
   layout: Schema.optional(ConfigLayoutV1.Layout).annotate({ description: "@deprecated Always uses stretch layout." }),
   permission: Schema.optional(ConfigPermissionV1.Info),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
