@@ -27,7 +27,15 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 
 export const STE_LITE = PROMPT_STE_LITE
 
-export function style(enabled = true) {
+export function chat(input: { config?: boolean; hidden?: boolean; small?: boolean; format?: string }) {
+  if (input.config === false) return false
+  if (input.hidden === true) return false
+  if (input.small === true) return false
+  if (input.format === "json_schema") return false
+  return true
+}
+
+export function style(enabled: boolean) {
   if (!enabled) return []
   return [PROMPT_STE_LITE]
 }

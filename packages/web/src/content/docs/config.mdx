@@ -764,7 +764,7 @@ You can control context compaction behavior through the `compaction` option.
 
 ### Reply style
 
-OpenCode injects a short STE-lite reply style into agent system prompts. It keeps chat terse without shrinking deliverables such as source, tests, docs, plans, or reviews.
+OpenCode injects a short STE-lite reply style into **user-facing chat** generations. Internal calls — compaction, titles, summaries, and structured output — do not receive it.
 
 Enabled by default. Set `ste_lite` to `false` to turn it off.
 

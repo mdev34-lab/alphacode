@@ -723,6 +723,38 @@ it.instance(
   15_000,
 )
 
+it.instance(
+  "loop omits STE-lite from compaction generations",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const compaction = yield* SessionCompaction.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* seed(chat.id, { finish: "stop" })
+      yield* compaction.create({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        auto: true,
+      })
+      yield* llm.hang
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(1), "timed out waiting for compaction request", "10 seconds")
+
+      const hits = yield* llm.hits
+      const body = JSON.stringify(hits[0]?.body)
+      expect(body).not.toContain("Do not apply this style to deliverables")
+      yield* Fiber.interrupt(fiber)
+    }),
+  15_000,
+)
+
 withMcpInstructions.instance(
   "loop includes MCP instructions in model system context",
   () =>

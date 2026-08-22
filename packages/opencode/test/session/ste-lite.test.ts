@@ -82,8 +82,15 @@ describe("ste-lite", () => {
     expect(ConfigParse.schema(ConfigV1.Info, { ste_lite: false }, "test").ste_lite).toBe(false)
   })
 
-  test("style fragment is on by default and off when disabled", () => {
-    expect(SystemPrompt.style().join("\n")).toContain(MARKER)
+  test("chat style is on for user-facing replies and off for internal generations", () => {
+    expect(SystemPrompt.chat({})).toBe(true)
+    expect(SystemPrompt.chat({ config: false })).toBe(false)
+    expect(SystemPrompt.chat({ hidden: true })).toBe(false)
+    expect(SystemPrompt.chat({ small: true })).toBe(false)
+    expect(SystemPrompt.chat({ format: "json_schema" })).toBe(false)
+  })
+
+  test("style fragment is empty unless explicitly enabled", () => {
     expect(SystemPrompt.style(true).join("\n")).toBe(SystemPrompt.STE_LITE)
     expect(SystemPrompt.style(false)).toEqual([])
   })
@@ -93,12 +100,12 @@ describe("ste-lite", () => {
     expect(TRINITY_PROMPT).not.toContain("fewer than 4 lines")
   })
 
-  test("prepare injects STE-lite by default, including custom agent prompts", async () => {
+  test("prepare injects STE-lite only when opted in", async () => {
     const unset = await Effect.runPromise(prepare())
-    const custom = await Effect.runPromise(prepare({ prompt: "You are compaction." }))
-    expect(unset.system.join("\n")).toContain(MARKER)
+    const custom = await Effect.runPromise(prepare({ steLite: true, prompt: "You are a reviewer." }))
+    expect(unset.system.join("\n")).not.toContain(MARKER)
     expect(custom.system.join("\n")).toContain(MARKER)
-    expect(custom.system.join("\n")).toContain("You are compaction.")
+    expect(custom.system.join("\n")).toContain("You are a reviewer.")
   })
 
   test("prepare omits STE-lite when disabled", async () => {

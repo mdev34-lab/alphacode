@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { SystemPrompt } from "./system"
 import { ToolCatalog } from "@/tool/catalog"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -113,7 +114,12 @@ const live: Layer.Layer<
         plugin,
         flags,
         isWorkflow,
-        steLite: cfg.ste_lite !== false,
+        steLite: SystemPrompt.chat({
+          config: cfg.ste_lite,
+          hidden: input.agent.hidden,
+          small: input.small,
+          format: input.user.format?.type,
+        }),
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls

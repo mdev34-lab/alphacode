@@ -159,7 +159,7 @@ Shape notes worth being explicit about:
 - `plugin` is an array of strings or `[name, options]` tuples, not an object.
 - `mcp[name].command` is an array of strings, never a single string. `type` is required.
 - `permission` is either a string action or an object keyed by tool name.
-- `ste_lite` is a boolean. Omit it or set `true` to inject the terse reply style; set `false` to disable. It does not apply to deliverables.
+- `ste_lite` is a boolean. Omit it or set `true` to inject the terse reply style on user-facing chat; set `false` to disable. Hidden agents, small-model helpers, and structured output never receive it.
 
 ## Skills
 
