@@ -228,6 +228,13 @@ describe("TUI inline tool wrapping", () => {
     expect(toolDisplay("plugin_tool")).toBe("generic")
   })
 
+  test("renders the new built-in tools natively", () => {
+    expect(toolDisplay("tool_search")).toBe("tool_search")
+    expect(toolDisplay("tool_search_regex")).toBe("tool_search_regex")
+    expect(toolDisplay("lsp")).toBe("lsp")
+    expect(toolDisplay("plan_exit")).toBe("plan_exit")
+  })
+
   test("replaces pending copy when a tool fails before completion", async () => {
     const frame = await renderFrame(() => <FailedPendingToolFixture />, { width: 72, height: 3 })
     expect(frame).toContain("Patch failed")
