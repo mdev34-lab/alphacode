@@ -133,7 +133,7 @@ failure appears during canary work:
   process-local
 - stream-cap websearch body collection before parsing
 - add ripgrep execution timeout and bounded line framing
-- materialize or consistently reject unresolved URL and file attachment sources
+- materialize or consistently reject unresolved URL and file attachment sources (prompt attachments — `data:`, `file://`, `http(s)://` — are now materialized and normalized via `AttachmentStore`; MCP-resource materialization remains deferred)
 - decide stateless OpenAI Responses hosted-tool continuation behavior; reconstructed hosted output can replay as a stored `item_reference` when `store !== false`, while `store: false` intentionally omits the unavailable reference path
 - decide whether to preserve deprecated `@opencode-ai/llm` orchestration exports
 - preserve or alias renamed filesystem SDK generated type names if compatibility

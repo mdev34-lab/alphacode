@@ -14,6 +14,7 @@ import { PromptInput } from "@opencode-ai/schema/prompt-input"
 import { EventV2 } from "./event"
 import { Database } from "./database/database"
 import { SessionProjector } from "./session/projector"
+import { AttachmentStore } from "./attachment-store"
 import { SessionMessageTable, SessionTable } from "./session/sql"
 import { SessionSchema } from "./session/schema"
 import { AbsolutePath, PositiveInt, RelativePath } from "./schema"
@@ -361,7 +362,15 @@ const layer = Layer.effect(
         Effect.uninterruptible(
           Effect.gen(function* () {
             yield* result.get(input.sessionID)
-            const prompt = resolvePrompt(input.prompt)
+            const store = yield* AttachmentStore.Service
+            const files = input.prompt.files
+              ? yield* Effect.forEach(
+                  input.prompt.files,
+                  (file) => store.materialize({ sessionID: input.sessionID, attachment: file }),
+                  { concurrency: 4 },
+                )
+              : undefined
+            const prompt = resolvePrompt({ ...input.prompt, files })
             const messageID = input.id ?? SessionMessage.ID.create()
             const delivery = input.delivery ?? "steer"
             const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
@@ -473,14 +482,15 @@ const resolvePrompt = (input: PromptInput.Prompt) =>
 
 export const node = makeGlobalNode({
   service: Service,
-  layer: layer.pipe(Layer.orDie),
-  deps: [
-    Database.node,
-    EventV2.node,
-    ProjectV2.node,
-    SessionExecution.node,
-    SessionStore.node,
-    LocationServiceMap.node,
-    SessionProjector.node,
-  ],
+    layer: layer.pipe(Layer.orDie),
+    deps: [
+      Database.node,
+      EventV2.node,
+      ProjectV2.node,
+      SessionExecution.node,
+      SessionStore.node,
+      LocationServiceMap.node,
+      SessionProjector.node,
+      AttachmentStore.node,
+    ],
 })
