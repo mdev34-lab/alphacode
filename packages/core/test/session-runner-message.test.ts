@@ -1,4 +1,8 @@
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect, test } from "bun:test"
+import { Effect } from "effect"
 import { Message, Model } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -13,6 +17,10 @@ const created = DateTime.makeUnsafe(0)
 const id = (value: string) => SessionMessage.ID.make(`msg_${value}`)
 const model = Model.make({ id: "model", provider: "provider", route: OpenAIChat.route })
 
+const fixtureDir = mkdtempSync(path.join(tmpdir(), "alphacode-llm-"))
+const fixtureFile = path.join(fixtureDir, "hello.png")
+writeFileSync(fixtureFile, "hello")
+
 describe("toLLMMessages", () => {
   test("omits empty assistant turns", () => {
     const assistant = (value: string, content: SessionMessage.Assistant["content"]) =>
@@ -24,7 +32,7 @@ describe("toLLMMessages", () => {
         content,
         time: { created, completed: created },
       })
-    const messages = toLLMMessages(
+    const messages = Effect.runSync(toLLMMessages(
       [
         assistant("empty", []),
         assistant("empty-text", [SessionMessage.AssistantText.make({ type: "text", id: "empty", text: "" })]),
@@ -48,8 +56,14 @@ describe("toLLMMessages", () => {
   })
 
   test("maps every top-level V2 Session message type", () => {
-    const file = FileAttachment.make({ uri: "data:image/png;base64,aGVsbG8=", mime: "image/png", name: "hello.png" })
-    const messages = toLLMMessages(
+    const file = FileAttachment.make({
+      id: "att_existing",
+      uri: "data:image/png;base64,aGVsbG8=",
+      mime: "image/png",
+      name: "hello.png",
+      path: fixtureFile,
+    })
+    const messages = Effect.runSync(toLLMMessages(
       [
         SessionMessage.AgentSwitched.make({
           id: id("agent"),
@@ -112,7 +126,7 @@ describe("toLLMMessages", () => {
         role: "user",
         content: [
           { type: "text", text: "Inspect this image" },
-          { type: "media", mediaType: "image/png", data: "data:image/png;base64,aGVsbG8=", filename: "hello.png" },
+          { type: "media", mediaType: "image/png", data: "aGVsbG8=", filename: "hello.png" },
         ],
         metadata: { agents: [{ name: "work" }] },
       }),
@@ -140,7 +154,7 @@ Recent work
   })
 
   test("replays durable tool media into canonical tool messages without structured base64", () => {
-    const messages = toLLMMessages(
+    const messages = Effect.runSync(toLLMMessages(
       [
         SessionMessage.Assistant.make({
           id: id("assistant"),
@@ -297,7 +311,7 @@ Recent work
   })
 
   test("restores OpenAI encrypted reasoning metadata", () => {
-    const messages = toLLMMessages(
+    const messages = Effect.runSync(toLLMMessages(
       [
         SessionMessage.Assistant.make({
           id: id("assistant-openai-reasoning"),
@@ -328,7 +342,7 @@ Recent work
   })
 
   test("drops provider-native continuation metadata from failed assistant turns", () => {
-    const messages = toLLMMessages(
+    const messages = Effect.runSync(toLLMMessages(
       [
         SessionMessage.Assistant.make({
           id: id("assistant-failed"),
@@ -400,7 +414,7 @@ Recent work
   })
 
   test("drops provider-native continuation metadata after a model switch", () => {
-    const messages = toLLMMessages(
+    const messages = Effect.runSync(toLLMMessages(
       [
         SessionMessage.Assistant.make({
           id: id("assistant-old-model"),

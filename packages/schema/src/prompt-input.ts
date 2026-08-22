@@ -6,6 +6,7 @@ import { optional, statics } from "./schema"
 
 export interface FileAttachment extends Schema.Schema.Type<typeof FileAttachment> {}
 export const FileAttachment = Schema.Struct({
+  id: Schema.String.pipe(optional),
   uri: Schema.String,
   name: Schema.String.pipe(optional),
   description: Schema.String.pipe(optional),

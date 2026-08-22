@@ -7,15 +7,50 @@ import {
   type Model,
   type ProviderMetadata,
 } from "@opencode-ai/llm"
+import { Effect } from "effect"
+import { FSUtil } from "../../fs-util"
 import { SessionMessage } from "../message"
 import type { FileAttachment } from "../prompt"
 
-const media = (file: FileAttachment): ContentPart => ({
-  type: "media",
-  mediaType: file.mime,
-  data: file.uri,
-  filename: file.name,
-  metadata: file.description === undefined ? undefined : { description: file.description },
+const TEXTUAL_MIMES = [
+  "text/",
+  "application/json",
+  "+json",
+  "application/xml",
+  "+xml",
+  "application/javascript",
+  "application/x-javascript",
+  "application/csv",
+  "application/markdown",
+]
+const isTextualMime = (mime: string) => TEXTUAL_MIMES.some((prefix) => mime.includes(prefix))
+const MAX_INLINE_BYTES = 50 * 1024
+
+const contentFor = Effect.fn("toLLMMessages.contentFor")(function* (file: FileAttachment) {
+  if (file.path === undefined)
+    return [{ type: "text", text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
+  const bytes = yield* FSUtil.Service.pipe(
+    Effect.flatMap((fs) => fs.readFile(file.path)),
+    Effect.mapError(() => undefined),
+  )
+  if (bytes === undefined)
+    return [{ type: "text", text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
+  const base64 = Buffer.from(bytes as Uint8Array).toString("base64")
+  if (!isTextualMime(file.mime)) {
+    return [
+      {
+        type: "media",
+        mediaType: file.mime,
+        data: base64,
+        filename: file.name,
+        metadata: file.description === undefined ? undefined : { description: file.description },
+      },
+    ]
+  }
+  const text = Buffer.from(bytes as Uint8Array).toString("utf8")
+  const truncated = text.length > MAX_INLINE_BYTES ? `${text.slice(0, MAX_INLINE_BYTES)}\n…(truncated)` : text
+  const header = `------ attachment: ${file.name ?? file.uri} (mime=${file.mime}${file.source?.type ? `, source=${file.source.type}` : ""}) ------`
+  return [{ type: "text", text: `${header}\n${truncated}\n------ end attachment ------` }]
 })
 
 const toolInput = (tool: SessionMessage.AssistantTool) => {
@@ -112,23 +147,28 @@ const assistant = (message: SessionMessage.Assistant, model: Model) => {
   ]
 }
 
-function toLLMMessage(message: SessionMessage.Message, model: Model): Message[] {
+const toLLMMessage = Effect.fn("toLLMMessages.toLLMMessage")(function* (
+  message: SessionMessage.Message,
+  model: Model,
+) {
   switch (message.type) {
     case "agent-switched":
     case "model-switched":
       return []
-    case "user":
+    case "user": {
+      const files = yield* Effect.forEach(message.files ?? [], (file) => contentFor(file), { concurrency: 4 })
       return [
         Message.make({
           id: message.id,
           role: "user",
-          content: [{ type: "text", text: message.text }, ...(message.files ?? []).map(media)],
+          content: [{ type: "text", text: message.text }, ...files.flat()],
           metadata: {
             ...message.metadata,
             ...(message.agents?.length ? { agents: message.agents } : {}),
           },
         }),
       ]
+    }
     case "synthetic":
       return [Message.make({ id: message.id, role: "user", content: message.text, metadata: message.metadata })]
     case "system":
@@ -168,4 +208,6 @@ ${message.recent}
 
 /** Translate projected V2 Session history into canonical @opencode-ai/llm context. */
 export const toLLMMessages = (messages: readonly SessionMessage.Message[], model: Model) =>
-  messages.flatMap((message) => toLLMMessage(message, model))
+  Effect.forEach(messages, (message) => toLLMMessage(message, model), { concurrency: 1 }).pipe(
+    Effect.map((parts) => parts.flat()),
+  )

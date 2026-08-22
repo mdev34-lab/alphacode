@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import { Identifier } from "./identifier"
 import { optional } from "./schema"
 import { statics } from "./schema"
 
@@ -11,22 +12,28 @@ export const Source = Schema.Struct({
 
 export interface FileAttachment extends Schema.Schema.Type<typeof FileAttachment> {}
 export const FileAttachment = Schema.Struct({
+  id: Schema.String.pipe(optional),
   uri: Schema.String,
   mime: Schema.String,
   name: Schema.String.pipe(optional),
   description: Schema.String.pipe(optional),
   source: Source.pipe(optional),
+  path: Schema.String.pipe(optional),
+  size: Schema.Number.pipe(optional),
 })
   .annotate({ identifier: "Prompt.FileAttachment" })
   .pipe(
     statics((schema) => ({
       create: (input: FileAttachment) =>
         schema.make({
+          id: input.id ?? Identifier.ascending("att"),
           uri: input.uri,
           mime: input.mime,
           name: input.name,
           description: input.description,
           source: input.source,
+          path: input.path,
+          size: input.size,
         }),
     })),
   )

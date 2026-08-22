@@ -8,11 +8,12 @@ import {
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
-import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
+import { Cause, DateTime, Effect, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { Database } from "../../database/database"
 import { EventV2 } from "../../event"
+import { FSUtil } from "../../fs-util"
 import { Location } from "../../location"
 import { ModelV2 } from "../../model"
 import { PermissionV2 } from "../../permission"
@@ -20,6 +21,7 @@ import { ProviderV2 } from "../../provider"
 import { QuestionV2 } from "../../question"
 import { SystemContext } from "../../system-context/index"
 import { SystemContextRegistry } from "../../system-context/registry"
+import { AttachmentStore } from "../../attachment-store"
 import { SkillGuidance } from "../../skill/guidance"
 import { ReferenceGuidance } from "../../reference/guidance"
 import { ToolRegistry } from "../../tool/registry"
@@ -114,7 +116,41 @@ const layer = Layer.effect(
     })
 
     const getContext = Effect.fn("SessionRunner.getContext")(function* (sessionID: SessionSchema.ID) {
+      yield* registerAttachments(sessionID)
       return yield* store.context(sessionID)
+    })
+
+    const registerAttachments = Effect.fn("SessionRunner.registerAttachments")(function* (
+      sessionID: SessionSchema.ID,
+    ) {
+      const registry = yield* SystemContextRegistry.Service
+      const store = yield* AttachmentStore.Service
+      const attachmentSchema = Schema.Struct({
+        id: Schema.String,
+        name: Schema.String.pipe(Schema.optional),
+        mime: Schema.String,
+        source: Schema.String,
+        size: Schema.Number.pipe(Schema.optional),
+        unavailable: Schema.Boolean.pipe(Schema.optional),
+      })
+      const render = (attachments: typeof attachmentSchema.Type[]) => {
+        if (attachments.length === 0) return "No attachments have been shared in this session yet."
+        const lines = attachments.map((attachment) => {
+          const where = attachment.unavailable ? "source unavailable" : `${attachment.size ?? 0} bytes`
+          return `- managed_id=${attachment.id} name=${attachment.name ?? attachment.id} mime=${attachment.mime} source=${attachment.source} ${where}`
+        })
+        return [
+          "Attachments shared in this session (materialized locally; use the `attachment` tool to inspect or save them to the workspace by managed_id):",
+          ...lines,
+        ].join("\n")
+      }
+      yield* registry.register({
+        key: SystemContext.Key.make("core/attachments"),
+        load: store.inventory(sessionID),
+        codec: Schema.toCodecJson(Schema.Array(attachmentSchema)),
+        baseline: (attachments) => render(attachments),
+        update: (_previous, attachments) => render(attachments),
+      })
     })
     const failInterruptedTools = Effect.fn("SessionRunner.failInterruptedTools")(function* (
       sessionID: SessionSchema.ID,
@@ -215,7 +251,10 @@ const layer = Layer.effect(
         system: [agent.info?.system, system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
-        messages: [...toLLMMessages(context, model), ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : [])],
+        messages: [
+          ...(yield* toLLMMessages(context, model)),
+          ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
+        ],
         tools: toolMaterialization?.definitions ?? [],
         toolChoice: isLastStep ? "none" : undefined,
       })
@@ -429,6 +468,8 @@ export const node = makeLocationNode({
     SessionRunnerModel.node,
     SessionStore.node,
     Location.node,
+    FSUtil.node,
+    AttachmentStore.node,
     SystemContextRegistry.node,
     SkillGuidance.node,
     ReferenceGuidance.node,
