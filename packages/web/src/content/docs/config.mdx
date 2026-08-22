@@ -762,6 +762,21 @@ You can control context compaction behavior through the `compaction` option.
 
 ---
 
+### Reply style
+
+OpenCode injects a short STE-lite reply style into agent system prompts. It keeps chat terse without shrinking deliverables such as source, tests, docs, plans, or reviews.
+
+Enabled by default. Set `ste_lite` to `false` to turn it off.
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "ste_lite": false
+}
+```
+
+---
+
 ### Watcher
 
 You can configure file watcher ignore patterns through the `watcher` option.

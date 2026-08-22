@@ -355,6 +355,15 @@ it.instance(
   { config: { shell: "bash" } },
 )
 
+it.instance(
+  "loads ste_lite config field",
+  Effect.gen(function* () {
+    const config = yield* Config.use.get()
+    expect(config.ste_lite).toBe(false)
+  }),
+  { config: { ste_lite: false } },
+)
+
 it.instance("updates config and preserves empty shell sentinel", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

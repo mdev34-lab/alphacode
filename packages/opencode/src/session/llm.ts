@@ -113,6 +113,7 @@ const live: Layer.Layer<
         plugin,
         flags,
         isWorkflow,
+        steLite: cfg.ste_lite !== false,
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
