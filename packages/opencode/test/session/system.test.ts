@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Shell } from "@opencode-ai/core/shell"
 import { Effect, Layer } from "effect"
+import os from "os"
 import type { Agent } from "../../src/agent/agent"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Skill } from "../../src/skill"
@@ -9,6 +11,8 @@ import type { Provider } from "../../src/provider/provider"
 import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
+
+const configuredShell = process.platform === "win32" ? (process.env.COMSPEC ?? "cmd.exe") : "/bin/sh"
 
 const skills: Skill.Info[] = [
   {
@@ -108,6 +112,20 @@ describe("session.system", () => {
       expect(prompt).toContain("# Prompt and Tool Use")
     }
   })
+
+  it.instance(
+    "environment includes the OS release and configured shell on one line",
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SystemPrompt.Service
+        const output = (yield* prompt.environment({ providerID: "test", api: { id: "model" } } as Provider.Model))[0]
+
+        expect(output.split("\n").filter((line) => line.includes("  OS:"))).toEqual([
+          `  OS: ${os.type()} ${os.release()}; Shell: ${Shell.name(Shell.acceptable(configuredShell))}`,
+        ])
+      }),
+    { config: { shell: configuredShell } },
+  )
 
   it.effect("skills output is sorted by name and stable across calls", () =>
     Effect.gen(function* () {
