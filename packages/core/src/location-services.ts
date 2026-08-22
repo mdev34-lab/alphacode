@@ -36,6 +36,7 @@ import { BuiltInTools } from "./tool/builtins"
 import { ReadToolFileSystem } from "./tool/read-filesystem"
 import { ToolRegistry } from "./tool/registry"
 import { ToolOutputStore } from "./tool-output-store"
+import { AttachmentStore } from "./attachment-store"
 
 export { LocationServiceMap } from "./location-service-map"
 
@@ -64,6 +65,8 @@ export const locationServices = LayerNode.group([
   FileMutation.node,
   PermissionV2.node,
   ToolOutputStore.node,
+  AttachmentStore.node,
+  AttachmentStore.cleanupNode,
   ToolRegistry.node,
   ToolRegistry.toolsNode,
   Image.node,

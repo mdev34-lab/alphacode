@@ -9,7 +9,7 @@
  */
 import path from "path"
 import { fileURLToPath } from "url"
-import { Context, Duration, Effect, Layer } from "effect"
+import { Context, Duration, Effect, Layer, Schedule } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeLocationNode } from "../effect/app-node"
 import { LayerNodePlatform } from "../effect/app-node-platform"
@@ -181,33 +181,36 @@ const layer = Layer.effect(
     const materialize = Effect.fn("AttachmentStore.materialize")(function* (input: MaterializeInput) {
       const { attachment } = input
       if (attachment.path !== undefined) return Prompt.FileAttachment.create(attachment as Prompt.FileAttachment)
-      const id = attachment.id ?? Identifier.ascending("att")
-      const mime = finalMime(attachment.uri, attachment.mime, attachment.name)
-      const bytes = yield* (attachment.uri.startsWith("data:")
-        ? Effect.sync(() => {
-            const parsed = parseDataUri(attachment.uri)
-            if (!parsed) return Buffer.from([])
-            return parsed.base64 ? Buffer.from(parsed.payload, "base64") : Buffer.from(decodeURIComponent(parsed.payload), "utf8")
-          })
-        : attachment.uri.startsWith("http://") || attachment.uri.startsWith("https://")
-          ? fetchBytes(http, permission, input.sessionID, input.agent, attachment.uri)
-          : readBytes(fs, location, permission, input.sessionID, input.agent, attachment.uri)
-      ).pipe(
-        Effect.catch((error) => Effect.log(`attachment materialization failed: ${String(error)}`).pipe(Effect.andThen(() => Effect.succeed(undefined))))
+      return yield* Effect.gen(function* () {
+        const id = attachment.id ?? Identifier.ascending("att")
+        const mime = finalMime(attachment.uri, attachment.mime, attachment.name)
+        let bytes: Uint8Array | undefined
+        if (attachment.uri.startsWith("data:")) {
+          const parsed = parseDataUri(attachment.uri)
+          bytes = parsed ? (parsed.base64 ? Buffer.from(parsed.payload, "base64") : Buffer.from(decodeURIComponent(parsed.payload), "utf8")) : Buffer.from([])
+        } else if (attachment.uri.startsWith("http://") || attachment.uri.startsWith("https://")) {
+          bytes = yield* fetchBytes(http, permission, input.sessionID, input.agent, attachment.uri)
+        } else if (attachment.uri.startsWith("file://")) {
+          bytes = yield* readBytes(fs, location, permission, input.sessionID, input.agent, attachment.uri)
+        } else {
+          return Prompt.FileAttachment.create({ ...attachment, id } as Prompt.FileAttachment)
+        }
+        if (bytes.length > MAX_BYTES) return Prompt.FileAttachment.create({ ...attachment, id } as Prompt.FileAttachment)
+        const file = yield* write(input.sessionID, id, mime, bytes)
+        return Prompt.FileAttachment.create({
+          id,
+          uri: attachment.uri,
+          mime,
+          name: attachment.name,
+          description: attachment.description,
+          source: attachment.source,
+          path: file,
+          size: bytes.length,
+        })
+      }).pipe(
+        Effect.catch((error) => Effect.log(`attachment materialization failed: ${String(error)}`).pipe(Effect.andThen(() => Effect.succeed(undefined)))),
+        Effect.flatMap((result) => result === undefined ? Effect.succeed(Prompt.FileAttachment.create({ ...attachment, id: attachment.id ?? Identifier.ascending("att") } as Prompt.FileAttachment)) : Effect.succeed(result)),
       )
-      if (bytes === undefined) return Prompt.FileAttachment.create({ ...attachment, id } as Prompt.FileAttachment)
-      if (bytes.length > MAX_BYTES) return Prompt.FileAttachment.create({ ...attachment, id } as Prompt.FileAttachment)
-      const file = yield* write(input.sessionID, id, mime, bytes)
-      return Prompt.FileAttachment.create({
-        id,
-        uri: attachment.uri,
-        mime,
-        name: attachment.name,
-        description: attachment.description,
-        source: attachment.source,
-        path: file,
-        size: bytes.length,
-      })
     })
 
     const inventory = Effect.fn("AttachmentStore.inventory")(function* (sessionID: SessionSchema.ID) {
@@ -293,4 +296,18 @@ export const node = makeLocationNode({
     LayerNodePlatform.httpClient,
     SessionProjector.node,
   ],
+})
+
+/** Runs retention scanning once globally rather than once per active Location. */
+export const cleanupLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const store = yield* Service
+    yield* store.cleanup().pipe(Effect.repeat(Schedule.spaced(Duration.hours(1))), Effect.forkScoped)
+  }),
+)
+
+export const cleanupNode = makeGlobalNode({
+  name: "attachment-store-cleanup",
+  layer: Layer.merge(layer, cleanupLayer.pipe(Layer.provide(layer))),
+  deps: [FSUtil.node, Global.node],
 })
