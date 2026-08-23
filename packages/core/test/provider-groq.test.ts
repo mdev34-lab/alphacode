@@ -1,7 +1,7 @@
 import { createGroq } from "@ai-sdk/groq"
 import { expect, test } from "bun:test"
 
-test("Groq passes through unknown reasoning effort", async () => {
+test("Groq rejects unknown reasoning effort", async () => {
   let body: Record<string, unknown> | undefined
   const mockFetch = Object.assign(
     async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -19,10 +19,19 @@ test("Groq passes through unknown reasoning effort", async () => {
   )
   const model = createGroq({ apiKey: "test", fetch: mockFetch })("openai/gpt-oss-120b")
 
-  await model.doGenerate({
-    prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
-    providerOptions: { groq: { reasoningEffort: "custom" } },
-  })
+  let thrown: unknown
+  await model
+    .doGenerate({
+      prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
+      providerOptions: { groq: { reasoningEffort: "custom" } },
+    })
+    .catch((error) => {
+      thrown = error
+    })
 
-  expect(body?.reasoning_effort).toBe("custom")
+  // @ai-sdk/groq validates reasoningEffort and rejects unknown values before
+  // any request is sent.
+  expect(thrown).toBeDefined()
+  expect(String(thrown)).toContain("InvalidArgument")
+  expect(body).toBeUndefined()
 })

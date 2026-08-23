@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer } from "effect"
 import { Message, Model } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -10,8 +10,12 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { AgentAttachment, FileAttachment } from "@opencode-ai/core/session/prompt"
 import { toLLMMessages } from "@opencode-ai/core/session/runner/to-llm-message"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { DateTime } from "effect"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 const created = DateTime.makeUnsafe(0)
 const id = (value: string) => SessionMessage.ID.make(`msg_${value}`)
@@ -50,12 +54,12 @@ describe("toLLMMessages", () => {
         ]),
       ],
       model,
-    )
+    ).pipe(Effect.provide(LayerNode.compile(FSUtil.node) as Layer.Layer<FSUtil.Service>)))
 
     expect(messages.map((message) => message.id)).toEqual([id("text"), id("reasoning")])
   })
 
-  test("maps every top-level V2 Session message type", () => {
+  test("maps every top-level V2 Session message type", async () => {
     const file = FileAttachment.make({
       id: "att_existing",
       uri: "data:image/png;base64,aGVsbG8=",
@@ -63,7 +67,8 @@ describe("toLLMMessages", () => {
       name: "hello.png",
       path: fixtureFile,
     })
-    const messages = Effect.runSync(toLLMMessages(
+    const messages = await Effect.runPromise(
+      toLLMMessages(
       [
         SessionMessage.AgentSwitched.make({
           id: id("agent"),
@@ -103,7 +108,7 @@ describe("toLLMMessages", () => {
           type: "shell",
           callID: "shell-1",
           command: "pwd",
-          output: "/project",
+          output: projectDir,
           time: { created, completed: created },
         }),
         SessionMessage.Compaction.make({
@@ -116,6 +121,7 @@ describe("toLLMMessages", () => {
         }),
       ],
       model,
+    ).pipe(Effect.provide(LayerNode.compile(FSUtil.node) as Layer.Layer<FSUtil.Service>)),
     )
 
     expect(messages.map((message) => message.role)).toEqual(["system", "user", "user", "user", "user"])
@@ -133,7 +139,7 @@ describe("toLLMMessages", () => {
     )
     expect(messages.slice(2).map((message) => message.content)).toEqual([
       [{ type: "text", text: "Synthetic context" }],
-      [{ type: "text", text: "Shell command: pwd\n\n/project" }],
+      [{ type: "text", text: `Shell command: pwd\n\n${projectDir}` }],
       [
         {
           type: "text",
@@ -244,7 +250,7 @@ Recent work
         }),
       ],
       model,
-    )
+    ).pipe(Effect.provide(LayerNode.compile(FSUtil.node) as Layer.Layer<FSUtil.Service>)))
 
     expect(messages.map((message) => message.role)).toEqual(["assistant", "tool"])
     expect(messages[0]?.content).toEqual([
@@ -330,7 +336,7 @@ Recent work
         }),
       ],
       model,
-    )
+    ).pipe(Effect.provide(LayerNode.compile(FSUtil.node) as Layer.Layer<FSUtil.Service>)))
 
     expect(messages[0]?.content).toEqual([
       {
@@ -381,7 +387,7 @@ Recent work
         }),
       ],
       model,
-    )
+    ).pipe(Effect.provide(LayerNode.compile(FSUtil.node) as Layer.Layer<FSUtil.Service>)))
 
     expect(messages[0]?.content).toEqual([
       { type: "reasoning", text: "Partial thought", providerMetadata: undefined },
@@ -468,7 +474,7 @@ Recent work
         }),
       ],
       model,
-    )
+    ).pipe(Effect.provide(LayerNode.compile(FSUtil.node) as Layer.Layer<FSUtil.Service>)))
 
     expect(messages[0]?.content).toEqual([
       { type: "text", text: "Visible thought" },

@@ -1,3 +1,5 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir as nodeTmpdir } from "node:os"
 import { describe, expect } from "bun:test"
 import path from "path"
 import { Effect, Layer, Stream } from "effect"
@@ -27,6 +29,8 @@ import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { testEffect } from "./lib/effect"
 import { tmpdir } from "./fixture/tmpdir"
 
+const projectDir = mkdtempSync(path.join(nodeTmpdir(), "alphacode-test-project-"))
+
 const projects = Layer.succeed(
   ProjectV2.Service,
   ProjectV2.Service.of({
@@ -44,7 +48,7 @@ const it = testEffect(
     ],
   ),
 )
-const location = Location.Ref.make({ directory: AbsolutePath.make("/project") })
+const location = Location.Ref.make({ directory: AbsolutePath.make(projectDir) })
 const id = SessionV2.ID.create()
 
 describe("SessionV2.create", () => {

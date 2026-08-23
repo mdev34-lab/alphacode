@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import {
   LLMClient,
@@ -58,6 +61,8 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 const requests: LLMRequest[] = []
 let response: LLMEvent[] = []
@@ -230,7 +235,7 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [LayerNodePlatform.llmClient, client],
   [SessionRunnerModel.node, models],
   [SystemContextRegistry.node, systemContext],
-  [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+  [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
   [SkillGuidance.node, skillGuidance],
   [ReferenceGuidance.node, referenceGuidance],
   [PermissionV2.node, permission],
@@ -279,7 +284,7 @@ const it = testEffect(
       [PermissionV2.node, permission],
       [SessionRunnerModel.node, models],
       [SystemContextRegistry.node, systemContext],
-      [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+      [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
       [SkillGuidance.node, skillGuidance],
       [ReferenceGuidance.node, referenceGuidance],
       [Snapshot.node, Snapshot.noopLayer],
@@ -300,7 +305,7 @@ const insertSession = (id: SessionV2.ID) =>
         id,
         project_id: Project.ID.global,
         slug: id,
-        directory: "/project",
+        directory: projectDir,
         title: "test",
         version: "test",
       })
@@ -331,7 +336,7 @@ const setup = Effect.gen(function* () {
   maxActiveToolExecutions = 0
   yield* db
     .insert(ProjectTable)
-    .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
     .onConflictDoNothing()
     .run()
     .pipe(Effect.orDie)

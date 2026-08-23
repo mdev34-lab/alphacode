@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Schema } from "effect"
 import { asc, eq, sql } from "drizzle-orm"
@@ -23,6 +26,8 @@ import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-
 import { testEffect } from "./lib/effect"
 import { Snapshot } from "@opencode-ai/core/snapshot"
 import { Location } from "@opencode-ai/core/location"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionProjector.node])))
 const sessionsLayer = AppNodeBuilder.build(SessionV2.node, [[SessionExecution.node, SessionExecution.noopLayer]])
@@ -51,7 +56,7 @@ describe("SessionProjector", () => {
       const events = yield* EventV2.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
       yield* db
         .insert(SessionTable)
@@ -59,7 +64,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
@@ -83,7 +88,7 @@ describe("SessionProjector", () => {
       const db = (yield* Database.Service).db
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
       yield* db
         .insert(SessionTable)
@@ -91,7 +96,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
@@ -135,7 +140,7 @@ describe("SessionProjector", () => {
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -144,7 +149,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
@@ -204,7 +209,7 @@ describe("SessionProjector", () => {
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -213,7 +218,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
@@ -248,7 +253,7 @@ describe("SessionProjector", () => {
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -257,7 +262,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
@@ -294,7 +299,7 @@ describe("SessionProjector", () => {
         sessionID,
         timestamp: DateTime.makeUnsafe(1),
         callID: "shell-1",
-        output: "/project",
+        output: projectDir,
       })
       const compactionID = SessionMessage.ID.create()
       yield* events.publish(SessionEvent.Compaction.Started, {
@@ -353,7 +358,7 @@ describe("SessionProjector", () => {
         "compaction",
       ])
       expect(messages.find((message) => message.type === "shell")).toMatchObject({
-        output: "/project",
+        output: projectDir,
         time: { completed: DateTime.makeUnsafe(1) },
       })
       expect(messages.find((message) => message.type === "compaction")).toMatchObject({
@@ -375,7 +380,7 @@ describe("SessionProjector", () => {
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -384,7 +389,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
@@ -441,7 +446,7 @@ describe("SessionProjector", () => {
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -450,7 +455,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
@@ -499,7 +504,7 @@ describe("SessionProjector", () => {
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -508,7 +513,7 @@ describe("SessionProjector", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })

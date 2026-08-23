@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import * as TestClock from "effect/testing/TestClock"
@@ -12,6 +15,8 @@ import { SystemContextBuiltIns } from "@opencode-ai/core/system-context/builtins
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 const directory = AbsolutePath.make(FSUtil.resolve("/repo/packages/core"))
 const projectDirectory = AbsolutePath.make(FSUtil.resolve("/repo"))

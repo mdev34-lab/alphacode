@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { HttpRecorder } from "@opencode-ai/http-recorder"
 import { HttpRecorderInternal } from "@opencode-ai/http-recorder/internal"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
@@ -38,6 +41,8 @@ import { Effect, Layer } from "effect"
 import path from "node:path"
 import { testEffect } from "./lib/effect"
 
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+
 const cassette =
   process.env.RECORD === "true"
     ? HttpRecorderInternal.cassetteLayer("session-runner/openai-chat-streams-text", {
@@ -77,7 +82,7 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [LayerNodePlatform.llmClient, client],
   [SessionRunnerModel.node, models],
   [SystemContextRegistry.node, systemContext],
-  [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+  [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
   [SkillGuidance.node, skillGuidance],
   [ReferenceGuidance.node, referenceGuidance],
   [Config.node, config],
@@ -123,7 +128,7 @@ const it = testEffect(
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
       [SessionRunnerModel.node, models],
       [SystemContextRegistry.node, systemContext],
-      [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
+      [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
       [SkillGuidance.node, skillGuidance],
       [ReferenceGuidance.node, referenceGuidance],
       [Config.node, config],
@@ -140,7 +145,7 @@ describe("SessionRunnerLLM recorded", () => {
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .onConflictDoNothing()
         .run()
         .pipe(Effect.orDie)
@@ -150,7 +155,7 @@ describe("SessionRunnerLLM recorded", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "test",
-          directory: "/project",
+          directory: projectDir,
           title: "test",
           version: "test",
         })
