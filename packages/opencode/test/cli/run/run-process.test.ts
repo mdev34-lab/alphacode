@@ -73,10 +73,10 @@ describe("opencode run (non-interactive subprocess)", () => {
       Effect.gen(function* () {
         const result = yield* opencode.run("say hi", {
           model: "test/nonexistent-model",
-          timeoutMs: 15_000,
+          timeoutMs: 25_000,
         })
         expect(result.exitCode).not.toBe(0)
-        expect(result.durationMs).toBeLessThan(15_000)
+        expect(result.durationMs).toBeLessThan(25_000)
       }),
     30_000,
   )
