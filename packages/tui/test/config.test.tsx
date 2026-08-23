@@ -101,6 +101,12 @@ test("resolves a session move keybind", () => {
   expect(config.keybinds.get("session.move")).toMatchObject([{ key: "ctrl+o" }])
 })
 
+test("resolves yolo permission keybindings", () => {
+  const config = resolve({}, { terminalSuspend: true })
+  expect(config.keybinds.has("permission.mode")).toBe(true)
+  expect(config.keybinds.get("permission.mode")).toMatchObject([{ key: "<leader>y" }])
+})
+
 test("disables suspend and assigns ctrl+z to undo when unsupported", () => {
   const config = resolve({}, { terminalSuspend: false })
 

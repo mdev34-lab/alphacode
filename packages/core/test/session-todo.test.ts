@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { asc } from "drizzle-orm"
 import { Effect } from "effect"
@@ -13,6 +16,8 @@ import { SessionTable, TodoTable } from "@opencode-ai/core/session/sql"
 import { SessionTodo } from "@opencode-ai/core/session/todo"
 import { testEffect } from "./lib/effect"
 
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionTodo.node])))
 const sessionID = SessionV2.ID.make("ses_todo_test")
 
@@ -20,7 +25,7 @@ const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   yield* db
     .insert(ProjectTable)
-    .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
     .run()
     .pipe(Effect.orDie)
   yield* db
@@ -29,7 +34,7 @@ const setup = Effect.gen(function* () {
       id: sessionID,
       project_id: Project.ID.global,
       slug: "todo",
-      directory: "/project",
+      directory: projectDir,
       title: "todo",
       version: "test",
     })

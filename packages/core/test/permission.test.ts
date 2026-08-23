@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { Cause, Deferred, Effect, Fiber, Layer } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
@@ -19,9 +22,11 @@ import { eq } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+
 const current = Layer.succeed(
   Location.Service,
-  Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
+  Location.Service.of(location({ directory: AbsolutePath.make(projectDir) })),
 )
 const it = testEffect(
   AppNodeBuilder.build(
@@ -42,7 +47,7 @@ function setup(rules: PermissionV2.Ruleset = []) {
     const { db } = yield* Database.Service
     yield* db
       .insert(ProjectTable)
-      .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+      .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
       .onConflictDoNothing()
       .run()
       .pipe(Effect.orDie)
@@ -52,7 +57,7 @@ function setup(rules: PermissionV2.Ruleset = []) {
         id: SessionV2.ID.make("ses_test"),
         project_id: Project.ID.global,
         slug: "test",
-        directory: "/project",
+        directory: projectDir,
         title: "test",
         version: "test",
         agent: "test",

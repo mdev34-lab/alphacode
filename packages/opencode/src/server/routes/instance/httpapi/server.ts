@@ -189,6 +189,10 @@ const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effe
   Layer.provide(authOnlyRouterLayer),
 )
 
+const statusRoute = HttpRouter.use((router) =>
+  router.add("GET", "/status", () => Effect.succeed(HttpServerResponse.text("ok"))),
+).pipe(Layer.provide(authOnlyRouterLayer))
+
 type RouteRequirements =
   | HttpRouter.HttpRouter
   | HttpRouter.Request<"Error", unknown>
@@ -267,6 +271,7 @@ export function createRoutes(
     instanceRoutes,
     serverRoutes,
     docRoute,
+    statusRoute,
   ).pipe(
     Layer.provide([
       errorLayer,

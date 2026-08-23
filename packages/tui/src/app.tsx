@@ -137,6 +137,7 @@ const appBindingCommands = [
   "app.toggle.diffwrap",
   "app.toggle.paste_summary",
   "app.toggle.session_directory_filter",
+  "permission.mode",
 ] as const
 
 export type TuiInput = {
@@ -946,7 +947,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       {
         name: "permission.mode",
         title:
-          local.permission.mode === "auto" ? "Disable auto-approve permissions" : "Enable auto-approve permissions",
+          local.permission.mode === "yolo" ? "Disable YOLO mode (auto-approve all)" : "Enable YOLO mode (auto-approve all)",
         category: "System",
         run: () => {
           local.permission.toggle()

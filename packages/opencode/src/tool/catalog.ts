@@ -150,6 +150,7 @@ export const CORE_TOOLS = [
   "skill",
   "question",
   "plan_exit",
+  "finish",
   "execute",
 ] as const
 

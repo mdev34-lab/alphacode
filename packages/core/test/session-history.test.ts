@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
@@ -14,6 +17,8 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { testEffect } from "./lib/effect"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 const projects = Layer.succeed(
   ProjectV2.Service,
@@ -32,7 +37,7 @@ const it = testEffect(
     ],
   ),
 )
-const location = Location.Ref.make({ directory: AbsolutePath.make("/project") })
+const location = Location.Ref.make({ directory: AbsolutePath.make(projectDir) })
 
 const GapEvent = EventV2.define({
   type: "test.session.history.gap",
@@ -48,7 +53,7 @@ describe("SessionV2.history", () => {
       const sessionID = SessionV2.ID.make("ses_empty_history")
       yield* db
         .insert(ProjectTable)
-        .values({ id: ProjectV2.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: ProjectV2.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .onConflictDoNothing()
         .run()
       yield* db
@@ -57,7 +62,7 @@ describe("SessionV2.history", () => {
           id: sessionID,
           project_id: ProjectV2.ID.global,
           slug: "empty-history",
-          directory: "/project",
+          directory: projectDir,
           title: "Empty history",
           version: "test",
         })

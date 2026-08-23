@@ -1,7 +1,7 @@
 export * as SessionV2 from "./session"
 export * from "./session/schema"
 
-import { DateTime, Effect, Layer, Schema, Context, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Context, Stream , Option } from "effect"
 import { ListAnchor } from "@opencode-ai/schema/session"
 import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
@@ -11,9 +11,11 @@ import { Location } from "./location"
 import { SessionMessage } from "./session/message"
 import { Prompt } from "./session/prompt"
 import { PromptInput } from "@opencode-ai/schema/prompt-input"
+import { FileAttachment } from "./session/prompt"
 import { EventV2 } from "./event"
 import { Database } from "./database/database"
 import { SessionProjector } from "./session/projector"
+import { AttachmentStoreService } from "./attachment-store/service"
 import { SessionMessageTable, SessionTable } from "./session/sql"
 import { SessionSchema } from "./session/schema"
 import { AbsolutePath, PositiveInt, RelativePath } from "./schema"
@@ -361,7 +363,26 @@ const layer = Layer.effect(
         Effect.uninterruptible(
           Effect.gen(function* () {
             yield* result.get(input.sessionID)
-            const prompt = resolvePrompt(input.prompt)
+            // Attachment materialization prefers the request-scoped service (the
+            // session-location middleware provides it) and falls back to the
+            // location-services map for the session's directory so admission
+            // outside an HTTP request still materializes attachments.
+            const materializeOne = (file: PromptInput.FileAttachment): Effect.Effect<FileAttachment | undefined> =>
+              Effect.gen(function* () {
+                const direct = Option.getOrUndefined(yield* Effect.serviceOption(AttachmentStoreService.Service))
+                if (direct) return yield* direct.materialize({ sessionID: input.sessionID, attachment: file })
+                const info = yield* store.get(input.sessionID)
+                if (!info) return undefined
+                return yield* Effect.gen(function* () {
+                  const viaLocation = yield* AttachmentStoreService.Service
+                  return yield* viaLocation.materialize({ sessionID: input.sessionID, attachment: file })
+                }).pipe(Effect.provide(locations.get(info.location)))
+              }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+            const materialized = input.prompt.files?.length
+              ? yield* Effect.forEach(input.prompt.files, (file) => materializeOne(file), { concurrency: 4 })
+              : undefined
+            const files = materialized?.filter((file): file is FileAttachment => file !== undefined)
+            const prompt = resolvePrompt({ ...input.prompt, files })
             const messageID = input.id ?? SessionMessage.ID.create()
             const delivery = input.delivery ?? "steer"
             const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
@@ -473,14 +494,14 @@ const resolvePrompt = (input: PromptInput.Prompt) =>
 
 export const node = makeGlobalNode({
   service: Service,
-  layer: layer.pipe(Layer.orDie),
-  deps: [
-    Database.node,
-    EventV2.node,
-    ProjectV2.node,
-    SessionExecution.node,
-    SessionStore.node,
-    LocationServiceMap.node,
-    SessionProjector.node,
-  ],
+    layer: layer.pipe(Layer.orDie),
+    deps: [
+      Database.node,
+      EventV2.node,
+      ProjectV2.node,
+      SessionExecution.node,
+      SessionStore.node,
+      LocationServiceMap.node,
+      SessionProjector.node,
+    ],
 })

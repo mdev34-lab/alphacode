@@ -76,6 +76,7 @@ import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
+import { collapseDiff } from "../../util/collapse-diff"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { getRevertDiffFiles } from "../../util/revert-diff"
@@ -1584,6 +1585,9 @@ const PART_MAPPING = {
 
 const INLINE_TOOL_ICON_WIDTH = 2
 
+// Default content lines shown in a collapsed bash/write/edit block before "Click to expand".
+const COLLAPSED_TOOL_PREVIEW_LINES = 3
+
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme } = useTheme()
   const ctx = use()
@@ -2060,7 +2064,7 @@ function Shell(props: ToolProps) {
   const isRunning = createMemo(() => props.part.state.status === "running")
   const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
   const [expanded, setExpanded] = createSignal(false)
-  const maxLines = 10
+  const maxLines = COLLAPSED_TOOL_PREVIEW_LINES
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
   const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
   const limited = createMemo(() => {
@@ -2118,20 +2122,33 @@ function Write(props: ToolProps) {
   const code = createMemo(() => {
     return stringValue(props.input.content) ?? ""
   })
+  const [expanded, setExpanded] = createSignal(false)
+  const lines = createMemo(() => code().split("\n"))
+  const overflow = createMemo(() => lines().length > COLLAPSED_TOOL_PREVIEW_LINES)
+  const visible = createMemo(() =>
+    expanded() || !overflow() ? code() : lines().slice(0, COLLAPSED_TOOL_PREVIEW_LINES).join("\n"),
+  )
 
   return (
     <Switch>
       <Match when={props.metadata.diagnostics !== undefined}>
-        <BlockTool title={"# Wrote " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
+        <BlockTool
+          title={"# Wrote " + pathFormatter.format(stringValue(props.input.filePath))}
+          part={props.part}
+          onClick={overflow() ? () => setExpanded((prev) => !prev) : undefined}
+        >
           <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
             <code
               conceal={false}
               fg={theme.text}
               filetype={filetype(stringValue(props.input.filePath))}
               syntaxStyle={syntax()}
-              content={code()}
+              content={visible()}
             />
           </line_number>
+          <Show when={overflow()}>
+            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+          </Show>
           <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
         </BlockTool>
       </Match>
@@ -2492,6 +2509,7 @@ function Edit(props: ToolProps) {
   const ctx = use()
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
+  const [expanded, setExpanded] = createSignal(false)
 
   const view = createMemo(() => {
     const diffStyle = ctx.tui.diff_style
@@ -2503,14 +2521,20 @@ function Edit(props: ToolProps) {
   const ft = createMemo(() => filetype(stringValue(props.input.filePath)))
 
   const diffContent = createMemo(() => stringValue(props.metadata.diff) ?? "")
+  const collapsed = createMemo(() => collapseDiff(diffContent(), COLLAPSED_TOOL_PREVIEW_LINES))
+  const visible = createMemo(() => (expanded() || !collapsed().overflow ? diffContent() : collapsed().diff))
 
   return (
     <Switch>
       <Match when={stringValue(props.metadata.diff) !== undefined}>
-        <BlockTool title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
+        <BlockTool
+          title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))}
+          part={props.part}
+          onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+        >
           <box paddingLeft={1}>
             <diff
-              diff={diffContent()}
+              diff={visible()}
               view={view()}
               filetype={ft()}
               syntaxStyle={syntax()}
@@ -2529,6 +2553,9 @@ function Edit(props: ToolProps) {
               removedLineNumberBg={theme.diffRemovedLineNumberBg}
             />
           </box>
+          <Show when={collapsed().overflow}>
+            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+          </Show>
           <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
         </BlockTool>
       </Match>

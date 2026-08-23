@@ -46,7 +46,9 @@ import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
+import { FinishTool } from "@/tool/finish"
 import PROMPT_REVIEW_LOOP from "./prompt/review-loop.txt"
+import FINISH_NUDGE from "./prompt/finish-nudge.txt"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -1111,6 +1113,37 @@ const layer = Layer.effect(
               (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
             ) ?? false
 
+          // Finish-tool gating: agents with finishTool enabled (the default) may
+          // only end their turn by calling the finish tool. Random end-of-stream
+          // stops are resisted — the model is nudged and the loop continues —
+          // until finish completes, an interrupt or error ends the turn, or the
+          // agent's step cap is reached.
+          const activeAgent = yield* agents.get(lastUser.agent)
+          const finishRequired = activeAgent !== undefined && activeAgent.finishTool !== false
+          const finishCalled = msgs
+            .slice(msgs.findLastIndex((msg) => msg.info.id === lastUser.id) + 1)
+            .some(
+              (msg) =>
+                msg.info.role === "assistant" &&
+                msg.parts.some(
+                  (part) => part.type === "tool" && part.tool === FinishTool.id && part.state.status === "completed",
+                ),
+            )
+          // A pending or running tool call on the last assistant message means
+          // the turn still has work in flight; finish completing first must not
+          // strand it, so the loop keeps going until the tool resolves.
+          const hasUnresolvedTools =
+            lastAssistantMsg?.parts.some(
+              (part) =>
+                part.type === "tool" &&
+                !part.metadata?.providerExecuted &&
+                (part.state.status === "pending" || part.state.status === "running"),
+            ) ?? false
+          if (finishRequired && finishCalled && !hasUnresolvedTools) {
+            yield* Effect.logInfo("finish tool completed, exiting loop", { "session.id": sessionID })
+            break
+          }
+
           if (
             lastAssistant?.finish &&
             !["tool-calls"].includes(lastAssistant.finish) &&
@@ -1127,6 +1160,36 @@ const layer = Layer.effect(
                 tool: orphan.tool,
                 callID: orphan.callID,
               })
+            }
+            if (
+              finishRequired &&
+              !finishCalled &&
+              orphan === undefined &&
+              lastAssistant.error === undefined &&
+              step < (activeAgent?.steps ?? Infinity)
+            ) {
+              yield* Effect.logWarning("assistant ended without the finish tool, nudging", {
+                "session.id": sessionID,
+                messageID: lastAssistant.id,
+              })
+              const nudge: SessionV1.User = {
+                id: MessageID.ascending(),
+                sessionID,
+                role: "user",
+                agent: lastUser.agent,
+                model: lastUser.model,
+                time: { created: Date.now() },
+              }
+              yield* sessions.updateMessage(nudge)
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: nudge.id,
+                sessionID,
+                type: "text",
+                text: FINISH_NUDGE,
+                synthetic: true,
+              } satisfies SessionV1.TextPart)
+              continue
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
