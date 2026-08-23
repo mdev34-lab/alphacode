@@ -1,6 +1,5 @@
 import { mkdtempSync } from "node:fs"
 import { tmpdir as nodeTmpdir } from "node:os"
-import path from "node:path"
 import { describe, expect, test } from "bun:test"
 import { $ } from "bun"
 import { fileURLToPath } from "url"

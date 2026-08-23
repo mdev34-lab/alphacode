@@ -20,14 +20,14 @@ test("Groq rejects unknown reasoning effort", async () => {
   const model = createGroq({ apiKey: "test", fetch: mockFetch })("openai/gpt-oss-120b")
 
   let thrown: unknown
-  await model
-    .doGenerate({
+  await Promise.resolve(
+    model.doGenerate({
       prompt: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
       providerOptions: { groq: { reasoningEffort: "custom" } },
-    })
-    .catch((error) => {
-      thrown = error
-    })
+    }),
+  ).catch((error: unknown) => {
+    thrown = error
+  })
 
   // @ai-sdk/groq validates reasoningEffort and rejects unknown values before
   // any request is sent.

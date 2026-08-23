@@ -38,7 +38,6 @@ import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
 import { describe, expect } from "bun:test"
 import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
-import path from "node:path"
 import { testEffect } from "./lib/effect"
 
 const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
