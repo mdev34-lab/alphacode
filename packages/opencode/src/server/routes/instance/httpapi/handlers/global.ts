@@ -116,7 +116,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
         ),
       )
       if (!result.body.success) return result
-      GlobalBus.emit("event", {
+      GlobalBus.emitEvent( {
         directory: "global",
         payload: {
           type: Installation.Event.Updated.type,
@@ -154,3 +154,4 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       .handleRaw("upgrade", upgradeRaw)
   }),
 )
+

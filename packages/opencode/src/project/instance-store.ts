@@ -78,7 +78,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
 
     const emitDisposed = (input: { directory: string; project?: string }) =>
       Effect.sync(() =>
-        GlobalBus.emit("event", {
+        GlobalBus.emitEvent( {
           directory: input.directory,
           project: input.project,
           workspace: WorkspaceContext.workspaceID,
@@ -211,3 +211,4 @@ export const node = makeGlobalNode({
 })
 
 export * as InstanceStore from "./instance-store"
+

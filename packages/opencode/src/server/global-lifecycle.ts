@@ -4,7 +4,7 @@ import { Effect } from "effect"
 import { Event } from "./event"
 
 export const emitGlobalDisposed = Effect.sync(() =>
-  GlobalBus.emit("event", {
+  GlobalBus.emitEvent( {
     directory: "global",
     payload: {
       type: Event.Disposed.type,
@@ -26,3 +26,4 @@ export const disposeAllInstancesAndEmitGlobalDisposed = Effect.fn("Server.dispos
 )
 
 export * as GlobalLifecycle from "./global-lifecycle"
+

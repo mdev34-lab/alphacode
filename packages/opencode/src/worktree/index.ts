@@ -238,7 +238,7 @@ const layer: Layer.Layer<
       if (populated.code !== 0) {
         const message = populated.stderr || populated.text || "Failed to populate worktree"
         yield* Effect.logError("worktree checkout failed", { directory: info.directory, message })
-        GlobalBus.emit("event", {
+        GlobalBus.emitEvent( {
           directory: info.directory,
           project: ctx.project.id,
           workspace: workspaceID,
@@ -253,7 +253,7 @@ const layer: Layer.Layer<
           Effect.gen(function* () {
             const message = errorMessage(error)
             yield* Effect.logError("worktree bootstrap failed", { directory: info.directory, message })
-            GlobalBus.emit("event", {
+            GlobalBus.emitEvent( {
               directory: info.directory,
               project: ctx.project.id,
               workspace: workspaceID,
@@ -265,7 +265,7 @@ const layer: Layer.Layer<
       )
       if (!booted) return
 
-      GlobalBus.emit("event", {
+      GlobalBus.emitEvent( {
         directory: info.directory,
         project: ctx.project.id,
         workspace: workspaceID,
@@ -621,3 +621,4 @@ export const node = LayerNode.make({
 })
 
 export * as Worktree from "."
+

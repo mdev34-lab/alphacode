@@ -171,7 +171,7 @@ const layer = Layer.effect(
       const next = { workspaceID: id, status }
       connections.set(id, next)
 
-      GlobalBus.emit("event", {
+      GlobalBus.emitEvent( {
         directory: "global",
         workspace: id,
         payload: {
@@ -413,7 +413,7 @@ const layer = Layer.effect(
 
               try {
                 const event = evt as { directory?: string; project?: string; payload: unknown }
-                GlobalBus.emit("event", {
+                GlobalBus.emitEvent( {
                   directory: event.directory,
                   project: event.project,
                   workspace: space.id,
@@ -964,3 +964,4 @@ export const node = LayerNode.make({
 })
 
 export * as Workspace from "./workspace"
+
