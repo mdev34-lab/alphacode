@@ -27,19 +27,17 @@ const isTextualMime = (mime: string) => TEXTUAL_MIMES.some((prefix) => mime.incl
 const MAX_INLINE_BYTES = 50 * 1024
 
 const contentFor = Effect.fn("toLLMMessages.contentFor")(function* (file: FileAttachment) {
-  if (file.path === undefined)
-    return [{ type: "text", text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
-  const bytes = yield* FSUtil.Service.pipe(
-    Effect.flatMap((fs) => fs.readFile(file.path)),
-    Effect.mapError(() => undefined),
-  )
+  const filePath = file.path
+  if (filePath === undefined)
+    return [{ type: "text" as const, text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
+  const bytes = yield* FSUtil.Service.pipe(Effect.flatMap((fs) => fs.readFile(filePath).pipe(Effect.orElseSucceed(() => undefined))))
   if (bytes === undefined)
-    return [{ type: "text", text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
+    return [{ type: "text" as const, text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
   const base64 = Buffer.from(bytes as Uint8Array).toString("base64")
   if (!isTextualMime(file.mime)) {
     return [
       {
-        type: "media",
+        type: "media" as const,
         mediaType: file.mime,
         data: base64,
         filename: file.name,
@@ -49,8 +47,8 @@ const contentFor = Effect.fn("toLLMMessages.contentFor")(function* (file: FileAt
   }
   const text = Buffer.from(bytes as Uint8Array).toString("utf8")
   const truncated = text.length > MAX_INLINE_BYTES ? `${text.slice(0, MAX_INLINE_BYTES)}\n…(truncated)` : text
-  const header = `------ attachment: ${file.name ?? file.uri} (mime=${file.mime}${file.source?.type ? `, source=${file.source.type}` : ""}) ------`
-  return [{ type: "text", text: `${header}\n${truncated}\n------ end attachment ------` }]
+  const header = `------ attachment: ${file.name ?? file.uri} (mime=${file.mime}) ------`
+  return [{ type: "text" as const, text: `${header}\n${truncated}\n------ end attachment ------` }]
 })
 
 const toolInput = (tool: SessionMessage.AssistantTool) => {
@@ -161,7 +159,7 @@ const toLLMMessage = Effect.fn("toLLMMessages.toLLMMessage")(function* (
         Message.make({
           id: message.id,
           role: "user",
-          content: [{ type: "text", text: message.text }, ...files.flat()],
+          content: [{ type: "text" as const, text: message.text }, ...files.flat()],
           metadata: {
             ...message.metadata,
             ...(message.agents?.length ? { agents: message.agents } : {}),
@@ -204,7 +202,7 @@ ${message.recent}
         }),
       ]
   }
-}
+})
 
 /** Translate projected V2 Session history into canonical @opencode-ai/llm context. */
 export const toLLMMessages = (messages: readonly SessionMessage.Message[], model: Model) =>
