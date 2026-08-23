@@ -42,9 +42,6 @@
             alphacode = final.callPackage ./nix/alphacode.nix {
               inherit node_modules;
             };
-            alphacode-desktop = final.callPackage ./nix/desktop.nix {
-              inherit alphacode;
-            };
           };
       };
 
@@ -59,9 +56,6 @@
           default = alphacode;
           alphacode = pkgs.callPackage ./nix/alphacode.nix {
             inherit node_modules;
-          };
-          alphacode-desktop = pkgs.callPackage ./nix/desktop.nix {
-            inherit alphacode;
           };
           # Updater derivation with fakeHash - build fails and reveals correct hash
           node_modules_updater = node_modules.override {
