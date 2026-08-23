@@ -2117,7 +2117,6 @@ function Shell(props: ToolProps) {
 }
 
 function Write(props: ToolProps) {
-  const ctx = use()
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
   const code = createMemo(() => {

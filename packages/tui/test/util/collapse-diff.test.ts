@@ -97,4 +97,28 @@ ${body}`
     expect(result.overflow).toBe(true)
     expect(result.diff).toBe("just\nsome\n…")
   })
+
+  test("keeps the no-newline marker in the body without counting it in the header", () => {
+    const diff = [
+      "--- a/file.ts",
+      "+++ b/file.ts",
+      "@@ -1,4 +1,4 @@",
+      "-oldlast",
+      "\\ No newline at end of file",
+      "+newlast",
+      "\\ No newline at end of file",
+    ].join("\n")
+    const result = collapseDiff(diff, 2)
+    expect(result.overflow).toBe(true)
+    const out = result.diff.split("\n")
+    // 2 kept body lines: the removal and its no-newline marker. The marker is
+    // preserved (keeps the diff valid) but excluded from the rewritten counts.
+    expect(out).toEqual([
+      "--- a/file.ts",
+      "+++ b/file.ts",
+      "@@ -1,1 +1,0 @@",
+      "-oldlast",
+      "\\ No newline at end of file",
+    ])
+  })
 })
