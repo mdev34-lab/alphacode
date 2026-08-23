@@ -10,6 +10,14 @@ export function testProviderConfig(llmUrl: string) {
   return {
     formatter: false,
     lsp: false,
+    // These suites script exact reply sequences over the fake LLM and assert
+    // request/streaming behavior, so the default agents opt out of the finish
+    // tool gate (covered separately in test/session/prompt.test.ts).
+    agent: {
+      work: { finishTool: false },
+      general: { finishTool: false },
+      plan: { finishTool: false },
+    },
     provider: {
       test: {
         name: "Test",

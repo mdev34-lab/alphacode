@@ -1,0 +1,9 @@
+Signal that the user's task is COMPLETE.
+
+The task does NOT end when you stop responding — an end of output never completes the task by itself. You MUST call the finish tool when the task is done, passing a concise summary of the final result for the user. The task keeps running until you call finish.
+
+Only call finish when the task is truly complete:
+- Every requested change is made and verified (tests, builds, linters where applicable).
+- Nothing is left half-done and no known issue remains unaddressed.
+
+Do not call finish to report partial progress, and do not call it to ask a question — use the question tool for questions and keep working otherwise.
