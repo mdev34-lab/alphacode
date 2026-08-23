@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { LLM } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
@@ -12,6 +15,8 @@ import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { it } from "./lib/effect"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 type Api =
   | {
@@ -126,7 +131,7 @@ describe("SessionRunnerModel", () => {
         cost: 0,
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
-        location: { directory: AbsolutePath.make("/project") },
+        location: { directory: AbsolutePath.make(projectDir) },
       })
 
       const resolved = yield* SessionRunnerModel.resolve(session, catalog)
@@ -162,7 +167,7 @@ describe("SessionRunnerModel", () => {
         cost: 0,
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
-        location: { directory: AbsolutePath.make("/project") },
+        location: { directory: AbsolutePath.make(projectDir) },
       })
 
       const resolved = yield* SessionRunnerModel.resolve(session, catalog)
@@ -190,7 +195,7 @@ describe("SessionRunnerModel", () => {
         cost: 0,
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
-        location: { directory: AbsolutePath.make("/project") },
+        location: { directory: AbsolutePath.make(projectDir) },
       })
 
       const failure = yield* SessionRunnerModel.resolve(session, catalog).pipe(Effect.flip)
@@ -222,7 +227,7 @@ describe("SessionRunnerModel", () => {
         cost: 0,
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
         time: { created: DateTime.makeUnsafe(0), updated: DateTime.makeUnsafe(0) },
-        location: { directory: AbsolutePath.make("/project") },
+        location: { directory: AbsolutePath.make(projectDir) },
       })
 
       const resolved = yield* SessionRunnerModel.resolve(session, catalog)

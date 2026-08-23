@@ -210,7 +210,16 @@ export const TaskTool = Tool.define(
           agent: next.name,
           parts,
         })
-        return result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        const text = result.parts.findLast((item) => item.type === "text")?.text
+        if (text !== undefined) return text
+        // Subagents end their turn with the finish tool; its result argument is
+        // the task summary.
+        const finish = result.parts.findLast(
+          (item): item is SessionV1.ToolPart =>
+            item.type === "tool" && item.tool === "finish" && item.state.status === "completed",
+        )
+        const summary = finish?.state.status === "completed" ? finish.state.input.result : undefined
+        return typeof summary === "string" ? summary : ""
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (

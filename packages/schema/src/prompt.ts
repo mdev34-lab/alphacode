@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Identifier } from "./identifier"
+import { ascending } from "./identifier"
 import { optional } from "./schema"
 import { statics } from "./schema"
 
@@ -26,7 +26,7 @@ export const FileAttachment = Schema.Struct({
     statics((schema) => ({
       create: (input: FileAttachment) =>
         schema.make({
-          id: input.id ?? Identifier.ascending("att"),
+          id: input.id ?? ascending(),
           uri: input.uri,
           mime: input.mime,
           name: input.name,

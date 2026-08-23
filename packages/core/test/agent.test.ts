@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { Effect, Exit, Scope } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
@@ -8,6 +11,8 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 import { agentHost, host } from "./plugin/host"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 const it = testEffect(AppNodeBuilder.build(AgentV2.node))
 
@@ -109,7 +114,7 @@ describe("AgentV2", () => {
       ).pipe(
         Effect.provideService(
           Location.Service,
-          Location.Service.of(location({ directory: AbsolutePath.make("/project") })),
+          Location.Service.of(location({ directory: AbsolutePath.make(projectDir) })),
         ),
       )
 

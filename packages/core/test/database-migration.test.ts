@@ -1,3 +1,5 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir as nodeTmpdir } from "node:os"
 import { describe, expect, test } from "bun:test"
 import { $ } from "bun"
 import { fileURLToPath } from "url"
@@ -29,6 +31,8 @@ import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { tmpdir } from "./fixture/tmpdir"
+
+const projectDir = mkdtempSync(path.join(nodeTmpdir(), "alphacode-test-project-"))
 
 const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
   Effect.runPromise(
@@ -280,7 +284,7 @@ describe("DatabaseMigration", () => {
               id: SessionSchema.ID.make("session"),
               slug: "session",
               projectID: ProjectV2.ID.global,
-              directory: "/project",
+              directory: projectDir,
               title: "After",
               version: "test",
               time: { created: 1, updated: 2 },

@@ -7,6 +7,9 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventTable } from "@opencode-ai/core/event/sql"
 import { SessionEvent } from "@opencode-ai/core/session/event"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -51,11 +54,13 @@ const it = testEffect(
 const sessionID = SessionV2.ID.make("ses_prompt_test")
 const messageID = SessionMessage.ID.create()
 
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-v2-prompt-"))
+
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   yield* db
     .insert(ProjectTable)
-    .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
     .onConflictDoNothing()
     .run()
     .pipe(Effect.orDie)
@@ -65,7 +70,7 @@ const setup = Effect.gen(function* () {
       id: sessionID,
       project_id: Project.ID.global,
       slug: "test",
-      directory: "/project",
+      directory: projectDir,
       title: "test",
       version: "test",
     })
@@ -176,9 +181,10 @@ describe("SessionV2.prompt", () => {
         resume: false,
       })
 
-      expect(message.prompt.files).toEqual([
+      expect(message.prompt.files).toMatchObject([
         { uri: "data:image/png;base64,aGVsbG8=", name: "image.png", mime: "image/png" },
       ])
+      expect(message.prompt.files?.[0]?.path).toBeDefined()
       expect((yield* admitted(message.id))?.prompt.files).toEqual(message.prompt.files)
     }),
   )
@@ -497,7 +503,7 @@ describe("SessionV2.prompt", () => {
           id: other,
           project_id: Project.ID.global,
           slug: "other",
-          directory: "/project",
+          directory: projectDir,
           title: "other",
           version: "test",
         })

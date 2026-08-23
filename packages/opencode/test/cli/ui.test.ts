@@ -3,9 +3,18 @@ import { logo } from "@opencode-ai/tui/logo"
 import { UI } from "../../src/cli/ui"
 
 test("plain wordmark is derived from the shared logo art", () => {
-  const rows = UI.logo().split("\n")
+  // A CRLF checkout can smuggle \r into either side; compare row by row with
+  // the exact wordmark transform instead of absolute widths.
+  const clean = (value: string) => value.replaceAll("\r", "")
+  const rows = clean(UI.logo()).split("\n")
   expect(rows).toHaveLength(logo.left.length)
-  expect(new Set(rows.map((row) => row.length))).toEqual(new Set([logo.left[0]!.length + 1 + logo.right[0]!.length]))
+  for (const [index, row] of rows.entries()) {
+    expect(row).toBe(
+      clean(logo.left[index] + " " + (logo.right[index] ?? ""))
+        .replaceAll("^", "▀")
+        .replaceAll(/[_~,]/g, " "),
+    )
+  }
 })
 
 test("plain wordmark expands every shadow mark", () => {

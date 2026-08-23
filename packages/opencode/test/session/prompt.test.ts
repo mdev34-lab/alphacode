@@ -283,7 +283,15 @@ const unixNoLLMServer = process.platform !== "win32" ? noLLMServer.instance : no
 
 // Config that registers a custom "test" provider with a "test-model" model
 // so provider model lookup succeeds inside the loop.
+// The default agents opt out of the finish tool here: these tests script
+// loop mechanics with minimal replies and assert exact request counts, so the
+// finish gate (covered by the dedicated finish-tool tests below) stays off.
 const cfg = {
+  agent: {
+    work: { finishTool: false },
+    general: { finishTool: false },
+    plan: { finishTool: false },
+  },
   provider: {
     test: {
       name: "Test",
@@ -1324,13 +1332,279 @@ it.instance("loop continues when finish is stop but assistant has tool parts", (
   }),
 )
 
+// Finish tool gating
+
+it.instance(
+  "loop nudges the model to call finish when it ends its turn without the finish tool",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      yield* llm.text("working on it")
+      yield* llm.tool("finish", { result: "all done" })
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(2)
+      const hits = yield* llm.hits
+      expect(toolNames(hits[0]?.body)).toContain("finish")
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        const finish = result.parts.find(
+          (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish",
+        )
+        expect(finish?.state.status).toBe("completed")
+      }
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const nudges = messages.filter(
+        (msg) =>
+          msg.info.role === "user" &&
+          msg.parts.some((part) => part.type === "text" && part.synthetic && part.text.includes("finish")),
+      )
+      expect(nudges.length).toBe(1)
+    }),
+  { timeout: 30_000 },
+)
+
+noLLMServer.instance(
+  "loop exits without an LLM request when the finish tool already completed",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const seeded = yield* seed(chat.id, { finish: "tool-calls" })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: seeded.assistant.id,
+        sessionID: chat.id,
+        type: "tool",
+        callID: "finish-call",
+        tool: "finish",
+        state: {
+          status: "completed",
+          input: { result: "done" },
+          output: "done",
+          title: "Task completed",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+      })
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.id).toBe(seeded.assistant.id)
+    }),
+  { config: { ...cfg, agent: { work: { finishTool: true } } } },
+)
+
+it.instance(
+  "finish does not end the turn while another tool call is still running",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const seeded = yield* seed(chat.id, { finish: "tool-calls" })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: seeded.assistant.id,
+        sessionID: chat.id,
+        type: "tool",
+        callID: "stuck-bash",
+        tool: "bash",
+        state: {
+          status: "running",
+          input: { command: "sleep 100" },
+          title: "sleep",
+          metadata: {},
+          time: { start: 1 },
+        },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: seeded.assistant.id,
+        sessionID: chat.id,
+        type: "tool",
+        callID: "finish-call",
+        tool: "finish",
+        state: {
+          status: "completed",
+          input: { result: "done" },
+          output: "done",
+          title: "Task completed",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+      })
+      yield* llm.hang
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(
+        llm.wait(1),
+        "finish ended the turn while a tool call was still running",
+        "10 seconds",
+      )
+      yield* Fiber.interrupt(fiber)
+      expect(yield* llm.calls).toBeGreaterThanOrEqual(1)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance(
+  "finish does not end the turn while another tool call is still running",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const seeded = yield* seed(chat.id, { finish: "tool-calls" })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: seeded.assistant.id,
+        sessionID: chat.id,
+        type: "tool",
+        callID: "stuck-bash",
+        tool: "bash",
+        state: {
+          status: "running",
+          input: { command: "sleep 100" },
+          title: "sleep",
+          metadata: {},
+          time: { start: 1 },
+        },
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: seeded.assistant.id,
+        sessionID: chat.id,
+        type: "tool",
+        callID: "finish-call",
+        tool: "finish",
+        state: {
+          status: "completed",
+          input: { result: "done" },
+          output: "done",
+          title: "Task completed",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        },
+      })
+      yield* llm.hang
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(
+        llm.wait(1),
+        "finish ended the turn while a tool call was still running",
+        "10 seconds",
+      )
+      yield* Fiber.interrupt(fiber)
+      expect(yield* llm.calls).toBeGreaterThanOrEqual(1)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance("loop nudges repeated EOS turns until the agent step cap waives the finish requirement", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      agent: { work: { finishTool: true, steps: 3 } },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "work",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.text("not done yet")
+    yield* llm.text("still not done")
+    yield* llm.text("final answer")
+
+    const result = yield* prompt.loop({ sessionID: session.id })
+
+    // Two EOS turns are nudged, the third runs at the step cap and exits.
+    expect(yield* llm.calls).toBe(3)
+    const hits = yield* llm.hits
+    expect(toolNames(hits[0]?.body)).toContain("finish")
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") expect(result.info.finish).toBe("stop")
+    const messages = yield* sessions.messages({ sessionID: session.id })
+    const nudges = messages.filter(
+      (msg) =>
+        msg.info.role === "user" &&
+        msg.parts.some((part) => part.type === "text" && part.synthetic && part.text.includes("finish")),
+    )
+    expect(nudges.length).toBe(2)
+  }),
+  { timeout: 30_000 },
+)
+
+it.instance("loop ends on end-of-stream when the agent opts out of the finish tool", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      agent: { work: { finishTool: false } },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const session = yield* sessions.create({
+      title: "Pinned",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+    yield* prompt.prompt({
+      sessionID: session.id,
+      agent: "work",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    yield* llm.text("done")
+
+    const result = yield* prompt.loop({ sessionID: session.id })
+
+    expect(yield* llm.calls).toBe(1)
+    const hits = yield* llm.hits
+    expect(toolNames(hits[0]?.body)).not.toContain("finish")
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") expect(result.info.finish).toBe("stop")
+  }),
+)
+
 it.instance("failed subtask preserves metadata on error tool state", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
       ...providerCfg(url),
       agent: {
+        work: { finishTool: false },
         general: {
           model: "test/missing-model",
+          finishTool: false,
         },
       },
     }))
@@ -1789,6 +2063,7 @@ noLLMServer.instance("concurrent loop callers get same result", () =>
     expect(a.info.role).toBe("assistant")
     yield* run.assertNotBusy(chat.id)
   }),
+  { config: cfg },
 )
 
 it.instance("concurrent loop callers all receive same error result", () =>

@@ -103,6 +103,7 @@ const layer = Layer.effect(
     const store = yield* SessionStore.Service
     const location = yield* Location.Service
     const systemContext = yield* SystemContextRegistry.Service
+    const fsys = yield* FSUtil.Service
     const skillGuidance = yield* SkillGuidance.Service
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
@@ -123,8 +124,9 @@ const layer = Layer.effect(
     const registerAttachments = Effect.fn("SessionRunner.registerAttachments")(function* (
       sessionID: SessionSchema.ID,
     ) {
-      const registry = yield* SystemContextRegistry.Service
-      const store = yield* AttachmentStore.Service
+      const registry = systemContext
+      const store = Option.getOrElse(yield* Effect.serviceOption(AttachmentStore.Service), () => undefined)
+      if (!store) return
       const attachmentSchema = Schema.Struct({
         id: Schema.String,
         name: Schema.String.pipe(Schema.optional),
@@ -133,7 +135,7 @@ const layer = Layer.effect(
         size: Schema.Number.pipe(Schema.optional),
         unavailable: Schema.Boolean.pipe(Schema.optional),
       })
-      const render = (attachments: typeof attachmentSchema.Type[]) => {
+      const render = (attachments: readonly (typeof attachmentSchema.Type)[]) => {
         if (attachments.length === 0) return "No attachments have been shared in this session yet."
         const lines = attachments.map((attachment) => {
           const where = attachment.unavailable ? "source unavailable" : `${attachment.size ?? 0} bytes`
@@ -144,13 +146,20 @@ const layer = Layer.effect(
           ...lines,
         ].join("\n")
       }
-      yield* registry.register({
-        key: SystemContext.Key.make("core/attachments"),
-        load: store.inventory(sessionID),
-        codec: Schema.toCodecJson(Schema.Array(attachmentSchema)),
-        baseline: (attachments) => render(attachments),
-        update: (_previous, attachments) => render(attachments),
-      })
+      yield* registry
+        .register({
+          key: SystemContext.Key.make("core/attachments"),
+          load: Effect.succeed(
+            SystemContext.make({
+              key: SystemContext.Key.make("core/attachments"),
+              codec: Schema.toCodecJson(Schema.Array(attachmentSchema)),
+              load: store.inventory(sessionID),
+              baseline: (attachments) => render(attachments),
+              update: (_previous, attachments) => render(attachments),
+            }),
+          ),
+        })
+        .pipe(Effect.scoped)
     })
     const failInterruptedTools = Effect.fn("SessionRunner.failInterruptedTools")(function* (
       sessionID: SessionSchema.ID,
@@ -252,7 +261,7 @@ const layer = Layer.effect(
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
         messages: [
-          ...(yield* toLLMMessages(context, model)),
+          ...(yield* toLLMMessages(context, model).pipe(Effect.provideService(FSUtil.Service, fsys))),
           ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
         ],
         tools: toolMaterialization?.definitions ?? [],

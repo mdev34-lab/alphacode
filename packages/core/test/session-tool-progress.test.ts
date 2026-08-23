@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { asc, eq } from "drizzle-orm"
 import { DateTime, Effect, Schema } from "effect"
@@ -17,6 +20,8 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionTable, SessionMessageTable } from "@opencode-ai/core/session/sql"
 import { testEffect } from "./lib/effect"
 
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+
 const it = testEffect(LayerNode.compile(LayerNode.group([Database.node, EventV2.node, SessionProjector.node])))
 const timestamp = DateTime.makeUnsafe(1)
 const model = { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") }
@@ -31,7 +36,7 @@ describe("Tool.Progress", () => {
       const sessionID = SessionV2.ID.make("ses_tool_progress_projector")
       yield* db
         .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+        .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
         .onConflictDoNothing()
         .run()
         .pipe(Effect.orDie)
@@ -41,7 +46,7 @@ describe("Tool.Progress", () => {
           id: sessionID,
           project_id: Project.ID.global,
           slug: "progress",
-          directory: "/project",
+          directory: projectDir,
           title: "progress",
           version: "test",
         })

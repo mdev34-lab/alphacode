@@ -35,6 +35,10 @@ const AgentSchema = Schema.StructWithRest(
       description: "Maximum number of agentic iterations before forcing text-only response",
     }),
     maxSteps: Schema.optional(PositiveInt).annotate({ description: "@deprecated Use 'steps' field instead." }),
+    finishTool: Schema.optional(Schema.Boolean).annotate({
+      description:
+        "Require the finish tool to complete a task (default: true). When false, tasks also end whenever the model stops responding.",
+    }),
     permission: Schema.optional(ConfigPermissionV1.Info),
   }),
   [Schema.Record(Schema.String, Schema.Any)],
@@ -53,6 +57,7 @@ const KNOWN_KEYS = new Set([
   "color",
   "steps",
   "maxSteps",
+  "finishTool",
   "options",
   "permission",
   "disable",

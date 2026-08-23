@@ -13,6 +13,7 @@ import { makeLocationNode } from "../effect/app-node"
 import { AttachmentStore } from "../attachment-store"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
+import { SessionSchema } from "../session/schema"
 import { Tools } from "./tools"
 
 export const name = "attachment"
@@ -36,7 +37,7 @@ const SaveOutput = Schema.Struct({
   resource: Schema.String,
 })
 
-const Input = Schema.Union(
+const Input = Schema.Union([
   Schema.Struct({
     action: Schema.Literal("list"),
   }),
@@ -48,12 +49,11 @@ const Input = Schema.Union(
         "Workspace path to save the attachment to. Relative paths resolve within the active Location; external absolute paths require external_directory approval.",
     }),
   }),
-).pipe(Schema.toTaggedUnion("action"))
+]).pipe(Schema.toTaggedUnion("action"))
 
-const Output = Schema.Union(ListOutput, SaveOutput)
+const Output = Schema.Union([ListOutput, SaveOutput])
 
-const inventory = Effect.fn("AttachmentTool.inventory")(function* (sessionID: string) {
-  const store = yield* AttachmentStore.Service
+const inventory = Effect.fn("AttachmentTool.inventory")(function* (store: AttachmentStore.Interface, sessionID: SessionSchema.ID) {
   const rows = yield* store.inventory(sessionID)
   return rows.map((row) => ({
     managed_id: row.id,
@@ -100,7 +100,7 @@ const layer = Layer.effectDiscard(
           execute: (input, context) =>
             Effect.gen(function* () {
               if (input.action === "list") {
-                const attachments = yield* inventory(context.sessionID)
+                const attachments = yield* inventory(store, SessionSchema.ID.make(context.sessionID))
                 return { action: "list" as const, attachments }
               }
               const result = yield* store

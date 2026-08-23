@@ -86,11 +86,11 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
         // An initial load with no data surfaces the inline error view below. A
         // failed refresh intentionally stays quiet and keeps the already-shown
         // list interactive; reopening the dialog retries the load.
-        return info.value
+        return (info.value as ProjectDirectory[] | undefined) ?? []
       }
     },
   )
-  const directoryData = createMemo(() => directories() ?? props.initialDirectories)
+  const directoryData = createMemo<ProjectDirectory[] | undefined>(() => (directories() as ProjectDirectory[] | undefined) ?? props.initialDirectories)
   // Show the locked error view only when we have nothing to display. A refresh
   // that fails after the list rendered keeps the list and its actions.
   const showError = createMemo(() => Boolean(loadError()) && !directoryData())
