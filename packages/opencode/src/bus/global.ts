@@ -11,7 +11,9 @@ export type GlobalEvent = {
 class GlobalBusEmitter extends EventEmitter<{
   event: [GlobalEvent]
 }> {
-  override emit(eventName: "event", event: GlobalEvent): boolean {
+  override emit(eventName: string | symbol, ...args: any[]): boolean {
+    if (eventName !== "event") return super.emit(eventName, ...args)
+    const event = args[0] as GlobalEvent
     if (event.payload && typeof event.payload === "object" && !("id" in event.payload)) {
       event.payload.id = event.payload.syncEvent?.id ?? Identifier.create("evt", "ascending")
     }
