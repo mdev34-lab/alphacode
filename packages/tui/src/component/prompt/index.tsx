@@ -4,6 +4,7 @@ import {
   TextareaRenderable,
   MouseEvent,
   PasteEvent,
+  TextAttributes,
   decodePasteBytes,
   type KeyEvent,
   type Renderable,
@@ -15,7 +16,7 @@ import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { tint, useTheme } from "../../context/theme"
+import { tint, useTheme, selectedForeground } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
@@ -1449,9 +1450,6 @@ export function Prompt(props: PromptProps) {
                       <text fg={fadeColor(highlight(), agentMetaAlpha())}>
                         {store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}
                       </text>
-                      <Show when={store.mode === "normal" && local.permission.mode === "auto"}>
-                        <text fg={fadeColor(theme.textMuted, agentMetaAlpha())}>auto</text>
-                      </Show>
                       <Show when={store.mode === "normal"}>
                         <box flexDirection="row" gap={1}>
                           <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
@@ -1476,11 +1474,16 @@ export function Prompt(props: PromptProps) {
                   )}
                 </Show>
               </box>
-              <Show when={hasRightContent()}>
-                <box flexDirection="row" gap={1} alignItems="center">
-                  {props.right}
-                </box>
-              </Show>
+              <box flexDirection="row" gap={1} alignItems="center">
+                <Show when={store.mode === "normal" && local.permission.mode === "yolo"}>
+                  <box paddingLeft={1} paddingRight={1} backgroundColor={theme.warning}>
+                    <text fg={selectedForeground(theme, theme.warning)} attributes={TextAttributes.BOLD}>
+                      YOLO
+                    </text>
+                  </box>
+                </Show>
+                <Show when={hasRightContent()}>{props.right}</Show>
+              </box>
             </box>
           </box>
         </box>
