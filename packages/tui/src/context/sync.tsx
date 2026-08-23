@@ -195,7 +195,7 @@ export const {
 
         case "permission.asked": {
           const request = event.properties
-          if (permission.mode === "auto") {
+          if (permission.mode === "yolo") {
             void sdk.client.permission.reply({
               requestID: request.id,
               reply: "once",
