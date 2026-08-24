@@ -219,7 +219,7 @@ export function Session() {
     return index === -1 ? messages() : messages().slice(0, index)
   }
   const foregroundTasks = createMemo(() =>
-    sync.data.capabilities.experimentalBackgroundSubagents
+    sync.data.capabilities.backgroundSubagents
       ? messages().flatMap((message) =>
           (sync.data.part[message.id] ?? []).filter(
             (part): part is ToolPart =>
@@ -1515,7 +1515,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
             <span style={{ fg: theme.textMuted }}> view subagents</span>
             <Show
               when={
-                sync.data.capabilities.experimentalBackgroundSubagents &&
+                sync.data.capabilities.backgroundSubagents &&
                 props.parts.some(
                   (x) =>
                     x.type === "tool" &&

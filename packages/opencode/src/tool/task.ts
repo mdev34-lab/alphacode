@@ -1,6 +1,5 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./task.txt"
-import { ToolJsonSchema } from "./json-schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
@@ -12,7 +11,6 @@ import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
 
 export interface TaskPromptOps {
@@ -23,13 +21,12 @@ export interface TaskPromptOps {
 
 const id = "task"
 const BACKGROUND_DESCRIPTION = [
-  "Background mode: background=true launches the subagent asynchronously and returns immediately.",
-  "Foreground is the default; use it when you need the result before continuing.",
-  "Use background only for independent work that can run while you continue elsewhere.",
-  "You will be notified automatically when it finishes.",
+  "Subagents run asynchronously by default: the tool launches the subagent and returns immediately.",
+  "You will be notified automatically when it finishes; do not sleep, poll, or ask it for status.",
+  "Use background=false for synchronous execution only when you need the result before continuing.",
 ].join(" ")
 const BACKGROUND_STARTED = [
-  "The task is working in the background. You will be notified automatically when it finishes.",
+  "The task is running in the background. You will be notified automatically when it finishes.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
   "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
 ].join("\n")
@@ -51,13 +48,11 @@ const BaseParameterFields = {
   command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
 }
 
-const BaseParameters = Schema.Struct(BaseParameterFields)
-
 export const Parameters = Schema.Struct({
   ...BaseParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      "Run the agent asynchronously (default: true). The tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Set to false to run synchronously and wait for the result.",
   }),
 })
 
@@ -86,7 +81,6 @@ export const TaskTool = Tool.define(
     const config = yield* Config.Service
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
-    const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
 
     const run = Effect.fn("TaskTool.execute")(function* (
@@ -94,12 +88,9 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
-      const runInBackground = params.background === true
-      if (runInBackground && !flags.experimentalBackgroundSubagents) {
-        return yield* Effect.fail(
-          new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
-        )
-      }
+      // Background is the default. Only an explicit `background: false`
+      // (synchronous request) waits for the child result before returning.
+      const runInBackground = params.background !== false
 
       const parent = yield* sessions.get(ctx.sessionID)
       let current = parent
@@ -227,10 +218,21 @@ export const TaskTool = Tool.define(
         text: string,
       ) {
         const currentParent = yield* sessions.get(ctx.sessionID)
+        // Notifications must run in the parent session, with the parent's own
+        // agent. The task context agent is the child's agent on the subtask
+        // path, so fall back to the most recent parent user message before
+        // using it.
+        const parentMessages = yield* sessions
+          .messages({ sessionID: ctx.sessionID, limit: 50 })
+          .pipe(Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])))
+        const parentAgent =
+          currentParent.agent ??
+          parentMessages.find((message) => message.info.role === "user")?.info.agent ??
+          ctx.agent
         yield* ops
           .prompt({
             sessionID: ctx.sessionID,
-            agent: currentParent.agent ?? ctx.agent,
+            agent: parentAgent,
             variant,
             parts: [
               {
@@ -357,11 +359,8 @@ export const TaskTool = Tool.define(
     })
 
     return {
-      description: flags.experimentalBackgroundSubagents
-        ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")
-        : DESCRIPTION,
+      description: [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n"),
       parameters: Parameters,
-      jsonSchema: flags.experimentalBackgroundSubagents ? undefined : ToolJsonSchema.fromSchema(BaseParameters),
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         run(params, ctx).pipe(Effect.orDie),
     }

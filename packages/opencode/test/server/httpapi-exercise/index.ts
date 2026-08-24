@@ -580,7 +580,8 @@ const scenarios: Scenario[] = [
     .json(200, array),
   http.protected.get("/experimental/capabilities", "experimental.capabilities.get").json(200, (body) => {
     check(typeof body === "object" && body !== null, "capabilities should be an object")
-    check("backgroundSubagents" in body, "capabilities should report background subagents")
+    const capabilities = body as { backgroundSubagents?: boolean }
+    check(capabilities.backgroundSubagents === true, "background subagents should always be enabled")
   }),
   http.protected
     .post("/experimental/session/{sessionID}/background", "experimental.session.background")
