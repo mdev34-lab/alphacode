@@ -388,6 +388,7 @@ export type SessionsPromptInput = {
     readonly prompt: {
       readonly text: string
       readonly files?: ReadonlyArray<{
+        readonly id?: string
         readonly uri: string
         readonly name?: string
         readonly description?: string
@@ -406,6 +407,7 @@ export type SessionsPromptInput = {
     readonly prompt: {
       readonly text: string
       readonly files?: ReadonlyArray<{
+        readonly id?: string
         readonly uri: string
         readonly name?: string
         readonly description?: string
@@ -424,6 +426,7 @@ export type SessionsPromptInput = {
     readonly prompt: {
       readonly text: string
       readonly files?: ReadonlyArray<{
+        readonly id?: string
         readonly uri: string
         readonly name?: string
         readonly description?: string
@@ -442,6 +445,7 @@ export type SessionsPromptInput = {
     readonly prompt: {
       readonly text: string
       readonly files?: ReadonlyArray<{
+        readonly id?: string
         readonly uri: string
         readonly name?: string
         readonly description?: string
@@ -465,11 +469,14 @@ export type SessionsPromptOutput = {
     readonly prompt: {
       readonly text: string
       readonly files?: ReadonlyArray<{
+        readonly id?: string
         readonly uri: string
         readonly mime: string
         readonly name?: string
         readonly description?: string
         readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+        readonly path?: string
+        readonly size?: number | "Infinity" | "-Infinity" | "NaN"
       }>
       readonly agents?: ReadonlyArray<{
         readonly name: string
@@ -544,11 +551,14 @@ export type SessionsContextOutput = {
         readonly time: { readonly created: number }
         readonly text: string
         readonly files?: ReadonlyArray<{
+          readonly id?: string
           readonly uri: string
           readonly mime: string
           readonly name?: string
           readonly description?: string
           readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+          readonly path?: string
+          readonly size?: number | "Infinity" | "-Infinity" | "NaN"
         }>
         readonly agents?: ReadonlyArray<{
           readonly name: string
@@ -620,11 +630,14 @@ export type SessionsContextOutput = {
                     readonly status: "completed"
                     readonly input: { readonly [x: string]: JsonValue }
                     readonly attachments?: ReadonlyArray<{
+                      readonly id?: string
                       readonly uri: string
                       readonly mime: string
                       readonly name?: string
                       readonly description?: string
                       readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+                      readonly path?: string
+                      readonly size?: number | "Infinity" | "-Infinity" | "NaN"
                     }>
                     readonly content: ReadonlyArray<
                       | { readonly type: "text"; readonly text: string }
@@ -736,11 +749,14 @@ export type SessionsHistoryOutput = {
           readonly prompt: {
             readonly text: string
             readonly files?: ReadonlyArray<{
+              readonly id?: string
               readonly uri: string
               readonly mime: string
               readonly name?: string
               readonly description?: string
               readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+              readonly path?: string
+              readonly size?: number | "Infinity" | "-Infinity" | "NaN"
             }>
             readonly agents?: ReadonlyArray<{
               readonly name: string
@@ -763,11 +779,14 @@ export type SessionsHistoryOutput = {
           readonly prompt: {
             readonly text: string
             readonly files?: ReadonlyArray<{
+              readonly id?: string
               readonly uri: string
               readonly mime: string
               readonly name?: string
               readonly description?: string
               readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+              readonly path?: string
+              readonly size?: number | "Infinity" | "-Infinity" | "NaN"
             }>
             readonly agents?: ReadonlyArray<{
               readonly name: string
@@ -1194,11 +1213,14 @@ export type SessionsEventsOutput =
         readonly prompt: {
           readonly text: string
           readonly files?: ReadonlyArray<{
+            readonly id?: string
             readonly uri: string
             readonly mime: string
             readonly name?: string
             readonly description?: string
             readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+            readonly path?: string
+            readonly size?: number
           }>
           readonly agents?: ReadonlyArray<{
             readonly name: string
@@ -1221,11 +1243,14 @@ export type SessionsEventsOutput =
         readonly prompt: {
           readonly text: string
           readonly files?: ReadonlyArray<{
+            readonly id?: string
             readonly uri: string
             readonly mime: string
             readonly name?: string
             readonly description?: string
             readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+            readonly path?: string
+            readonly size?: number
           }>
           readonly agents?: ReadonlyArray<{
             readonly name: string
@@ -1622,11 +1647,14 @@ export type SessionsMessageOutput = {
         readonly time: { readonly created: number }
         readonly text: string
         readonly files?: ReadonlyArray<{
+          readonly id?: string
           readonly uri: string
           readonly mime: string
           readonly name?: string
           readonly description?: string
           readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+          readonly path?: string
+          readonly size?: number | "Infinity" | "-Infinity" | "NaN"
         }>
         readonly agents?: ReadonlyArray<{
           readonly name: string
@@ -1698,11 +1726,14 @@ export type SessionsMessageOutput = {
                     readonly status: "completed"
                     readonly input: { readonly [x: string]: JsonValue }
                     readonly attachments?: ReadonlyArray<{
+                      readonly id?: string
                       readonly uri: string
                       readonly mime: string
                       readonly name?: string
                       readonly description?: string
                       readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+                      readonly path?: string
+                      readonly size?: number | "Infinity" | "-Infinity" | "NaN"
                     }>
                     readonly content: ReadonlyArray<
                       | { readonly type: "text"; readonly text: string }
@@ -1794,11 +1825,14 @@ export type MessagesListOutput = {
         readonly time: { readonly created: number }
         readonly text: string
         readonly files?: ReadonlyArray<{
+          readonly id?: string
           readonly uri: string
           readonly mime: string
           readonly name?: string
           readonly description?: string
           readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+          readonly path?: string
+          readonly size?: number | "Infinity" | "-Infinity" | "NaN"
         }>
         readonly agents?: ReadonlyArray<{
           readonly name: string
@@ -1870,11 +1904,14 @@ export type MessagesListOutput = {
                     readonly status: "completed"
                     readonly input: { readonly [x: string]: JsonValue }
                     readonly attachments?: ReadonlyArray<{
+                      readonly id?: string
                       readonly uri: string
                       readonly mime: string
                       readonly name?: string
                       readonly description?: string
                       readonly source?: { readonly start: number; readonly end: number; readonly text: string }
+                      readonly path?: string
+                      readonly size?: number | "Infinity" | "-Infinity" | "NaN"
                     }>
                     readonly content: ReadonlyArray<
                       | { readonly type: "text"; readonly text: string }

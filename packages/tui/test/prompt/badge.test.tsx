@@ -47,10 +47,7 @@ describe("prompt badge", () => {
       return undefined
     })
     const config = resolve({}, { terminalSuspend: true })
-    const pluginRuntime = createPluginRuntime({
-      fetch: calls.fetch,
-      plugins: [],
-    })
+    const pluginRuntime = createPluginRuntime()
 
     let sync!: ReturnType<typeof useSync>
     let done!: () => void
@@ -155,10 +152,7 @@ describe("prompt badge", () => {
       return undefined
     })
     const config = resolve({}, { terminalSuspend: true })
-    const pluginRuntime = createPluginRuntime({
-      fetch: calls.fetch,
-      plugins: [],
-    })
+    const pluginRuntime = createPluginRuntime()
 
     let sync!: ReturnType<typeof useSync>
     let done!: () => void

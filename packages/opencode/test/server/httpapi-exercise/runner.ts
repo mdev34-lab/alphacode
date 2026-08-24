@@ -225,6 +225,11 @@ function projectOptions(
 
 function fakeLlmConfig(url: string): Partial<ConfigV1.Info> {
   return {
+    agent: {
+      work: { finishTool: false },
+      general: { finishTool: false },
+      plan: { finishTool: false },
+    },
     model: "test/test-model",
     small_model: "test/test-model",
     provider: {

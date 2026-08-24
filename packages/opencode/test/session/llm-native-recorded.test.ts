@@ -98,6 +98,7 @@ const providerConfig = (input: {
   readonly model: ModelsDev.Provider["models"][string]
   readonly options: Record<string, unknown>
 }): Partial<ConfigV1.Info> => ({
+  ste_lite: false,
   enabled_providers: [input.providerID],
   provider: {
     [input.providerID]: {

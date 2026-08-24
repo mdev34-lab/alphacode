@@ -95,6 +95,7 @@ const it = testEffect(
 )
 
 const providerCfg = (url: string) => ({
+  agent: { work: { finishTool: false } },
   provider: {
     test: {
       name: "Test",
