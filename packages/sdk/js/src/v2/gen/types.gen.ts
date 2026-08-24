@@ -1705,6 +1705,7 @@ export type AgentConfig = {
   color?: string | "primary" | "secondary" | "accent" | "success" | "warning" | "error" | "info"
   steps?: number
   maxSteps?: number
+  finishTool?: boolean
   permission?: PermissionConfig
   [key: string]:
     | unknown
@@ -1935,12 +1936,14 @@ export type Config = {
   subagent_depth?: number
   username?: string
   mode?: {
+    work?: AgentConfig
     build?: AgentConfig
     plan?: AgentConfig
     [key: string]: AgentConfig | undefined
   }
   agent?: {
     plan?: AgentConfig
+    work?: AgentConfig
     build?: AgentConfig
     general?: AgentConfig
     explore?: AgentConfig
@@ -1998,10 +2001,17 @@ export type Config = {
             }
       }
   instructions?: Array<string>
+  ste_lite?: boolean
   layout?: LayoutConfig
   permission?: PermissionConfig
   tools?: {
     [key: string]: boolean
+  }
+  tool_search?: {
+    enabled?: boolean
+    always_load?: Array<string>
+    defer?: Array<string>
+    limit?: number
   }
   attachment?: AttachmentConfig
   enterprise?: {
@@ -2367,6 +2377,7 @@ export type Agent = {
     [key: string]: unknown
   }
   steps?: number
+  finishTool?: boolean
 }
 
 export type LspStatus = {
@@ -3053,11 +3064,14 @@ export type PromptSource = {
 }
 
 export type PromptFileAttachment = {
+  id?: string
   uri: string
   mime: string
   name?: string
   description?: string
   source?: PromptSource
+  path?: string
+  size?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type PromptAgentAttachment = {
@@ -3930,6 +3944,7 @@ export type SessionV2Info = {
 }
 
 export type PromptInputFileAttachment = {
+  id?: string
   uri: string
   name?: string
   description?: string
@@ -4769,6 +4784,17 @@ export type SessionNextRevertCommitted = {
     sessionID: string
     messageID: string
   }
+}
+
+export type PromptFileAttachment1 = {
+  id?: string
+  uri: string
+  mime: string
+  name?: string
+  description?: string
+  source?: PromptSource
+  path?: string
+  size?: number | "NaN" | "Infinity" | "-Infinity"
 }
 
 export type ModelApi =
@@ -6279,6 +6305,17 @@ export type EventSessionNextMoved = {
     location: LocationRef
     subdirectory?: string
   }
+}
+
+export type PromptFileAttachment2 = {
+  id?: string
+  uri: string
+  mime: string
+  name?: string
+  description?: string
+  source?: PromptSource
+  path?: string
+  size?: number | "NaN" | "Infinity" | "-Infinity"
 }
 
 export type EventSessionNextPrompted = {
