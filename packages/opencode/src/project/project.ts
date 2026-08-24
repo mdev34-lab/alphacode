@@ -132,7 +132,7 @@ const layer = Layer.effect(
 
     const emitUpdated = (data: Info) =>
       Effect.sync(() =>
-        GlobalBus.emit("event", {
+        GlobalBus.emitEvent( {
           directory: "global",
           project: data.id,
           payload: { type: Event.Updated.type, properties: data },
@@ -481,3 +481,4 @@ export const node = LayerNode.make({
 })
 
 export * as Project from "./project"
+

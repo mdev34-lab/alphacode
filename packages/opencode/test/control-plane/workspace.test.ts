@@ -1635,7 +1635,7 @@ describe("workspace waitForSync", () => {
                 .where(eq(EventSequenceTable.aggregate_id, sessionID))
                 .run()
                 .pipe(Effect.orDie)
-              GlobalBus.emit("event", { workspace: workspaceID, payload: { type: "anything" } })
+              GlobalBus.emitEvent( { workspace: workspaceID, payload: { type: "anything" } })
             }),
           ],
           { concurrency: "unbounded" },
@@ -1665,7 +1665,7 @@ describe("workspace waitForSync", () => {
                 .where(eq(EventSequenceTable.aggregate_id, sessionID))
                 .run()
                 .pipe(Effect.orDie)
-              GlobalBus.emit("event", {
+              GlobalBus.emitEvent( {
                 workspace: WorkspaceV2.ID.ascending("wrk_other_workspace"),
                 payload: { type: "sync" },
               })
@@ -1715,3 +1715,4 @@ describe("workspace waitForSync", () => {
     7000,
   )
 })
+

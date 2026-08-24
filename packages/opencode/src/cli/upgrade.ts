@@ -13,7 +13,7 @@ export async function upgrade() {
   if (!latest) return
 
   if (Flag.OPENCODE_ALWAYS_NOTIFY_UPDATE) {
-    GlobalBus.emit("event", {
+    GlobalBus.emitEvent( {
       directory: "global",
       payload: {
         type: Installation.Event.UpdateAvailable.type,
@@ -28,7 +28,7 @@ export async function upgrade() {
   const kind = Installation.getReleaseType(InstallationVersion, latest)
 
   if (config.autoupdate === "notify" || kind !== "patch") {
-    GlobalBus.emit("event", {
+    GlobalBus.emitEvent( {
       directory: "global",
       payload: {
         type: Installation.Event.UpdateAvailable.type,
@@ -41,7 +41,7 @@ export async function upgrade() {
   if (method === "unknown") return
   await Installation.upgrade(method, latest)
     .then(() =>
-      GlobalBus.emit("event", {
+      GlobalBus.emitEvent( {
         directory: "global",
         payload: {
           type: Installation.Event.Updated.type,
@@ -51,3 +51,4 @@ export async function upgrade() {
     )
     .catch(() => {})
 }
+

@@ -15,7 +15,7 @@ git clone https://github.com/mdev34-lab/alphacode.git
 cd alphacode
 bun install
 ./packages/opencode/script/build.ts --single
-# binary: ./packages/opencode/dist/opencode-<platform>/bin/opencode (e.g. linux-x64, darwin-arm64)
+# binary: ./packages/opencode/dist/alphacode-<platform>/bin/alphacode (e.g. linux-x64, darwin-arm64)
 ```
 
-> **Note:** the executable is still named `opencode` for compatibility — this rebrand does not rename the CLI binary, package names, or config paths (`~/.opencode`) at this stage.
+> **Note:** the executable is now named `alphacode`. Config and data paths (`~/.opencode`) are unchanged.
