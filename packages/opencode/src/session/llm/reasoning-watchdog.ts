@@ -2,7 +2,7 @@ import type { LLMEvent } from "@opencode-ai/llm"
 import { Clock, Duration, Effect, Stream } from "effect"
 import { ProviderError } from "@/provider/error"
 
-export const INACTIVITY_TIMEOUT = "5 minutes"
+export const INACTIVITY_TIMEOUT = "1 minute"
 
 type Options = {
   readonly timeout?: Duration.Input

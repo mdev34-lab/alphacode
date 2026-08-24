@@ -6,7 +6,7 @@ import { ProviderError } from "@/provider/error"
 import { ReasoningWatchdog } from "@/session/llm/reasoning-watchdog"
 import { it } from "../lib/effect"
 
-const TIMEOUT = "5 minutes"
+const TIMEOUT = "1 minute"
 
 const start = (id = "reasoning-1") => LLMEvent.reasoningStart({ id })
 const delta = (text: string, id = "reasoning-1") => LLMEvent.reasoningDelta({ id, text })
@@ -39,7 +39,7 @@ describe("reasoning inactivity watchdog", () => {
       const source = Stream.concat(
         Stream.concat(
           Stream.make(start(), delta("first")),
-          Stream.fromEffect(Effect.sleep("4 minutes").pipe(Effect.as(delta("second")))),
+          Stream.fromEffect(Effect.sleep("40 seconds").pipe(Effect.as(delta("second")))),
         ),
         Stream.never,
       )
@@ -48,11 +48,11 @@ describe("reasoning inactivity watchdog", () => {
         Effect.forkScoped({ startImmediately: true }),
       )
 
-      yield* adjust("4 minutes")
+      yield* adjust("40 seconds")
       yield* pending(fiber)
-      yield* adjust("4 minutes")
+      yield* adjust("40 seconds")
       yield* pending(fiber)
-      yield* adjust("1 minute")
+      yield* adjust("20 seconds")
 
       const error = yield* Fiber.join(fiber).pipe(Effect.flip)
       expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
@@ -64,7 +64,7 @@ describe("reasoning inactivity watchdog", () => {
       const source = Stream.concat(
         Stream.concat(
           Stream.make(start(), delta("thinking")),
-          Stream.fromEffect(Effect.sleep("4 minutes").pipe(Effect.as(text("answer")))),
+          Stream.fromEffect(Effect.sleep("40 seconds").pipe(Effect.as(text("answer")))),
         ),
         Stream.never,
       )
@@ -73,11 +73,11 @@ describe("reasoning inactivity watchdog", () => {
         Effect.forkScoped({ startImmediately: true }),
       )
 
-      yield* adjust("4 minutes")
+      yield* adjust("40 seconds")
       yield* pending(fiber)
-      yield* adjust("4 minutes")
+      yield* adjust("40 seconds")
       yield* pending(fiber)
-      yield* adjust("1 minute")
+      yield* adjust("20 seconds")
 
       const error = yield* Fiber.join(fiber).pipe(Effect.flip)
       expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
@@ -89,7 +89,7 @@ describe("reasoning inactivity watchdog", () => {
       const source = Stream.concat(
         Stream.concat(
           Stream.make(start(), delta("thinking")),
-          Stream.fromEffect(Effect.sleep("4 minutes").pipe(Effect.as(step()))),
+          Stream.fromEffect(Effect.sleep("40 seconds").pipe(Effect.as(step()))),
         ),
         Stream.never,
       )
@@ -98,9 +98,9 @@ describe("reasoning inactivity watchdog", () => {
         Effect.forkScoped({ startImmediately: true }),
       )
 
-      yield* adjust("4 minutes")
+      yield* adjust("40 seconds")
       yield* pending(fiber)
-      yield* adjust("1 minute")
+      yield* adjust("20 seconds")
 
       const error = yield* Fiber.join(fiber).pipe(Effect.flip)
       expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
@@ -114,7 +114,7 @@ describe("reasoning inactivity watchdog", () => {
         Effect.forkScoped({ startImmediately: true }),
       )
 
-      yield* adjust("6 minutes")
+      yield* adjust("2 minutes")
       yield* pending(fiber)
       yield* Fiber.interrupt(fiber)
     }),
@@ -127,7 +127,7 @@ describe("reasoning inactivity watchdog", () => {
         Effect.forkScoped({ startImmediately: true }),
       )
 
-      yield* adjust("6 minutes")
+      yield* adjust("2 minutes")
       yield* pending(fiber)
       yield* Fiber.interrupt(fiber)
     }),
@@ -147,7 +147,7 @@ describe("reasoning inactivity watchdog", () => {
         summarized: true,
       }).pipe(Stream.runDrain, Effect.forkScoped({ startImmediately: true }))
 
-      yield* adjust("6 minutes")
+      yield* adjust("2 minutes")
       yield* pending(fiber)
       yield* Fiber.interrupt(fiber)
     }),
