@@ -1,5 +1,11 @@
 export * as AttachmentStore from "./attachment-store"
-export { Service, type Interface, type MaterializeInput, type CopyInput, type InventoryRow } from "./attachment-store/service"
+export {
+  Service,
+  type Interface,
+  type MaterializeInput,
+  type CopyInput,
+  type InventoryRow,
+} from "./attachment-store/service"
 
 /**
  * Materializes conversation attachments (pasted media, mentioned files, remote
@@ -12,7 +18,7 @@ export { Service, type Interface, type MaterializeInput, type CopyInput, type In
  */
 import path from "path"
 import { fileURLToPath } from "url"
-import { Context, Duration, Effect, Layer, Schedule } from "effect"
+import { Duration, Effect, Layer, Schedule } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeGlobalNode, makeLocationNode } from "./effect/app-node"
 import { LayerNodePlatform } from "./effect/app-node-platform"
@@ -28,7 +34,10 @@ import { AgentV2 } from "./agent"
 import { SessionMessage } from "./session/message"
 import { FileAttachment } from "./session/prompt"
 import { AttachmentStoreService } from "./attachment-store/service"
-import { PromptInput } from "@opencode-ai/schema/prompt-input"
+import { Database } from "./database/database"
+import { MessageTable, PartTable } from "./session/sql"
+import { asc, eq } from "drizzle-orm"
+import type { SessionV1 } from "./v1/session"
 
 export const MANAGED_DIRECTORY = "attachments"
 export const MAX_BYTES = 50 * 1024 * 1024
@@ -83,6 +92,10 @@ const sourceOf = (uri: string, kind?: string) => {
   return "unknown"
 }
 
+type LegacyPartData = Omit<SessionV1.Part, "id" | "sessionID" | "messageID">
+type LegacyFilePartData = Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">
+const isLegacyFilePart = (part: LegacyPartData): part is LegacyFilePartData => part.type === "file"
+
 const readBytes = (
   fs: FSUtil.Interface,
   location: LocationMutation.Interface,
@@ -113,11 +126,16 @@ const readBytes = (
     const size = info && "size" in info ? Number(info.size) : Number.NaN
     if (Number.isFinite(size) && size > MAX_BYTES)
       return yield* Effect.fail(new Error(`Attachment exceeds the ${MAX_BYTES} byte limit`))
-    const bytes = yield* fs.readFile(target.canonical)
-    return bytes as Uint8Array
+    return yield* fs.readFile(target.canonical)
   })
 
-const fetchBytes = (http: HttpClient.HttpClient, permission: PermissionV2.Interface, sessionID: SessionSchema.ID, agent: AgentV2.ID | undefined, uri: string) =>
+const fetchBytes = (
+  http: HttpClient.HttpClient,
+  permission: PermissionV2.Interface,
+  sessionID: SessionSchema.ID,
+  agent: AgentV2.ID | undefined,
+  uri: string,
+) =>
   Effect.gen(function* () {
     yield* permission.assert({
       action: "web",
@@ -129,8 +147,10 @@ const fetchBytes = (http: HttpClient.HttpClient, permission: PermissionV2.Interf
     const response = yield* http
       .execute(HttpClientRequest.get(uri))
       .pipe(Effect.flatMap(HttpClientResponse.filterStatusOk))
-    const bytes = yield* collectBoundedResponseBody(response, MAX_BYTES, () =>
-      new Error(`Attachment exceeds the ${MAX_BYTES} byte limit`),
+    const bytes = yield* collectBoundedResponseBody(
+      response,
+      MAX_BYTES,
+      () => new Error(`Attachment exceeds the ${MAX_BYTES} byte limit`),
     )
     return bytes as Uint8Array
   })
@@ -145,7 +165,12 @@ const layer = Layer.effect(
     const permission = yield* PermissionV2.Service
     const directory = path.join(global.data, MANAGED_DIRECTORY)
 
-    const write = Effect.fn("AttachmentStore.write")(function* (sessionID: string, id: string, mime: string, bytes: Uint8Array) {
+    const write = Effect.fn("AttachmentStore.write")(function* (
+      sessionID: string,
+      id: string,
+      mime: string,
+      bytes: Uint8Array,
+    ) {
       const file = path.join(directory, sessionID, `${id}.${extensionFor(mime)}`)
       yield* fs.ensureDir(path.dirname(file)).pipe(Effect.mapError((cause) => new Error(String(cause))))
       yield* fs.writeFile(file, bytes).pipe(Effect.mapError((cause) => new Error(String(cause))))
@@ -153,8 +178,42 @@ const layer = Layer.effect(
     })
 
     const sessionStore = yield* SessionStore.Service
+    const { db } = yield* Database.Service
 
-    const materialize = Effect.fn("AttachmentStore.materialize")(function* (input: AttachmentStoreService.MaterializeInput) {
+    const legacyAttachments = Effect.fn("AttachmentStore.legacyAttachments")(function* (sessionID: SessionSchema.ID) {
+      const rows = yield* db
+        .select({ id: PartTable.id, part: PartTable.data, message: MessageTable.data })
+        .from(PartTable)
+        .innerJoin(MessageTable, eq(PartTable.message_id, MessageTable.id))
+        .where(eq(PartTable.session_id, sessionID))
+        .orderBy(asc(PartTable.time_created), asc(PartTable.id))
+        .all()
+        .pipe(Effect.orDie)
+      return rows.flatMap((row) => {
+        if (row.message.role !== "user" || !isLegacyFilePart(row.part)) return []
+        return [{ ...row.part, id: row.id }]
+      })
+    })
+
+    const managedEntries = (sessionID: SessionSchema.ID) =>
+      fs
+        .readDirectoryEntries(path.join(directory, sessionID))
+        .pipe(Effect.orElseSucceed(() => [] as { name: string }[]))
+
+    const managedFile = (entries: ReadonlyArray<{ name: string }>, id: string) =>
+      entries.find((entry) => entry.name === `${id}${path.extname(entry.name)}`)
+
+    const managedSize = (sessionID: SessionSchema.ID, entry: { name: string } | undefined) =>
+      entry
+        ? fs.stat(path.join(directory, sessionID, entry.name)).pipe(
+            Effect.map((info) => ("size" in info ? Number(info.size) : undefined)),
+            Effect.orElseSucceed(() => undefined),
+          )
+        : Effect.succeed(undefined)
+
+    const materialize = Effect.fn("AttachmentStore.materialize")(function* (
+      input: AttachmentStoreService.MaterializeInput,
+    ) {
       const { attachment } = input
       return yield* Effect.gen(function* () {
         const id = attachment.id ?? Identifier.ascending()
@@ -162,7 +221,11 @@ const layer = Layer.effect(
         let bytes: Uint8Array | undefined
         if (attachment.uri.startsWith("data:")) {
           const parsed = parseDataUri(attachment.uri)
-          bytes = parsed ? (parsed.base64 ? Buffer.from(parsed.payload, "base64") : Buffer.from(decodeURIComponent(parsed.payload), "utf8")) : Buffer.from([])
+          bytes = parsed
+            ? parsed.base64
+              ? Buffer.from(parsed.payload, "base64")
+              : Buffer.from(decodeURIComponent(parsed.payload), "utf8")
+            : Buffer.from([])
         } else if (attachment.uri.startsWith("http://") || attachment.uri.startsWith("https://")) {
           bytes = yield* fetchBytes(http, permission, input.sessionID, input.agent, attachment.uri)
         } else if (attachment.uri.startsWith("file://")) {
@@ -183,30 +246,64 @@ const layer = Layer.effect(
           size: bytes.length,
         })
       }).pipe(
-        Effect.catch((error) => Effect.log(`attachment materialization failed: ${String(error)}`).pipe(Effect.andThen(() => Effect.succeed(undefined)))),
-        Effect.flatMap((result) => result === undefined ? Effect.succeed(FileAttachment.create({ ...attachment, id: attachment.id ?? Identifier.ascending() } as FileAttachment)) : Effect.succeed(result)),
+        Effect.catch((error) =>
+          Effect.log(`attachment materialization failed: ${String(error)}`).pipe(
+            Effect.andThen(() => Effect.succeed(undefined)),
+          ),
+        ),
+        Effect.flatMap((result) =>
+          result === undefined
+            ? Effect.succeed(
+                FileAttachment.create({ ...attachment, id: attachment.id ?? Identifier.ascending() } as FileAttachment),
+              )
+            : Effect.succeed(result),
+        ),
       )
     })
 
     const inventory = Effect.fn("AttachmentStore.inventory")(function* (sessionID: SessionSchema.ID) {
-      const messages = yield* sessionStore.context(sessionID).pipe(Effect.orDie)
-      return messages
+      const [messages, legacy, entries] = yield* Effect.all([
+        sessionStore.context(sessionID).pipe(Effect.orDie),
+        legacyAttachments(sessionID),
+        managedEntries(sessionID),
+      ])
+      const canonical = messages
         .filter((message): message is Extract<typeof message, { type: "user" }> => message.type === "user")
         .flatMap((message) => message.files ?? [])
-        .filter((attachment): attachment is NonNullable<typeof attachment> => attachment !== undefined)
-        .filter((attachment): attachment is FileAttachment & { id: string } => attachment.id !== undefined)
-        .map((attachment) => ({
+        .filter((attachment): attachment is FileAttachment & { id: string } => attachment?.id !== undefined)
+
+      const rows = new Map<string, AttachmentStoreService.InventoryRow>()
+      for (const attachment of canonical) {
+        const managed = managedFile(entries, attachment.id)
+        const size = yield* managedSize(sessionID, managed)
+        rows.set(attachment.id, {
           id: attachment.id,
           name: attachment.name,
           mime: attachment.mime,
           source: sourceOf(attachment.uri),
-          size: attachment.size,
-          unavailable: attachment.path === undefined ? true : undefined,
-        }))
+          size: size ?? attachment.size,
+          unavailable: managed ? undefined : true,
+        })
+      }
+      for (const attachment of legacy) {
+        if (rows.has(attachment.id)) continue
+        const managed = managedFile(entries, attachment.id)
+        rows.set(attachment.id, {
+          id: attachment.id,
+          name: attachment.filename,
+          mime: attachment.mime,
+          source: sourceOf(attachment.url, attachment.source?.type),
+          size: yield* managedSize(sessionID, managed),
+          unavailable: managed ? undefined : true,
+        })
+      }
+      return [...rows.values()]
     })
 
     const copyTo = Effect.fn("AttachmentStore.copyTo")(function* (input: AttachmentStoreService.CopyInput) {
-      const target = yield* location.resolve({ path: input.target, kind: "file" }).pipe(Effect.mapError((error) => new Error(String(error))))
+      const target = yield* location
+        .resolve({ path: input.target, kind: "file" })
+        .pipe(Effect.mapError((error) => new Error(String(error))))
       const external = target.externalDirectory
       const source = { type: "tool" as const, messageID: SessionMessage.ID.create(), callID: input.id }
       if (external)
@@ -224,17 +321,29 @@ const layer = Layer.effect(
         agent: input.agent,
         source,
       })
-      const entries = (yield* fs
-        .readDirectoryEntries(path.join(directory, input.sessionID))
-        .pipe(Effect.orElseSucceed(() => [] as typeof entries))) as { name: string }[]
-      const match = entries.find((entry) => entry.name === `${input.id}${path.extname(entry.name)}`)
+      let entries = yield* managedEntries(input.sessionID)
+      let match = managedFile(entries, input.id)
+      if (!match) {
+        const attachment = (yield* legacyAttachments(input.sessionID)).find((item) => item.id === input.id)
+        if (attachment) {
+          yield* materialize({
+            sessionID: input.sessionID,
+            agent: input.agent,
+            attachment: {
+              id: attachment.id,
+              uri: attachment.url,
+              name: attachment.filename,
+            },
+          })
+          entries = yield* managedEntries(input.sessionID)
+          match = managedFile(entries, input.id)
+        }
+      }
       if (!match) return yield* Effect.fail(new Error(`Attachment ${input.id} not found in managed store`))
       const bytes = yield* fs
         .readFile(path.join(directory, input.sessionID, match.name))
         .pipe(Effect.mapError((cause) => new Error(String(cause))))
-      yield* fs
-        .ensureDir(path.dirname(target.canonical))
-        .pipe(Effect.mapError((cause) => new Error(String(cause))))
+      yield* fs.ensureDir(path.dirname(target.canonical)).pipe(Effect.mapError((cause) => new Error(String(cause))))
       yield* fs.writeFile(target.canonical, bytes).pipe(Effect.mapError((cause) => new Error(String(cause))))
       return { resource: target.resource }
     })
@@ -250,8 +359,7 @@ const layer = Layer.effect(
           const full = path.join(sub, file.name)
           const info = yield* fs.stat(full).pipe(Effect.orElseSucceed(() => undefined))
           const modified = info && "mtimeMs" in info ? Number(info.mtimeMs) : 0
-          if (modified !== 0 && modified < cutoff)
-            yield* fs.remove(full).pipe(Effect.catch(() => Effect.void))
+          if (modified !== 0 && modified < cutoff) yield* fs.remove(full).pipe(Effect.catch(() => Effect.void))
         }
       }
     })
@@ -270,6 +378,7 @@ export const node = makeLocationNode({
     PermissionV2.node,
     LayerNodePlatform.httpClient,
     SessionStore.node,
+    Database.node,
   ],
 })
 
@@ -281,10 +390,14 @@ const cleanupLayer = Layer.effectDiscard(
     const directory = path.join(global.data, MANAGED_DIRECTORY)
     const prune = Effect.gen(function* () {
       const cutoff = Date.now() - Duration.toMillis(RETENTION)
-      for (const entry of (yield* fs.readDirectoryEntries(directory).pipe(Effect.orElseSucceed(() => [] as { name: string; type?: string }[])))) {
+      for (const entry of yield* fs
+        .readDirectoryEntries(directory)
+        .pipe(Effect.orElseSucceed(() => [] as { name: string; type?: string }[]))) {
         if (entry.type !== "directory") continue
         const sub = path.join(directory, entry.name)
-        for (const file of (yield* fs.readDirectoryEntries(sub).pipe(Effect.orElseSucceed(() => [] as { name: string }[])))) {
+        for (const file of yield* fs
+          .readDirectoryEntries(sub)
+          .pipe(Effect.orElseSucceed(() => [] as { name: string }[]))) {
           const full = path.join(sub, file.name)
           const info = yield* fs.stat(full).pipe(Effect.orElseSucceed(() => undefined))
           const modified = info && "mtimeMs" in info ? Number(info.mtimeMs) : 0

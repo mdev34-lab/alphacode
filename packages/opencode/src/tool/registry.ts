@@ -58,6 +58,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
+import * as Attachment from "./attachment"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -121,6 +122,7 @@ const layer = Layer.effect(
     const skilltool = yield* SkillTool
     const toolsearch = yield* ToolSearchTool
     const toolsearchregex = yield* ToolSearchRegexTool
+    const attachment = yield* Attachment.AttachmentTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
     const codeModeTool = codeMode ? yield* codeMode.CodeModeTool : undefined
@@ -229,6 +231,7 @@ const layer = Layer.effect(
           skill: Tool.init(skilltool),
           toolSearch: Tool.init(toolsearch),
           toolSearchRegex: Tool.init(toolsearchregex),
+          attachment: Tool.init(attachment),
           patch: Tool.init(patchtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
@@ -254,6 +257,7 @@ const layer = Layer.effect(
             tool.search,
             tool.skill,
             tool.patch,
+            tool.attachment,
             ...(toolSearch.enabled ? [tool.toolSearch, tool.toolSearchRegex] : []),
             tool.finish,
             ...(tool.execute ? [tool.execute] : []),
@@ -464,6 +468,7 @@ export const node = LayerNode.make({
     Database.node,
     Ripgrep.node,
     ToolCatalog.node,
+    Attachment.node,
   ],
 })
 

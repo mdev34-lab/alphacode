@@ -167,6 +167,59 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("exposes the native attachment tool once to the normal agent", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const agent = yield* agents.get("work")
+      const tools = yield* registry.tools({
+        agent,
+        providerID: ProviderV2.ID.make("test"),
+        modelID: ModelV2.ID.make("test-model"),
+      })
+      const attachment = tools.filter((tool) => tool.id === "attachment")
+
+      expect(agent.mode).toBe("primary")
+      expect(attachment).toHaveLength(1)
+      expect(attachment[0]?.description).toContain("attachments shared in the conversation")
+      expect(attachment[0]?.jsonSchema).toMatchObject({
+        anyOf: [{ properties: { action: { enum: ["list"] } } }, { properties: { action: { enum: ["save"] } } }],
+      })
+    }),
+  )
+
+  it.instance("keeps native attachment distinct from similarly named plugin tools", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const tool = path.join(test.directory, ".opencode", "tool")
+      yield* Effect.promise(() => fs.mkdir(tool, { recursive: true }))
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(tool, "attachments.ts"),
+          [
+            "export const list = {",
+            "  description: 'external attachment list',",
+            "  args: {},",
+            "  execute: async () => 'external list',",
+            "}",
+            "export const save = {",
+            "  description: 'external attachment save',",
+            "  args: {},",
+            "  execute: async () => 'external save',",
+            "}",
+            "",
+          ].join("\n"),
+        ),
+      )
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids.filter((id) => id === "attachment")).toHaveLength(1)
+      expect(ids).toContain("attachments_list")
+      expect(ids).toContain("attachments_save")
+    }),
+  )
+
   it.instance("loads tools from .opencode/tool (singular)", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
