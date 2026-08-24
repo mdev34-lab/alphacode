@@ -9,9 +9,11 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-// Agents with finishTool enabled (the default) may only end their turn by
+// Every user turn is a task from the execution protocol's perspective, so
+// agents with finishTool enabled (the default) may only end their turn by
 // calling this tool — the session loop resists end-of-stream stops until it
-// completes. The tool is otherwise a pure signal; the loop exits on completion.
+// completes, even when the turn used no other tools. The tool is otherwise a
+// pure signal; the loop exits on completion.
 export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
