@@ -60,6 +60,13 @@ import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { AgentV2 } from "@opencode-ai/core/agent"
+import { AttachmentStore } from "@opencode-ai/core/attachment-store"
+import { Location } from "@opencode-ai/core/location"
+import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
+import { WorkspaceRef } from "@/effect/instance-ref"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -143,6 +150,7 @@ const layer = Layer.effect(
     const sys = yield* SystemPrompt.Service
     const llm = yield* LLM.Service
     const events = yield* EventV2Bridge.Service
+    const locations = yield* LocationServiceMap.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     const { db } = database
@@ -1024,6 +1032,29 @@ const layer = Layer.effect(
           : Effect.succeed(part),
       )
 
+      const attachmentParts = parts.filter((part): part is SessionV1.FilePart => part.type === "file")
+      if (attachmentParts.length > 0) {
+        const ctx = yield* InstanceState.context
+        const workspaceID = yield* WorkspaceRef
+        const ref = Location.Ref.make({ directory: AbsolutePath.make(ctx.directory), workspaceID })
+        yield* AttachmentStore.Service.use((store) =>
+          Effect.forEach(
+            attachmentParts,
+            (part) =>
+              store.materialize({
+                sessionID: SessionSchema.ID.make(input.sessionID),
+                agent: AgentV2.ID.make(info.agent),
+                attachment: {
+                  id: part.id,
+                  uri: part.url,
+                  name: part.filename,
+                },
+              }),
+            { concurrency: "unbounded", discard: true },
+          ),
+        ).pipe(Effect.provide(locations.get(ref)))
+      }
+
       const parsed = decodeMessageInfo(info, { errors: "all", propertyOrder: "original" })
       if (Exit.isFailure(parsed)) {
         yield* Effect.logError("invalid user message before save", {
@@ -1670,6 +1701,12 @@ const argsRegex = /(?:\[Image\s+\d+\]|"[^"]*"|'[^']*'|[^\s"']+)/gi
 const placeholderRegex = /\$(\d+)/g
 const quoteTrimRegex = /^["']|["']$/g
 
+const locationServiceMapNode = LayerNode.make({
+  service: LocationServiceMap.Service,
+  layer: locationServiceMapLayer,
+  deps: [],
+})
+
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
@@ -1701,6 +1738,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    locationServiceMapNode,
   ],
 })
 

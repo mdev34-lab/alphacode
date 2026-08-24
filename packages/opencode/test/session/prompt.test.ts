@@ -270,6 +270,8 @@ const withMcpTools = testEffect(
   makeHttp({
     mcpTools: {
       notes_search_notes: mcpTool("search_notes", "Search the user's notes and return matching entries"),
+      attachments_list: mcpTool("attachments_list", "External MCP attachment list"),
+      attachments_save: mcpTool("attachments_save", "External MCP attachment save"),
     },
   }),
 )
@@ -1088,6 +1090,288 @@ it.instance("defers non-core tools until tool_search discovers them", () =>
     const second = toolNames(hits[1]?.body)
     expect(second).toContain("webfetch")
   }),
+)
+
+it.instance(
+  "discovers and invokes native attachment under its exact model-facing identity",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Native attachment",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "list the files I attached" }],
+      })
+      yield* llm.tool("tool_search_regex", { pattern: "^attachment$" })
+      yield* llm.tool("attachment", { action: "list" })
+      yield* llm.text("There are no attachments.")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      const hits = yield* llm.hits
+
+      expect(toolNames(hits[0]?.body)).not.toContain("attachment")
+      expect(toolNames(hits[1]?.body)).toContain("attachment")
+      expect(toolNames(hits[1]?.body)).not.toContain("attachments_list")
+      expect(toolNames(hits[1]?.body)).not.toContain("attachments_save")
+
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const call = messages
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "attachment")
+      expect(call).toBeDefined()
+      if (call?.type === "tool") {
+        expect(call.state.status).toBe("completed")
+        if (call.state.status === "completed") {
+          expect(call.state.output).toContain("No attachments in this session")
+          expect(call.state.metadata).toMatchObject({ action: "list", attachments: [] })
+        }
+      }
+      expect(result.info.role).toBe("assistant")
+    }),
+  20_000,
+)
+
+withMcpTools.instance(
+  "serializes native attachment distinctly from similarly named MCP tools",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), tool_search: { enabled: false } }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Native and MCP attachments",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "list attachments" }],
+      })
+      yield* llm.text("done")
+
+      yield* prompt.loop({ sessionID: session.id })
+
+      const names = toolNames((yield* llm.hits)[0]?.body)
+      expect(names.filter((name) => name === "attachment")).toHaveLength(1)
+      expect(names.filter((name) => name === "attachments_list")).toHaveLength(1)
+      expect(names.filter((name) => name === "attachments_save")).toHaveLength(1)
+    }),
+  20_000,
+)
+
+it.instance(
+  "permission filtering does not conflate attachment visibility with edit tools",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({ ...providerCfg(url), tool_search: { enabled: false } }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Attachment visibility",
+        permission: [
+          { permission: "*", pattern: "*", action: "allow" },
+          { permission: "edit", pattern: "*", action: "deny" },
+        ],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "list attachments without changing files" }],
+      })
+      yield* llm.text("done")
+
+      yield* prompt.loop({ sessionID: session.id })
+
+      const names = toolNames((yield* llm.hits)[0]?.body)
+      expect(names).toContain("attachment")
+      expect(names).not.toContain("edit")
+      expect(names).not.toContain("write")
+      expect(names).not.toContain("attachments_list")
+      expect(names).not.toContain("attachments_save")
+    }),
+  20_000,
+)
+
+it.instance(
+  "attachment save remains gated by canonical edit permission",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        tool_search: { enabled: false },
+        permission: { "*": "allow", edit: "deny" },
+      }))
+      const fsys = yield* FSUtil.Service
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Attachment save denied" })
+      const user = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [
+          { type: "text", text: "save this attachment" },
+          {
+            type: "file",
+            mime: "text/plain",
+            filename: "note.txt",
+            url: "data:text/plain;base64,YXR0YWNobWVudCBjb250ZW50",
+          },
+        ],
+      })
+      const attachment = user.parts.find((part) => part.type === "file")
+      if (!attachment || attachment.type !== "file") throw new Error("expected prompt attachment")
+      const target = path.join(dir, "saved-note.txt")
+
+      yield* llm.tool("attachment", { action: "list" })
+      yield* llm.tool("attachment", { action: "save", id: attachment.id, path: "saved-note.txt" })
+      yield* llm.text("I could not save it without edit permission.")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const calls = messages
+        .flatMap((message) => message.parts)
+        .filter((part) => part.type === "tool" && part.tool === "attachment")
+      const list = calls.find((part) => part.type === "tool" && part.state.input.action === "list")
+      const save = calls.find((part) => part.type === "tool" && part.state.input.action === "save")
+      expect(list).toBeDefined()
+      if (list?.type === "tool") {
+        expect(list.state.status).toBe("completed")
+        if (list.state.status === "completed") {
+          expect(list.state.metadata).toMatchObject({
+            action: "list",
+            attachments: [{ managed_id: attachment.id }],
+          })
+        }
+      }
+      expect(save).toBeDefined()
+      if (save?.type === "tool") expect(save.state.status).toBe("error")
+      expect(yield* fsys.existsSafe(target)).toBe(false)
+    }),
+  20_000,
+)
+
+it.instance(
+  "attachment save copies managed bytes after edit authorization",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        tool_search: { enabled: false },
+        permission: { "*": "allow" },
+      }))
+      const fsys = yield* FSUtil.Service
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Attachment save allowed" })
+      const user = yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [
+          { type: "text", text: "save this attachment" },
+          {
+            type: "file",
+            mime: "text/plain",
+            filename: "note.txt",
+            url: "data:text/plain;base64,YXR0YWNobWVudCBjb250ZW50",
+          },
+        ],
+      })
+      const attachment = user.parts.find((part) => part.type === "file")
+      if (!attachment || attachment.type !== "file") throw new Error("expected prompt attachment")
+      const target = path.join(dir, "saved-note.txt")
+
+      yield* llm.tool("attachment", { action: "save", id: attachment.id, path: "saved-note.txt" })
+      yield* llm.text("Saved.")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const save = messages
+        .flatMap((message) => message.parts)
+        .find((part) => part.type === "tool" && part.tool === "attachment")
+      expect(save).toBeDefined()
+      if (save?.type === "tool") {
+        expect(save.state.status).toBe("completed")
+        if (save.state.status === "completed") {
+          expect(save.state.output).toContain("Saved attachment to saved-note.txt")
+          expect(save.state.metadata).toMatchObject({ action: "save", resource: "saved-note.txt" })
+        }
+      }
+      expect(yield* fsys.readFileStringSafe(target)).toBe("attachment content")
+    }),
+  20_000,
+)
+
+it.instance(
+  "historical legacy attachments remain listable and lazily saveable",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        tool_search: { enabled: false },
+        permission: { "*": "allow" },
+      }))
+      const fsys = yield* FSUtil.Service
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({ title: "Historical attachment" })
+      const messageID = MessageID.ascending()
+      const attachmentID = PartID.ascending()
+      yield* sessions.updateMessage({
+        id: messageID,
+        role: "user",
+        sessionID: session.id,
+        agent: "work",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      yield* sessions.updatePart({
+        id: attachmentID,
+        messageID,
+        sessionID: session.id,
+        type: "file",
+        mime: "text/plain",
+        filename: "historical.txt",
+        url: "data:text/plain;base64,aGlzdG9yaWNhbCBjb250ZW50",
+      })
+      const target = path.join(dir, "historical.txt")
+
+      yield* llm.tool("attachment", { action: "list" })
+      yield* llm.tool("attachment", { action: "save", id: attachmentID, path: "historical.txt" })
+      yield* llm.text("Saved the historical attachment.")
+      yield* prompt.loop({ sessionID: session.id })
+
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      const calls = messages
+        .flatMap((message) => message.parts)
+        .filter((part) => part.type === "tool" && part.tool === "attachment")
+      const list = calls.find((part) => part.type === "tool" && part.state.input.action === "list")
+      const save = calls.find((part) => part.type === "tool" && part.state.input.action === "save")
+      expect(list).toBeDefined()
+      if (list?.type === "tool") {
+        expect(list.state.status).toBe("completed")
+        if (list.state.status === "completed") {
+          expect(list.state.metadata).toMatchObject({
+            action: "list",
+            attachments: [{ managed_id: attachmentID, name: "historical.txt", unavailable: true }],
+          })
+        }
+      }
+      expect(save).toBeDefined()
+      if (save?.type === "tool") expect(save.state.status).toBe("completed")
+      expect(yield* fsys.readFileStringSafe(target)).toBe("historical content")
+    }),
+  20_000,
 )
 
 it.instance("keeps every tool loaded when tool search is disabled", () =>
