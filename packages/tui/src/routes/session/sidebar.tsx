@@ -8,6 +8,7 @@ import { usePluginRuntime } from "../../plugin/runtime"
 
 import { getScrollAcceleration } from "../../util/scroll"
 import { WorkspaceLabel } from "../../component/workspace-label"
+import { BRAND_PREFIX, BRAND_SUFFIX } from "../../brand"
 
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const pluginRuntime = usePluginRuntime()
@@ -89,9 +90,9 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
         <box flexShrink={0} gap={1} paddingTop={1}>
           <pluginRuntime.Slot name="sidebar_footer" mode="single_winner" session_id={props.sessionID}>
             <text fg={theme.textMuted}>
-              <span style={{ fg: theme.success }}>•</span> <b>Open</b>
+              <span style={{ fg: theme.success }}>•</span> <b>{BRAND_PREFIX}</b>
               <span style={{ fg: theme.text }}>
-                <b>Code</b>
+                <b>{BRAND_SUFFIX}</b>
               </span>{" "}
               <span>{InstallationVersion}</span>
             </text>
