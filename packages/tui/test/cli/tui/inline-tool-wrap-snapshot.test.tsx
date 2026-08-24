@@ -8,13 +8,17 @@ import {
   formatSubagentTitle,
   formatSubagentToolcalls,
   InlineToolRow,
+  finishResult,
+  finishToolView,
   parseApplyPatchFiles,
   parseDiagnostics,
   parseQuestionAnswers,
   parseQuestions,
   parseTodos,
   alwaysSeparate,
+  shouldHideTool,
   toolDisplay,
+  toolRenderer,
 } from "../../../src/routes/session"
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
@@ -209,6 +213,22 @@ function FailedCompleteToolFixture() {
   )
 }
 
+function FinishToolFixture(props: { status: "pending" | "running" | "completed" | "error"; result?: string }) {
+  const view = finishToolView(props.status, props.result)
+  return (
+    <InlineToolRow
+      icon={view.icon}
+      complete={view.complete}
+      pending={view.pending}
+      spinner={view.spinner}
+      failed={props.status === "error"}
+      failure={view.failure}
+    >
+      {view.children}
+    </InlineToolRow>
+  )
+}
+
 async function renderFrame(component: () => JSX.Element, options: { width: number; height: number }) {
   testSetup = await testRender(component, options)
   await testSetup.renderOnce()
@@ -233,6 +253,46 @@ describe("TUI inline tool wrapping", () => {
     expect(toolDisplay("tool_search_regex")).toBe("tool_search_regex")
     expect(toolDisplay("lsp")).toBe("lsp")
     expect(toolDisplay("plan_exit")).toBe("plan_exit")
+  })
+
+  test("selects a native renderer for finish without changing fallback behavior", () => {
+    expect(toolDisplay("finish")).toBe("finish")
+    expect(toolRenderer("finish")).not.toBe(toolRenderer("plugin_tool"))
+    expect(toolDisplay("plugin_tool")).toBe("generic")
+    expect(toolDisplay("bash")).toBe("bash")
+  })
+
+  test("keeps finish visible when completed tool details are hidden", () => {
+    expect(shouldHideTool("finish", "completed", false)).toBe(false)
+    expect(shouldHideTool("bash", "completed", false)).toBe(true)
+    expect(shouldHideTool("plugin_tool", "completed", false)).toBe(true)
+    expect(shouldHideTool("bash", "running", false)).toBe(false)
+    expect(shouldHideTool("bash", "completed", true)).toBe(false)
+  })
+
+  test("derives finish result from output before input fallback", () => {
+    expect(finishResult({ result: "input summary" }, " output summary ")).toBe("output summary")
+    expect(finishResult({ result: " input summary " })).toBe("input summary")
+    expect(finishResult({}, "   ")).toBeUndefined()
+  })
+
+  test("renders completed finish with its summary", async () => {
+    const frame = await renderFrame(
+      () => <FinishToolFixture status="completed" result="Implemented the feature and verified tests." />,
+      { width: 72, height: 4 },
+    )
+    expect(frame).toContain("✓ Task completed")
+    expect(frame).toContain("↳ Implemented the feature and verified tests.")
+  })
+
+  test("renders pending and failed finish states distinctly", async () => {
+    const pending = await renderFrame(() => <FinishToolFixture status="pending" />, { width: 72, height: 2 })
+    expect(pending).toContain("~ Completing task...")
+    expect(pending).not.toContain("Task completed")
+
+    const failed = await renderFrame(() => <FinishToolFixture status="error" />, { width: 72, height: 2 })
+    expect(failed).toContain("Finish failed")
+    expect(failed).not.toContain("⚙")
   })
 
   test("replaces pending copy when a tool fails before completion", async () => {
