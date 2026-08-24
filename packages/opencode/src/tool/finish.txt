@@ -1,9 +1,7 @@
-Signal that the user's task is COMPLETE.
+End your turn by reporting the outcome. You MUST call this tool exactly once at the end of every reply — it is the only way to complete your turn.
 
-The task does NOT end when you stop responding — an end of output never completes the task by itself. You MUST call the finish tool when the task is done, passing a concise summary of the final result for the user. The task keeps running until you call finish.
+Every user message starts a task, even one that needs no tools. Greetings, questions, and conversational or explanatory answers all end with a finish call; answering without using any tools does not remove the requirement. Producing text is never enough on its own — ending your message alone does not complete the turn. The session keeps running until you call finish.
 
-Only call finish when the task is truly complete:
-- Every requested change is made and verified (tests, builds, linters where applicable).
-- Nothing is left half-done and no known issue remains unaddressed.
+Pass `result` as a concise summary of what you did or answered. This is a silent protocol signal, not something to announce to the user — do not say that you are finishing; just call it as the last step of your reply.
 
-Do not call finish to report partial progress, and do not call it to ask a question — use the question tool for questions and keep working otherwise.
+Call it once, after any other tool calls have completed. Do not call it to report partial progress, and do not use it to ask a question — use the question tool for questions and keep working otherwise.

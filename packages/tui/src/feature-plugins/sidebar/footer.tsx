@@ -3,6 +3,7 @@ import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo, Show } from "solid-js"
 import { abbreviateHome } from "../../runtime"
 import { useTuiPaths } from "../../context/runtime"
+import { BRAND_PREFIX, BRAND_SUFFIX } from "../../brand"
 
 const id = "internal:sidebar-footer"
 
@@ -69,9 +70,9 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
         <span style={{ fg: theme().text }}>{path().name}</span>
       </text>
       <text fg={theme().textMuted}>
-        <span style={{ fg: theme().success }}>•</span> <b>Open</b>
+        <span style={{ fg: theme().success }}>•</span> <b>{BRAND_PREFIX}</b>
         <span style={{ fg: theme().text }}>
-          <b>Code</b>
+          <b>{BRAND_SUFFIX}</b>
         </span>{" "}
         <span>{props.api.app.version}</span>
       </text>

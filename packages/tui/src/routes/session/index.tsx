@@ -1713,14 +1713,10 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
 
 function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMessage }) {
   const ctx = use()
-  const display = createMemo(() => toolDisplay(props.part.tool))
+  const renderer = createMemo(() => toolRenderer(props.part.tool))
 
   // Hide tool if showDetails is false and tool completed successfully
-  const shouldHide = createMemo(() => {
-    if (ctx.showDetails()) return false
-    if (props.part.state.status !== "completed") return false
-    return true
-  })
+  const shouldHide = createMemo(() => shouldHideTool(props.part.tool, props.part.state.status, ctx.showDetails()))
 
   const toolprops = {
     get metadata() {
@@ -1742,62 +1738,7 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
   return (
     <Show when={!shouldHide()}>
-      <Switch>
-        <Match when={display() === "bash"}>
-          <Shell {...toolprops} />
-        </Match>
-        <Match when={display() === "glob"}>
-          <Glob {...toolprops} />
-        </Match>
-        <Match when={display() === "read"}>
-          <Read {...toolprops} />
-        </Match>
-        <Match when={display() === "grep"}>
-          <Grep {...toolprops} />
-        </Match>
-        <Match when={display() === "webfetch"}>
-          <WebFetch {...toolprops} />
-        </Match>
-        <Match when={display() === "websearch"}>
-          <WebSearch {...toolprops} />
-        </Match>
-        <Match when={display() === "write"}>
-          <Write {...toolprops} />
-        </Match>
-        <Match when={display() === "edit"}>
-          <Edit {...toolprops} />
-        </Match>
-        <Match when={display() === "task"}>
-          <Task {...toolprops} />
-        </Match>
-        <Match when={display() === "execute"}>
-          <Execute {...toolprops} />
-        </Match>
-        <Match when={display() === "tool_search" || display() === "tool_search_regex"}>
-          <ToolSearch {...toolprops} />
-        </Match>
-        <Match when={display() === "lsp"}>
-          <Lsp {...toolprops} />
-        </Match>
-        <Match when={display() === "plan_exit"}>
-          <PlanExit {...toolprops} />
-        </Match>
-        <Match when={display() === "apply_patch"}>
-          <ApplyPatch {...toolprops} />
-        </Match>
-        <Match when={display() === "todowrite"}>
-          <TodoWrite {...toolprops} />
-        </Match>
-        <Match when={display() === "question"}>
-          <Question {...toolprops} />
-        </Match>
-        <Match when={display() === "skill"}>
-          <Skill {...toolprops} />
-        </Match>
-        <Match when={true}>
-          <GenericTool {...toolprops} />
-        </Match>
-      </Switch>
+      <Dynamic component={renderer()} {...toolprops} />
     </Show>
   )
 }
@@ -1845,6 +1786,62 @@ function GenericTool(props: ToolProps) {
       </BlockTool>
     </Show>
   )
+}
+
+function Finish(props: ToolProps) {
+  const result = createMemo(() => finishResult(props.input, props.output))
+  const view = createMemo(() => finishToolView(props.part.state.status, result()))
+
+  return (
+    <InlineTool
+      icon={view().icon}
+      pending={view().pending}
+      complete={view().complete}
+      spinner={view().spinner}
+      failure={view().failure}
+      separate={true}
+      part={props.part}
+    >
+      {view().children}
+    </InlineTool>
+  )
+}
+
+type FinishToolStatus = ToolPart["state"]["status"]
+
+export function finishResult(input: Record<string, unknown>, output?: string) {
+  return (output?.trim() || stringValue(input.result)?.trim() || undefined) ?? undefined
+}
+
+export function finishToolView(status: FinishToolStatus, result?: string) {
+  if (status === "pending") {
+    return {
+      icon: "✓",
+      pending: "Completing task...",
+      complete: false,
+      spinner: false,
+      failure: "Finish failed",
+      children: "Task completion",
+    }
+  }
+  if (status === "running") {
+    return {
+      icon: "✓",
+      pending: "Completing task...",
+      complete: true,
+      spinner: true,
+      failure: "Finish failed",
+      children: "Completing task...",
+    }
+  }
+  return {
+    icon: "✓",
+    pending: "Completing task...",
+    complete: status === "completed",
+    spinner: false,
+    failure: "Finish failed",
+    children: result ? `Task completed\n↳ ${result}` : "Task completed",
+  }
 }
 
 function InlineTool(props: {
@@ -2757,29 +2754,42 @@ function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
-const toolDisplays = new Set([
-  "bash",
-  "glob",
-  "read",
-  "grep",
-  "webfetch",
-  "websearch",
-  "write",
-  "edit",
-  "task",
-  "apply_patch",
-  "todowrite",
-  "question",
-  "skill",
-  "execute",
-  "tool_search",
-  "tool_search_regex",
-  "lsp",
-  "plan_exit",
-])
+type NativeToolRenderer = (props: ToolProps) => JSX.Element
+
+export function shouldHideTool(tool: string, status: ToolPart["state"]["status"], showDetails: boolean) {
+  if (showDetails) return false
+  if (status !== "completed") return false
+  return tool !== "finish"
+}
+
+const nativeToolRenderers = {
+  bash: Shell,
+  glob: Glob,
+  read: Read,
+  grep: Grep,
+  webfetch: WebFetch,
+  websearch: WebSearch,
+  write: Write,
+  edit: Edit,
+  task: Task,
+  apply_patch: ApplyPatch,
+  todowrite: TodoWrite,
+  question: Question,
+  skill: Skill,
+  execute: Execute,
+  tool_search: ToolSearch,
+  tool_search_regex: ToolSearch,
+  lsp: Lsp,
+  plan_exit: PlanExit,
+  finish: Finish,
+} satisfies Record<string, NativeToolRenderer>
+
+export function toolRenderer(tool: string): NativeToolRenderer {
+  return nativeToolRenderers[tool as keyof typeof nativeToolRenderers] ?? GenericTool
+}
 
 export function toolDisplay(tool: string) {
-  return toolDisplays.has(tool) ? tool : "generic"
+  return tool in nativeToolRenderers ? tool : "generic"
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

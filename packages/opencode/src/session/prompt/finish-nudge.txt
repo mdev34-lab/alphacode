@@ -1,7 +1,7 @@
-[WARNING] You ended your turn without calling the finish tool, so the task is not finished.
+[WARNING] You ended your turn without calling the finish tool, so the turn is not complete.
 
-Ending your response does not complete the task. You MUST call the finish tool to complete it.
-- If the task is complete, call the finish tool now with a concise summary of the result.
-- If it is not complete, continue the task using the available tools.
+Ending your response never completes the turn by itself. You MUST call the finish tool at the end of every turn — including turns that only need a conversational answer and no other tools.
+- Provide your final answer, or finish the work using the available tools.
+- Then call the finish tool exactly once with a concise summary of the result.
 
 (This is an automated reminder, so do not respond to it conversationally.)

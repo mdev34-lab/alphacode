@@ -1591,6 +1591,266 @@ it.instance("loop ends on end-of-stream when the agent opts out of the finish to
   }),
 )
 
+// Every user turn is a task from the execution protocol's perspective, so the
+// model must call finish even for conversational turns that need no other
+// tools. When the model ends a turn by calling finish alongside its final text,
+// the loop must terminate in that same turn without injecting a nudge. These
+// tests lock in that "no tools needed" never means "finish is unnecessary".
+
+const expectNoFinishNudge = (messages: SessionV1.WithParts[]) => {
+  const nudges = messages.filter(
+    (msg) =>
+      msg.info.role === "user" &&
+      msg.parts.some((part) => part.type === "text" && part.synthetic && part.text.includes("finish")),
+  )
+  expect(nudges.length).toBe(0)
+}
+
+const expectCompletedFinish = (result: SessionV1.WithParts) => {
+  const finish = result.parts.find(
+    (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish",
+  )
+  expect(finish?.state.status).toBe("completed")
+}
+
+it.instance(
+  "a simple greeting answered with the finish tool in the same turn completes without a nudge",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "Hello." }],
+      })
+      yield* llm.push(reply().text("Hello! How can I help you today?").tool("finish", { result: "Greeted the user." }).stop())
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(1)
+      const hits = yield* llm.hits
+      expect(toolNames(hits[0]?.body)).toContain("finish")
+      // The contract is surfaced to the model: the finish tool description must
+      // spell out that every reply ends with finish, not just coding tasks.
+      expect(JSON.stringify(hits[0]?.body)).toContain("end of every reply")
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.parts.some((part) => part.type === "text" && part.text.includes("How can I help"))).toBe(true)
+        expectCompletedFinish(result)
+      }
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      expectNoFinishNudge(messages)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance(
+  "a simple factual question answered with the finish tool in the same turn completes without a nudge",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "What is the capital of France?" }],
+      })
+      yield* llm.push(reply().text("Paris.").tool("finish", { result: "The capital of France is Paris." }).stop())
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(1)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.parts.some((part) => part.type === "text" && part.text === "Paris.")).toBe(true)
+        expectCompletedFinish(result)
+      }
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      expectNoFinishNudge(messages)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance(
+  "a conversational/explanatory answer that needs no tools still ends with the finish tool in the same turn",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "Explain what an agent loop is." }],
+      })
+      yield* llm.push(
+        reply()
+          .text("An agent loop repeatedly calls the model until the task reaches a terminal state.")
+          .tool("finish", { result: "Explained the agent loop." })
+          .stop(),
+      )
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(1)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.parts.some((part) => part.type === "text" && part.text.includes("agent loop"))).toBe(true)
+        expectCompletedFinish(result)
+      }
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      expectNoFinishNudge(messages)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance(
+  "a normal coding task that uses a tool finishes in the same turn without a nudge or a duplicate finish",
+  () =>
+    Effect.gen(function* () {
+      if (!(yield* hasBash)) return
+      const { dir, llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "Write the version to a file and confirm it." }],
+      })
+      yield* llm.tool("bash", { command: "printf 1 > version.txt", timeout: 5_000, workdir: path.resolve(dir) })
+      yield* llm.push(
+        reply().text("Wrote version.txt.").tool("finish", { result: "Wrote the version file." }).stop(),
+      )
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(2)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.parts.some((part) => part.type === "text" && part.text.includes("Wrote version.txt"))).toBe(true)
+        expectCompletedFinish(result)
+      }
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      expectNoFinishNudge(messages)
+      const finishParts = messages
+        .flatMap((message) => message.parts)
+        .filter((part) => part.type === "tool" && part.tool === "finish")
+      expect(finishParts.length).toBe(1)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance(
+  "a task that uses other tools finishes cleanly in the same turn as its final answer",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "List the text files in this project." }],
+      })
+      yield* llm.tool("glob", { pattern: "**/*.txt" })
+      yield* llm.push(reply().text("Found the files.").tool("finish", { result: "Listed the text files." }).stop())
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(2)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expectCompletedFinish(result)
+      }
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      expectNoFinishNudge(messages)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance(
+  "an edge case where the task cannot be completed normally still terminates with the finish tool",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "Delete the database file that does not exist." }],
+      })
+      yield* llm.push(
+        reply()
+          .text("No such file exists, so there is nothing to delete.")
+          .tool("finish", { result: "Nothing to delete — the database file does not exist." })
+          .stop(),
+      )
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(1)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expectCompletedFinish(result)
+      }
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      expectNoFinishNudge(messages)
+    }),
+  { timeout: 30_000 },
+)
+
 it.instance(
   "failed background subtask preserves metadata and surfaces the error",
   () =>
