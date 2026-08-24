@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { ReasoningWatchdog } from "./llm/reasoning-watchdog"
 import { SystemPrompt } from "./system"
 import { ToolCatalog } from "@/tool/catalog"
 
@@ -121,6 +122,7 @@ const live: Layer.Layer<
           format: input.user.format?.type,
         }),
       })
+      const summarizedReasoning = ReasoningWatchdog.hasSummary(prepared.params.options, input.model)
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -259,6 +261,7 @@ const live: Layer.Layer<
           return {
             type: "native" as const,
             stream: native.stream,
+            summarizedReasoning,
           }
         }
         yield* Effect.logInfo("llm runtime selected", {
@@ -287,6 +290,7 @@ const live: Layer.Layer<
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
       return {
         type: "ai-sdk" as const,
+        summarizedReasoning,
         result: streamText({
           onError(error) {
             bridge.fork(
@@ -394,17 +398,20 @@ const live: Layer.Layer<
 
             const result = yield* run({ ...input, abort: ctrl.signal })
 
-            if (result.type === "native") return result.stream
-
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
+            if (result.type === "native") {
+              return ReasoningWatchdog.guard(result.stream, { summarized: result.summarizedReasoning })
+            }
+
             const state = LLMAISDK.adapterState()
-            return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+            const events = Stream.fromAsyncIterable(result.result.fullStream, (e) =>
               e instanceof Error ? e : new Error(String(e)),
             ).pipe(
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
             )
+            return ReasoningWatchdog.guard(events, { summarized: result.summarizedReasoning })
           }),
         ),
       )
