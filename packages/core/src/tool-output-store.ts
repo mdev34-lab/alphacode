@@ -47,7 +47,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ToolOutputStore") {}
 
-const takePrefix = (input: string, maximumBytes: number) => {
+export const takePrefix = (input: string, maximumBytes: number) => {
   let bytes = 0
   let content = ""
   for (const char of input) {
@@ -59,7 +59,7 @@ const takePrefix = (input: string, maximumBytes: number) => {
   return content
 }
 
-const takeSuffix = (input: string, maximumBytes: number) => {
+export const takeSuffix = (input: string, maximumBytes: number) => {
   let bytes = 0
   const content: string[] = []
   for (const char of Array.from(input).toReversed()) {

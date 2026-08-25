@@ -9,6 +9,8 @@ import { expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
+import { readdir, readFile } from "node:fs/promises"
+import { Global } from "@opencode-ai/core/global"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
@@ -35,6 +37,7 @@ import { SessionSummary } from "../../src/session/summary"
 import { Instruction } from "../../src/session/instruction"
 import { SessionProcessor } from "../../src/session/processor"
 import { SessionPrompt } from "../../src/session/prompt"
+import { PASTE_FILE_DIRECTORY, PASTE_INLINE_MAX_BYTES } from "../../src/session/paste-file"
 import { SessionRevert } from "../../src/session/revert"
 import { SessionRunState } from "../../src/session/run-state"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -959,6 +962,127 @@ noLLMServer.instance.skip(
           expect.objectContaining({ type: "synthetic", text: "note content" }),
         ]),
       )
+    }),
+  { config: cfg },
+)
+
+// Paste-to-File: the TUI composer sends large pasted text as a
+// data:text/plain file part. Admission must keep the full content in a
+// managed file and inline a bounded preview, while small pastes keep the
+// legacy inline behavior.
+function pasteDir(sessionID: string) {
+  return path.join(Global.Path.data, PASTE_FILE_DIRECTORY, sessionID)
+}
+
+noLLMServer.instance(
+  "large data:text/plain paste is saved to a managed file with a bounded preview",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Paste to file" })
+
+      const content = "AlphaCode paste to file marker line. ".repeat(4000)
+      expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(PASTE_INLINE_MAX_BYTES)
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "work",
+        noReply: true,
+        parts: [
+          { type: "text", text: "please read this document" },
+          {
+            type: "file",
+            mime: "text/plain",
+            filename: "paste-1.txt",
+            url: `data:text/plain;base64,${Buffer.from(content, "utf8").toString("base64")}`,
+          },
+        ],
+      })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const parts = messages.flatMap((message) => message.parts)
+      const syntheticTexts = parts
+        .filter((part): part is SessionV1.TextPart => part.type === "text" && part.synthetic === true)
+        .map((part) => part.text)
+
+      // A note pointing the model at the full file...
+      const note = syntheticTexts.find((text) => text.includes("was saved to"))
+      expect(note).toBeDefined()
+      expect(note).toContain("Large pasted text file: paste-1.txt")
+      expect(note).toContain(pasteDir(chat.id))
+      // ...and a bounded preview that keeps head and tail of the content.
+      const preview = syntheticTexts.find((text) => text.includes("content truncated"))
+      expect(preview).toBeDefined()
+      expect(Buffer.byteLength(preview!, "utf8")).toBeLessThanOrEqual(PASTE_INLINE_MAX_BYTES)
+      expect(preview).toContain(content.split(" ")[0])
+      expect(preview).toContain(content.trim().split(" ").slice(-3).join(" "))
+      expect(preview).toContain(pasteDir(chat.id))
+      // The file part itself is retained on the message.
+      const fileParts = parts.filter((part) => part.type === "file")
+      expect(fileParts).toHaveLength(1)
+      expect(fileParts[0]).toMatchObject({ mime: "text/plain", filename: "paste-1.txt" })
+
+      // The full content is on disk, byte for byte.
+      const files = (yield* Effect.promise(() => readdir(pasteDir(chat.id)))).filter((file) =>
+        file.startsWith("paste-"),
+      )
+      expect(files).toHaveLength(1)
+      const saved = yield* Effect.promise(() => readFile(path.join(pasteDir(chat.id), files[0]), "utf8"))
+      expect(saved).toBe(content)
+    }),
+  { config: cfg },
+)
+
+noLLMServer.instance(
+  "small data:text/plain paste keeps the legacy inline behavior",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Paste to file small" })
+
+      // Exactly at the inline budget: still inlined in full, no file written.
+      const content = "a".repeat(PASTE_INLINE_MAX_BYTES)
+      expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(PASTE_INLINE_MAX_BYTES)
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "work",
+        noReply: true,
+        parts: [
+          { type: "text", text: "hello" },
+          {
+            type: "file",
+            mime: "text/plain",
+            filename: "note.txt",
+            url: `data:text/plain;base64,${Buffer.from(content, "utf8").toString("base64")}`,
+          },
+        ],
+      })
+
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const parts = messages.flatMap((message) => message.parts)
+      const syntheticTexts = parts
+        .filter((part): part is SessionV1.TextPart => part.type === "text" && part.synthetic === true)
+        .map((part) => part.text)
+
+      // Legacy shape: synthetic Read-tool note + the full decoded content.
+      expect(syntheticTexts).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining("Called the Read tool"),
+          content,
+        ]),
+      )
+      expect(syntheticTexts.find((text) => text.includes("Large pasted text file"))).toBeUndefined()
+      // No managed paste file for inlined content.
+      const exists = yield* Effect.promise(() =>
+        readdir(pasteDir(chat.id)).then(
+          () => true,
+          (error) => (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT" ? false : Promise.reject(error)),
+        ),
+      )
+      expect(exists).toBe(false)
     }),
   { config: cfg },
 )
