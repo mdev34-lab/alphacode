@@ -7,10 +7,13 @@ import {
   formatSubagentRetry,
   formatSubagentTitle,
   formatSubagentToolcalls,
+  formatToolSearchResult,
   InlineToolRow,
+  inlineToolState,
   finishResult,
   finishToolView,
   parseApplyPatchFiles,
+  parseAttachmentItems,
   parseDiagnostics,
   parseQuestionAnswers,
   parseQuestions,
@@ -213,6 +216,14 @@ function FailedCompleteToolFixture() {
   )
 }
 
+function InterruptedToolFixture() {
+  return (
+    <InlineToolRow icon="%" complete={false} pending="Preparing patch..." interrupted>
+      Patch
+    </InlineToolRow>
+  )
+}
+
 function FinishToolFixture(props: { status: "pending" | "running" | "completed" | "error"; result?: string }) {
   const view = finishToolView(props.status, props.result)
   return (
@@ -248,11 +259,34 @@ describe("TUI inline tool wrapping", () => {
     expect(toolDisplay("plugin_tool")).toBe("generic")
   })
 
-  test("renders the new built-in tools natively", () => {
-    expect(toolDisplay("tool_search")).toBe("tool_search")
-    expect(toolDisplay("tool_search_regex")).toBe("tool_search_regex")
-    expect(toolDisplay("lsp")).toBe("lsp")
-    expect(toolDisplay("plan_exit")).toBe("plan_exit")
+  test("renders every registered built-in tool natively", () => {
+    const builtins = [
+      "invalid",
+      "attachment",
+      "list_mcp_resources",
+      "list_mcp_resource_templates",
+      "read_mcp_resource",
+      "bash",
+      "read",
+      "glob",
+      "grep",
+      "edit",
+      "write",
+      "task",
+      "webfetch",
+      "todowrite",
+      "websearch",
+      "skill",
+      "apply_patch",
+      "question",
+      "tool_search",
+      "tool_search_regex",
+      "finish",
+      "execute",
+      "lsp",
+      "plan_exit",
+    ]
+    for (const tool of builtins) expect(toolDisplay(tool)).toBe(tool)
   })
 
   test("selects a native renderer for finish without changing fallback behavior", () => {
@@ -295,6 +329,20 @@ describe("TUI inline tool wrapping", () => {
     expect(failed).not.toContain("⚙")
   })
 
+  test("derives pending and running visuals from tool state centrally", () => {
+    expect(inlineToolState("pending", "src/index.ts")).toEqual({ complete: false, spinner: false })
+    expect(inlineToolState("running", "src/index.ts")).toEqual({ complete: "src/index.ts", spinner: true })
+    expect(inlineToolState("running", true, false)).toEqual({ complete: true, spinner: false })
+    expect(inlineToolState("completed", false)).toEqual({ complete: true, spinner: false })
+  })
+
+  test("renders interrupted tools as cancelled actions instead of pending or failed", async () => {
+    const frame = await renderFrame(() => <InterruptedToolFixture />, { width: 72, height: 2 })
+    expect(frame).toContain("Patch (interrupted)")
+    expect(frame).not.toContain("Preparing patch")
+    expect(frame).not.toContain("failed")
+  })
+
   test("replaces pending copy when a tool fails before completion", async () => {
     const frame = await renderFrame(() => <FailedPendingToolFixture />, { width: 72, height: 3 })
     expect(frame).toContain("Patch failed")
@@ -323,6 +371,24 @@ describe("TUI inline tool wrapping", () => {
     expect(parseQuestions([{}, { question: 1 }, { question: "Continue?" }])).toEqual([{ question: "Continue?" }])
     expect(parseQuestionAnswers([null, ["yes", 1], "no"])).toEqual([[], ["yes"], []])
     expect(parseQuestionAnswers({})).toBeUndefined()
+    expect(
+      parseAttachmentItems([
+        null,
+        { name: "missing mime" },
+        { name: "design.png", mime: "image/png", managed_id: "private-id", source: "/private/source" },
+        { mime: "application/pdf", unavailable: true },
+      ]),
+    ).toEqual([
+      { name: "design.png", mime: "image/png", unavailable: false },
+      { name: undefined, mime: "application/pdf", unavailable: true },
+    ])
+  })
+
+  test("formats tool-search success, empty, reused, and invalid-regex outcomes", () => {
+    expect(formatToolSearchResult(1, "Found 1 tool")).toBe("1 tool found")
+    expect(formatToolSearchResult(0, "No tools found")).toBe("no tools found")
+    expect(formatToolSearchResult(0, "Already available")).toBe("already available")
+    expect(formatToolSearchResult(0, "Invalid regex")).toBe("invalid regex")
   })
 
   test("ignores diagnostics with malformed nested ranges", () => {

@@ -1753,7 +1753,8 @@ type ToolProps = {
 function GenericTool(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
-  const output = createMemo(() => props.output?.trim() ?? "")
+  const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
+  const args = createMemo(() => Locale.truncate(input(props.input), Math.max(20, ctx.width - 12)))
   const [expanded, setExpanded] = createSignal(false)
   const maxLines = 3
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
@@ -1767,13 +1768,13 @@ function GenericTool(props: ToolProps) {
     <Show
       when={props.output && ctx.showGenericToolOutput()}
       fallback={
-        <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
-          {props.tool} {input(props.input)}
+        <InlineTool icon="⚙" pending={`Preparing ${props.tool}...`} complete={true} part={props.part}>
+          {props.tool} {args()}
         </InlineTool>
       }
     >
       <BlockTool
-        title={`# ${props.tool} ${input(props.input)}`}
+        title={`# ${props.tool} ${args()}`}
         part={props.part}
         onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
       >
@@ -1788,9 +1789,108 @@ function GenericTool(props: ToolProps) {
   )
 }
 
+function Attachment(props: ToolProps) {
+  const pathFormatter = usePathFormatter()
+  const [expanded, setExpanded] = createSignal(false)
+  const action = createMemo(() => stringValue(props.input.action) ?? stringValue(props.metadata.action))
+  const attachments = createMemo(() => parseAttachmentItems(props.metadata.attachments))
+  const overflow = createMemo(() => attachments().length > COLLAPSED_TOOL_PREVIEW_LINES)
+  const visible = createMemo(() =>
+    expanded() || !overflow() ? attachments() : attachments().slice(0, COLLAPSED_TOOL_PREVIEW_LINES),
+  )
+  const target = createMemo(() => stringValue(props.metadata.resource) ?? stringValue(props.input.path))
+  const title = createMemo(() => {
+    if (action() === "save") {
+      const path = target()
+      if (props.part.state.status === "completed")
+        return path ? `Saved attachment to ${pathFormatter.format(path)}` : "Saved attachment"
+      return path ? `Save attachment to ${pathFormatter.format(path)}` : "Save attachment"
+    }
+    if (props.part.state.status !== "completed") return "List attachments"
+    if (attachments().length === 0) return "No attachments"
+    return `Listed ${attachments().length} attachment${attachments().length === 1 ? "" : "s"}`
+  })
+  const content = createMemo(() => {
+    const rows = visible().map((item) => {
+      const name = stripAnsi(item.name ?? item.mime)
+      const type = item.name ? ` · ${item.mime}` : ""
+      return `↳ ${name}${type}${item.unavailable ? " · unavailable" : ""}`
+    })
+    if (overflow())
+      rows.push(
+        `  ${expanded() ? "Click to collapse" : `Click to expand ${attachments().length - visible().length} more`}`,
+      )
+    return [title(), ...rows].join("\n")
+  })
+  const pending = createMemo(() => (action() === "save" ? "Saving attachment..." : "Listing attachments..."))
+
+  return (
+    <InlineTool
+      icon="@"
+      pending={pending()}
+      failure="Attachment tool failed"
+      complete={action() ?? props.part.state.status === "completed"}
+      part={props.part}
+      onClick={overflow() ? () => setExpanded((prev) => !prev) : undefined}
+    >
+      {content()}
+    </InlineTool>
+  )
+}
+
+function Invalid(props: ToolProps) {
+  const ctx = use()
+  const { theme } = useTheme()
+  const [expanded, setExpanded] = createSignal(false)
+  const name = createMemo(() => stripAnsi(stringValue(props.input.tool)?.trim() ?? ""))
+  const detail = createMemo(() => stripAnsi(stringValue(props.input.error)?.trim() || props.output?.trim() || ""))
+  const collapsed = createMemo(() =>
+    collapseToolOutput(
+      detail(),
+      COLLAPSED_TOOL_PREVIEW_LINES,
+      COLLAPSED_TOOL_PREVIEW_LINES * Math.max(20, ctx.width - 6),
+    ),
+  )
+  const visible = createMemo(() => (expanded() || !collapsed().overflow ? detail() : collapsed().output))
+  const content = createMemo(() => {
+    const title = name() ? `Invalid tool call: ${name()}` : "Invalid tool call"
+    if (!visible()) return title
+    return `${title}\n↳ ${visible()}${collapsed().overflow ? `\n  ${expanded() ? "Click to collapse" : "Click to expand"}` : ""}`
+  })
+
+  return (
+    <InlineTool
+      icon="✗"
+      color={theme.error}
+      pending="Validating tool call..."
+      failure="Invalid tool call"
+      complete={name() || props.part.state.status === "completed"}
+      part={props.part}
+      onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+    >
+      {content()}
+    </InlineTool>
+  )
+}
+
 function Finish(props: ToolProps) {
+  const ctx = use()
   const result = createMemo(() => finishResult(props.input, props.output))
-  const view = createMemo(() => finishToolView(props.part.state.status, result()))
+  const [expanded, setExpanded] = createSignal(false)
+  const collapsed = createMemo(() =>
+    collapseToolOutput(
+      result() ?? "",
+      COLLAPSED_TOOL_PREVIEW_LINES,
+      COLLAPSED_TOOL_PREVIEW_LINES * Math.max(20, ctx.width - 6),
+    ),
+  )
+  const visible = createMemo(() => (expanded() || !collapsed().overflow ? result() : collapsed().output))
+  const view = createMemo(() => finishToolView(props.part.state.status, visible()))
+  const content = createMemo(() => {
+    if (!collapsed().overflow) return view().children
+    return `${view().children}
+  ${expanded() ? "Click to collapse" : "Click to expand"}`
+  })
 
   return (
     <InlineTool
@@ -1801,8 +1901,9 @@ function Finish(props: ToolProps) {
       failure={view().failure}
       separate={true}
       part={props.part}
+      onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
     >
-      {view().children}
+      {content()}
     </InlineTool>
   )
 }
@@ -1879,15 +1980,21 @@ function InlineTool(props: {
       error()?.includes("specified a rule") ||
       error()?.includes("user dismissed"),
   )
+  const interrupted = createMemo(
+    () =>
+      (props.part.state.status === "error" && props.part.state.metadata?.interrupted === true) ||
+      error()?.includes("Tool execution aborted"),
+  )
 
-  const failed = createMemo(() => Boolean(error() && !denied()))
+  const failed = createMemo(() => Boolean(error() && !denied() && !interrupted()))
   const clickable = createMemo(() => Boolean(props.onClick || failed()))
+  const state = createMemo(() => inlineToolState(props.part.state.status, props.complete, props.spinner))
   const fg = createMemo(() => {
     if (props.color) return props.color
     if (permission()) return theme.warning
     if (failed()) return theme.error
     if (hover() && props.onClick) return theme.text
-    if (props.complete) return theme.textMuted
+    if (state().complete || interrupted()) return theme.textMuted
     return theme.text
   })
 
@@ -1899,12 +2006,13 @@ function InlineTool(props: {
       errorColor={theme.error}
       failed={failed()}
       denied={Boolean(denied())}
+      interrupted={Boolean(interrupted())}
       error={error()}
       errorExpanded={errorExpanded()}
-      complete={props.complete}
+      complete={state().complete}
       pending={props.pending}
       failure={props.failure}
-      spinner={props.spinner}
+      spinner={state().spinner}
       separate={props.separate}
       onMouseOver={() => clickable() && setHover(true)}
       onMouseOut={() => setHover(false)}
@@ -1922,6 +2030,13 @@ function InlineTool(props: {
   )
 }
 
+export function inlineToolState(status: ToolPart["state"]["status"], complete: unknown, spinner?: boolean) {
+  return {
+    complete: status === "completed" ? true : status === "pending" ? false : complete,
+    spinner: spinner ?? status === "running",
+  }
+}
+
 export function InlineToolRow(props: {
   icon: string
   iconColor?: RGBA
@@ -1929,6 +2044,7 @@ export function InlineToolRow(props: {
   errorColor?: RGBA
   failed?: boolean
   denied?: boolean
+  interrupted?: boolean
   error?: string
   errorExpanded?: boolean
   complete: unknown
@@ -1967,27 +2083,28 @@ export function InlineToolRow(props: {
               <text
                 paddingLeft={3}
                 fg={props.color}
-                attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
+                attributes={props.denied || props.interrupted ? TextAttributes.STRIKETHROUGH : undefined}
               >
                 ~ {props.pending}
               </text>
             }
-            when={props.complete || props.failed}
+            when={props.complete || props.failed || props.denied || props.interrupted}
           >
             <box flexDirection="row">
               <text
                 width={INLINE_TOOL_ICON_WIDTH}
                 fg={props.failed ? props.errorColor : (props.iconColor ?? props.color)}
-                attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
+                attributes={props.denied || props.interrupted ? TextAttributes.STRIKETHROUGH : undefined}
               >
                 {props.icon}
               </text>
               <text
                 flexGrow={1}
                 fg={props.failed ? props.errorColor : props.color}
-                attributes={props.denied ? TextAttributes.STRIKETHROUGH : undefined}
+                attributes={props.denied || props.interrupted ? TextAttributes.STRIKETHROUGH : undefined}
               >
                 {props.failed && !props.complete ? (props.failure ?? props.children) : props.children}
+                <Show when={props.interrupted}> (interrupted)</Show>
               </text>
             </box>
           </Show>
@@ -2241,6 +2358,47 @@ function WebSearch(props: ToolProps) {
   )
 }
 
+function McpResource(props: ToolProps) {
+  const ctx = use()
+  const server = createMemo(() => stringValue(props.input.server) ?? stringValue(props.metadata.server))
+  const uri = createMemo(() => stringValue(props.input.uri) ?? stringValue(props.metadata.uri))
+  const count = createMemo(() => numberValue(props.metadata.count))
+  const read = props.tool === "read_mcp_resource"
+  const templates = props.tool === "list_mcp_resource_templates"
+  const content = createMemo(() => {
+    if (read) {
+      const location = [uri(), server() ? `from ${server()}` : undefined].filter(Boolean).join(" ")
+      const contents = numberValue(props.metadata.contents)
+      const attachments = numberValue(props.metadata.attachments)
+      const detail = [
+        contents !== undefined ? `${contents} content${contents === 1 ? "" : "s"}` : undefined,
+        attachments ? `${attachments} attachment${attachments === 1 ? "" : "s"}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+      return `${location ? `Read MCP resource ${location}` : "Read MCP resource"}${detail ? ` (${detail})` : ""}`
+    }
+    const label = templates ? "MCP resource templates" : "MCP resources"
+    const location = server() ? ` from ${server()}` : ""
+    const total = count()
+    return `${label}${location}${total === undefined ? "" : ` (${total} found)`}`
+  })
+  const label = createMemo(() => Locale.truncate(content(), Math.max(20, ctx.width - 8)))
+
+  return (
+    <InlineTool
+      icon={read ? "→" : "✱"}
+      pending={
+        read ? "Reading MCP resource..." : templates ? "Listing MCP resource templates..." : "Listing MCP resources..."
+      }
+      complete={read ? uri() : true}
+      part={props.part}
+    >
+      {label()}
+    </InlineTool>
+  )
+}
+
 function Task(props: ToolProps) {
   const { theme } = useTheme()
   const { navigate } = useRoute()
@@ -2382,7 +2540,7 @@ function Execute(props: ToolProps) {
   const content = createMemo(() => {
     const lines = ["execute"]
     for (const call of calls()) {
-      const args = input(call.input ?? {})
+      const args = Locale.truncate(input(call.input ?? {}), Math.max(20, ctx.width - 12))
       lines.push(`↳ ${call.tool}${args ? ` ${args}` : ""}${call.status === "error" ? " (failed)" : ""}`)
     }
     return lines.join("\n")
@@ -2417,8 +2575,8 @@ function Execute(props: ToolProps) {
 }
 
 function ToolSearch(props: ToolProps) {
-  const { theme } = useTheme()
   const regex = props.tool === "tool_search_regex"
+  const [expanded, setExpanded] = createSignal(false)
   const query = createMemo(() => stringValue(regex ? props.input.pattern : props.input.query))
   const count = createMemo(() => numberValue(props.metadata.count))
   const tools = createMemo(() => {
@@ -2427,29 +2585,38 @@ function ToolSearch(props: ToolProps) {
     if (!Array.isArray(value)) return []
     return value.filter((tool): tool is string => typeof tool === "string")
   })
+  const overflow = createMemo(() => tools().length > COLLAPSED_TOOL_PREVIEW_LINES)
+  const visible = createMemo(() =>
+    expanded() || !overflow() ? tools() : tools().slice(0, COLLAPSED_TOOL_PREVIEW_LINES),
+  )
+  const content = createMemo(() => {
+    const result =
+      props.part.state.status === "completed" ? formatToolSearchResult(count(), props.part.state.title) : undefined
+    const title = `Tool search ${regex ? `/${query()}` : `"${query()}"`}${result ? ` (${result})` : ""}`
+    const rows = visible().map((tool) => `↳ Loaded ${tool}`)
+    if (overflow())
+      rows.push(`  ${expanded() ? "Click to collapse" : `Click to expand ${tools().length - visible().length} more`}`)
+    return [title, ...rows].join("\n")
+  })
 
   return (
-    <>
-      <InlineTool icon="?" pending="Searching tools..." complete={query()} part={props.part}>
-        Tool search {regex ? `/${query()}` : `"${query()}"`}
-        <Show when={count() !== undefined}>
-          {" "}
-          ({count()} {count() === 1 ? "tool found" : "tools found"})
-        </Show>
-      </InlineTool>
-      <Show when={tools().length}>
-        <box paddingLeft={3}>
-          <For each={tools()}>
-            {(tool) => (
-              <text paddingLeft={3} fg={theme.textMuted}>
-                ↳ Loaded {tool}
-              </text>
-            )}
-          </For>
-        </box>
-      </Show>
-    </>
+    <InlineTool
+      icon="?"
+      pending="Searching tools..."
+      complete={query()}
+      part={props.part}
+      onClick={overflow() ? () => setExpanded((prev) => !prev) : undefined}
+    >
+      {content()}
+    </InlineTool>
   )
+}
+
+export function formatToolSearchResult(count: number | undefined, title: string) {
+  if (title === "Invalid regex") return "invalid regex"
+  if (title === "No tools found") return "no tools found"
+  if (title === "Already available") return "already available"
+  return count === undefined ? undefined : `${count} ${count === 1 ? "tool found" : "tools found"}`
 }
 
 const lspOperationLabels: Record<string, string> = {
@@ -2604,33 +2771,46 @@ function ApplyPatch(props: ToolProps) {
     )
   }
 
-  function title(file: { type: string; relativePath: string; filePath: string; deletions: number }) {
+  function title(file: ApplyPatchFile) {
     if (file.type === "delete") return "# Deleted " + file.relativePath
     if (file.type === "add") return "# Created " + file.relativePath
     if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " → " + file.relativePath
     return "← Patched " + file.relativePath
   }
 
+  function FilePatch(p: { file: ApplyPatchFile }) {
+    const [expanded, setExpanded] = createSignal(false)
+    const collapsed = createMemo(() => collapseDiff(p.file.patch, COLLAPSED_TOOL_PREVIEW_LINES))
+    const visible = createMemo(() => (expanded() || !collapsed().overflow ? p.file.patch : collapsed().diff))
+
+    return (
+      <BlockTool
+        title={title(p.file)}
+        part={props.part}
+        onClick={p.file.type !== "delete" && collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+      >
+        <Show
+          when={p.file.type !== "delete"}
+          fallback={
+            <text fg={theme.diffRemoved}>
+              -{p.file.deletions} line{p.file.deletions !== 1 ? "s" : ""}
+            </text>
+          }
+        >
+          <Diff diff={visible()} filePath={p.file.filePath} />
+          <Show when={collapsed().overflow}>
+            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+          </Show>
+          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={p.file.movePath ?? p.file.filePath} />
+        </Show>
+      </BlockTool>
+    )
+  }
+
   return (
     <Switch>
       <Match when={files().length > 0}>
-        <For each={files()}>
-          {(file) => (
-            <BlockTool title={title(file)} part={props.part}>
-              <Show
-                when={file.type !== "delete"}
-                fallback={
-                  <text fg={theme.diffRemoved}>
-                    -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
-                  </text>
-                }
-              >
-                <Diff diff={file.patch} filePath={file.filePath} />
-                <Diagnostics diagnostics={props.metadata.diagnostics} filePath={file.movePath ?? file.filePath} />
-              </Show>
-            </BlockTool>
-          )}
-        </For>
+        <For each={files()}>{(file) => <FilePatch file={file} />}</For>
       </Match>
       <Match when={true}>
         <InlineTool icon="%" pending="Preparing patch..." failure="Patch failed" complete={false} part={props.part}>
@@ -2641,15 +2821,20 @@ function ApplyPatch(props: ToolProps) {
   )
 }
 
+type ApplyPatchFile = ReturnType<typeof parseApplyPatchFiles>[number]
+
 function TodoWrite(props: ToolProps) {
+  const { theme } = useTheme()
   const todos = createMemo(() => parseTodos(props.input.todos))
   return (
     <Switch>
-      <Match when={parseTodos(props.metadata.todos).length}>
+      <Match when={props.metadata.todos !== undefined}>
         <BlockTool title="# Todos" part={props.part}>
-          <box>
-            <For each={todos()}>{(todo) => <TodoItem status={todo.status} content={todo.content} />}</For>
-          </box>
+          <Show when={todos().length > 0} fallback={<text fg={theme.textMuted}>No todos</text>}>
+            <box>
+              <For each={todos()}>{(todo) => <TodoItem status={todo.status} content={todo.content} />}</For>
+            </box>
+          </Show>
         </BlockTool>
       </Match>
       <Match when={true}>
@@ -2682,16 +2867,18 @@ function Question(props: ToolProps) {
     <Switch>
       <Match when={answers()}>
         <BlockTool title="# Questions" part={props.part}>
-          <box gap={1}>
-            <For each={questions()}>
-              {(q, i) => (
-                <box flexDirection="column">
-                  <text fg={theme.textMuted}>{q.question}</text>
-                  <text fg={theme.text}>{format(answers()?.[i()])}</text>
-                </box>
-              )}
-            </For>
-          </box>
+          <Show when={questions().length > 0} fallback={<text fg={theme.textMuted}>No questions</text>}>
+            <box gap={1}>
+              <For each={questions()}>
+                {(q, i) => (
+                  <box flexDirection="column">
+                    <text fg={theme.textMuted}>{q.question}</text>
+                    <text fg={theme.text}>{format(answers()?.[i()])}</text>
+                  </box>
+                )}
+              </For>
+            </box>
+          </Show>
         </BlockTool>
       </Match>
       <Match when={true}>
@@ -2763,6 +2950,11 @@ export function shouldHideTool(tool: string, status: ToolPart["state"]["status"]
 }
 
 const nativeToolRenderers = {
+  invalid: Invalid,
+  attachment: Attachment,
+  list_mcp_resources: McpResource,
+  list_mcp_resource_templates: McpResource,
+  read_mcp_resource: McpResource,
   bash: Shell,
   glob: Glob,
   read: Read,
@@ -2795,6 +2987,22 @@ export function toolDisplay(tool: string) {
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return
   return value as Record<string, unknown>
+}
+
+export function parseAttachmentItems(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    const attachment = recordValue(item)
+    const mime = stringValue(attachment?.mime)
+    if (!mime) return []
+    return [
+      {
+        name: stringValue(attachment?.name),
+        mime,
+        unavailable: attachment?.unavailable === true,
+      },
+    ]
+  })
 }
 
 export function parseApplyPatchFiles(value: unknown) {

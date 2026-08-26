@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { entryBody, entryCanStream, entryDone } from "@/cli/cmd/run/entry.body"
+import { entryCancelled, entryFailed } from "@/cli/cmd/run/scrollback.shared"
+import { toolInlineInfo, toolView } from "@/cli/cmd/run/tool"
 import type { StreamCommit, ToolSnapshot } from "@/cli/cmd/run/types"
 
 function commit(input: Partial<StreamCommit> & Pick<StreamCommit, "kind" | "text" | "phase" | "source">): StreamCommit {
@@ -514,6 +516,189 @@ describe("run entry body", () => {
       type: "text",
       content: "No such file or directory: '/tmp/demo/run'",
     })
+  })
+
+  test("registers every AlphaCode-native tool in direct-mode display rules", () => {
+    const fallback = { output: true, final: true }
+    const builtins = [
+      "invalid",
+      "attachment",
+      "list_mcp_resources",
+      "list_mcp_resource_templates",
+      "read_mcp_resource",
+      "bash",
+      "read",
+      "glob",
+      "grep",
+      "edit",
+      "write",
+      "task",
+      "webfetch",
+      "todowrite",
+      "websearch",
+      "skill",
+      "apply_patch",
+      "question",
+      "tool_search",
+      "tool_search_regex",
+      "finish",
+      "execute",
+      "lsp",
+      "plan_exit",
+    ]
+    for (const tool of builtins) expect(toolView(tool)).not.toEqual(fallback)
+    expect(toolView("attachment")).toEqual({ output: false, final: true })
+    expect(toolView("plugin_tool")).toEqual(fallback)
+  })
+
+  test("formats native attachment, tool-search, execute, and finish summaries", () => {
+    const attachment = toolInlineInfo(
+      toolPart("attachment", {
+        status: "completed",
+        input: { action: "list" },
+        output: "private raw output",
+        title: "attachment",
+        metadata: {
+          action: "list",
+          attachments: [
+            { managed_id: "private-id", name: "design.png", mime: "image/png", source: "/private/source" },
+            { managed_id: "private-id-2", name: "notes.txt", mime: "text/plain", source: "/private/notes" },
+          ],
+        },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(attachment).toEqual({
+      icon: "@",
+      title: "Listed 2 attachments",
+      mode: "block",
+      body: "↳ design.png · image/png\n↳ notes.txt · text/plain",
+    })
+    expect(attachment.body).not.toContain("private-id")
+    expect(attachment.body).not.toContain("/private/source")
+
+    expect(
+      toolInlineInfo(
+        toolPart("list_mcp_resources", {
+          status: "completed",
+          input: { server: "docs" },
+          output: '{"resources":[]}',
+          title: "MCP resources: docs",
+          metadata: { server: "docs", count: 0, servers: ["docs"] },
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({ icon: "✱", title: "MCP resources from docs (0 found)" })
+
+    expect(
+      toolInlineInfo(
+        toolPart("tool_search_regex", {
+          status: "completed",
+          input: { pattern: "[" },
+          output: "Invalid regex pattern",
+          title: "Invalid regex",
+          metadata: { query: "[", count: 0, tools: [] },
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({ icon: "?", title: "Tool search /[/ (invalid regex)" })
+
+    expect(
+      toolInlineInfo(
+        toolPart("execute", {
+          status: "completed",
+          input: { code: "tools.read({ filePath: 'a.ts' })" },
+          output: "MCP request failed",
+          title: "execute",
+          metadata: { error: true, toolCalls: [{ tool: "mcp_lookup", status: "error", input: { query: "alpha" } }] },
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({
+      icon: "✗",
+      title: "execute",
+      mode: "block",
+      body: "↳ mcp_lookup [query=alpha] (failed)\n  MCP request failed",
+    })
+
+    const fallback = toolInlineInfo(
+      toolPart("plugin_tool", {
+        status: "completed",
+        input: { query: "x".repeat(500), internal: { token: "do-not-render" } },
+        output: "done",
+        title: "",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(fallback.icon).toBe("⚙")
+    expect(fallback.title.length).toBeLessThanOrEqual(212)
+    expect(fallback.title).not.toContain("do-not-render")
+
+    expect(
+      toolInlineInfo(
+        toolPart("finish", {
+          status: "completed",
+          input: { result: "Verified the native renderers." },
+          output: "Verified the native renderers.",
+          title: "Task completed",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({
+      icon: "✓",
+      title: "Task completed",
+      mode: "block",
+      body: "Verified the native renderers.",
+    })
+  })
+
+  test("renders semantic failures and cancellations with native status language", () => {
+    const runtimeFailure = toolCommit({
+      tool: "execute",
+      state: {
+        status: "completed",
+        input: { code: "tools.fail()" },
+        output: "Runtime failed",
+        title: "execute",
+        metadata: { error: true, toolCalls: [] },
+        time: { start: 1, end: 2 },
+      },
+    })
+    expect(entryFailed(runtimeFailure)).toBe(true)
+    expect(entryBody(runtimeFailure)).toEqual({ type: "text", content: "✗ execute\n  Runtime failed" })
+
+    const interrupted = toolCommit({
+      tool: "read",
+      phase: "final",
+      toolState: "error",
+      state: {
+        status: "error",
+        input: { filePath: "src/a.ts" },
+        error: "Tool execution aborted",
+        metadata: { interrupted: true },
+        time: { start: 1, end: 2 },
+      },
+    })
+    expect(entryCancelled(interrupted)).toBe(true)
+    expect(entryFailed(interrupted)).toBe(false)
+    expect(entryBody(interrupted)).toEqual({ type: "text", content: "~ read interrupted" })
+
+    const denied = toolCommit({
+      tool: "webfetch",
+      phase: "final",
+      toolState: "error",
+      state: {
+        status: "error",
+        input: { url: "https://example.com" },
+        error: "The user rejected permission to use this tool",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      },
+    })
+    expect(entryCancelled(denied)).toBe(true)
+    expect(entryBody(denied)).toEqual({ type: "text", content: "~ webfetch cancelled" })
   })
 
   test("renders interrupted assistant finals as text", () => {

@@ -14,8 +14,24 @@ export function entrySyntax(commit: StreamCommit, theme: RunTheme): SyntaxStyle 
   return syntax(theme.block.syntax)
 }
 
+export function entryCancelled(commit: StreamCommit): boolean {
+  if (commit.kind !== "tool" || commit.part?.state.status !== "error") return false
+  const error = commit.part.state.error
+  return (
+    commit.part.state.metadata?.interrupted === true ||
+    error.includes("Tool execution aborted") ||
+    error.includes("QuestionRejectedError") ||
+    error.includes("rejected permission") ||
+    error.includes("specified a rule") ||
+    error.includes("user dismissed")
+  )
+}
+
 export function entryFailed(commit: StreamCommit): boolean {
-  return commit.kind === "tool" && (commit.toolState === "error" || commit.part?.state.status === "error")
+  if (commit.kind !== "tool" || entryCancelled(commit)) return false
+  if (commit.tool === "invalid") return true
+  if (commit.part?.state.status === "completed" && commit.part.state.metadata?.error === true) return true
+  return commit.toolState === "error" || commit.part?.state.status === "error"
 }
 
 export function entryLook(commit: StreamCommit, theme: RunEntryTheme): { fg: ColorInput; attrs?: number } {
@@ -30,6 +46,13 @@ export function entryLook(commit: StreamCommit, theme: RunEntryTheme): { fg: Col
     return {
       fg: theme.error.body,
       attrs: TextAttributes.BOLD,
+    }
+  }
+
+  if (entryCancelled(commit)) {
+    return {
+      fg: theme.system.body,
+      attrs: TextAttributes.DIM | TextAttributes.STRIKETHROUGH,
     }
   }
 
