@@ -122,6 +122,26 @@ it.instance("explore agent denies edit and write", () =>
   }),
 )
 
+it.instance("explore agent is read-only by default", () =>
+  Effect.gen(function* () {
+    const explore = yield* load((svc) => svc.get("explore"))
+    expect(explore).toBeDefined()
+    expect(explore?.mode).toBe("subagent")
+    expect(evalPerm(explore, "bash")).toBe("deny")
+    expect(evalPerm(explore, "websearch")).toBe("deny")
+    expect(evalPerm(explore, "write")).toBe("deny")
+    expect(evalPerm(explore, "edit")).toBe("deny")
+    expect(evalPerm(explore, "task")).toBe("deny")
+    expect(evalPerm(explore, "todowrite")).toBe("deny")
+
+    expect(evalPerm(explore, "read")).toBe("allow")
+    expect(evalPerm(explore, "grep")).toBe("allow")
+    expect(evalPerm(explore, "glob")).toBe("allow")
+    expect(evalPerm(explore, "list")).toBe("allow")
+    expect(evalPerm(explore, "webfetch")).toBe("allow")
+  }),
+)
+
 it.instance("explore agent asks for external directories and allows whitelisted external paths", () =>
   Effect.gen(function* () {
     const explore = yield* load((svc) => svc.get("explore"))
