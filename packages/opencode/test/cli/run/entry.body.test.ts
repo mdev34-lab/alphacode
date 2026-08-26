@@ -718,4 +718,118 @@ describe("run entry body", () => {
       content: "assistant interrupted",
     })
   })
+
+  test("bounded output handles Unicode edge cases (emoji, CJK, combining)", () => {
+    const emojiInput = "🔍".repeat(200)
+    const mcpWithEmoji = toolInlineInfo(
+      toolPart("list_mcp_resources", {
+        status: "completed",
+        input: { server: emojiInput },
+        output: '{"resources":[]}',
+        title: "MCP resources",
+        metadata: { server: emojiInput, count: 0 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(mcpWithEmoji.title.length).toBeLessThanOrEqual(210)
+    expect(mcpWithEmoji.title).toContain("MCP resources")
+
+    const cjkInput = "日本語テスト".repeat(100)
+    const searchWithCjk = toolInlineInfo(
+      toolPart("tool_search", {
+        status: "completed",
+        input: { query: cjkInput },
+        output: "",
+        title: "Tool search",
+        metadata: { count: 0, tools: [] },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(searchWithCjk.title.length).toBeLessThanOrEqual(210)
+    expect(searchWithCjk.title).toContain("Tool search")
+
+    const combiningInput = "é".repeat(200)
+    const mcpWithCombining = toolInlineInfo(
+      toolPart("read_mcp_resource", {
+        status: "completed",
+        input: { uri: combiningInput, server: "test" },
+        output: "content",
+        title: "Read MCP resource",
+        metadata: { uri: combiningInput, server: "test", contents: 1 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(mcpWithCombining.title.length).toBeLessThanOrEqual(210)
+  })
+
+  test("ANSI escape codes are stripped from renderer output", () => {
+    const ansiServer = "\x1b[31mmalicious\x1b[0m"
+    const mcp = toolInlineInfo(
+      toolPart("list_mcp_resources", {
+        status: "completed",
+        input: { server: ansiServer },
+        output: '{"resources":[]}',
+        title: "MCP resources",
+        metadata: { server: ansiServer, count: 0 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(mcp.title).not.toContain("\x1b[")
+    expect(mcp.title).toContain("malicious")
+
+    const ansiQuery = "\x1b[32m" + "x".repeat(500) + "\x1b[0m"
+    const search = toolInlineInfo(
+      toolPart("tool_search", {
+        status: "completed",
+        input: { query: ansiQuery },
+        output: "",
+        title: "Tool search",
+        metadata: { count: 0, tools: [] },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(search.title).not.toContain("\x1b[")
+    expect(search.title.length).toBeLessThanOrEqual(210)
+
+    const ansiUri = "\x1b[33m" + "x".repeat(500) + "\x1b[0m"
+    const readResource = toolInlineInfo(
+      toolPart("read_mcp_resource", {
+        status: "completed",
+        input: { uri: ansiUri, server: "test" },
+        output: "content",
+        title: "Read MCP resource",
+        metadata: { uri: ansiUri, server: "test", contents: 1 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(readResource.title).not.toContain("\x1b[")
+    expect(readResource.title.length).toBeLessThanOrEqual(210)
+  })
+
+  test("finish tool renders error icon when status is error", () => {
+    const errorFinish = toolInlineInfo(
+      toolPart("finish", {
+        status: "error",
+        input: { result: "partial work" },
+        error: "Task timed out",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      } as ToolPart["state"] & { output?: string; title?: string }),
+    )
+    expect(errorFinish.icon).toBe("✗")
+    expect(errorFinish.title).toContain("Task timed out")
+
+    const okFinish = toolInlineInfo(
+      toolPart("finish", {
+        status: "completed",
+        input: { result: "All done" },
+        output: "All done",
+        title: "Task completed",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(okFinish.icon).toBe("✓")
+    expect(okFinish.title).toBe("Task completed")
+  })
 })
