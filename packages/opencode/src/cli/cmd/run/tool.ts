@@ -440,9 +440,9 @@ function runQuestion(p: ToolProps<typeof QuestionTool>): ToolInline {
 function runInvalid(p: ToolProps<typeof InvalidTool>): ToolInline {
   return {
     icon: "✗",
-    title: text(p.frame.state.title) || "Invalid Tool",
+    title: bounded(p.frame.state.title, 120) || "Invalid Tool",
     mode: "block",
-    body: p.frame.status === "completed" ? text(p.frame.state.output) : undefined,
+    body: p.frame.status === "completed" ? Locale.truncate(stripAnsi(text(p.frame.state.output)), 2000) : undefined,
   }
 }
 
@@ -451,13 +451,23 @@ function boundedRows(rows: string[], max = 5): string[] {
   return [...rows.slice(0, max), `... and ${rows.length - max} more`]
 }
 
+function bounded(value: unknown, len = 200): string {
+  return Locale.truncate(stripAnsi(text(value).trim()), len)
+}
+
+function validAttachments(p: ToolProps): ToolDict[] {
+  return list<ToolDict>(p.frame.meta.attachments).filter((item) => {
+    const name = text(item?.name) || text(item?.mime)
+    return Boolean(name)
+  })
+}
+
 function attachmentRows(p: ToolProps): string[] {
   return boundedRows(
-    list<ToolDict>(p.frame.meta.attachments).flatMap((item) => {
-      const mime = text(item?.mime)
-      const name = text(item?.name) || mime
-      if (!name) return []
-      return [`↳ ${name}${item.name && mime ? ` · ${mime}` : ""}${item.unavailable === true ? " · unavailable" : ""}`]
+    validAttachments(p).map((item) => {
+      const mime = bounded(item?.mime, 40)
+      const name = bounded(item?.name, 80) || mime
+      return `↳ ${name}${item.name && mime ? ` · ${mime}` : ""}${item.unavailable === true ? " · unavailable" : ""}`
     }),
   )
 }
@@ -465,14 +475,14 @@ function attachmentRows(p: ToolProps): string[] {
 function attachmentTitle(p: ToolProps): string {
   const action = text(p.frame.input.action) || text(p.frame.meta.action)
   if (action === "save") {
-    const target = text(p.frame.meta.resource) || text(p.frame.input.path)
-    const path = toolPath(target)
-    if (p.frame.status === "completed") return path ? `Saved attachment to ${path}` : "Saved attachment"
-    return path ? `Save attachment to ${path}` : "Save attachment"
+    const target = bounded(p.frame.meta.resource || p.frame.input.path, 120)
+    const saved = target ? toolPath(target) : undefined
+    if (p.frame.status === "completed") return saved ? `Saved attachment to ${saved}` : "Saved attachment"
+    return saved ? `Save attachment to ${saved}` : "Save attachment"
   }
 
   if (p.frame.status !== "completed") return "List attachments"
-  const total = list(p.frame.meta.attachments).length
+  const total = validAttachments(p).length
   if (total === 0) return "No attachments"
   return `Listed ${total} attachment${total === 1 ? "" : "s"}`
 }
@@ -487,9 +497,9 @@ function runAttachment(p: ToolProps): ToolInline {
 }
 
 function mcpResourceTitle(p: ToolProps): string {
-  const server = text(p.frame.input.server) || text(p.frame.meta.server)
+  const server = bounded(p.frame.input.server || p.frame.meta.server)
   if (p.frame.name === "read_mcp_resource") {
-    const uri = text(p.frame.input.uri) || text(p.frame.meta.uri)
+    const uri = bounded(p.frame.input.uri || p.frame.meta.uri, 120)
     const location = [uri, server ? `from ${server}` : ""].filter(Boolean).join(" ")
     const contents = num(p.frame.meta.contents)
     const attachments = num(p.frame.meta.attachments)
@@ -499,12 +509,18 @@ function mcpResourceTitle(p: ToolProps): string {
     ]
       .filter(Boolean)
       .join(" · ")
-    return `${location ? `Read MCP resource ${location}` : "Read MCP resource"}${detail ? ` (${detail})` : ""}`
+    return Locale.truncate(
+      `${location ? `Read MCP resource ${location}` : "Read MCP resource"}${detail ? ` (${detail})` : ""}`,
+      200,
+    )
   }
 
   const label = p.frame.name === "list_mcp_resource_templates" ? "MCP resource templates" : "MCP resources"
   const total = num(p.frame.meta.count)
-  return `${label}${server ? ` from ${server}` : ""}${total === undefined ? "" : ` (${total} found)`}`
+  return Locale.truncate(
+    `${label}${server ? ` from ${server}` : ""}${total === undefined ? "" : ` (${total} found)`}`,
+    200,
+  )
 }
 
 function runMcpResource(p: ToolProps): ToolInline {
@@ -516,7 +532,7 @@ function runMcpResource(p: ToolProps): ToolInline {
 
 function toolSearchTitle(p: ToolProps): string {
   const regex = p.frame.name === "tool_search_regex"
-  const query = text(regex ? p.frame.input.pattern : p.frame.input.query)
+  const query = bounded(regex ? p.frame.input.pattern : p.frame.input.query, 120)
   const label = regex ? `/${query}/` : `"${query}"`
   const total = num(p.frame.meta.count)
   const title = text(p.frame.state.title)
@@ -530,7 +546,7 @@ function toolSearchTitle(p: ToolProps): string {
           : total === undefined
             ? undefined
             : `${total} ${total === 1 ? "tool found" : "tools found"}`
-  return `Tool search ${label}${result ? ` (${result})` : ""}`
+  return Locale.truncate(`Tool search ${label}${result ? ` (${result})` : ""}`, 200)
 }
 
 function toolSearchRows(p: ToolProps): string[] {
@@ -572,7 +588,7 @@ function runExecute(p: ToolProps): ToolInline {
 }
 
 function runFinish(p: ToolProps): ToolInline {
-  const result = text(p.frame.state.output).trim() || text(p.frame.input.result).trim()
+  const result = Locale.truncate(stripAnsi(text(p.frame.state.output).trim() || text(p.frame.input.result).trim()), 2000)
   if (p.frame.status === "error") {
     const error = toolError(p.frame)
     return {
@@ -590,11 +606,12 @@ function runFinish(p: ToolProps): ToolInline {
 
 function runBatch(p: ToolProps): ToolInline {
   const calls = list(dict(p.input).tool_calls).length
+  const suffix = calls === 1 ? "" : "s"
   return {
     icon: "#",
-    title: text(p.frame.state.title) || (calls > 0 ? `Batch ${calls} tool${calls === 1 ? "" : "s"}` : "Batch"),
+    title: bounded(p.frame.state.title, 120) || (calls > 0 ? `Batch ${calls} tool${suffix}` : "Batch"),
     mode: "block",
-    body: p.frame.status === "completed" ? text(p.frame.state.output) : undefined,
+    body: p.frame.status === "completed" ? Locale.truncate(stripAnsi(text(p.frame.state.output)), 2000) : undefined,
   }
 }
 
