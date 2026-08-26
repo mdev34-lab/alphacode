@@ -5,3 +5,5 @@ Every user message starts a task, even one that needs no tools. Greetings, quest
 Pass `result` as a concise summary of what you did or answered. This is a silent protocol signal, not something to announce to the user — do not say that you are finishing; just call it as the last step of your reply.
 
 Call it once, after any other tool calls have completed. Do not call it to report partial progress, and do not use it to ask a question — use the question tool for questions and keep working otherwise.
+
+When finish succeeds, any remaining open todos (pending or in_progress) for this task are automatically closed as cancelled, leaving a clean terminal todo state. This is a safety net — you must still explicitly mark individual todo items completed during execution rather than relying on finish to clean up.

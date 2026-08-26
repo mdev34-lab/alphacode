@@ -22,6 +22,23 @@ export type Output = typeof Output.Type
 
 export const toModelOutput = (output: Output) => JSON.stringify(output.todos, null, 2)
 
+const TODO_DESCRIPTION = [
+  "Create and maintain a structured task list for the current coding session. This is your primary execution-control mechanism, not just a checklist.",
+  "",
+  "One todo = one coherent unit of work that can be executed and marked complete. Avoid broad phases like 'Update model handling'; prefer specific verifiable units like 'Trace model-selection flow', 'Implement pending model state', 'Add model-switch test'.",
+  "Complex tasks should naturally produce longer plans (10-16 items is normal for substantial work); simple tasks remain simple.",
+  "",
+  "Execution discipline (critical):",
+  "1. Select next todo",
+  "2. Work ONLY on that item (multiple reads/searches allowed for that one unit)",
+  "3. Verify it is actually complete",
+  "4. Mark it completed IMMEDIATELY",
+  "5. Select next todo",
+  "Keep exactly one in_progress at a time. Do not batch unrelated work or mark multiple independent items complete at once unless they were genuinely completed as one indivisible operation.",
+  "Todo state must reflect reality: don't mark before verification, don't leave completed work in_progress, don't use updates as retrospective bookkeeping. When new work is discovered, update the plan.",
+  "Finish provides a safety net that closes any remaining open todos as cancelled, but you must still explicitly complete items during execution.",
+].join("\n")
+
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
@@ -31,8 +48,7 @@ const layer = Layer.effectDiscard(
     yield* tools
       .register({
         [name]: Tool.make({
-          description:
-            "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current.",
+          description: TODO_DESCRIPTION,
           input: Input,
           output: Output,
           toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],
