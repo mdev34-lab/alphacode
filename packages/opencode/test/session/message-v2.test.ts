@@ -319,6 +319,68 @@ describe("session.message-v2.toModelMessage", () => {
     ])
   })
 
+  test("drops text/plain file parts from user messages but keeps synthetic preview text (large paste)", async () => {
+    const messageID = "m-paste"
+    const secretContent = "THIS_IS_THE_SECRET_FULL_CONTENT_THAT_MUST_NOT_REACH_THE_MODEL"
+    const previewText = "AlphaCode paste to file marker line. ... content truncated; full content saved to /data/attachments/ses/paste-abc.txt ... AlphaCode paste to file marker line."
+    const noteText = `[Large pasted text file: paste-1.txt (100 lines, 5000 bytes) was saved to /data/attachments/ses/paste-abc.txt. The text below is a truncated preview; read the file for the full content.]`
+
+    const input: SessionV1.WithParts[] = [
+      {
+        info: userInfo(messageID),
+        parts: [
+          {
+            ...basePart(messageID, "p1"),
+            type: "text",
+            text: "Here is a document:",
+          },
+          {
+            ...basePart(messageID, "p2"),
+            type: "text",
+            synthetic: true,
+            text: noteText,
+          },
+          {
+            ...basePart(messageID, "p3"),
+            type: "text",
+            synthetic: true,
+            text: previewText,
+          },
+          {
+            ...basePart(messageID, "p4"),
+            type: "file",
+            mime: "text/plain",
+            filename: "paste-1.txt",
+            url: `data:text/plain;base64,${Buffer.from(secretContent, "utf8").toString("base64")}`,
+          },
+        ] as SessionV1.Part[],
+      },
+    ]
+
+    const result = await MessageV2.toModelMessages(input, model)
+
+    expect(result).toHaveLength(1)
+    expect(result[0].role).toBe("user")
+
+    const content = result[0].content as any[]
+    const textParts = content.filter((part: any) => part.type === "text")
+    const fileParts = content.filter((part: any) => part.type === "file")
+
+    // The synthetic note and preview are kept.
+    expect(textParts.map((p: any) => p.text)).toEqual([
+      "Here is a document:",
+      noteText,
+      previewText,
+    ])
+
+    // The text/plain file part is dropped — the full content must NOT reach the LLM.
+    expect(fileParts).toHaveLength(0)
+
+    // Defensive: the full pasted content must not appear anywhere in the model payload.
+    const allText = content.map((part: any) => (part.type === "text" ? part.text : "")).join("")
+    expect(allText).not.toContain(secretContent)
+  })
+
   test("converts assistant tool completion into tool-call + tool-result messages with attachments", async () => {
     const userID = "m-user"
     const assistantID = "m-assistant"

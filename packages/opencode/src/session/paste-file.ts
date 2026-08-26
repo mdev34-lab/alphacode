@@ -12,6 +12,13 @@
  * Files are written to the same managed directory the v2 `AttachmentStore`
  * uses for materialized conversation attachments
  * (`<data>/attachments/<sessionID>/...`).
+ *
+ * TODO(architecture): paste files bypass the v2 `AttachmentStore` and are
+ * written directly to disk. They therefore do not participate in
+ * retention/cleanup, session-deletion orphan collection, export/import, or
+ * attachment listing. Acceptable as a pragmatic V1 short-term solution; the
+ * follow-up should route large pastes through `AttachmentStore` so the full
+ * lifecycle is shared with other conversation attachments.
  */
 import path from "path"
 import { Effect } from "effect"
@@ -35,7 +42,11 @@ export function pasteFilePath(sessionID: string, id: string) {
  */
 export function pastePreview(content: string, filePath: string): string {
   const marker = `... content truncated; full content saved to ${filePath} ...`
-  const budget = PASTE_INLINE_MAX_BYTES - Buffer.byteLength(marker, "utf-8") - 4
+  // Reserve the bytes for the marker and for the separators on each side of it
+  // (two "\n\n" pairs, one around the marker in each format branch).
+  const separator = "\n\n"
+  const reserved = Buffer.byteLength(marker, "utf-8") + Buffer.byteLength(separator, "utf-8") * 2
+  const budget = PASTE_INLINE_MAX_BYTES - reserved
   if (budget <= 0) return marker
   const half = Math.floor(budget / 2)
   const head = takePrefix(content, half)
