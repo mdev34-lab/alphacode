@@ -33,6 +33,7 @@ import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
+import { isLargePaste, pastedFilePart, pastedFilePlaceholder } from "../../prompt/paste"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
@@ -1181,6 +1182,42 @@ export function Prompt(props: PromptProps) {
     )
   }
 
+  /**
+   * Paste to File: captures a large pasted text payload as a `text/plain`
+   * file attachment and inserts a compact `[Pasted file N]` placeholder
+   * instead of the full text. The file part is sent with the prompt and the
+   * server saves it to the managed attachment store, so the agent can read
+   * the full content as a file (see packages/opencode/src/session/paste-file.ts).
+   */
+  function pasteLargeText(text: string) {
+    const index =
+      store.prompt.parts.filter(
+        (part) => part.type === "file" && part.mime === "text/plain" && part.filename?.startsWith("paste-"),
+      ).length + 1
+    const virtualText = pastedFilePlaceholder(index)
+    const currentOffset = input.cursorOffset
+    const extmarkStart = currentOffset
+    const extmarkEnd = extmarkStart + promptOffsetWidth(virtualText)
+
+    input.insertText(virtualText + " ")
+
+    const extmarkId = input.extmarks.create({
+      start: extmarkStart,
+      end: extmarkEnd,
+      virtual: true,
+      styleId: pasteStyleId,
+      typeId: promptPartTypeId,
+    })
+
+    setStore(
+      produce((draft) => {
+        const partIndex = draft.prompt.parts.length
+        draft.prompt.parts.push(pastedFilePart({ text, index, start: extmarkStart, end: extmarkEnd }))
+        draft.extmarkToPartIndex.set(extmarkId, partIndex)
+      }),
+    )
+  }
+
   async function pasteInputText(text: string) {
     const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
     const pastedContent = normalizedText.trim()
@@ -1204,11 +1241,14 @@ export function Prompt(props: PromptProps) {
       }
     }
 
+    const summaryEnabled = kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
+    if (summaryEnabled && isLargePaste(pastedContent)) {
+      pasteLargeText(pastedContent)
+      return
+    }
+
     const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-    if (
-      (lineCount >= 3 || pastedContent.length > 150) &&
-      kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
-    ) {
+    if ((lineCount >= 3 || pastedContent.length > 150) && summaryEnabled) {
       pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
       return
     }

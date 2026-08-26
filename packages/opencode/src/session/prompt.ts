@@ -32,6 +32,7 @@ import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
+import { PASTE_INLINE_MAX_BYTES, pastePreview, writePasteFile } from "./paste-file"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
@@ -799,20 +800,48 @@ const layer = Layer.effect(
           switch (url.protocol) {
             case "data:":
               if (part.mime === "text/plain") {
-                return [
+                const content = decodeDataUrl(part.url)
+                const inline = (text: string) => [
                   {
                     messageID: info.id,
                     sessionID: input.sessionID,
-                    type: "text",
+                    type: "text" as const,
                     synthetic: true,
                     text: `Called the Read tool with the following input: ${JSON.stringify({ filePath: part.filename })}`,
                   },
                   {
                     messageID: info.id,
                     sessionID: input.sessionID,
-                    type: "text",
+                    type: "text" as const,
                     synthetic: true,
-                    text: decodeDataUrl(part.url),
+                    text,
+                  },
+                  { ...part, messageID: info.id, sessionID: input.sessionID },
+                ]
+                if (Buffer.byteLength(content, "utf8") <= PASTE_INLINE_MAX_BYTES) {
+                  return inline(content)
+                }
+                // Large paste ("Paste to File"): keep the full content in the
+                // managed paste file and inline a bounded preview so the
+                // payload does not flood the model context.
+                const file = yield* writePasteFile(fsys, input.sessionID, ulid(), content)
+                if (!file) return inline(content)
+                const bytes = Buffer.byteLength(content, "utf8")
+                const lines = content.split("\n").length
+                return [
+                  {
+                    messageID: info.id,
+                    sessionID: input.sessionID,
+                    type: "text" as const,
+                    synthetic: true,
+                    text: `[Large pasted text file: ${part.filename ?? "paste.txt"} (${lines} lines, ${bytes} bytes) was saved to ${file}. The text below is a truncated preview; read the file for the full content.]`,
+                  },
+                  {
+                    messageID: info.id,
+                    sessionID: input.sessionID,
+                    type: "text" as const,
+                    synthetic: true,
+                    text: pastePreview(content, file),
                   },
                   { ...part, messageID: info.id, sessionID: input.sessionID },
                 ]
