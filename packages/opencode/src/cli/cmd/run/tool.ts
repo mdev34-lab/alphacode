@@ -573,6 +573,14 @@ function runExecute(p: ToolProps): ToolInline {
 
 function runFinish(p: ToolProps): ToolInline {
   const result = text(p.frame.state.output).trim() || text(p.frame.input.result).trim()
+  if (p.frame.status === "error") {
+    const error = toolError(p.frame)
+    return {
+      icon: "✗",
+      title: error || "Task failed",
+      ...(result && { mode: "block" as const, body: result }),
+    }
+  }
   return {
     icon: "✓",
     title: "Task completed",

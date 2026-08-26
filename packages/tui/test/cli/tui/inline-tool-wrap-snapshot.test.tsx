@@ -331,8 +331,8 @@ describe("TUI inline tool wrapping", () => {
 
   test("derives pending and running visuals from tool state centrally", () => {
     expect(inlineToolState("pending", "src/index.ts")).toEqual({ complete: false, spinner: false })
-    expect(inlineToolState("running", "src/index.ts")).toEqual({ complete: "src/index.ts", spinner: true })
-    expect(inlineToolState("running", true, false)).toEqual({ complete: true, spinner: false })
+    expect(inlineToolState("running", "src/index.ts")).toEqual({ complete: false, spinner: true })
+    expect(inlineToolState("running", true, false)).toEqual({ complete: false, spinner: false })
     expect(inlineToolState("completed", false)).toEqual({ complete: true, spinner: false })
   })
 

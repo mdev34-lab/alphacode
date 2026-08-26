@@ -1929,7 +1929,7 @@ export function finishToolView(status: FinishToolStatus, result?: string) {
     return {
       icon: "✓",
       pending: "Completing task...",
-      complete: true,
+      complete: false,
       spinner: true,
       failure: "Finish failed",
       children: "Completing task...",
@@ -2032,7 +2032,7 @@ function InlineTool(props: {
 
 export function inlineToolState(status: ToolPart["state"]["status"], complete: unknown, spinner?: boolean) {
   return {
-    complete: status === "completed" ? true : status === "pending" ? false : complete,
+    complete: status === "completed" ? true : false,
     spinner: spinner ?? status === "running",
   }
 }
