@@ -1,6 +1,7 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./finish.txt"
 import { Effect, Schema } from "effect"
+import { Todo } from "../session/todo"
 
 export const Parameters = Schema.Struct({
   result: Schema.String.annotate({
@@ -12,19 +13,44 @@ export const Parameters = Schema.Struct({
 // Every user turn is a task from the execution protocol's perspective, so
 // agents with finishTool enabled (the default) may only end their turn by
 // calling this tool — the session loop resists end-of-stream stops until it
-// completes, even when the turn used no other tools. The tool is otherwise a
-// pure signal; the loop exits on completion.
+// completes, even when the turn used no other tools. On success it also
+// makes a best-effort attempt to close any remaining open todos for the
+// session as a safety net. The cleanup is logged but does not block task
+// completion if it fails.
 export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
+    const todo = yield* Todo.Service
+
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: Schema.Schema.Type<typeof Parameters>) =>
-        Effect.succeed({
-          title: "Task completed",
-          output: params.result,
-          metadata: {},
+      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          yield* Effect.gen(function* () {
+            const existing = yield* todo.get(ctx.sessionID)
+            const hasOpen = existing.some((t) => t.status === "pending" || t.status === "in_progress")
+            if (!hasOpen) return
+            const closed = existing.map((t) =>
+              t.status === "pending" || t.status === "in_progress"
+                ? { ...t, status: "cancelled" as const }
+                : t,
+            )
+            yield* todo.update({ sessionID: ctx.sessionID, todos: closed })
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("finish todo cleanup failed, but finish still succeeds", {
+                sessionID: ctx.sessionID,
+                cause,
+              }),
+            ),
+          )
+
+          return {
+            title: "Task completed",
+            output: params.result,
+            metadata: {},
+          }
         }),
     }
   }),
