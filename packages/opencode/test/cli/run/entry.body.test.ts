@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { entryBody, entryCanStream, entryDone } from "@/cli/cmd/run/entry.body"
+import { entryCancelled, entryFailed } from "@/cli/cmd/run/scrollback.shared"
+import { toolInlineInfo, toolView } from "@/cli/cmd/run/tool"
 import type { StreamCommit, ToolSnapshot } from "@/cli/cmd/run/types"
 
 function commit(input: Partial<StreamCommit> & Pick<StreamCommit, "kind" | "text" | "phase" | "source">): StreamCommit {
@@ -516,6 +518,189 @@ describe("run entry body", () => {
     })
   })
 
+  test("registers every AlphaCode-native tool in direct-mode display rules", () => {
+    const fallback = { output: true, final: true }
+    const builtins = [
+      "invalid",
+      "attachment",
+      "list_mcp_resources",
+      "list_mcp_resource_templates",
+      "read_mcp_resource",
+      "bash",
+      "read",
+      "glob",
+      "grep",
+      "edit",
+      "write",
+      "task",
+      "webfetch",
+      "todowrite",
+      "websearch",
+      "skill",
+      "apply_patch",
+      "question",
+      "tool_search",
+      "tool_search_regex",
+      "finish",
+      "execute",
+      "lsp",
+      "plan_exit",
+    ]
+    for (const tool of builtins) expect(toolView(tool)).not.toEqual(fallback)
+    expect(toolView("attachment")).toEqual({ output: false, final: true })
+    expect(toolView("plugin_tool")).toEqual(fallback)
+  })
+
+  test("formats native attachment, tool-search, execute, and finish summaries", () => {
+    const attachment = toolInlineInfo(
+      toolPart("attachment", {
+        status: "completed",
+        input: { action: "list" },
+        output: "private raw output",
+        title: "attachment",
+        metadata: {
+          action: "list",
+          attachments: [
+            { managed_id: "private-id", name: "design.png", mime: "image/png", source: "/private/source" },
+            { managed_id: "private-id-2", name: "notes.txt", mime: "text/plain", source: "/private/notes" },
+          ],
+        },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(attachment).toEqual({
+      icon: "@",
+      title: "Listed 2 attachments",
+      mode: "block",
+      body: "↳ design.png · image/png\n↳ notes.txt · text/plain",
+    })
+    expect(attachment.body).not.toContain("private-id")
+    expect(attachment.body).not.toContain("/private/source")
+
+    expect(
+      toolInlineInfo(
+        toolPart("list_mcp_resources", {
+          status: "completed",
+          input: { server: "docs" },
+          output: '{"resources":[]}',
+          title: "MCP resources: docs",
+          metadata: { server: "docs", count: 0, servers: ["docs"] },
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({ icon: "✱", title: "MCP resources from docs (0 found)" })
+
+    expect(
+      toolInlineInfo(
+        toolPart("tool_search_regex", {
+          status: "completed",
+          input: { pattern: "[" },
+          output: "Invalid regex pattern",
+          title: "Invalid regex",
+          metadata: { query: "[", count: 0, tools: [] },
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({ icon: "?", title: "Tool search /[/ (invalid regex)" })
+
+    expect(
+      toolInlineInfo(
+        toolPart("execute", {
+          status: "completed",
+          input: { code: "tools.read({ filePath: 'a.ts' })" },
+          output: "MCP request failed",
+          title: "execute",
+          metadata: { error: true, toolCalls: [{ tool: "mcp_lookup", status: "error", input: { query: "alpha" } }] },
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({
+      icon: "✗",
+      title: "execute",
+      mode: "block",
+      body: "↳ mcp_lookup [query=alpha] (failed)\n  MCP request failed",
+    })
+
+    const fallback = toolInlineInfo(
+      toolPart("plugin_tool", {
+        status: "completed",
+        input: { query: "x".repeat(500), internal: { token: "do-not-render" } },
+        output: "done",
+        title: "",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(fallback.icon).toBe("⚙")
+    expect(fallback.title.length).toBeLessThanOrEqual(212)
+    expect(fallback.title).not.toContain("do-not-render")
+
+    expect(
+      toolInlineInfo(
+        toolPart("finish", {
+          status: "completed",
+          input: { result: "Verified the native renderers." },
+          output: "Verified the native renderers.",
+          title: "Task completed",
+          metadata: {},
+          time: { start: 1, end: 2 },
+        }),
+      ),
+    ).toEqual({
+      icon: "✓",
+      title: "Task completed",
+      mode: "block",
+      body: "Verified the native renderers.",
+    })
+  })
+
+  test("renders semantic failures and cancellations with native status language", () => {
+    const runtimeFailure = toolCommit({
+      tool: "execute",
+      state: {
+        status: "completed",
+        input: { code: "tools.fail()" },
+        output: "Runtime failed",
+        title: "execute",
+        metadata: { error: true, toolCalls: [] },
+        time: { start: 1, end: 2 },
+      },
+    })
+    expect(entryFailed(runtimeFailure)).toBe(true)
+    expect(entryBody(runtimeFailure)).toEqual({ type: "text", content: "✗ execute\n  Runtime failed" })
+
+    const interrupted = toolCommit({
+      tool: "read",
+      phase: "final",
+      toolState: "error",
+      state: {
+        status: "error",
+        input: { filePath: "src/a.ts" },
+        error: "Tool execution aborted",
+        metadata: { interrupted: true },
+        time: { start: 1, end: 2 },
+      },
+    })
+    expect(entryCancelled(interrupted)).toBe(true)
+    expect(entryFailed(interrupted)).toBe(false)
+    expect(entryBody(interrupted)).toEqual({ type: "text", content: "~ read interrupted" })
+
+    const denied = toolCommit({
+      tool: "webfetch",
+      phase: "final",
+      toolState: "error",
+      state: {
+        status: "error",
+        input: { url: "https://example.com" },
+        error: "The user rejected permission to use this tool",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      },
+    })
+    expect(entryCancelled(denied)).toBe(true)
+    expect(entryBody(denied)).toEqual({ type: "text", content: "~ webfetch cancelled" })
+  })
+
   test("renders interrupted assistant finals as text", () => {
     expect(
       entryBody(
@@ -532,5 +717,119 @@ describe("run entry body", () => {
       type: "text",
       content: "assistant interrupted",
     })
+  })
+
+  test("bounded output handles Unicode edge cases (emoji, CJK, combining)", () => {
+    const emojiInput = "🔍".repeat(200)
+    const mcpWithEmoji = toolInlineInfo(
+      toolPart("list_mcp_resources", {
+        status: "completed",
+        input: { server: emojiInput },
+        output: '{"resources":[]}',
+        title: "MCP resources",
+        metadata: { server: emojiInput, count: 0 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(mcpWithEmoji.title.length).toBeLessThanOrEqual(210)
+    expect(mcpWithEmoji.title).toContain("MCP resources")
+
+    const cjkInput = "日本語テスト".repeat(100)
+    const searchWithCjk = toolInlineInfo(
+      toolPart("tool_search", {
+        status: "completed",
+        input: { query: cjkInput },
+        output: "",
+        title: "Tool search",
+        metadata: { count: 0, tools: [] },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(searchWithCjk.title.length).toBeLessThanOrEqual(210)
+    expect(searchWithCjk.title).toContain("Tool search")
+
+    const combiningInput = "é".repeat(200)
+    const mcpWithCombining = toolInlineInfo(
+      toolPart("read_mcp_resource", {
+        status: "completed",
+        input: { uri: combiningInput, server: "test" },
+        output: "content",
+        title: "Read MCP resource",
+        metadata: { uri: combiningInput, server: "test", contents: 1 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(mcpWithCombining.title.length).toBeLessThanOrEqual(210)
+  })
+
+  test("ANSI escape codes are stripped from renderer output", () => {
+    const ansiServer = "\x1b[31mmalicious\x1b[0m"
+    const mcp = toolInlineInfo(
+      toolPart("list_mcp_resources", {
+        status: "completed",
+        input: { server: ansiServer },
+        output: '{"resources":[]}',
+        title: "MCP resources",
+        metadata: { server: ansiServer, count: 0 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(mcp.title).not.toContain("\x1b[")
+    expect(mcp.title).toContain("malicious")
+
+    const ansiQuery = "\x1b[32m" + "x".repeat(500) + "\x1b[0m"
+    const search = toolInlineInfo(
+      toolPart("tool_search", {
+        status: "completed",
+        input: { query: ansiQuery },
+        output: "",
+        title: "Tool search",
+        metadata: { count: 0, tools: [] },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(search.title).not.toContain("\x1b[")
+    expect(search.title.length).toBeLessThanOrEqual(210)
+
+    const ansiUri = "\x1b[33m" + "x".repeat(500) + "\x1b[0m"
+    const readResource = toolInlineInfo(
+      toolPart("read_mcp_resource", {
+        status: "completed",
+        input: { uri: ansiUri, server: "test" },
+        output: "content",
+        title: "Read MCP resource",
+        metadata: { uri: ansiUri, server: "test", contents: 1 },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(readResource.title).not.toContain("\x1b[")
+    expect(readResource.title.length).toBeLessThanOrEqual(210)
+  })
+
+  test("finish tool renders error icon when status is error", () => {
+    const errorFinish = toolInlineInfo(
+      toolPart("finish", {
+        status: "error",
+        input: { result: "partial work" },
+        error: "Task timed out",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      } as ToolPart["state"] & { output?: string; title?: string }),
+    )
+    expect(errorFinish.icon).toBe("✗")
+    expect(errorFinish.title).toContain("Task timed out")
+
+    const okFinish = toolInlineInfo(
+      toolPart("finish", {
+        status: "completed",
+        input: { result: "All done" },
+        output: "All done",
+        title: "Task completed",
+        metadata: {},
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(okFinish.icon).toBe("✓")
+    expect(okFinish.title).toBe("Task completed")
   })
 })

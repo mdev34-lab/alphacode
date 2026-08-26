@@ -97,7 +97,10 @@ type ToolDefs = {
   write: typeof WriteTool
   edit: typeof EditTool
   apply_patch: typeof ApplyPatchTool
+  attachment: Tool.Info
   batch: Tool.Info
+  execute: Tool.Info
+  finish: Tool.Info
   task: typeof TaskTool
   todowrite: typeof TodoWriteTool
   question: typeof QuestionTool
@@ -105,10 +108,15 @@ type ToolDefs = {
   glob: typeof GlobTool
   grep: typeof GrepTool
   list: Tool.Info
+  list_mcp_resources: Tool.Info
+  list_mcp_resource_templates: Tool.Info
+  read_mcp_resource: Tool.Info
   lsp: typeof LspTool
   webfetch: typeof WebFetchTool
   websearch: typeof WebSearchTool
   skill: typeof SkillTool
+  tool_search: Tool.Info
+  tool_search_regex: Tool.Info
   plan_exit: typeof PlanExitTool
 }
 
@@ -201,10 +209,15 @@ function span(state: ToolDict): string {
 
 function fail(ctx: ToolFrame): string {
   const error = toolError(ctx)
-  if (error) {
-    return `✖ ${ctx.name} failed: ${error}`
-  }
-
+  if (ctx.meta.interrupted === true || error.includes("Tool execution aborted")) return `~ ${ctx.name} interrupted`
+  if (
+    error.includes("QuestionRejectedError") ||
+    error.includes("rejected permission") ||
+    error.includes("specified a rule") ||
+    error.includes("user dismissed")
+  )
+    return `~ ${ctx.name} cancelled`
+  if (error) return `✖ ${ctx.name} failed: ${error}`
   return `✖ ${ctx.name} failed`
 }
 
@@ -222,7 +235,7 @@ function toolError(ctx: ToolFrame): string {
 }
 
 function fallbackStart(ctx: ToolFrame): string {
-  const extra = info(ctx.input)
+  const extra = Locale.truncate(info(ctx.input), 200)
   if (!extra) {
     return `⚙ ${ctx.name}`
   }
@@ -273,11 +286,12 @@ export function toolPath(input?: string, opts: { home?: boolean } = {}): string 
 }
 
 function fallbackInline(ctx: ToolFrame): ToolInline {
-  const title = text(ctx.state.title) || (Object.keys(ctx.input).length > 0 ? JSON.stringify(ctx.input) : "Unknown")
+  const title = text(ctx.state.title).trim()
+  const extra = Locale.truncate(info(ctx.input), 200)
 
   return {
     icon: "⚙",
-    title: `${ctx.name} ${title}`,
+    title: [ctx.name, title || extra].filter(Boolean).join(" "),
   }
 }
 
@@ -426,19 +440,178 @@ function runQuestion(p: ToolProps<typeof QuestionTool>): ToolInline {
 function runInvalid(p: ToolProps<typeof InvalidTool>): ToolInline {
   return {
     icon: "✗",
-    title: text(p.frame.state.title) || "Invalid Tool",
+    title: bounded(p.frame.state.title, 120) || "Invalid Tool",
     mode: "block",
-    body: p.frame.status === "completed" ? text(p.frame.state.output) : undefined,
+    body: p.frame.status === "completed" ? Locale.truncate(stripAnsi(text(p.frame.state.output)), 2000) : undefined,
+  }
+}
+
+function boundedRows(rows: string[], max = 5): string[] {
+  if (rows.length <= max) return rows
+  return [...rows.slice(0, max), `... and ${rows.length - max} more`]
+}
+
+function bounded(value: unknown, len = 200): string {
+  return Locale.truncate(stripAnsi(text(value).trim()), len)
+}
+
+function validAttachments(p: ToolProps): ToolDict[] {
+  return list<ToolDict>(p.frame.meta.attachments).filter((item) => {
+    const name = text(item?.name) || text(item?.mime)
+    return Boolean(name)
+  })
+}
+
+function attachmentRows(p: ToolProps): string[] {
+  return boundedRows(
+    validAttachments(p).map((item) => {
+      const mime = bounded(item?.mime, 40)
+      const name = bounded(item?.name, 80) || mime
+      return `↳ ${name}${item.name && mime ? ` · ${mime}` : ""}${item.unavailable === true ? " · unavailable" : ""}`
+    }),
+  )
+}
+
+function attachmentTitle(p: ToolProps): string {
+  const action = text(p.frame.input.action) || text(p.frame.meta.action)
+  if (action === "save") {
+    const target = bounded(p.frame.meta.resource || p.frame.input.path, 120)
+    const saved = target ? toolPath(target) : undefined
+    if (p.frame.status === "completed") return saved ? `Saved attachment to ${saved}` : "Saved attachment"
+    return saved ? `Save attachment to ${saved}` : "Save attachment"
+  }
+
+  if (p.frame.status !== "completed") return "List attachments"
+  const total = validAttachments(p).length
+  if (total === 0) return "No attachments"
+  return `Listed ${total} attachment${total === 1 ? "" : "s"}`
+}
+
+function runAttachment(p: ToolProps): ToolInline {
+  const rows = attachmentRows(p)
+  return {
+    icon: "@",
+    title: attachmentTitle(p),
+    ...(rows.length > 0 && { mode: "block" as const, body: rows.join("\n") }),
+  }
+}
+
+function mcpResourceTitle(p: ToolProps): string {
+  const server = bounded(p.frame.input.server || p.frame.meta.server)
+  if (p.frame.name === "read_mcp_resource") {
+    const uri = bounded(p.frame.input.uri || p.frame.meta.uri, 120)
+    const location = [uri, server ? `from ${server}` : ""].filter(Boolean).join(" ")
+    const contents = num(p.frame.meta.contents)
+    const attachments = num(p.frame.meta.attachments)
+    const detail = [
+      contents !== undefined ? `${contents} content${contents === 1 ? "" : "s"}` : "",
+      attachments ? `${attachments} attachment${attachments === 1 ? "" : "s"}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ")
+    return Locale.truncate(
+      `${location ? `Read MCP resource ${location}` : "Read MCP resource"}${detail ? ` (${detail})` : ""}`,
+      200,
+    )
+  }
+
+  const label = p.frame.name === "list_mcp_resource_templates" ? "MCP resource templates" : "MCP resources"
+  const total = num(p.frame.meta.count)
+  return Locale.truncate(
+    `${label}${server ? ` from ${server}` : ""}${total === undefined ? "" : ` (${total} found)`}`,
+    200,
+  )
+}
+
+function runMcpResource(p: ToolProps): ToolInline {
+  return {
+    icon: p.frame.name === "read_mcp_resource" ? "→" : "✱",
+    title: mcpResourceTitle(p),
+  }
+}
+
+function toolSearchTitle(p: ToolProps): string {
+  const regex = p.frame.name === "tool_search_regex"
+  const query = bounded(regex ? p.frame.input.pattern : p.frame.input.query, 120)
+  const label = regex ? `/${query}/` : `"${query}"`
+  const total = num(p.frame.meta.count)
+  const title = text(p.frame.state.title)
+  const result =
+    title === "Invalid regex"
+      ? "invalid regex"
+      : title === "No tools found"
+        ? "no tools found"
+        : title === "Already available"
+          ? "already available"
+          : total === undefined
+            ? undefined
+            : `${total} ${total === 1 ? "tool found" : "tools found"}`
+  return Locale.truncate(`Tool search ${label}${result ? ` (${result})` : ""}`, 200)
+}
+
+function toolSearchRows(p: ToolProps): string[] {
+  return boundedRows(list(p.frame.meta.tools).flatMap((tool) => (typeof tool === "string" ? [`↳ Loaded ${tool}`] : [])))
+}
+
+function runToolSearch(p: ToolProps): ToolInline {
+  const rows = toolSearchRows(p)
+  return {
+    icon: "?",
+    title: toolSearchTitle(p),
+    ...(rows.length > 0 && { mode: "block" as const, body: rows.join("\n") }),
+  }
+}
+
+function executeRows(p: ToolProps): string[] {
+  const calls = list<ToolDict>(p.frame.meta.toolCalls).flatMap((call) => {
+    const tool = text(call?.tool)
+    if (!tool) return []
+    const status = text(call.status)
+    const args = Locale.truncate(info(dict(call.input)), 160)
+    return [`↳ ${tool}${args ? ` ${args}` : ""}${status === "error" ? " (failed)" : ""}`]
+  })
+  const rows = boundedRows(calls, 8)
+  if (p.frame.meta.error !== true) return rows
+  const output = stripAnsi(text(p.frame.state.output)).trim()
+  if (!output) return rows
+  return [...rows, ...boundedRows(output.split("\n"), 4).map((line) => `  ${line}`)]
+}
+
+function runExecute(p: ToolProps): ToolInline {
+  const rows = executeRows(p)
+  const failed = p.frame.meta.error === true
+  return {
+    icon: failed ? "✗" : p.frame.status === "completed" ? "✓" : "│",
+    title: "execute",
+    ...(rows.length > 0 && { mode: "block" as const, body: rows.join("\n") }),
+  }
+}
+
+function runFinish(p: ToolProps): ToolInline {
+  const result = Locale.truncate(stripAnsi(text(p.frame.state.output).trim() || text(p.frame.input.result).trim()), 2000)
+  if (p.frame.status === "error") {
+    const error = toolError(p.frame)
+    return {
+      icon: "✗",
+      title: error || "Task failed",
+      ...(result && { mode: "block" as const, body: result }),
+    }
+  }
+  return {
+    icon: "✓",
+    title: "Task completed",
+    ...(result && { mode: "block" as const, body: result }),
   }
 }
 
 function runBatch(p: ToolProps): ToolInline {
   const calls = list(dict(p.input).tool_calls).length
+  const suffix = calls === 1 ? "" : "s"
   return {
     icon: "#",
-    title: text(p.frame.state.title) || (calls > 0 ? `Batch ${calls} tool${calls === 1 ? "" : "s"}` : "Batch"),
+    title: bounded(p.frame.state.title, 120) || (calls > 0 ? `Batch ${calls} tool${suffix}` : "Batch"),
     mode: "block",
-    body: p.frame.status === "completed" ? text(p.frame.state.output) : undefined,
+    body: p.frame.status === "completed" ? Locale.truncate(stripAnsi(text(p.frame.state.output)), 2000) : undefined,
   }
 }
 
@@ -917,6 +1090,55 @@ function scrollWebSearchStart(p: ToolProps<typeof WebSearchTool>): string {
   return `◈ ${title} "${query}"`
 }
 
+function scrollInline(view: ToolInline): string {
+  return [`${view.icon} ${view.title}`, view.body].filter(Boolean).join("\n")
+}
+
+function scrollAttachmentStart(p: ToolProps): string {
+  return `@ ${attachmentTitle(p)}`
+}
+
+function scrollAttachmentFinal(p: ToolProps): string {
+  if (p.frame.status === "error") return fail(p.frame)
+  return scrollInline(runAttachment(p))
+}
+
+function scrollMcpResourceStart(p: ToolProps): string {
+  return scrollInline(runMcpResource(p))
+}
+
+function scrollMcpResourceFinal(p: ToolProps): string {
+  if (p.frame.status === "error") return fail(p.frame)
+  return scrollInline(runMcpResource(p))
+}
+
+function scrollToolSearchStart(p: ToolProps): string {
+  return `? ${toolSearchTitle(p)}`
+}
+
+function scrollToolSearchFinal(p: ToolProps): string {
+  if (p.frame.status === "error") return fail(p.frame)
+  return scrollInline(runToolSearch(p))
+}
+
+function scrollExecuteStart(_: ToolProps): string {
+  return "│ execute"
+}
+
+function scrollExecuteFinal(p: ToolProps): string {
+  if (p.frame.status === "error") return fail(p.frame)
+  return scrollInline(runExecute(p))
+}
+
+function scrollFinishFinal(p: ToolProps): string {
+  if (p.frame.status === "error") return fail(p.frame)
+  return scrollInline(runFinish(p))
+}
+
+function scrollInvalidFinal(p: ToolProps<typeof InvalidTool>): string {
+  return scrollInline(runInvalid(p))
+}
+
 function permEdit(p: ToolPermissionProps<typeof EditTool>): ToolPermissionInfo {
   const input = p.input as { filePath?: string; filepath?: string; diff?: string }
   const file = input.filePath || input.filepath || p.patterns[0] || ""
@@ -1022,12 +1244,13 @@ function permLsp(p: ToolPermissionProps<typeof LspTool>): ToolPermissionInfo {
 const TOOL_RULES = {
   invalid: {
     view: {
-      output: true,
-      final: false,
+      output: false,
+      final: true,
     },
     run: runInvalid,
     scroll: {
       start: () => "",
+      final: scrollInvalidFinal,
     },
   },
   bash: {
@@ -1079,6 +1302,39 @@ const TOOL_RULES = {
     scroll: {
       start: scrollPatchStart,
       final: scrollPatchFinal,
+    },
+  },
+  attachment: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runAttachment,
+    scroll: {
+      start: scrollAttachmentStart,
+      final: scrollAttachmentFinal,
+    },
+  },
+  execute: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runExecute,
+    scroll: {
+      start: scrollExecuteStart,
+      final: scrollExecuteFinal,
+    },
+  },
+  finish: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runFinish,
+    scroll: {
+      start: () => "",
+      final: scrollFinishFinal,
     },
   },
   batch: {
@@ -1176,6 +1432,39 @@ const TOOL_RULES = {
     },
     permission: permList,
   },
+  list_mcp_resources: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runMcpResource,
+    scroll: {
+      start: scrollMcpResourceStart,
+      final: scrollMcpResourceFinal,
+    },
+  },
+  list_mcp_resource_templates: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runMcpResource,
+    scroll: {
+      start: scrollMcpResourceStart,
+      final: scrollMcpResourceFinal,
+    },
+  },
+  read_mcp_resource: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runMcpResource,
+    scroll: {
+      start: scrollMcpResourceStart,
+      final: scrollMcpResourceFinal,
+    },
+  },
   lsp: {
     view: {
       output: false,
@@ -1217,6 +1506,28 @@ const TOOL_RULES = {
     run: runSkill,
     scroll: {
       start: scrollSkillStart,
+    },
+  },
+  tool_search: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runToolSearch,
+    scroll: {
+      start: scrollToolSearchStart,
+      final: scrollToolSearchFinal,
+    },
+  },
+  tool_search_regex: {
+    view: {
+      output: false,
+      final: true,
+    },
+    run: runToolSearch,
+    scroll: {
+      start: scrollToolSearchStart,
+      final: scrollToolSearchFinal,
     },
   },
   plan_exit: {
