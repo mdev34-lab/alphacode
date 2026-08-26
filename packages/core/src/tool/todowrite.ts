@@ -26,7 +26,7 @@ const TODO_DESCRIPTION = [
   "Create and maintain a structured task list for the current coding session. This is your primary execution-control mechanism, not just a checklist.",
   "",
   "One todo = one coherent unit of work that can be executed and marked complete. Avoid broad phases like 'Update model handling'; prefer specific verifiable units like 'Trace model-selection flow', 'Implement pending model state', 'Add model-switch test'.",
-  "Complex tasks should naturally produce longer plans (10-16 items is normal for substantial work); simple tasks remain simple.",
+  "Complex tasks should naturally produce longer plans; substantial work often breaks into many meaningful units, but let the work drive the count, not a numeric target. Simple tasks remain simple.",
   "",
   "Execution discipline (critical):",
   "1. Select next todo",
@@ -36,7 +36,7 @@ const TODO_DESCRIPTION = [
   "5. Select next todo",
   "Keep exactly one in_progress at a time. Do not batch unrelated work or mark multiple independent items complete at once unless they were genuinely completed as one indivisible operation.",
   "Todo state must reflect reality: don't mark before verification, don't leave completed work in_progress, don't use updates as retrospective bookkeeping. When new work is discovered, update the plan.",
-  "Finish provides a safety net that closes any remaining open todos as cancelled, but you must still explicitly complete items during execution.",
+  "Finish provides a best-effort safety net that attempts to close any remaining open todos as cancelled, but you must still explicitly complete items during execution. Cleanup does not block task completion if it fails.",
 ].join("\n")
 
 const layer = Layer.effectDiscard(

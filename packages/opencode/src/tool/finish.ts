@@ -14,8 +14,9 @@ export const Parameters = Schema.Struct({
 // agents with finishTool enabled (the default) may only end their turn by
 // calling this tool — the session loop resists end-of-stream stops until it
 // completes, even when the turn used no other tools. On success it also
-// closes any remaining open todos for the session as a safety net, ensuring
-// no dangling pending/in_progress items remain.
+// makes a best-effort attempt to close any remaining open todos for the
+// session as a safety net. The cleanup is logged but does not block task
+// completion if it fails.
 export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
@@ -36,7 +37,14 @@ export const FinishTool = Tool.define(
                 : t,
             )
             yield* todo.update({ sessionID: ctx.sessionID, todos: closed })
-          }).pipe(Effect.catch(() => Effect.void))
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("finish todo cleanup failed, but finish still succeeds", {
+                sessionID: ctx.sessionID,
+                cause,
+              }),
+            ),
+          )
 
           return {
             title: "Task completed",

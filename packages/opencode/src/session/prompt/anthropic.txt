@@ -43,7 +43,7 @@ You have access to the TodoWrite tools to help you manage and plan tasks. Use th
   14. Run broader validation
   15. Review final diff
   16. Create PR
-- Complex tasks should naturally produce longer plans (10-16 items is normal for substantial work); simple tasks should remain simple (2-4 items). Do NOT artificially inflate with trivial actions, and do NOT use a fixed minimum.
+- Complex tasks should naturally produce longer plans; substantial work often breaks into many meaningful units, but let the work drive the count, not a numeric target; simple tasks should remain simple (2-4 items). Do NOT artificially inflate with trivial actions, and do NOT use a fixed minimum.
 - Each item must be specific, actionable, and independently verifiable.
 
 ## Execution discipline – one step at a time (most important)

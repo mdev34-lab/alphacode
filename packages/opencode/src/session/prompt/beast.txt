@@ -36,7 +36,7 @@ You have access to TodoWrite (or markdown todo lists when TodoWrite is not avail
 - One todo item MUST represent one coherent unit of work that you can execute and then mark complete.
 - Avoid broad phases like "Update model handling" / "Update UI" / "Add tests".
 - Prefer meaningful, independently verifiable units: e.g. "Trace model-selection flow", "Define next-turn semantics", "Implement pending model state", "Add model-switch test", "Run targeted tests", "Review final diff".
-- Complex tasks should naturally produce longer plans (10-16 items is normal for substantial work); simple tasks remain simple.
+- Complex tasks should naturally produce longer plans; substantial work often breaks into many meaningful units, but let the work drive the count, not a numeric target; simple tasks remain simple.
 - Each item must be specific, actionable, and independently verifiable.
 
 ## Execution discipline – one step at a time (most important)

@@ -41,9 +41,9 @@ Prefer meaningful, verifiable units:
 - ✅ "Review final diff"
 
 Rules:
-- Complex tasks should naturally produce longer plans (10-16 items is normal for substantial work)
-- Simple tasks should remain simple (2-4 items)
-- Do NOT artificially inflate with trivial actions just to increase count
+- Complex tasks should naturally produce longer plans; substantial work often breaks into many meaningful units (the example in the task shows 16), but let the work drive the count, not a numeric target
+- Simple tasks should remain simple (2-4 items is normal for trivial work)
+- Do NOT artificially inflate with trivial actions just to increase count; granularity should be sufficient, not a target to hit
 - Each item must be independently verifiable
 - Break large work into smaller steps that can be completed and verified one at a time
 
@@ -84,7 +84,7 @@ If you discover additional necessary work during execution:
 - Todo state is authoritative representation of progress; it must reflect reality at all times
 - When an item is complete, mark it immediately — do not wait
 - When blocked, keep it in_progress and add a follow-up todo describing the blocker
-- The `finish` tool provides a final safety net: when it succeeds, any remaining open todos (pending or in_progress) will be automatically closed as cancelled, leaving a clean terminal state
+- The `finish` tool provides a best-effort final safety net: when it succeeds, it attempts to close any remaining open todos (pending or in_progress) as cancelled, leaving a clean terminal state when possible. It does not block task completion if todo cleanup fails
 - This safety net is NOT a replacement for disciplined updates — you must still explicitly mark individual items complete during execution
 
 ## Rules summary

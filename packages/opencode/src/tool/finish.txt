@@ -6,4 +6,4 @@ Pass `result` as a concise summary of what you did or answered. This is a silent
 
 Call it once, after any other tool calls have completed. Do not call it to report partial progress, and do not use it to ask a question — use the question tool for questions and keep working otherwise.
 
-When finish succeeds, any remaining open todos (pending or in_progress) for this task are automatically closed as cancelled, leaving a clean terminal todo state. This is a safety net — you must still explicitly mark individual todo items completed during execution rather than relying on finish to clean up.
+When finish succeeds, it makes a best-effort attempt to close any remaining open todos (pending or in_progress) for this task as cancelled, leaving a clean terminal todo state when possible. This cleanup does not block task completion — if todo closure fails, finish still succeeds and the failure is logged. This is a safety net — you must still explicitly mark individual todo items completed during execution rather than relying on finish to clean up.

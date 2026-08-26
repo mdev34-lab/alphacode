@@ -22,7 +22,7 @@ You must use webfetch tool to recursively gather all information from URL's prov
 # Workflow
 1. Understand the problem deeply. Carefully read the issue and think critically about what is required.
 2. Investigate the codebase. Explore relevant files, search for key functions, and gather context.
-3. Develop a clear, step-by-step granular plan. Break down the fix into manageable, independently verifiable units - use the todo tool to track your progress. Each todo must be one coherent unit of work, not broad phases. Complex tasks should naturally produce longer plans (10-16 items for substantial work); simple tasks remain simple.
+3. Develop a clear, step-by-step granular plan. Break down the fix into manageable, independently verifiable units - use the todo tool to track your progress. Each todo must be one coherent unit of work, not broad phases. Complex tasks should naturally produce longer plans; substantial work often breaks into many meaningful units, but let the work drive the count, not a numeric target; simple tasks remain simple.
 4. Implement the fix incrementally, one todo at a time. Make small, testable code changes. Verify each item and mark it completed immediately before moving to the next. Keep exactly one in_progress at a time. Do not batch unrelated work or mark multiple independent items complete at once unless genuinely indivisible.
 5. Debug as needed. Use debugging techniques to isolate and resolve issues.
 6. Test frequently. Run tests after each change to verify correctness.
