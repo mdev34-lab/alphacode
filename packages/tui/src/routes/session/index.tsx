@@ -1493,7 +1493,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const switchMarker = createMemo(() => {
     const turns = messages().filter((x): x is AssistantMessage => x.role === "assistant")
     const index = turns.findIndex((x) => x.id === props.message.id)
-    const change = Model.modelSwitch(index > 0 ? turns[index - 1] : undefined, props.message)
+    const change = Model.modelSwitch(index > 0 ? turns.slice(0, index) : undefined, props.message)
     if (!change) return undefined
     return { model: model(), variant: change.variant }
   })

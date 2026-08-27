@@ -646,19 +646,21 @@ const layer = Layer.effect(
       return yield* provider.defaultModel().pipe(Effect.orDie)
     })
 
-    // The per-turn configuration snapshot. The session row carries the latest
-    // model/variant selection (a client may update it while a task is
-    // running); sampling it once at the top of each iteration keeps the
-    // executing turn on the configuration it started with and applies
-    // mid-task changes at the next turn boundary.
-    const turnSelection = Effect.fnUntraced(function* (sessionID: SessionID, fallback: SessionV1.User["model"]) {
+    // Per-turn configuration snapshot, sampled when the turn starts (changes
+    // that land after this read apply to the following turn). Authority: the
+    // session row stores the latest (agent, model, variant) selection
+    // recorded for the session — written when a prompt arrives or a client
+    // patches it mid-task. A turn consumes that selection only when it runs
+    // the same agent it was recorded for; otherwise the user message that
+    // started the task remains the configuration source.
+    const turnSelection = Effect.fnUntraced(function* (sessionID: SessionID, lastUser: SessionV1.User) {
       const current = yield* db
-        .select({ model: SessionTable.model })
+        .select({ agent: SessionTable.agent, model: SessionTable.model })
         .from(SessionTable)
         .where(eq(SessionTable.id, sessionID))
         .get()
         .pipe(Effect.orDie)
-      if (!current?.model) return fallback
+      if (!current?.model || !current.agent || current.agent !== lastUser.agent) return lastUser.model
       return {
         providerID: ProviderV2.ID.make(current.model.providerID),
         modelID: ModelV2.ID.make(current.model.id),
@@ -1183,9 +1185,9 @@ const layer = Layer.effect(
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
           // Snapshot the effective model/variant for this turn. A selection
-          // that changed mid-task takes effect here, at the turn boundary,
+          // that changed mid-task takes effect here, when the turn starts,
           // without touching the request this turn is already running.
-          const selection = yield* turnSelection(sessionID, lastUser.model)
+          const selection = yield* turnSelection(sessionID, lastUser)
           const effectiveUser: SessionV1.User = { ...lastUser, model: selection }
 
           const lastAssistantMsg = msgs.findLast(
@@ -1479,10 +1481,14 @@ const layer = Layer.effect(
 
             if (result === "stop") return "break" as const
             if (result === "compact") {
+              // Compaction runs as the next provider task, so it samples the
+              // selection now instead of using this turn's snapshot: a change
+              // that landed while this turn was streaming is already active.
+              const latestSelection = yield* turnSelection(sessionID, lastUser)
               yield* compaction.create({
                 sessionID,
                 agent: lastUser.agent,
-                model: selection,
+                model: latestSelection,
                 auto: true,
                 overflow: !handle.message.finish,
               })

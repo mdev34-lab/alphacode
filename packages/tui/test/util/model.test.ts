@@ -133,7 +133,7 @@ describe("util.model", () => {
   test("marks a mid-task model switch on the turn that ran with the new model", () => {
     expect(
       modelSwitch(
-        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
+        [{ parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" }],
         { parentID: "user", agent: "work", providerID: "provider", modelID: "model-b" },
       ),
     ).toEqual({ variant: undefined })
@@ -142,7 +142,7 @@ describe("util.model", () => {
   test("marks a thinking-effort switch on the same model", () => {
     expect(
       modelSwitch(
-        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
+        [{ parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" }],
         { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "high" },
       ),
     ).toEqual({ variant: "high" })
@@ -151,33 +151,52 @@ describe("util.model", () => {
   test("shows no marker when the configuration is unchanged", () => {
     expect(
       modelSwitch(
-        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "high" },
+        [{ parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "high" }],
         { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "high" },
       ),
     ).toBeUndefined()
     expect(
       modelSwitch(
-        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "default" },
+        [{ parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "default" }],
         { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
       ),
     ).toBeUndefined()
   })
 
-  test("never compares turns from another task or another agent", () => {
+  test("shows no marker across user-message task boundaries", () => {
     expect(
       modelSwitch(
-        { parentID: "user-a", agent: "work", providerID: "provider", modelID: "model-a" },
+        [{ parentID: "user-a", agent: "work", providerID: "provider", modelID: "model-a" }],
         { parentID: "user-b", agent: "work", providerID: "provider", modelID: "model-b" },
       ),
     ).toBeUndefined()
+  })
+
+  test("interleaved subagent turns produce no marker and cannot hide a real switch", () => {
+    const turns = [
+      { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
+      { parentID: "user", agent: "explore", providerID: "provider", modelID: "model-x" },
+    ]
+    // work/model-a -> explore/model-x: different agent, no marker
+    expect(modelSwitch([turns[0]], turns[1])).toBeUndefined()
+    // explore/model-x -> work/model-b: compares against the nearest
+    // same-task/same-agent turn (work/model-a), so the real switch still
+    // shows and the subagent model difference is skipped
     expect(
-      modelSwitch(
-        { parentID: "user", agent: "explore", providerID: "provider", modelID: "model-b" },
-        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
-      ),
+      modelSwitch(turns, { parentID: "user", agent: "work", providerID: "provider", modelID: "model-b" }),
+    ).toEqual({ variant: undefined })
+    // no switch at all after the subagent: no marker
+    expect(
+      modelSwitch(turns, { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" }),
     ).toBeUndefined()
+  })
+
+  test("shows no marker for the first turn", () => {
     expect(
       modelSwitch(undefined, { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" }),
+    ).toBeUndefined()
+    expect(
+      modelSwitch([], { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" }),
     ).toBeUndefined()
   })
 })

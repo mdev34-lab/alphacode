@@ -50,7 +50,7 @@ test("pushes an update when only the thinking effort changed", () => {
   })
 })
 
-test("treats the stored default variant as no variant", () => {
+test("treats the default variant as no variant everywhere", () => {
   expect(
     selectionUpdate({
       providerID: "provider",
@@ -59,6 +59,8 @@ test("treats the stored default variant as no variant", () => {
       session: { id: "session", model: { providerID: "provider", id: "model-a", variant: "default" } },
     }),
   ).toBeUndefined()
+  // Selecting "default" while the row also stores "default" is not a
+  // change, and the wire format never carries the string "default".
   expect(
     selectionUpdate({
       providerID: "provider",
@@ -67,9 +69,50 @@ test("treats the stored default variant as no variant", () => {
       busy: true,
       session: { id: "session", model: { providerID: "provider", id: "model-a", variant: "default" } },
     }),
+  ).toBeUndefined()
+  expect(
+    selectionUpdate({
+      providerID: "provider",
+      modelID: "model-b",
+      variant: "default",
+      busy: true,
+      session: { id: "session", model: { providerID: "provider", id: "model-a", variant: "high" } },
+    }),
   ).toEqual({
     sessionID: "session",
-    model: { providerID: "provider", id: "model-a", variant: "default" },
+    model: { providerID: "provider", id: "model-b", variant: undefined },
+  })
+})
+
+test("never pushes a selection that belongs to another agent", () => {
+  expect(
+    selectionUpdate({
+      providerID: "provider",
+      modelID: "model-b",
+      agent: "plan",
+      busy: true,
+      session: {
+        id: "session",
+        agent: "work",
+        model: { providerID: "provider", id: "model-a", variant: "default" },
+      },
+    }),
+  ).toBeUndefined()
+  expect(
+    selectionUpdate({
+      providerID: "provider",
+      modelID: "model-b",
+      agent: "work",
+      busy: true,
+      session: {
+        id: "session",
+        agent: "work",
+        model: { providerID: "provider", id: "model-a", variant: "default" },
+      },
+    }),
+  ).toEqual({
+    sessionID: "session",
+    model: { providerID: "provider", id: "model-b", variant: undefined },
   })
 })
 

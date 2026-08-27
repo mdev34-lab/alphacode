@@ -61,12 +61,15 @@ export function effectiveVariant(value?: string) {
 }
 
 // Decides whether an assistant turn actually ran with a different model or
-// thinking effort than the previous assistant turn. Turns from a different
-// task (different parent message) or runs by another agent (subagent turns)
-// are never compared, so ordinary user-message boundaries and subagent model
-// differences do not produce markers.
-export function modelSwitch(previous: TurnModel | undefined, current: TurnModel) {
-  if (!previous || previous.parentID !== current.parentID || previous.agent !== current.agent) return undefined
+// thinking effort than the previous assistant turn of the same task. The
+// comparison target is the nearest earlier turn with the same parent message
+// and agent, so user-message boundaries and subagent turns interleaved in
+// between never produce markers and cannot hide a real switch.
+export function modelSwitch(previousTurns: TurnModel[] | undefined, current: TurnModel) {
+  const previous = previousTurns
+    ?.filter((turn) => turn.parentID === current.parentID && turn.agent === current.agent)
+    .at(-1)
+  if (!previous) return undefined
   const sameModel = previous.providerID === current.providerID && previous.modelID === current.modelID
   if (sameModel && effectiveVariant(previous.variant) === effectiveVariant(current.variant)) return undefined
   return { variant: effectiveVariant(current.variant) }
