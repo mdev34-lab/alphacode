@@ -482,6 +482,8 @@ export const Assistant = Schema.Struct({
   structured: Schema.optional(Schema.Any),
   variant: Schema.optional(Schema.String),
   finish: Schema.optional(Schema.String),
+  ttft: optional(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  tokensPerSecond: optional(Schema.Finite.check(Schema.isGreaterThan(0))),
 }).annotate({ identifier: "AssistantMessage" })
 export type Assistant = Omit<Types.DeepMutable<Schema.Schema.Type<typeof Assistant>>, "error"> & {
   error?: AssistantError

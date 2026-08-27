@@ -104,6 +104,23 @@ describe("transcript", () => {
       const result = formatAssistantHeader(msg, true)
       expect(result).toContain("Plan")
     })
+
+    test("appends tok/s and TTFT when present", () => {
+      const msg = { ...baseMsg, tokensPerSecond: 48.7, ttft: 842 }
+      const result = formatAssistantHeader(msg, true)
+      expect(result).toBe("## Assistant (Work · claude-sonnet-4-20250514 · 5.4s · 48.7 tok/s · TTFT 842 ms)\n\n")
+    })
+
+    test("appends only the metrics that are present", () => {
+      const withRate = { ...baseMsg, tokensPerSecond: 12.25 }
+      const withTtft = { ...baseMsg, ttft: 90.4 }
+      expect(formatAssistantHeader(withRate, true)).toBe(
+        "## Assistant (Work · claude-sonnet-4-20250514 · 5.4s · 12.3 tok/s)\n\n",
+      )
+      expect(formatAssistantHeader(withTtft, true)).toBe(
+        "## Assistant (Work · claude-sonnet-4-20250514 · 5.4s · TTFT 90 ms)\n\n",
+      )
+    })
   })
 
   describe("formatPart", () => {

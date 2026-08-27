@@ -1112,3 +1112,183 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
     { config: cfg },
   ),
 )
+
+function delayedEvents(items: Array<[number, LLMEvent]>) {
+  return Stream.fromIterable(items).pipe(
+    Stream.mapEffect(([ms, event]) =>
+      ms > 0 ? Effect.sleep(`${ms} millis`).pipe(Effect.as(event)) : Effect.succeed(event),
+    ),
+  )
+}
+
+function processorWithLLM(stream: () => Stream.Stream<LLMEvent>) {
+  return testEffect(
+    LayerNode.compile(root, [
+      ...replacements,
+      [
+        LLM.node,
+        Layer.succeed(
+          LLM.Service,
+          LLM.Service.of({
+            stream,
+          }),
+        ),
+      ],
+    ]),
+  )
+}
+
+const runProcessor = Effect.fn("test.runProcessor")(function* (dir: string, text: string) {
+  const { processors, session, provider } = yield* boot()
+  const chat = yield* session.create({})
+  const parent = yield* user(chat.id, text)
+  const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+  const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+  const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+  const value = yield* handle.process({
+    user: {
+      id: parent.id,
+      sessionID: chat.id,
+      role: "user",
+      time: parent.time,
+      agent: parent.agent,
+      model: { providerID: ref.providerID, modelID: ref.modelID },
+    } satisfies SessionV1.User,
+    sessionID: chat.id,
+    model: mdl,
+    agent: agent(),
+    system: [],
+    messages: [{ role: "user", content: text }],
+    tools: {},
+  })
+  const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+  return { value, handle, stored }
+})
+
+const itStreamingMetrics = processorWithLLM(() =>
+  delayedEvents([
+    [0, LLMEvent.stepStart({ index: 0 })],
+    [0, LLMEvent.textStart({ id: "text-1" })],
+    [80, LLMEvent.textDelta({ id: "text-1", text: "hello" })],
+    [120, LLMEvent.textEnd({ id: "text-1" })],
+    [
+      0,
+      LLMEvent.stepFinish({
+        index: 0,
+        reason: "stop",
+        usage: { inputTokens: 12, outputTokens: 24 },
+      }),
+    ],
+    [0, LLMEvent.finish({ reason: "stop", usage: { inputTokens: 12, outputTokens: 24 } })],
+  ]),
+)
+
+const itBurstMetrics = processorWithLLM(() =>
+  Stream.make(
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.textStart({ id: "text-1" }),
+    LLMEvent.textDelta({ id: "text-1", text: "hello" }),
+    LLMEvent.textEnd({ id: "text-1" }),
+    LLMEvent.stepFinish({
+      index: 0,
+      reason: "stop",
+      usage: { inputTokens: 12, outputTokens: 24 },
+    }),
+    LLMEvent.finish({ reason: "stop", usage: { inputTokens: 12, outputTokens: 24 } }),
+  ),
+)
+
+const itMissingUsageMetrics = processorWithLLM(() =>
+  delayedEvents([
+    [0, LLMEvent.stepStart({ index: 0 })],
+    [0, LLMEvent.textStart({ id: "text-1" })],
+    [80, LLMEvent.textDelta({ id: "text-1", text: "hello" })],
+    [80, LLMEvent.textEnd({ id: "text-1" })],
+    [0, LLMEvent.stepFinish({ index: 0, reason: "stop" })],
+    [0, LLMEvent.finish({ reason: "stop" })],
+  ]),
+)
+
+const itMissingOutputMetrics = processorWithLLM(() =>
+  Stream.make(
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.stepFinish({ index: 0, reason: "stop", usage: { inputTokens: 12, outputTokens: 24 } }),
+    LLMEvent.finish({ reason: "stop", usage: { inputTokens: 12, outputTokens: 24 } }),
+  ),
+)
+
+itStreamingMetrics.live(
+  "session.processor records streaming TTFT and tokens/sec on the assistant message",
+  () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { value, handle, stored } = yield* runProcessor(dir, "metrics")
+          expect(value).toBe("continue")
+          expect(handle.message.ttft).toBeGreaterThanOrEqual(50)
+          expect(handle.message.ttft).toBeLessThan(2000)
+          expect(handle.message.tokensPerSecond).toBeGreaterThan(20)
+          expect(handle.message.tokensPerSecond).toBeLessThan(2000)
+          expect(stored.info.role).toBe("assistant")
+          if (stored.info.role !== "assistant") return
+          expect(stored.info.ttft).toBe(handle.message.ttft)
+          expect(stored.info.tokensPerSecond).toBe(handle.message.tokensPerSecond)
+        }),
+      { config: cfg },
+    ),
+  { timeout: 15000 },
+)
+
+itBurstMetrics.live("session.processor omits tokens/sec for a same-tick non-streaming burst", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { handle, stored } = yield* runProcessor(dir, "burst")
+        expect(handle.message.ttft).toBeGreaterThanOrEqual(0)
+        if (handle.message.tokensPerSecond !== undefined) {
+          expect(handle.message.tokensPerSecond).toBeGreaterThan(0)
+          expect(Number.isFinite(handle.message.tokensPerSecond)).toBe(true)
+        }
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role !== "assistant") return
+        expect(stored.info.ttft).toBe(handle.message.ttft)
+        expect(stored.info.tokensPerSecond).toBe(handle.message.tokensPerSecond)
+      }),
+    { config: cfg },
+  ),
+)
+
+itMissingUsageMetrics.live(
+  "session.processor omits tokens/sec when the provider reports no usage",
+  () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const { handle, stored } = yield* runProcessor(dir, "no usage")
+          expect(handle.message.ttft).toBeGreaterThanOrEqual(50)
+          expect(handle.message.tokensPerSecond).toBeUndefined()
+          expect(stored.info.role).toBe("assistant")
+          if (stored.info.role !== "assistant") return
+          expect(stored.info.ttft).toBe(handle.message.ttft)
+          expect(stored.info.tokensPerSecond).toBeUndefined()
+        }),
+      { config: cfg },
+    ),
+  { timeout: 15000 },
+)
+
+itMissingOutputMetrics.live("session.processor omits generation metrics when no output is produced", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { handle, stored } = yield* runProcessor(dir, "empty")
+        expect(handle.message.ttft).toBeUndefined()
+        expect(handle.message.tokensPerSecond).toBeUndefined()
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role !== "assistant") return
+        expect(stored.info.ttft).toBeUndefined()
+        expect(stored.info.tokensPerSecond).toBeUndefined()
+      }),
+    { config: cfg },
+  ),
+)
