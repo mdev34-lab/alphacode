@@ -37,6 +37,7 @@ export const Plugin = define({
     const location = yield* Location.Service
     const npm = yield* Npm.Service
     yield* Effect.gen(function* () {
+      if (yield* RuntimeFlags.factoryDefault) return
       const configured: { package: string; options?: Record<string, any> }[] = []
 
       for (const entry of yield* config.entries()) {

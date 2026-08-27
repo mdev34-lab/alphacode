@@ -375,6 +375,10 @@ const layer = Layer.effect(
           return DISABLED_RESULT
         }
 
+        if (yield* RuntimeFlags.factoryDefault) {
+          return { status: { status: "disabled" } } satisfies CreateResult
+        }
+
         const { client: mcpClient, status } =
           mcp.type === "remote"
             ? yield* connectRemote(key, mcp as ConfigMCPV1.Info & { type: "remote" })

@@ -17,6 +17,7 @@ export const Plugin = define({
     const location = yield* Location.Service
     yield* ctx.skill.transform(
       Effect.fn(function* (draft) {
+        if (yield* RuntimeFlags.factoryDefault) return
         const entries = yield* config.entries()
         const directories = entries.flatMap((entry) => (entry.type === "directory" ? [entry.path] : []))
         const items = entries.flatMap((entry) => (entry.type === "document" ? (entry.info.skills ?? []) : []))

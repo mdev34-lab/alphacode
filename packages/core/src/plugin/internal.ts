@@ -43,6 +43,7 @@ export type Requirements =
   | FileSystem.Service
   | FSUtil.Service
   | Global.Service
+  | RuntimeFlags.Service
   | HttpClient.HttpClient
   | Integration.Service
   | Location.Service
@@ -107,18 +108,20 @@ const layer = Layer.effectDiscard(
 
     yield* State.batch(
       Effect.gen(function* () {
-        yield* add(ConfigReferencePlugin.Plugin)
-        yield* add(AgentPlugin.Plugin)
-        yield* add(CommandPlugin.Plugin)
-        yield* add(SkillPlugin.Plugin)
-        yield* add(ModelsDevPlugin)
-        yield* add(ConfigAgentPlugin.Plugin)
-        yield* add(ConfigCommandPlugin.Plugin)
-        yield* add(ConfigSkillPlugin.Plugin)
-        for (const item of ProviderPlugins) yield* add(item)
-        yield* add(ConfigExternalPlugin.Plugin)
-        yield* add(ConfigProviderPlugin.Plugin)
-        yield* add(VariantPlugin.Plugin)
+        if (!(yield* RuntimeFlags.factoryDefault)) {
+          yield* add(ConfigReferencePlugin.Plugin)
+          yield* add(AgentPlugin.Plugin)
+          yield* add(CommandPlugin.Plugin)
+          yield* add(SkillPlugin.Plugin)
+          yield* add(ModelsDevPlugin)
+          yield* add(ConfigAgentPlugin.Plugin)
+          yield* add(ConfigCommandPlugin.Plugin)
+          yield* add(ConfigSkillPlugin.Plugin)
+          for (const item of ProviderPlugins) yield* add(item)
+          yield* add(ConfigExternalPlugin.Plugin)
+          yield* add(ConfigProviderPlugin.Plugin)
+          yield* add(VariantPlugin.Plugin)
+        }
       }),
     ).pipe(Effect.withSpan("PluginInternal.boot"), Effect.forkScoped({ startImmediately: true }))
   }),
