@@ -9,10 +9,11 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/RuntimeFlags") {}
 
-const envDefault = process.env.OPENCODE_FACTORY_DEFAULT === "1" || process.env.OPENCODE_FACTORY_DEFAULT === "true"
+const readEnv = (): boolean =>
+  process.env.OPENCODE_FACTORY_DEFAULT === "1" || process.env.OPENCODE_FACTORY_DEFAULT === "true"
 
 export const layerWith = (input: Partial<Interface> = {}): Layer.Layer<Service> =>
-  Layer.succeed(Service, Service.of({ factoryDefault: envDefault, ...input }))
+  Layer.succeed(Service, Service.of({ factoryDefault: readEnv(), ...input }))
 
 export const layer: Layer.Layer<Service> = layerWith()
 
