@@ -159,8 +159,8 @@ async function mountActivity(options: {
   let sync!: Sync
   let scroll: ScrollBoxRenderable | undefined
   const [allExpanded, setAllExpanded] = createSignal(false)
-  const [overrides, setOverrides] = createStore<Record<string, boolean>>({})
-  const isExpanded = (groupID: string) => allExpanded() || overrides[groupID]
+  const [overrides, setOverrides] = createStore<Record<string, boolean | undefined>>({})
+  const isExpanded = (groupID: string) => allExpanded() || overrides[groupID] === true
 
   function KeymapBindings() {
     const tui = useTuiConfig()
@@ -172,7 +172,8 @@ async function mountActivity(options: {
           title: "Expand tool activity",
           run: () => {
             setAllExpanded((value) => !value)
-            setOverrides({})
+            // setStore merges, so clearing requires removing every key.
+            for (const key of Object.keys(overrides)) setOverrides(key, undefined)
           },
         },
       ],
@@ -219,7 +220,7 @@ async function mountActivity(options: {
       activity: () => activity(),
       activityAllExpanded: () => allExpanded(),
       activityExpanded: isExpanded,
-      toggleActivity: (groupID: string) => setOverrides(groupID, !isExpanded(groupID)),
+      toggleActivity: (groupID: string) => setOverrides(groupID, isExpanded(groupID) ? undefined : true),
     }
     return (
       <OpencodeKeymapProvider keymap={keymap}>
@@ -429,6 +430,52 @@ describe("activity group TUI", () => {
       app.mockInput.pressKey("o", { ctrl: true })
       await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
       expect(frameOf(app)).toContain("▸")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("ctrl+o clears individually expanded groups", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m2.id, "read", { filePath: "src/b.ts" }, 1100)
+      // Created before t3/t4 so its part id sorts ahead of them in the store.
+      const note = textPart(m3.id, "In between.")
+      const t3 = running(m3.id, "read", { filePath: "src/c.ts" }, 1200)
+      const t4 = running(m3.id, "read", { filePath: "src/d.ts" }, 1300)
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2] },
+        { message: m3, parts: [note] },
+      ])
+      reseedParts(sync, { [m3.id]: [note, t3, t4] })
+      await app.waitForFrame(
+        (frame: string) => frame.includes("In between.") && frame.match(/Working... 2 tool calls/g)?.length === 2,
+      )
+
+      // Expand only the first group, individually.
+      const firstRow = rowOf(frameOf(app), "Working... 2 tool calls")
+      await app.mockMouse.click(5, firstRow)
+      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      expect(frameOf(app)).not.toContain("Read src/c.ts")
+
+      // Toggle the global state on...
+      app.mockInput.pressKey("o", { ctrl: true })
+      await app.waitForFrame((frame: string) => frame.includes("Read src/c.ts"))
+
+      // ...and off again: everything must end up collapsed, including the
+      // group that was expanded individually.
+      app.mockInput.pressKey("o", { ctrl: true })
+      await app.waitForFrame(
+        (frame: string) => !frame.includes("Read src/a.ts") && !frame.includes("Read src/c.ts"),
+      )
+      const frame = frameOf(app)
+      expect(frame).toContain("▸")
+      expect(frame).not.toContain("▾")
     } finally {
       app.renderer.destroy()
     }

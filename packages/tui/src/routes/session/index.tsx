@@ -245,8 +245,13 @@ export function Session() {
   )
   const activityExpanded = (groupID: string) => activityAllExpanded() || activityOverrides[groupID] === true
   const toggleActivity = (groupID: string) => {
-    const next = !activityExpanded(groupID)
-    setActivityOverrides(groupID, next)
+    // Set undefined instead of false so collapsed groups leave no residue
+    // behind in the override map.
+    setActivityOverrides(groupID, activityExpanded(groupID) ? undefined : true)
+  }
+  const clearActivityOverrides = () => {
+    // setStore merges, so clearing requires removing every key explicitly.
+    for (const key of Object.keys(activityOverrides)) setActivityOverrides(key, undefined)
   }
   const foregroundTasks = createMemo(() =>
     sync.data.capabilities.backgroundSubagents
@@ -299,7 +304,8 @@ export function Session() {
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
   const [activityAllExpanded, setActivityAllExpanded] = kv.signal("activity_groups_expanded", false)
-  const [activityOverrides, setActivityOverrides] = createStore<Record<string, boolean>>({})
+  // Values are only ever `true`; `undefined` removes a key (solid store merges).
+  const [activityOverrides, setActivityOverrides] = createStore<Record<string, boolean | undefined>>({})
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -791,7 +797,7 @@ export function Session() {
       },
       run: () => {
         setActivityAllExpanded((prev) => !prev)
-        setActivityOverrides({})
+        clearActivityOverrides()
         dialog.clear()
       },
     },
