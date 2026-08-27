@@ -2,19 +2,19 @@ import { describe, expect, test } from "bun:test"
 import {
   computeGenerationMetrics,
   createGenerationClock,
-  isGeneratedOutput,
+  isReceivedTextToken,
 } from "../../src/session/generation-metrics"
 
-describe("generation-metrics.isGeneratedOutput", () => {
-  test("counts the first non-empty generated delta or tool-call", () => {
-    expect(isGeneratedOutput({ type: "text-start" })).toBe(false)
-    expect(isGeneratedOutput({ type: "text-delta", text: "" })).toBe(false)
-    expect(isGeneratedOutput({ type: "text-delta", text: "hi" })).toBe(true)
-    expect(isGeneratedOutput({ type: "reasoning-start" })).toBe(false)
-    expect(isGeneratedOutput({ type: "reasoning-delta", text: "think" })).toBe(true)
-    expect(isGeneratedOutput({ type: "tool-input-delta", text: "{" })).toBe(true)
-    expect(isGeneratedOutput({ type: "tool-call" })).toBe(true)
-    expect(isGeneratedOutput({ type: "step-finish" })).toBe(false)
+describe("generation-metrics.isReceivedTextToken", () => {
+  test("counts only non-empty text-delta as a received token", () => {
+    expect(isReceivedTextToken({ type: "text-start" })).toBe(false)
+    expect(isReceivedTextToken({ type: "text-delta", text: "" })).toBe(false)
+    expect(isReceivedTextToken({ type: "text-delta", text: "hi" })).toBe(true)
+    expect(isReceivedTextToken({ type: "reasoning-start" })).toBe(false)
+    expect(isReceivedTextToken({ type: "reasoning-delta", text: "think" })).toBe(false)
+    expect(isReceivedTextToken({ type: "tool-input-delta", text: "{" })).toBe(false)
+    expect(isReceivedTextToken({ type: "tool-call" })).toBe(false)
+    expect(isReceivedTextToken({ type: "step-finish" })).toBe(false)
   })
 })
 
@@ -90,16 +90,51 @@ describe("generation-metrics.createGenerationClock", () => {
     })
   })
 
-  test("uses tool-call as first output when no deltas streamed", () => {
+  test("does not use tool-call as TTFT", () => {
+    const clock = createGenerationClock()
+    clock.startRequest(0)
+    clock.observe({ type: "tool-call" }, 40)
+    clock.observe({ type: "text-delta", text: "hello" }, 200)
+
+    expect(clock.finish(300).ttft).toBe(200)
+  })
+
+  test("measures TTFT from first text token after a tool-call step", () => {
+    const clock = createGenerationClock()
+    clock.startRequest(0)
+    clock.observe({ type: "tool-call" }, 40)
+    clock.observe({ type: "step-finish", usage: { outputTokens: 8 } }, 100)
+    clock.observe({ type: "text-delta", text: "hello" }, 800)
+    clock.observe({ type: "step-finish", usage: { outputTokens: 4 } }, 900)
+
+    expect(clock.finish(1000)).toEqual({
+      ttft: 800,
+      tokensPerSecond: 40,
+    })
+  })
+
+  test("does not start TTFT or tok/s from reasoning or tool-input deltas", () => {
+    const clock = createGenerationClock()
+    clock.startRequest(0)
+    clock.observe({ type: "reasoning-delta", text: "hmm" }, 50)
+    clock.observe({ type: "tool-input-delta", text: "{" }, 60)
+    clock.observe({ type: "tool-call" }, 70)
+    clock.observe({ type: "text-delta", text: "ok" }, 180)
+    clock.observe({ type: "step-finish", usage: { outputTokens: 10 } }, 280)
+
+    expect(clock.finish(300)).toEqual({
+      ttft: 180,
+      tokensPerSecond: 100,
+    })
+  })
+
+  test("omits both metrics when only a tool-call is produced", () => {
     const clock = createGenerationClock()
     clock.startRequest(0)
     clock.observe({ type: "tool-call" }, 40)
     clock.observe({ type: "step-finish", usage: { outputTokens: 8 } }, 120)
 
-    expect(clock.finish(200)).toEqual({
-      ttft: 40,
-      tokensPerSecond: 100,
-    })
+    expect(clock.finish(200)).toEqual({})
   })
 
   test("does not count tool execution time between steps", () => {
@@ -119,7 +154,7 @@ describe("generation-metrics.createGenerationClock", () => {
   test("falls back to finish usage when step-finish has none", () => {
     const clock = createGenerationClock()
     clock.startRequest(0)
-    clock.observe({ type: "reasoning-delta", text: "hmm" }, 50)
+    clock.observe({ type: "text-delta", text: "hmm" }, 50)
     clock.observe({ type: "step-finish" }, 150)
     clock.observe({ type: "finish", usage: { outputTokens: 5 } }, 150)
 

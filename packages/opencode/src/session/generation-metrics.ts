@@ -11,11 +11,10 @@ export type GenerationMetrics = {
   tokensPerSecond?: number
 }
 
-export function isGeneratedOutput(event: GenerationStreamEvent) {
-  if (event.type === "text-delta" || event.type === "reasoning-delta" || event.type === "tool-input-delta") {
-    return typeof event.text === "string" && event.text.length > 0
-  }
-  return event.type === "tool-call"
+// TTFT is time to first text token received: a non-empty text-delta.
+// Tool-call, tool-input-delta, and reasoning-delta do not start TTFT or tok/s.
+export function isReceivedTextToken(event: GenerationStreamEvent) {
+  return event.type === "text-delta" && typeof event.text === "string" && event.text.length > 0
 }
 
 function reportedOutputTokens(event: GenerationStreamEvent) {
@@ -77,12 +76,14 @@ export function createGenerationClock() {
       sawStepUsage = false
     },
     observe(event: GenerationStreamEvent, at: number) {
-      if (isGeneratedOutput(event)) {
+      if (isReceivedTextToken(event)) {
         if (firstOutputAt === undefined) firstOutputAt = at
         if (generatingSince === undefined) generatingSince = at
       }
       if (event.type === "step-finish") {
+        const wasGenerating = generatingSince !== undefined
         pause(at)
+        if (!wasGenerating) return
         const tokens = reportedOutputTokens(event)
         if (tokens !== undefined) {
           outputTokens = (outputTokens ?? 0) + tokens
