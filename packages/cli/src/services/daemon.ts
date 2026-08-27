@@ -1,5 +1,7 @@
 import { Global } from "@opencode-ai/core/global"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { filesystem } from "@opencode-ai/core/effect/app-node-platform"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
 import { ServerAuth } from "@opencode-ai/server/auth"
 import { Context, Effect, FileSystem, Layer, Option, Schedule, Schema, Scope } from "effect"
@@ -111,7 +113,10 @@ export const layer = Layer.effect(
       const existing = yield* healthy().pipe(Effect.option)
       const found = Option.getOrUndefined(existing)
       const compiled = path.basename(process.execPath).replace(/\.exe$/, "") !== "bun"
-      if (found?.version === InstallationVersion && compiled) return found.url
+      const factoryDefault =
+        process.env.OPENCODE_FACTORY_DEFAULT === "1" || process.env.OPENCODE_FACTORY_DEFAULT === "true"
+
+      if (!factoryDefault && found?.version === InstallationVersion && compiled) return found.url
       if (found) yield* stopProcess(found).pipe(Effect.ignore)
 
       const entrypoint = compiled ? undefined : process.argv[1]
@@ -188,5 +193,11 @@ export const layer = Layer.effect(
     return Service.of({ client, transport, start, status, stop, password, register })
   }),
 )
+
+export const node = LayerNode.make({
+  service: Service,
+  layer,
+  deps: [filesystem, Global.node],
+})
 
 export * as Daemon from "./daemon"

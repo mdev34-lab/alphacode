@@ -24,6 +24,7 @@ import { ModelsDev } from "../models-dev"
 import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
 import { Reference } from "../reference"
+import { RuntimeFlags } from "../effect/runtime-flags"
 import { SkillV2 } from "../skill"
 import { State } from "../state"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
@@ -43,6 +44,7 @@ export type Requirements =
   | FileSystem.Service
   | FSUtil.Service
   | Global.Service
+  | RuntimeFlags.Service
   | HttpClient.HttpClient
   | Integration.Service
   | Location.Service
@@ -107,18 +109,22 @@ const layer = Layer.effectDiscard(
 
     yield* State.batch(
       Effect.gen(function* () {
-        yield* add(ConfigReferencePlugin.Plugin)
-        yield* add(AgentPlugin.Plugin)
-        yield* add(CommandPlugin.Plugin)
-        yield* add(SkillPlugin.Plugin)
         yield* add(ModelsDevPlugin)
-        yield* add(ConfigAgentPlugin.Plugin)
-        yield* add(ConfigCommandPlugin.Plugin)
-        yield* add(ConfigSkillPlugin.Plugin)
         for (const item of ProviderPlugins) yield* add(item)
-        yield* add(ConfigExternalPlugin.Plugin)
-        yield* add(ConfigProviderPlugin.Plugin)
-        yield* add(VariantPlugin.Plugin)
+
+        const flags = yield* RuntimeFlags.Service
+        if (!(flags.factoryDefault)) {
+          yield* add(ConfigReferencePlugin.Plugin)
+          yield* add(AgentPlugin.Plugin)
+          yield* add(CommandPlugin.Plugin)
+          yield* add(SkillPlugin.Plugin)
+          yield* add(ConfigAgentPlugin.Plugin)
+          yield* add(ConfigCommandPlugin.Plugin)
+          yield* add(ConfigSkillPlugin.Plugin)
+          yield* add(ConfigExternalPlugin.Plugin)
+          yield* add(ConfigProviderPlugin.Plugin)
+          yield* add(VariantPlugin.Plugin)
+        }
       }),
     ).pipe(Effect.withSpan("PluginInternal.boot"), Effect.forkScoped({ startImmediately: true }))
   }),
@@ -147,6 +153,7 @@ export const node = makeLocationNode({
     FileSystem.node,
     Global.node,
     httpClient,
+    RuntimeFlags.node,
     SkillV2.node,
     Reference.node,
   ],

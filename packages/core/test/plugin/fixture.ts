@@ -16,6 +16,7 @@ import { PluginV2 } from "@opencode-ai/core/plugin"
 import { Reference } from "@opencode-ai/core/reference"
 import { SkillV2 } from "@opencode-ai/core/skill"
 import { Effect, Layer } from "effect"
+import { RuntimeFlags } from "@opencode-ai/core/effect/runtime-flags"
 import { tempLocationLayer } from "../fixture/location"
 
 const npmLayer = Layer.succeed(
@@ -43,6 +44,7 @@ export const PluginTestLayer = AppNodeBuilder.build(
     CommandV2.node,
     Integration.node,
     Reference.node,
+    RuntimeFlags.node,
     SkillV2.node,
   ]),
   [

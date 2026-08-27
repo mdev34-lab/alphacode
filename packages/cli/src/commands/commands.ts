@@ -5,6 +5,10 @@ declare const OPENCODE_CLI_NAME: string | undefined
 
 export const Commands = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME : "opencode", {
   description: "alphacode 2.0 preview command line interface",
+  params: {
+    "factory-default": Flag.boolean("factory-default")
+      .pipe(Flag.withDefault(false), Flag.withDescription("Start with factory-default configuration, ignoring user-configured MCP servers, plugins, skills, and other extensions"))
+  },
   commands: [
     Spec.make("api", {
       description: "Make a request to the running server",
