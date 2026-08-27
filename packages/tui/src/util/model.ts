@@ -1,5 +1,14 @@
 import type { Provider } from "@opencode-ai/sdk/v2"
 
+export type ModelLike =
+  | {
+      capabilities?: {
+        input?: { image?: boolean } | ReadonlyArray<string> | string[]
+      }
+    }
+  | undefined
+  | null
+
 export function parse(value: string) {
   const [providerID, ...modelID] = value.split("/")
   return { providerID, modelID: modelID.join("/") }
@@ -25,4 +34,16 @@ export function name(
   modelID: string,
 ) {
   return get(list, providerID, modelID)?.name ?? modelID
+}
+
+export function supportsVision(model: ModelLike) {
+  if (!model?.capabilities?.input) return false
+  const input = model.capabilities.input
+  if (Array.isArray(input)) {
+    return input.includes("image")
+  }
+  if (typeof input === "object") {
+    return (input as { image?: boolean }).image === true
+  }
+  return false
 }
