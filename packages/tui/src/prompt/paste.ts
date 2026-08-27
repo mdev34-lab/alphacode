@@ -1,23 +1,30 @@
 /**
  * Client-side "Paste to File" for the prompt composer.
  *
- * When the user pastes a document-sized text payload into the composer, we do
- * not flood the message with it: the payload is captured as a `text/plain`
- * file part (a `data:text/plain;base64` URL) and a compact placeholder is
- * inserted at the cursor instead. On submit the file part is sent with the
- * prompt and the server (see packages/opencode/src/session/paste-file.ts)
- * inlines it or saves it to the managed attachment store, so the agent can
- * read the full content as a file.
+ * When the user pastes a text payload into the composer we capture it as a
+ * `text/plain` file part (a `data:text/plain;base64` URL) so the model
+ * receives the full content through the file-attachment path rather than
+ * embedded in a text part. The composer shows a compact placeholder instead
+ * of the full text. On submit the file part is sent with the prompt and the
+ * server (see packages/opencode/src/session/paste-file.ts) inlines it or
+ * saves it to the managed attachment store, so the agent can read the full
+ * content as a file.
  *
- * The large-paste thresholds are carried over from the paste classifier of
- * the former web composer (packages/app/src/components/prompt-input/paste.ts):
- * a paste is "large" at 8000+ characters or 120+ line breaks. Smaller pastes
- * keep the existing behavior (paste summary or plain insertion).
+ * Thresholds:
+ *   - `LARGE_PASTE_CHARS` (8000) and `LARGE_PASTE_BREAKS` (120) are the
+ *     historical "definitely large" thresholds inherited from the former web
+ *     composer.
+ *   - `LARGE_PASTE_FILE_BYTES` (2048) is the lower bound at which a paste
+ *     becomes a file attachment. It bridges the gap between the
+ *     composer-summary threshold (~150 chars) and `LARGE_PASTE_CHARS`, so
+ *     medium pastes (a few KB of code/log/config) are also captured as
+ *     attachments rather than being sent inline as a text part.
  */
 import type { FilePart } from "@opencode-ai/sdk/v2"
 
 export const LARGE_PASTE_CHARS = 8000
 export const LARGE_PASTE_BREAKS = 120
+export const LARGE_PASTE_FILE_BYTES = 2048
 
 export function isLargePaste(text: string): boolean {
   if (text.length >= LARGE_PASTE_CHARS) return true
@@ -28,6 +35,17 @@ export function isLargePaste(text: string): boolean {
     if (breaks >= LARGE_PASTE_BREAKS) return true
   }
   return false
+}
+
+/**
+ * Pastes at or above this size always become a file attachment when
+ * `summaryEnabled` is true, regardless of whether they meet the historical
+ * `isLargePaste` thresholds. This is the entry point for medium-sized
+ * pastes (a few KB of code, logs, config) that should not flood the message.
+ */
+export function isPasteAsFile(text: string): boolean {
+  if (isLargePaste(text)) return true
+  return text.length >= LARGE_PASTE_FILE_BYTES
 }
 
 /** Compact composer placeholder shown where the large paste was captured. */
