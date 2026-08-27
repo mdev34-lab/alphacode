@@ -9,6 +9,7 @@ import { Glob } from "./util/glob"
 import { serviceUse } from "./effect/service-use"
 import { makeGlobalNode } from "./effect/app-node"
 import { filesystem } from "./effect/app-node-platform"
+import { resolveDesktop, type DesktopResolverOptions } from "./filesystem/desktop"
 
 export namespace FSUtil {
   export class FileSystemError extends Schema.TaggedErrorClass<FileSystemError>()("FileSystemError", {
@@ -44,6 +45,8 @@ export namespace FSUtil {
     readonly globUp: (pattern: string, start: string, stop?: string) => Effect.Effect<string[], Error>
     readonly glob: (pattern: string, options?: Glob.Options) => Effect.Effect<string[], Error>
     readonly globMatch: (pattern: string, filepath: string) => boolean
+    readonly desktopDir: (options?: DesktopResolverOptions) => Effect.Effect<string | undefined>
+    readonly requireDesktopDir: (options?: DesktopResolverOptions) => Effect.Effect<string, FileSystemError>
   }
 
   export class Service extends Context.Service<Service, Interface>()("@opencode/FileSystem") {}
@@ -197,6 +200,25 @@ export namespace FSUtil {
         return result
       })
 
+      const desktopDir = Effect.fn("FileSystem.desktopDir")(function* (options?: DesktopResolverOptions) {
+        return resolveDesktop(options)
+      })
+
+      const requireDesktopDir = Effect.fn("FileSystem.requireDesktopDir")(function* (
+        options?: DesktopResolverOptions,
+      ) {
+        const dir = resolveDesktop(options)
+        if (!dir) {
+          return yield* Effect.fail(
+            new FileSystemError({
+              method: "desktopDir",
+              cause: new Error("Failed to resolve operating system Desktop directory"),
+            }),
+          )
+        }
+        return dir
+      })
+
       return Service.of({
         ...fs,
         existsSafe,
@@ -214,6 +236,8 @@ export namespace FSUtil {
         globUp,
         glob,
         globMatch: Glob.match,
+        desktopDir,
+        requireDesktopDir,
       })
     }),
   )
@@ -271,4 +295,21 @@ export namespace FSUtil {
     const result = relative(parent, child)
     return result === "" || (!isAbsolute(result) && result !== ".." && !result.startsWith(`..${sep}`))
   }
+
+  export function desktopDir(options?: DesktopResolverOptions): string | undefined {
+    return resolveDesktop(options)
+  }
+
+  export function requireDesktopDir(options?: DesktopResolverOptions): string {
+    const dir = resolveDesktop(options)
+    if (!dir) {
+      throw new FileSystemError({
+        method: "desktopDir",
+        cause: new Error("Failed to resolve operating system Desktop directory"),
+      })
+    }
+    return dir
+  }
+
+  export type DesktopResolverOptions = import("./filesystem/desktop").DesktopResolverOptions
 }
