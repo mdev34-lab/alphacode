@@ -213,7 +213,7 @@ const Revert = Schema.Struct({
   diff: optional(Schema.String),
 })
 
-const Model = Schema.Struct({
+export const Model = Schema.Struct({
   id: ModelV2.ID,
   providerID: ProviderV2.ID,
   variant: optional(Schema.String),
@@ -430,7 +430,7 @@ export interface Interface {
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
   readonly setAgentModel: (input: {
     sessionID: SessionID
-    agent: string
+    agent?: string
     model: NonNullable<Info["model"]>
     time: number
   }) => Effect.Effect<void>
@@ -764,12 +764,12 @@ const layer: Layer.Layer<
 
     const setAgentModel = Effect.fn("Session.setAgentModel")(function* (input: {
       sessionID: SessionID
-      agent: string
+      agent?: string
       model: NonNullable<Info["model"]>
       time: number
     }) {
       yield* patch(input.sessionID, {
-        agent: input.agent,
+        ...(input.agent !== undefined ? { agent: input.agent } : {}),
         model: input.model,
         time: { updated: input.time },
       }).pipe(Effect.orDie)

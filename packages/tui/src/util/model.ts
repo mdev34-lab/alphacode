@@ -47,3 +47,27 @@ export function supportsVision(model: ModelLike) {
   }
   return false
 }
+
+export type TurnModel = {
+  parentID?: string
+  agent?: string
+  providerID?: string
+  modelID?: string
+  variant?: string
+}
+
+export function effectiveVariant(value?: string) {
+  return value && value !== "default" ? value : undefined
+}
+
+// Decides whether an assistant turn actually ran with a different model or
+// thinking effort than the previous assistant turn. Turns from a different
+// task (different parent message) or runs by another agent (subagent turns)
+// are never compared, so ordinary user-message boundaries and subagent model
+// differences do not produce markers.
+export function modelSwitch(previous: TurnModel | undefined, current: TurnModel) {
+  if (!previous || previous.parentID !== current.parentID || previous.agent !== current.agent) return undefined
+  const sameModel = previous.providerID === current.providerID && previous.modelID === current.modelID
+  if (sameModel && effectiveVariant(previous.variant) === effectiveVariant(current.variant)) return undefined
+  return { variant: effectiveVariant(current.variant) }
+}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { get, parse, supportsVision } from "../../src/util/model"
+import { get, modelSwitch, parse, supportsVision } from "../../src/util/model"
 import type { Provider } from "@opencode-ai/sdk/v2"
 
 describe("util.model", () => {
@@ -128,5 +128,56 @@ describe("util.model", () => {
       expect(supportsVision(get(providers, "prov-a", "non-existent"))).toBe(false)
       expect(supportsVision(get(providers, "unknown-prov", "model-vision"))).toBe(false)
     })
+  })
+
+  test("marks a mid-task model switch on the turn that ran with the new model", () => {
+    expect(
+      modelSwitch(
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-b" },
+      ),
+    ).toEqual({ variant: undefined })
+  })
+
+  test("marks a thinking-effort switch on the same model", () => {
+    expect(
+      modelSwitch(
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "high" },
+      ),
+    ).toEqual({ variant: "high" })
+  })
+
+  test("shows no marker when the configuration is unchanged", () => {
+    expect(
+      modelSwitch(
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "high" },
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "high" },
+      ),
+    ).toBeUndefined()
+    expect(
+      modelSwitch(
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a", variant: "default" },
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
+      ),
+    ).toBeUndefined()
+  })
+
+  test("never compares turns from another task or another agent", () => {
+    expect(
+      modelSwitch(
+        { parentID: "user-a", agent: "work", providerID: "provider", modelID: "model-a" },
+        { parentID: "user-b", agent: "work", providerID: "provider", modelID: "model-b" },
+      ),
+    ).toBeUndefined()
+    expect(
+      modelSwitch(
+        { parentID: "user", agent: "explore", providerID: "provider", modelID: "model-b" },
+        { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" },
+      ),
+    ).toBeUndefined()
+    expect(
+      modelSwitch(undefined, { parentID: "user", agent: "work", providerID: "provider", modelID: "model-a" }),
+    ).toBeUndefined()
   })
 })

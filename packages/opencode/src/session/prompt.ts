@@ -646,6 +646,26 @@ const layer = Layer.effect(
       return yield* provider.defaultModel().pipe(Effect.orDie)
     })
 
+    // The per-turn configuration snapshot. The session row carries the latest
+    // model/variant selection (a client may update it while a task is
+    // running); sampling it once at the top of each iteration keeps the
+    // executing turn on the configuration it started with and applies
+    // mid-task changes at the next turn boundary.
+    const turnSelection = Effect.fnUntraced(function* (sessionID: SessionID, fallback: SessionV1.User["model"]) {
+      const current = yield* db
+        .select({ model: SessionTable.model })
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!current?.model) return fallback
+      return {
+        providerID: ProviderV2.ID.make(current.model.providerID),
+        modelID: ModelV2.ID.make(current.model.id),
+        variant: current.model.variant && current.model.variant !== "default" ? current.model.variant : undefined,
+      }
+    })
+
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
       const agentName = input.agent
       const ag = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
@@ -1162,6 +1182,12 @@ const layer = Layer.effect(
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
+          // Snapshot the effective model/variant for this turn. A selection
+          // that changed mid-task takes effect here, at the turn boundary,
+          // without touching the request this turn is already running.
+          const selection = yield* turnSelection(sessionID, lastUser.model)
+          const effectiveUser: SessionV1.User = { ...lastUser, model: selection }
+
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
           )
@@ -1237,7 +1263,7 @@ const layer = Layer.effect(
                 sessionID,
                 role: "user",
                 agent: lastUser.agent,
-                model: lastUser.model,
+                model: selection,
                 time: { created: Date.now() },
               }
               yield* sessions.updateMessage(nudge)
@@ -1259,16 +1285,16 @@ const layer = Layer.effect(
           if (step === 1)
             yield* title({
               session,
-              modelID: lastUser.model.modelID,
-              providerID: lastUser.model.providerID,
+              modelID: selection.modelID,
+              providerID: selection.providerID,
               history: msgs,
             }).pipe(Effect.ignore, Effect.forkIn(scope))
 
-          const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, sessionID)
+          const model = yield* getModel(selection.providerID, selection.modelID, sessionID)
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
-            yield* handleSubtask({ task, model, lastUser, sessionID, session, msgs })
+            yield* handleSubtask({ task, model, lastUser: effectiveUser, sessionID, session, msgs })
             continue
           }
 
@@ -1289,7 +1315,7 @@ const layer = Layer.effect(
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
-            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+            yield* compaction.create({ sessionID, agent: lastUser.agent, model: selection, auto: true })
             continue
           }
 
@@ -1315,7 +1341,7 @@ const layer = Layer.effect(
             role: "assistant",
             mode: agent.name,
             agent: agent.name,
-            variant: lastUser.model.variant,
+            variant: selection.variant,
             path: { cwd: ctx.directory, root: ctx.worktree },
             cost: 0,
             tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -1405,7 +1431,7 @@ const layer = Layer.effect(
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
-              user: lastUser,
+              user: effectiveUser,
               agent,
               permission: session.permission,
               sessionID,
@@ -1456,7 +1482,7 @@ const layer = Layer.effect(
               yield* compaction.create({
                 sessionID,
                 agent: lastUser.agent,
-                model: lastUser.model,
+                model: selection,
                 auto: true,
                 overflow: !handle.message.finish,
               })
