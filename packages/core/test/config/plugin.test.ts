@@ -10,6 +10,7 @@ import { Npm } from "@opencode-ai/core/npm"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { RuntimeFlags } from "@opencode-ai/core/effect/runtime-flags"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "../plugin/fixture"
 
@@ -32,6 +33,7 @@ describe("ConfigExternalPlugin", () => {
         Effect.provideService(FSUtil.Service, fs),
         Effect.provideService(Location.Service, location),
         Effect.provideService(Npm.Service, npm),
+        Effect.provideService(RuntimeFlags.Service, RuntimeFlags.Service.of({ factoryDefault: false })),
         Effect.provideService(
           Config.Service,
           Config.Service.of({
@@ -75,6 +77,7 @@ describe("ConfigExternalPlugin", () => {
         Effect.provideService(FSUtil.Service, fs),
         Effect.provideService(Location.Service, location),
         Effect.provideService(Npm.Service, npm),
+        Effect.provideService(RuntimeFlags.Service, RuntimeFlags.Service.of({ factoryDefault: false })),
         Effect.provideService(
           Config.Service,
           Config.Service.of({
@@ -118,6 +121,7 @@ describe("ConfigExternalPlugin", () => {
         Effect.provideService(FSUtil.Service, fs),
         Effect.provideService(Location.Service, location),
         Effect.provideService(Npm.Service, npm),
+        Effect.provideService(RuntimeFlags.Service, RuntimeFlags.Service.of({ factoryDefault: false })),
         Effect.provideService(
           Config.Service,
           Config.Service.of({
@@ -174,6 +178,7 @@ describe("ConfigExternalPlugin", () => {
         Effect.provideService(FSUtil.Service, fs),
         Effect.provideService(Location.Service, location),
         Effect.provideService(Npm.Service, npm),
+        Effect.provideService(RuntimeFlags.Service, RuntimeFlags.Service.of({ factoryDefault: false })),
         Effect.provideService(
           Config.Service,
           Config.Service.of({
@@ -216,6 +221,7 @@ describe("ConfigExternalPlugin", () => {
         Effect.provideService(FSUtil.Service, fs),
         Effect.provideService(Location.Service, location),
         Effect.provideService(Npm.Service, npm),
+        Effect.provideService(RuntimeFlags.Service, RuntimeFlags.Service.of({ factoryDefault: false })),
         Effect.provideService(
           Config.Service,
           Config.Service.of({
