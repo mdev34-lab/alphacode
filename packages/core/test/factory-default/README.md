@@ -1,10 +1,10 @@
-# Factory-Domain Mode Tests
+# Factory-Default Mode Tests
 
 This directory contains tests for the factory-default mode feature that suppresses user-configured extensions.
 
-## Tests Included
+## Test Plan
 
-### 1. RuntimeFlags factoryDefault
+### 1. RuntimeFlags factoryDefault ✅
 - Verifies the `factoryDefault` flag defaults to `false`
 - Verifies the flag can be set to `true` via the RuntimeFlags layer
 
@@ -19,6 +19,11 @@ This directory contains tests for the factory-default mode feature that suppress
 ### 4. Skill discovery factory-default mode
 - Verifies that when `factoryDefault` is true, skill sources are not created from configuration
 - The SkillDiscovery service remains available but with no user-configured skills
+
+### 5. Daemon lifecycle factory-default mode (not implemented)
+- Would verify that when `factoryDefault` is true, an existing compatible daemon is stopped and a fresh one is spawned
+- **Not feasible as a unit test**: the daemon service spawns real child processes (`spawn(process.execPath, ...)`) and makes real HTTP requests to the health endpoint. A unit test would need to mock the SDK client (`createOpencodeClient`) and the `node:child_process` module, which would defeat the purpose of testing the real layer
+- Manual verification: run `opencode serve` then `opencode --factory-default` and observe the existing daemon is stopped
 
 ## How It Works
 
