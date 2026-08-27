@@ -33,7 +33,7 @@ import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
-import { isLargePaste, pastedFilePart, pastedFilePlaceholder } from "../../prompt/paste"
+import { isPasteAsFile, pastedFilePart, pastedFilePlaceholder } from "../../prompt/paste"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
@@ -1242,7 +1242,7 @@ export function Prompt(props: PromptProps) {
     }
 
     const summaryEnabled = kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
-    if (summaryEnabled && isLargePaste(pastedContent)) {
+    if (summaryEnabled && isPasteAsFile(pastedContent)) {
       pasteLargeText(pastedContent)
       return
     }

@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { LARGE_PASTE_BREAKS, LARGE_PASTE_CHARS, isLargePaste, pastedFilePart, pastedFilePlaceholder } from "../../src/prompt/paste"
+import {
+  LARGE_PASTE_BREAKS,
+  LARGE_PASTE_CHARS,
+  LARGE_PASTE_FILE_BYTES,
+  isLargePaste,
+  isPasteAsFile,
+  pastedFilePart,
+  pastedFilePlaceholder,
+} from "../../src/prompt/paste"
 
 describe("isLargePaste", () => {
   test("tiny single-line paste is not large", () => {
@@ -101,5 +109,63 @@ describe("pastedFilePart", () => {
   test("numbers repeated pasted files within a draft", () => {
     expect(pastedFilePart({ text: "x", index: 1, start: 0, end: 1 }).filename).toBe("paste-1.txt")
     expect(pastedFilePart({ text: "x", index: 2, start: 0, end: 1 }).filename).toBe("paste-2.txt")
+  })
+})
+
+describe("isPasteAsFile", () => {
+  test("small paste is not a file", () => {
+    expect(isPasteAsFile("Hello")).toBe(false)
+  })
+
+  test("ordinary paragraph under the file threshold is not a file", () => {
+    const paragraph = "The quick brown fox jumps over the lazy dog. ".repeat(6)
+    expect(paragraph.length).toBeLessThan(LARGE_PASTE_FILE_BYTES)
+    expect(isPasteAsFile(paragraph)).toBe(false)
+  })
+
+  test("medium paste (2KB+) is a file even with few line breaks", () => {
+    const text = "x".repeat(LARGE_PASTE_FILE_BYTES)
+    expect(text.length).toBeLessThan(LARGE_PASTE_CHARS)
+    expect(isLargePaste(text)).toBe(false)
+    expect(isPasteAsFile(text)).toBe(true)
+  })
+
+  test("medium paste at exactly the file threshold is a file", () => {
+    expect(isPasteAsFile("a".repeat(LARGE_PASTE_FILE_BYTES))).toBe(true)
+  })
+
+  test("paste one byte below the file threshold is not a file", () => {
+    const text = "a".repeat(LARGE_PASTE_FILE_BYTES - 1)
+    expect(text.length).toBeLessThan(LARGE_PASTE_FILE_BYTES)
+    expect(isPasteAsFile(text)).toBe(false)
+  })
+
+  test("definitely-large pastes (isLargePaste) are still files", () => {
+    expect(isPasteAsFile("a".repeat(LARGE_PASTE_CHARS))).toBe(true)
+    const text = Array.from({ length: LARGE_PASTE_BREAKS + 1 }, (_, i) => `line ${i}`).join("\n")
+    expect(isPasteAsFile(text)).toBe(true)
+  })
+
+  test("unicode: 2KB of CJK characters is a file", () => {
+    const text = "文".repeat(LARGE_PASTE_FILE_BYTES)
+    expect(text.length).toBeLessThan(LARGE_PASTE_CHARS)
+    // 2048 CJK characters are 6144 bytes in UTF-8, well above 2KB byte threshold.
+    expect(Buffer.byteLength(text, "utf-8")).toBe(LARGE_PASTE_FILE_BYTES * 3)
+    expect(isPasteAsFile(text)).toBe(true)
+  })
+
+  test("regression: 5KB paste of code is a file (user-reported case)", () => {
+    // 50 lines × ~100 chars each = ~5KB total. Under 8KB chars and under
+    // 120 line breaks, so the historical isLargePaste returns false even
+    // though the content is clearly "large" by user perception.
+    const text = Array.from({ length: 50 }, (_, i) => `// step ${i}: ${"x".repeat(60)}`).join("\n")
+    expect(text.length).toBeGreaterThan(LARGE_PASTE_FILE_BYTES)
+    expect(text.length).toBeLessThan(LARGE_PASTE_CHARS)
+    expect(isLargePaste(text)).toBe(false)
+    expect(isPasteAsFile(text)).toBe(true)
+  })
+
+  test("empty text is not a file", () => {
+    expect(isPasteAsFile("")).toBe(false)
   })
 })
