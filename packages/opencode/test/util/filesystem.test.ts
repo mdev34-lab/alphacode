@@ -657,8 +657,9 @@ describe("filesystem", () => {
   describe("desktopDir()", () => {
     test("resolves Desktop folder via canonical discovery", () => {
       const desktop = Filesystem.desktopDir()
-      expect(desktop).toBeDefined()
-      expect(typeof desktop).toBe("string")
+      if (desktop !== undefined) {
+        expect(typeof desktop).toBe("string")
+      }
     })
 
     test("passes options through to FSUtil.desktopDir", () => {

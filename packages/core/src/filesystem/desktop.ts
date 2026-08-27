@@ -14,12 +14,17 @@ export interface DesktopResolverOptions {
 
 let cachedDefaultDesktop: string | undefined | null = null
 
+function getEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const matchKey = Object.keys(env).find((k) => k.toLowerCase() === name.toLowerCase())
+  return matchKey ? env[matchKey] : undefined
+}
+
 function defaultExecCommand(command: string, args: string[]): string {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: 5000,
+    timeout: 10000,
   })
   if (result.error) throw result.error
   if (result.status !== 0) {
@@ -39,9 +44,9 @@ function defaultReadConfigFile(filePath: string): string | undefined {
 export function expandWindowsEnv(raw: string, env: NodeJS.ProcessEnv, fallbackHome?: string): string | undefined {
   let unresolvable = false
   const expanded = raw.replace(/%([^%]+)%/g, (_, name) => {
-    const matchKey = Object.keys(env).find((k) => k.toLowerCase() === name.toLowerCase())
-    if (matchKey && env[matchKey]) {
-      return env[matchKey]!
+    const val = getEnv(env, name)
+    if (val) {
+      return val
     }
     if (name.toUpperCase() === "USERPROFILE" && fallbackHome) {
       return fallbackHome
@@ -70,79 +75,105 @@ export function normalizeWindowsDesktopPath(candidate: string): string | undefin
   return normalized
 }
 
-function parseRegQueryDesktop(stdout: string): string | undefined {
-  const match = stdout.match(/^\s*Desktop\s+REG_(?:EXPAND_)?SZ\s+(.+)$/im)
+function parseRegQueryDesktop(stdout: string, valueName?: string): string | undefined {
+  if (valueName) {
+    const escaped = valueName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    const match = stdout.match(new RegExp(`^\\s*${escaped}\\s+REG_(?:EXPAND_)?SZ\\s+(.+)$`, "im"))
+    if (match) return match[1].trim()
+  }
+  const match = stdout.match(/^\s*(?:Desktop|\{754AC886-DF64-4C2C-865E-37E494E293C6\})\s+REG_(?:EXPAND_)?SZ\s+(.+)$/im)
   return match ? match[1].trim() : undefined
 }
 
 function resolveWindowsDesktop(options: DesktopResolverOptions): string | undefined {
   const env = options.env ?? process.env
-  const homedir = options.homedir ?? (env.OPENCODE_TEST_HOME ?? os.homedir())
+  const homedir = options.homedir ?? (getEnv(env, "OPENCODE_TEST_HOME") ?? os.homedir())
   const execCommand = options.execCommand ?? defaultExecCommand
-  const regExe = path.win32.join(env.SystemRoot ?? env.windir ?? "C:\\Windows", "System32", "reg.exe")
+  const systemRoot = getEnv(env, "SystemRoot") ?? getEnv(env, "windir") ?? "C:\\Windows"
+  const regExe = path.win32.join(systemRoot, "System32", "reg.exe")
+  const regCommands = [regExe, "reg.exe", "reg"]
+
+  const userShellFolderKeys = [
+    "{754AC886-DF64-4C2C-865E-37E494E293C6}",
+    "Desktop",
+  ]
 
   // Step 1: Query User Shell Folders (authoritative source for redirected folders in Windows)
-  try {
-    const stdout = execCommand(regExe, [
-      "query",
-      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders",
-      "/v",
-      "Desktop",
-    ])
-    const raw = parseRegQueryDesktop(stdout)
-    if (raw) {
-      const expanded = expandWindowsEnv(raw, env, homedir)
-      if (expanded) {
-        const normalized = normalizeWindowsDesktopPath(expanded)
-        if (normalized) return normalized
+  for (const regCmd of regCommands) {
+    let succeeded = false
+    for (const valName of userShellFolderKeys) {
+      try {
+        const stdout = execCommand(regCmd, [
+          "query",
+          "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders",
+          "/v",
+          valName,
+        ])
+        const raw = parseRegQueryDesktop(stdout, valName)
+        if (raw) {
+          const expanded = expandWindowsEnv(raw, env, homedir)
+          if (expanded) {
+            const normalized = normalizeWindowsDesktopPath(expanded)
+            if (normalized) return normalized
+          }
+        }
+        succeeded = true
+      } catch {
+        // Continue trying other value names or commands
       }
     }
-  } catch {
-    // Continue to fallback
+    if (succeeded) break
   }
 
   // Step 2: Query legacy Shell Folders
-  try {
-    const stdout = execCommand(regExe, [
-      "query",
-      "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders",
-      "/v",
-      "Desktop",
-    ])
-    const raw = parseRegQueryDesktop(stdout)
-    if (raw) {
-      const expanded = expandWindowsEnv(raw, env, homedir)
-      if (expanded) {
-        const normalized = normalizeWindowsDesktopPath(expanded)
-        if (normalized) return normalized
+  for (const regCmd of regCommands) {
+    try {
+      const stdout = execCommand(regCmd, [
+        "query",
+        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Shell Folders",
+        "/v",
+        "Desktop",
+      ])
+      const raw = parseRegQueryDesktop(stdout, "Desktop")
+      if (raw) {
+        const expanded = expandWindowsEnv(raw, env, homedir)
+        if (expanded) {
+          const normalized = normalizeWindowsDesktopPath(expanded)
+          if (normalized) return normalized
+        }
       }
+      break
+    } catch {
+      // Continue to next command or fallback
     }
-  } catch {
-    // Continue to fallback
   }
 
-  // Step 3: Query via PowerShell [Environment]::GetFolderPath
-  try {
-    const powershellExe = path.win32.join(
-      env.SystemRoot ?? env.windir ?? "C:\\Windows",
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    )
-    const stdout = execCommand(powershellExe, [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Environment]::GetFolderPath([Environment+SpecialFolder]::Desktop)",
-    ])
-    const trimmed = stdout.trim().split(/\r?\n/)[0]?.trim()
-    if (trimmed) {
-      const normalized = normalizeWindowsDesktopPath(trimmed)
-      if (normalized) return normalized
+  // Step 3: Query via PowerShell [Environment]::GetFolderPath('Desktop')
+  const powershellExe = path.win32.join(
+    systemRoot,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  )
+  const psCommands = [powershellExe, "powershell.exe", "powershell"]
+  for (const psCmd of psCommands) {
+    try {
+      const stdout = execCommand(psCmd, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Environment]::GetFolderPath('Desktop')",
+      ])
+      const trimmed = stdout.trim().split(/\r?\n/)[0]?.trim()
+      if (trimmed) {
+        const normalized = normalizeWindowsDesktopPath(trimmed)
+        if (normalized) return normalized
+      }
+      break
+    } catch {
+      // Try next powershell candidate
     }
-  } catch {
-    // Fall through
   }
 
   // Failure mode: deterministic undefined. Never fabricate or assume %USERPROFILE%\Desktop.
