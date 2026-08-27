@@ -1,7 +1,7 @@
 import { afterEach, describe, expect } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Deferred, Effect, Layer } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import { HttpServer } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process"
@@ -20,7 +20,7 @@ import { MessageV2 } from "../../src/session/message-v2"
 import type { Config } from "@/config/config"
 import { Session as SessionNs } from "@/session/session"
 import { errorMessage } from "../../src/util/error"
-import { TestLLMServer } from "../lib/llm-server"
+import { reply, TestLLMServer } from "../lib/llm-server"
 import path from "path"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance, tmpdirScoped } from "../fixture/fixture"
@@ -832,6 +832,89 @@ describe("HttpApi SDK", () => {
         expect(JSON.stringify(inputs[0])).toContain("project-rest-skill")
       }),
     ),
+  )
+
+  httpapi(
+    "applies a mid-task model update at the next agent turn",
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const base = testProviderConfig(llm.url)
+      const config: Partial<ConfigV1.Info> = {
+        ...base,
+        provider: {
+          ...base.provider,
+          test: {
+            ...base.provider.test,
+            models: {
+              ...base.provider.test.models,
+              "test-model-b": {
+                ...base.provider.test.models["test-model"],
+                id: "test-model-b",
+                name: "Test Model B",
+              },
+            },
+          },
+        },
+      }
+      return yield* withProject("default", { config }, ({ sdk }) =>
+        Effect.gen(function* () {
+          // Turn one stays in flight until the gate opens so the model
+          // update lands while a turn is running.
+          let resolveGate!: () => void
+          const gate = new Promise<void>((done) => {
+            resolveGate = done
+          })
+          yield* llm.push(reply().wait(gate).tool("first", { value: "first" }))
+          yield* llm.text("second")
+
+          const session = yield* capture(() =>
+            sdk.session.create({
+              title: "mid-task switch",
+              permission: [{ permission: "*", pattern: "*", action: "allow" }],
+            }),
+          )
+          const sessionID = String(record(session.data).id)
+
+          const promptFiber = yield* capture(() =>
+            sdk.session.prompt({
+              sessionID,
+              agent: "work",
+              model: { providerID: "test", modelID: "test-model" },
+              parts: [{ type: "text", text: "hello" }],
+            }),
+          ).pipe(Effect.forkChild)
+
+          yield* llm.wait(1)
+
+          const updated = yield* capture(() =>
+            sdk.session.update({
+              sessionID,
+              model: { providerID: "test", id: "test-model-b" },
+            }),
+          )
+          expect(updated.status).toBe(200)
+
+          resolveGate()
+          const exit = yield* Fiber.await(promptFiber)
+          expect(Exit.isSuccess(exit)).toBe(true)
+
+          const inputs = (yield* llm.inputs).filter(
+            (body) => !JSON.stringify(body).includes("Generate a title for this conversation"),
+          )
+          expect(inputs).toHaveLength(2)
+          // The running turn kept its original model; the next turn picked
+          // up the update without another user message.
+          expect(inputs[0]?.model).toBe("test-model")
+          expect(inputs[1]?.model).toBe("test-model-b")
+
+          const messages = yield* capture(() => sdk.session.messages({ sessionID }))
+          const assistants = array(messages.data).filter((item) => record(record(item).info).role === "assistant")
+          expect(assistants.length).toBe(2)
+          expect(record(record(assistants[0]).info).modelID).toBe("test-model")
+          expect(record(record(assistants[1]).info).modelID).toBe("test-model-b")
+        }),
+      )
+    }).pipe(Effect.provide(TestLLMServer.layer)),
   )
 
   serverPathParity("matches generated SDK TUI validation and command routes", (serverPath) =>

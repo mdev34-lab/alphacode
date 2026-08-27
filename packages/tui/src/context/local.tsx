@@ -1,14 +1,16 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createEffect, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, on } from "solid-js"
 import { useSync } from "./sync"
 import { useEvent } from "./event"
 import path from "path"
 import { useTuiPaths } from "./runtime"
 import { useArgs } from "./args"
 import { useSDK } from "./sdk"
+import { effectiveVariant } from "../util/model"
 import { RGBA } from "@opentui/core"
 import { readJson, writeJsonAtomic } from "../util/persistence"
+import { errorMessage } from "../util/error"
 import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
@@ -30,6 +32,33 @@ export function parseModel(model: string) {
   return {
     providerID: providerID,
     modelID: rest.join("/"),
+  }
+}
+
+// Decides which model update must be pushed to a session when the current
+// selection differs from the session's stored selection while a task is
+// running. Returns undefined when nothing must be sent, which keeps the
+// push idempotent and avoids touching idle sessions. The stored selection
+// is agent-scoped, so a selection for a different agent than the one the
+// session is running never pushes.
+export function selectionUpdate(input: {
+  providerID?: string
+  modelID?: string
+  variant?: string
+  agent?: string
+  busy?: boolean
+  session?: { id: string; agent?: string; model?: { providerID: string; id: string; variant?: string } }
+}) {
+  if (!input.providerID || !input.modelID || !input.session || !input.busy) return undefined
+  if (input.agent && input.session.agent && input.session.agent !== input.agent) return undefined
+  const sameModel =
+    input.session.model?.providerID === input.providerID && input.session.model?.id === input.modelID
+  const rowVariant = effectiveVariant(input.session.model?.variant)
+  const variant = effectiveVariant(input.variant)
+  if (sameModel && rowVariant === variant) return undefined
+  return {
+    sessionID: input.session.id,
+    model: { providerID: input.providerID, id: input.modelID, variant },
   }
 }
 
@@ -536,6 +565,58 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         duration: 3000,
       })
     })
+
+    // While a task is running in the visible session, push model/thinking
+    // effort selection changes to the server so they apply at the next agent
+    // turn instead of waiting for the next user message. Comparing against the
+    // synced session row keeps this idempotent and per-session.
+    let lastAttempt: string | undefined
+    createEffect(
+      on(
+        () => {
+          const current = model.current()
+          const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+          return {
+            providerID: current?.providerID,
+            modelID: current?.modelID,
+            variant: model.variant.current(),
+            agent: agent.current()?.name,
+            session: sessionID ? sync.session.get(sessionID) : undefined,
+            status: sessionID ? sync.data.session_status[sessionID]?.type : undefined,
+          }
+        },
+        (state) => {
+          const update = selectionUpdate({
+            providerID: state.providerID,
+            modelID: state.modelID,
+            variant: state.variant,
+            agent: state.agent,
+            busy: state.status === "busy",
+            session: state.session,
+          })
+          if (!update) {
+            lastAttempt = undefined
+            return
+          }
+          // A rejected push must not retry itself on every unrelated signal
+          // change; the same update is attempted once until the selection or
+          // the stored row actually moves.
+          const attempt = JSON.stringify(update)
+          if (attempt === lastAttempt) return
+          lastAttempt = attempt
+          void sdk.client.session
+            .update(update, { throwOnError: true })
+            .catch((error) => {
+              toast.show({
+                variant: "warning",
+                message: `Failed to apply model to the running session: ${errorMessage(error)}`,
+                duration: 3000,
+              })
+            })
+        },
+        { defer: true },
+      ),
+    )
 
     const result = {
       model,

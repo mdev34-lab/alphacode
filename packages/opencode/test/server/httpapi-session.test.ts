@@ -844,6 +844,110 @@ describe("session HttpApi", () => {
     { git: true, config: { formatter: false, lsp: false } },
   )
 
+  const updateModelProviderCfg = {
+    formatter: false,
+    lsp: false,
+    provider: {
+      test: {
+        name: "Test",
+        id: "test",
+        env: [],
+        npm: "@ai-sdk/openai-compatible",
+        models: {
+          "test-model": {
+            id: "test-model",
+            name: "Test Model",
+            attachment: false,
+            reasoning: false,
+            temperature: false,
+            tool_call: true,
+            release_date: "2025-01-01",
+            limit: { context: 100_000, output: 10_000 },
+            cost: { input: 0, output: 0 },
+            options: {},
+            variants: { high: { reasoningEffort: "high" } },
+          },
+          "test-model-b": {
+            id: "test-model-b",
+            name: "Test Model B",
+            attachment: false,
+            reasoning: false,
+            temperature: false,
+            tool_call: true,
+            release_date: "2025-01-01",
+            limit: { context: 100_000, output: 10_000 },
+            cost: { input: 0, output: 0 },
+            options: {},
+            variants: { high: { reasoningEffort: "high" } },
+          },
+        },
+        options: { apiKey: "test-key", baseURL: "http://localhost:9/v1" },
+      },
+    },
+  }
+
+  it.instance(
+    "persists a model selection through session update",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const session = yield* createSession({ title: "model update" })
+
+        const updated = yield* requestJson<Session.Info>(pathFor(SessionPaths.update, { sessionID: session.id }), {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ model: { providerID: "test", id: "test-model-b", variant: "high" } }),
+        })
+        expect(updated.model).toEqual({
+          id: ModelV2.ID.make("test-model-b"),
+          providerID: ProviderV2.ID.make("test"),
+          variant: "high",
+        })
+
+        const current = yield* requestJson<Session.Info>(pathFor(SessionPaths.get, { sessionID: session.id }), {
+          headers,
+        })
+        expect(current.model).toEqual({
+          id: ModelV2.ID.make("test-model-b"),
+          providerID: ProviderV2.ID.make("test"),
+          variant: "high",
+        })
+      }),
+    { git: true, config: updateModelProviderCfg },
+  )
+
+  it.instance(
+    "rejects unknown models and variants in session update",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const headers = { "x-opencode-directory": test.directory, "content-type": "application/json" }
+        const session = yield* createSession({ title: "model validation" })
+
+        const missingModel = yield* request(pathFor(SessionPaths.update, { sessionID: session.id }), {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ model: { providerID: "test", id: "no-such-model" } }),
+        })
+        expect(missingModel.status).toBe(400)
+
+        const missingVariant = yield* request(pathFor(SessionPaths.update, { sessionID: session.id }), {
+          method: "PATCH",
+          headers,
+          body: JSON.stringify({ model: { providerID: "test", id: "test-model", variant: "no-such-variant" } }),
+        })
+        expect(missingVariant.status).toBe(400)
+
+        // Failed updates must not change the stored selection.
+        const current = yield* requestJson<Session.Info>(pathFor(SessionPaths.get, { sessionID: session.id }), {
+          headers,
+        })
+        expect(current.model).toBeUndefined()
+      }),
+    { git: true, config: updateModelProviderCfg },
+  )
+
   it.instance(
     "uses project-scoped path and directory precedence",
     () =>

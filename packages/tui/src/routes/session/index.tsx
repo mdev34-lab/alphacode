@@ -1488,11 +1488,32 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     return props.message.time.completed - user.time.created
   })
 
+  // A mid-task model/thinking-effort switch becomes visible on the first
+  // assistant turn that actually ran with the new selection.
+  const switchMarker = createMemo(() => {
+    const turns = messages().filter((x): x is AssistantMessage => x.role === "assistant")
+    const index = turns.findIndex((x) => x.id === props.message.id)
+    const change = Model.modelSwitch(index > 0 ? turns.slice(0, index) : undefined, props.message)
+    if (!change) return undefined
+    return { model: model(), variant: change.variant }
+  })
+
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
 
   return (
     <>
+      <Show when={switchMarker()}>
+        {(marker) => (
+          <box
+            marginTop={1}
+            border={["top"]}
+            title={` ↻ ${marker().model}${marker().variant ? ` · thinking effort: ${marker().variant}` : ""} `}
+            titleAlignment="center"
+            borderColor={theme.border}
+          />
+        )}
+      </Show>
       <For each={props.parts}>
         {(part, index) => {
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])

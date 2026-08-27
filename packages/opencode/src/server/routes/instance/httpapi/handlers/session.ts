@@ -1,5 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
+import { Provider } from "@/provider/provider"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
@@ -54,6 +55,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const compactSvc = yield* SessionCompaction.Service
     const runState = yield* SessionRunState.Service
     const agentSvc = yield* Agent.Service
+    const providerSvc = yield* Provider.Service
     const permissionSvc = yield* Permission.Service
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
@@ -195,6 +197,27 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         yield* session.setPermission({
           sessionID: ctx.params.sessionID,
           permission: Permission.merge(current.permission ?? [], ctx.payload.permission),
+        })
+      }
+      if (ctx.payload.model !== undefined) {
+        const selected = yield* providerSvc
+          .getModel(ctx.payload.model.providerID, ctx.payload.model.id)
+          .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+        const variant = ctx.payload.model.variant
+        if (variant && variant !== "default" && !selected.variants?.[variant]) {
+          return yield* new HttpApiError.BadRequest({})
+        }
+        // The running loop samples this selection at the next turn boundary;
+        // the currently executing turn keeps the configuration it started with.
+        yield* session.setAgentModel({
+          sessionID: ctx.params.sessionID,
+          agent: current.agent,
+          model: {
+            id: ctx.payload.model.id,
+            providerID: ctx.payload.model.providerID,
+            variant: variant ?? "default",
+          },
+          time: Date.now(),
         })
       }
       if (ctx.payload.time?.archived !== undefined) {
