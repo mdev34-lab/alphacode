@@ -14,6 +14,7 @@ import {
   untrack,
   useContext,
 } from "solid-js"
+import { createStore } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
@@ -77,6 +78,13 @@ import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
+import {
+  activityHeader,
+  computeActivityGroups,
+  summarizeActivity,
+  toolPartOutcome,
+  type ActivityGroups,
+} from "../../util/activity"
 import { collapseDiff } from "../../util/collapse-diff"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
@@ -131,6 +139,7 @@ const sessionBindingCommands = [
   "session.toggle.actions",
   "session.toggle.scrollbar",
   "session.toggle.generic_tool_output",
+  "session.toggle.activity",
   "session.first",
   "session.last",
   "session.messages_last_user",
@@ -169,6 +178,10 @@ const context = createContext<{
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
   tui: ReturnType<typeof useTuiConfig>
+  activity: () => ActivityGroups
+  activityAllExpanded: () => boolean
+  activityExpanded: (groupID: string) => boolean
+  toggleActivity: (groupID: string) => void
 }>()
 
 function use() {
@@ -176,6 +189,10 @@ function use() {
   if (!ctx) throw new Error("useContext must be used within a Session component")
   return ctx
 }
+
+// Exported so tests can mount the transcript components (AssistantMessageRow,
+// ActivityGroup, tool renderers) outside the full Session route.
+export const SessionContext = context
 
 export function Session() {
   const setEpilogue = useEpilogue()
@@ -218,6 +235,24 @@ export function Session() {
     if (!messageID) return messages()
     const index = messages().findIndex((message) => message.id === messageID)
     return index === -1 ? messages() : messages().slice(0, index)
+  }
+  const activity = createMemo<ActivityGroups>(() =>
+    computeActivityGroups(
+      messagesBeforeRevert().map((message) => ({
+        message,
+        parts: sync.data.part[message.id] ?? [],
+      })),
+    ),
+  )
+  const activityExpanded = (groupID: string) => activityAllExpanded() || activityOverrides[groupID] === true
+  const toggleActivity = (groupID: string) => {
+    // Set undefined instead of false so collapsed groups leave no residue
+    // behind in the override map.
+    setActivityOverrides(groupID, activityExpanded(groupID) ? undefined : true)
+  }
+  const clearActivityOverrides = () => {
+    // setStore merges, so clearing requires removing every key explicitly.
+    for (const key of Object.keys(activityOverrides)) setActivityOverrides(key, undefined)
   }
   const foregroundTasks = createMemo(() =>
     sync.data.capabilities.backgroundSubagents
@@ -269,6 +304,9 @@ export function Session() {
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
+  const [activityAllExpanded, setActivityAllExpanded] = kv.signal("activity_groups_expanded", false)
+  // Values are only ever `true`; `undefined` removes a key (solid store merges).
+  const [activityOverrides, setActivityOverrides] = createStore<Record<string, boolean | undefined>>({})
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -752,6 +790,19 @@ export function Session() {
       },
     },
     {
+      title: activityAllExpanded() ? "Collapse tool activity" : "Expand tool activity",
+      value: "session.toggle.activity",
+      category: "Session",
+      slash: {
+        name: "activity",
+      },
+      run: () => {
+        setActivityAllExpanded((prev) => !prev)
+        clearActivityOverrides()
+        dialog.clear()
+      },
+    },
+    {
       title: "Page up",
       value: "session.page.up",
       category: "Session",
@@ -1175,6 +1226,10 @@ export function Session() {
           providers,
           sync,
           tui: tuiConfig,
+          activity,
+          activityAllExpanded,
+          activityExpanded,
+          toggleActivity,
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
@@ -1286,7 +1341,7 @@ export function Session() {
                         />
                       </Match>
                       <Match when={message.role === "assistant"}>
-                        <AssistantMessage
+                        <AssistantMessageRow
                           last={lastAssistant()?.id === message.id}
                           message={message as AssistantMessage}
                           parts={sync.data.part[message.id] ?? []}
@@ -1469,7 +1524,8 @@ function UserMessage(props: {
   )
 }
 
-function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
+// Exported so tests can render the assistant transcript row directly.
+export function AssistantMessageRow(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
   const ctx = use()
   const local = useLocal()
   const { theme } = useTheme()
@@ -1519,16 +1575,39 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
       </Show>
       <For each={props.parts}>
         {(part, index) => {
+          // A tool part belongs to an activity group when it is part of a
+          // consecutive run of two or more tool calls. Only the first part of
+          // the run (the owner) renders the group; the rest are hidden here
+          // because they are rendered inside it.
+          const group = createMemo(() => {
+            if (part.type !== "tool") return undefined
+            const activity = ctx.activity()
+            const groupID = activity.groupOf.get(part.id)
+            if (!groupID) return undefined
+            const info = activity.byID.get(groupID)
+            if (!info || info.items.length < 2) return undefined
+            return { groupID, owner: info.items[0].part.id === part.id }
+          })
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
           return (
-            <Show when={component()}>
-              <Dynamic
-                last={index() === props.parts.length - 1}
-                component={component()}
-                part={part as any}
-                message={props.message}
-              />
-            </Show>
+            <Switch>
+              <Match when={group()?.owner === true}>
+                <ActivityGroup groupID={group()!.groupID} />
+              </Match>
+              <Match when={group()?.owner === false}>
+                <></>
+              </Match>
+              <Match when={true}>
+                <Show when={component()}>
+                  <Dynamic
+                    last={index() === props.parts.length - 1}
+                    component={component()}
+                    part={part as any}
+                    message={props.message}
+                  />
+                </Show>
+              </Match>
+            </Switch>
           )
         }}
       </For>
@@ -1603,6 +1682,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
     </>
   )
 }
+
 
 const PART_MAPPING = {
   text: TextPart,
@@ -1737,6 +1817,85 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
 }
 
 // Pending messages moved to individual tool pending functions
+
+// Exported so tests can mount the activity block outside the full Session route.
+export function ActivityGroup(props: { groupID: string }) {
+  const ctx = use()
+  const renderer = useRenderer()
+  const { theme } = useTheme()
+  const [hover, setHover] = createSignal(false)
+
+  const group = createMemo(() => ctx.activity().byID.get(props.groupID))
+  const items = createMemo(() => group()?.items ?? [])
+  const summary = createMemo(() => summarizeActivity(items().map((item) => item.part)))
+  const expanded = createMemo(() => ctx.activityExpanded(props.groupID))
+  const header = createMemo(() =>
+    activityHeader(summary(), {
+      expanded: expanded(),
+      duration: summary().durationMs === undefined ? undefined : Locale.duration(summary().durationMs!),
+    }),
+  )
+  const baseFg = createMemo(() => {
+    if (hover()) return theme.text
+    if (summary().working) return theme.text
+    return theme.textMuted
+  })
+
+  const toggle = () => {
+    if (renderer.getSelection()?.getSelectedText()) return
+    ctx.toggleActivity(props.groupID)
+  }
+
+  return (
+    <box
+      ref={(el: BoxRenderable) => {
+        alwaysSeparate.add(el)
+        setPreLayoutSiblingMargin(el, (previous) => {
+          return previous instanceof BoxRenderable && (previous.height > 1 || alwaysSeparate.has(previous))
+            ? 1
+            : 0
+        })
+      }}
+      paddingLeft={3}
+      flexShrink={0}
+    >
+      <box onMouseOver={() => setHover(true)} onMouseOut={() => setHover(false)} onMouseUp={toggle}>
+        <Switch>
+          <Match when={summary().working}>
+            <box flexDirection="row" gap={1}>
+              <text fg={baseFg()} wrapMode="none">
+                <span style={{ fg: baseFg() }}>{header().marker}</span>
+              </text>
+              <Spinner color={baseFg()}>
+                {header().main}
+                <Show when={header().failed}>
+                  <span style={{ fg: theme.error }}> · {header().failed}</span>
+                </Show>
+              </Spinner>
+            </box>
+          </Match>
+          <Match when={true}>
+            <text fg={baseFg()} wrapMode="none">
+              <span style={{ fg: baseFg() }}>{header().marker} </span>
+              {header().main}
+              <Show when={header().failed}>
+                <span style={{ fg: theme.error }}> · {header().failed}</span>
+              </Show>
+              <Show when={header().note}>
+                <span style={{ fg: theme.textMuted }}> · {header().note}</span>
+              </Show>
+            </text>
+          </Match>
+        </Switch>
+      </box>
+      <Show when={expanded()}>
+        <For each={items()}>
+          {(item) => <ToolPart last={false} part={item.part} message={item.message} />}
+        </For>
+      </Show>
+    </box>
+  )
+}
 
 function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMessage }) {
   const ctx = use()
@@ -1999,21 +2158,10 @@ function InlineTool(props: {
   })
 
   const error = createMemo(() => (props.part.state.status === "error" ? props.part.state.error : undefined))
-
-  const denied = createMemo(
-    () =>
-      error()?.includes("QuestionRejectedError") ||
-      error()?.includes("rejected permission") ||
-      error()?.includes("specified a rule") ||
-      error()?.includes("user dismissed"),
-  )
-  const interrupted = createMemo(
-    () =>
-      (props.part.state.status === "error" && props.part.state.metadata?.interrupted === true) ||
-      error()?.includes("Tool execution aborted"),
-  )
-
-  const failed = createMemo(() => Boolean(error() && !denied() && !interrupted()))
+  const outcome = createMemo(() => toolPartOutcome(props.part))
+  const denied = createMemo(() => outcome() === "denied")
+  const interrupted = createMemo(() => outcome() === "interrupted")
+  const failed = createMemo(() => outcome() === "error")
   const clickable = createMemo(() => Boolean(props.onClick || failed()))
   const state = createMemo(() => inlineToolState(props.part.state.status, props.complete, props.spinner))
   const fg = createMemo(() => {
