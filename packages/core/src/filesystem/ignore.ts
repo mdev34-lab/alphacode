@@ -31,6 +31,15 @@ const FOLDERS = new Set([
   ".gradle",
 ])
 
+/**
+ * Glob patterns that match known generated, dependency, VCS metadata, and
+ * runtime cache directories. Used by the ripgrep adapter so recursive tools
+ * do not traverse trees that are almost always large, low-signal, or
+ * regenerated. The pattern deliberately excludes the directory itself so
+ * ripgrep prunes the subtree even for files at the directory root.
+ */
+export const FOLDER_GLOBS = [...FOLDERS].map((folder) => `**/${folder}`)
+
 const FILES = [
   "**/*.swp",
   "**/*.swo",

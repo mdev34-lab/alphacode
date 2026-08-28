@@ -1,9 +1,10 @@
 export * as Ripgrep from "./ripgrep"
 
-import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect"
+import { Context, Duration, Effect, Fiber, Layer, Schema, Semaphore, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { Entry, Match } from "@opencode-ai/schema/filesystem"
 import { makeGlobalNode } from "./effect/app-node"
+import { Ignore } from "./filesystem/ignore"
 import { AppProcess, collectStream, waitForAbort } from "./process"
 import { NonNegativeInt, PositiveInt, RelativePath } from "./schema"
 import { RipgrepBinary } from "./ripgrep/binary"
@@ -18,6 +19,9 @@ import { RipgrepBinary } from "./ripgrep/binary"
 const ERROR_BYTES = 8 * 1024
 const MAX_RECORD_BYTES = 64 * 1024
 const MAX_SUBMATCHES = 100
+const SEARCH_TIMEOUT = Duration.minutes(2)
+const DEFAULT_EXCLUDES = Ignore.FOLDER_GLOBS.map((pattern) => `--glob=!${pattern}`)
+const CONCURRENCY = process.platform === "win32" ? 2 : 8
 
 const RawMatch = Schema.Struct({
   type: Schema.Literal("match"),
@@ -94,6 +98,7 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const process = yield* AppProcess.Service
     const binary = yield* RipgrepBinary.Service
+    const semaphore = Semaphore.makeUnsafe(CONCURRENCY)
 
     const run = <A>(input: {
       readonly cwd: string
@@ -107,7 +112,16 @@ const layer = Layer.effect(
       const program = Effect.scoped(
         Effect.gen(function* () {
           const handle = yield* process.spawn(
-            ChildProcess.make(yield* binary.filepath, input.args, { cwd: input.cwd, extendEnv: true, stdin: "ignore" }),
+            ChildProcess.make(yield* binary.filepath, input.args, {
+              cwd: input.cwd,
+              extendEnv: true,
+              stdin: "ignore",
+              // If the search is aborted or times out, scope teardown must not
+              // leave rg.exe chewing through the filesystem in the background.
+              // The cross-platform spawner escalates to SIGKILL after this grace
+              // period; on Windows it uses taskkill /T /F from the outset.
+              forceKillAfter: Duration.seconds(3),
+            }),
           )
           const stderrFiber = yield* collectStream(handle.stderr, ERROR_BYTES).pipe(
             Effect.map((output) => output.buffer.toString("utf8")),
@@ -142,11 +156,19 @@ const layer = Layer.effect(
         }),
       )
       const abortable = input.signal ? program.pipe(Effect.raceFirst(waitForAbort(input.signal))) : program
-      return abortable.pipe(
-        Effect.mapError((cause) =>
-          cause instanceof Error || cause instanceof InvalidPatternError
-            ? cause
-            : failure("ripgrep execution failed", cause),
+      const timed = abortable.pipe(
+        Effect.timeoutOrElse({
+          duration: SEARCH_TIMEOUT,
+          orElse: () => Effect.fail(failure(`ripgrep timed out after ${SEARCH_TIMEOUT}`)),
+        }),
+      )
+      return semaphore.withPermit(
+        timed.pipe(
+          Effect.mapError((cause) =>
+            cause instanceof Error || cause instanceof InvalidPatternError
+              ? cause
+              : failure("ripgrep execution failed", cause),
+          ),
         ),
       )
     }
@@ -163,7 +185,7 @@ const layer = Layer.effect(
             ...(input.hidden ? ["--hidden"] : []),
             ...(input.follow ? ["--follow"] : []),
             `--glob=${input.pattern}`,
-            "--glob=!**/.git/**",
+            ...DEFAULT_EXCLUDES,
             ".",
           ],
           parse: (line) =>
@@ -195,7 +217,7 @@ const layer = Layer.effect(
             ...(input.hidden ? ["--hidden"] : []),
             ...(input.follow ? ["--follow"] : []),
             ...(input.pattern === "*" ? [] : [`--glob=${input.pattern}`]),
-            "--glob=!**/.git/**",
+            ...DEFAULT_EXCLUDES,
             ".",
           ],
           parse: (line) => {
@@ -224,7 +246,7 @@ const layer = Layer.effect(
             "--hidden",
             "--no-messages",
             ...(input.include ? [`--glob=${input.include}`] : []),
-            "--glob=!**/.git/**",
+            ...DEFAULT_EXCLUDES,
             "--",
             input.pattern,
             input.file ?? ".",

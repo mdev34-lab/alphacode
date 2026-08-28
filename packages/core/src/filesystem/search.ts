@@ -2,7 +2,7 @@ export * as FileSystemSearch from "./search"
 
 import { makeLocationNode } from "../effect/app-node"
 import path from "path"
-import { Context, Effect, Layer, Scope } from "effect"
+import { Context, Duration, Effect, Layer, Ref } from "effect"
 import { Fff } from "#fff"
 import fuzzysort from "fuzzysort"
 import { FileSystem } from "../filesystem"
@@ -20,32 +20,50 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/FileSystem/Search") {}
 
+const MAX_INDEX_FILES = 100_000
+const INDEX_BUILD_TIMEOUT = Duration.seconds(30)
+
+interface IndexState {
+  readonly files: string[]
+  readonly incomplete: boolean
+}
+
 export const ripgrepLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
     const ripgrep = yield* Ripgrep.Service
-    const scope = yield* Scope.Scope
-    const state = {
-      files: [] as string[],
-      directories: [] as string[],
-    }
-    const directories = new Set<string>()
-    yield* ripgrep
-      .find({
-        cwd: location.directory,
-        pattern: "*",
-        limit: location.vcs ? Number.MAX_SAFE_INTEGER : 100_000,
-        onEntry: (entry) =>
-          Effect.sync(() => {
-            state.files.push(entry.path)
-            const parts = entry.path.split("/")
-            parts.slice(0, -1).forEach((_, index) => directories.add(parts.slice(0, index + 1).join("/") + path.sep))
-            state.directories = Array.from(directories)
+    const index = yield* Ref.make<IndexState>({ files: [], incomplete: false })
+    const markIncomplete = Ref.update(index, (current) =>
+      current.incomplete ? current : { ...current, incomplete: true },
+    )
+    // The index is intentionally best-effort: it is built once and cached for
+    // the service lifetime. If it is truncated (100k files) or the 30s build
+    // budget is exhausted, `incomplete` stays true and future `find` calls use
+    // the partial snapshot rather than repeatedly scanning the tree.
+    const buildIndex = yield* Effect.cached(
+      ripgrep
+        .find({
+          cwd: location.directory,
+          pattern: "*",
+          limit: MAX_INDEX_FILES,
+          onEntry: (entry) =>
+            Ref.update(index, (current) => {
+              if (current.files.length >= MAX_INDEX_FILES) return { ...current, incomplete: true }
+              current.files.push(entry.path)
+              return current
+            }),
+        })
+        .pipe(
+          Effect.timeoutOrElse({
+            duration: INDEX_BUILD_TIMEOUT,
+            orElse: () => markIncomplete.pipe(Effect.as([] as readonly FileSystem.Entry[])),
           }),
-      })
-      .pipe(Effect.orDie, Effect.asVoid, Effect.forkIn(scope))
+          Effect.catch(() => markIncomplete.pipe(Effect.as([] as readonly FileSystem.Entry[]))),
+          Effect.asVoid,
+        ),
+    )
     return Service.of({
       glob: (input) =>
         Effect.gen(function* () {
@@ -100,12 +118,27 @@ export const ripgrepLayer = Layer.effect(
         }),
       find: (input) =>
         Effect.gen(function* () {
+          yield* buildIndex
+          const state = yield* Ref.get(index)
+          if (state.incomplete) {
+            yield* Effect.logWarning("file search index is incomplete; results may omit files", {
+              count: state.files.length,
+            })
+          }
+          const directories = Array.from(
+            new Set(
+              state.files.flatMap((file) => {
+                const parts = file.split("/")
+                return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/") + path.sep)
+              }),
+            ),
+          )
           const items =
             input.type === "file"
               ? state.files
               : input.type === "directory"
-                ? state.directories
-                : [...state.files, ...state.directories]
+                ? directories
+                : [...state.files, ...directories]
           return fuzzysort.go(input.query, items, { limit: input.limit ?? 50 }).map((item) => {
             const relative = item.target
             const type = relative.endsWith(path.sep) ? ("directory" as const) : ("file" as const)
