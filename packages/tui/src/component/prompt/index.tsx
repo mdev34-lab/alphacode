@@ -1341,10 +1341,18 @@ export function Prompt(props: PromptProps) {
     return !!current
   })
 
+  const showVision = createMemo(() => {
+    return local.model.parsed().vision
+  })
+
   const agentMetaAlpha = createFadeIn(() => !!local.agent.current(), animationsEnabled)
   const modelMetaAlpha = createFadeIn(() => !!local.agent.current() && store.mode === "normal", animationsEnabled)
   const variantMetaAlpha = createFadeIn(
     () => !!local.agent.current() && store.mode === "normal" && showVariant(),
+    animationsEnabled,
+  )
+  const visionMetaAlpha = createFadeIn(
+    () => !!local.agent.current() && store.mode === "normal" && showVision(),
     animationsEnabled,
   )
   const borderHighlight = createMemo(() => tint(theme.border, highlight(), agentMetaAlpha()))
@@ -1505,6 +1513,14 @@ export function Prompt(props: PromptProps) {
                             <text>
                               <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
                                 {local.model.variant.current()}
+                              </span>
+                            </text>
+                          </Show>
+                          <Show when={showVision()}>
+                            <text fg={fadeColor(theme.textMuted, visionMetaAlpha())}>·</text>
+                            <text>
+                              <span style={{ fg: fadeColor(theme.accent, visionMetaAlpha()), bold: true }}>
+                                vision
                               </span>
                             </text>
                           </Show>

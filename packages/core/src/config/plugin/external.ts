@@ -6,6 +6,7 @@ import { Effect, Schema } from "effect"
 import path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
 import { Config } from "../../config"
+import { RuntimeFlags } from "../../effect/runtime-flags"
 import { FSUtil } from "../../fs-util"
 import { Location } from "../../location"
 import { Npm } from "../../npm"
@@ -36,7 +37,9 @@ export const Plugin = define({
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
     const npm = yield* Npm.Service
+    const flags = yield* RuntimeFlags.Service
     yield* Effect.gen(function* () {
+      if (flags.factoryDefault) return
       const configured: { package: string; options?: Record<string, any> }[] = []
 
       for (const entry of yield* config.entries()) {

@@ -2804,7 +2804,7 @@ it.instance("prompt submitted during an active run is included in the next LLM i
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
 
-    yield* llm.hold("first", deferredAsPromise(gate))
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
     yield* llm.text("second")
 
     const a = yield* prompt
@@ -2860,6 +2860,598 @@ it.instance("prompt submitted during an active run is included in the next LLM i
     if (!Array.isArray(messages)) throw new Error("expected LLM messages")
     expect(messages.at(-1)).toEqual({ role: "user", content: "second" })
   }),
+)
+
+// A second/third model so mid-task switches are observable on the request
+// stream; `high` variants exercise thinking-effort switches.
+const switchModel = (id: string, name: string) => ({
+  id,
+  name,
+  attachment: false,
+  reasoning: false,
+  temperature: false,
+  tool_call: true,
+  release_date: "2025-01-01",
+  limit: { context: 100000, output: 10000 },
+  cost: { input: 0, output: 0 },
+  options: {},
+  variants: { high: { reasoningEffort: "high" } },
+})
+
+function switchProviderCfg(url: string) {
+  return {
+    ...cfg,
+    provider: {
+      ...cfg.provider,
+      test: {
+        ...cfg.provider.test,
+        models: {
+          ...cfg.provider.test.models,
+          "test-model": { ...cfg.provider.test.models["test-model"], variants: { high: { reasoningEffort: "high" } } },
+          "test-model-b": switchModel("test-model-b", "Test Model B"),
+          "test-model-c": switchModel("test-model-c", "Test Model C"),
+        },
+        options: {
+          ...cfg.provider.test.options,
+          baseURL: url,
+        },
+      },
+    },
+  }
+}
+
+const modelB = { providerID: ref.providerID, modelID: ModelV2.ID.make("test-model-b") }
+const modelC = { providerID: ref.providerID, modelID: ModelV2.ID.make("test-model-c") }
+
+// Title generation issues its own request; filter it out so request
+// assertions only cover the agent turns under test.
+const turnInputs = (inputs: Record<string, unknown>[]) =>
+  inputs.filter((body) => !JSON.stringify(body).includes("Generate a title for this conversation"))
+
+it.instance("model change during a running task applies at the next agent turn", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ permission: [{ permission: "*", pattern: "*", action: "allow" }], title: "Switch" })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
+    yield* llm.text("second")
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    // Turn one is still streaming; the selection changes mid-task.
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "work",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "default" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gate, void 0)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs[1]?.model).toBe("test-model-b")
+
+    const assistants = (yield* sessions.messages({ sessionID: chat.id })).filter(
+      (msg) => msg.info.role === "assistant",
+    )
+    expect(assistants).toHaveLength(2)
+    const first = assistants[0]?.info
+    const second = assistants[1]?.info
+    if (first?.role !== "assistant" || second?.role !== "assistant") throw new Error("expected assistant messages")
+    expect(first.modelID).toBe(ModelV2.ID.make("test-model"))
+    expect(second.modelID).toBe(ModelV2.ID.make("test-model-b"))
+    expect(second.providerID).toBe(ref.providerID)
+  }),
+  15_000,
+)
+
+it.instance("thinking effort change during a running task applies at the next agent turn", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ permission: [{ permission: "*", pattern: "*", action: "allow" }], title: "Effort" })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
+    yield* llm.text("second")
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "work",
+      model: { providerID: ref.providerID, id: ref.modelID, variant: "high" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gate, void 0)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(2)
+    // Same model for both turns; only the effort changed.
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs[1]?.model).toBe("test-model")
+
+    const assistants = (yield* sessions.messages({ sessionID: chat.id })).filter(
+      (msg) => msg.info.role === "assistant",
+    )
+    expect(assistants).toHaveLength(2)
+    const first = assistants[0]?.info
+    const second = assistants[1]?.info
+    if (first?.role !== "assistant" || second?.role !== "assistant") throw new Error("expected assistant messages")
+    expect(first.variant).toBeUndefined()
+    expect(second.variant).toBe("high")
+    expect(second.modelID).toBe(ModelV2.ID.make("test-model"))
+  }),
+  15_000,
+)
+
+it.instance("model and effort changed together give the next turn one consistent snapshot", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ permission: [{ permission: "*", pattern: "*", action: "allow" }], title: "Both" })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
+    yield* llm.text("second")
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "work",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "high" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gate, void 0)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs[1]?.model).toBe("test-model-b")
+
+    const assistants = (yield* sessions.messages({ sessionID: chat.id })).filter(
+      (msg) => msg.info.role === "assistant",
+    )
+    const second = assistants[1]?.info
+    if (second?.role !== "assistant") throw new Error("expected second assistant message")
+    // The new model and new effort arrive on the same turn, not split
+    // across turns.
+    expect(second.modelID).toBe(ModelV2.ID.make("test-model-b"))
+    expect(second.variant).toBe("high")
+  }),
+  15_000,
+)
+
+it.instance("rapid mid-task changes apply only the latest selection", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ permission: [{ permission: "*", pattern: "*", action: "allow" }], title: "Rapid" })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
+    yield* llm.text("second")
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "work",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "default" },
+      time: Date.now(),
+    })
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "work",
+      model: { providerID: modelC.providerID, id: modelC.modelID, variant: "default" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gate, void 0)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]?.model).toBe("test-model")
+    // The intermediate selection is never replayed.
+    expect(inputs[1]?.model).toBe("test-model-c")
+  }),
+  15_000,
+)
+
+it.instance("turns keep the original configuration when no mid-task change happens", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Unchanged",
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+    })
+
+    yield* llm.tool("first", { value: "first" })
+    yield* llm.text("second")
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "work",
+      model: ref,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    expect(result.info.role).toBe("assistant")
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs[1]?.model).toBe("test-model")
+
+    const session = yield* sessions.get(chat.id)
+    expect(session.model).toEqual({ id: ref.modelID, providerID: ref.providerID, variant: "default" })
+  }),
+  15_000,
+)
+
+it.instance("mid-task model change does not leak into another session", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const one = yield* sessions.create({ permission: [{ permission: "*", pattern: "*", action: "allow" }], title: "One" })
+    const two = yield* sessions.create({ permission: [{ permission: "*", pattern: "*", action: "allow" }], title: "Two" })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
+    yield* llm.text("second")
+    yield* llm.text("other session")
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: one.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* llm.wait(1)
+    yield* waitForBusy(one.id)
+
+    yield* sessions.setAgentModel({
+      sessionID: one.id,
+      agent: "work",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "default" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gate, void 0)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    // Session two was never updated and still runs on its own selection.
+    const other = yield* sessions.get(two.id)
+    expect(other.model).toBeUndefined()
+
+    yield* prompt.prompt({
+      sessionID: two.id,
+      agent: "work",
+      model: ref,
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(3)
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs[1]?.model).toBe("test-model-b")
+    expect(inputs[2]?.model).toBe("test-model")
+  }),
+  15_000,
+)
+
+it.instance("concurrently running sessions keep independent selections", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gateA = yield* Deferred.make<void>()
+    const gateB = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const one = yield* sessions.create({
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      title: "Concurrent One",
+    })
+    const two = yield* sessions.create({
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      title: "Concurrent Two",
+    })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gateA)).tool("first", { value: "first" }))
+    yield* llm.push(reply().wait(deferredAsPromise(gateB)).tool("first", { value: "first" }))
+    yield* llm.text("a second")
+    yield* llm.text("b second")
+
+    const fiberA = yield* prompt
+      .prompt({
+        sessionID: one.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "a first" }],
+      })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+
+    const fiberB = yield* prompt
+      .prompt({
+        sessionID: two.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "b first" }],
+      })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(2)
+    yield* waitForBusy(one.id)
+    yield* waitForBusy(two.id)
+
+    // Only session one's selection changes, while both tasks are mid-turn.
+    yield* sessions.setAgentModel({
+      sessionID: one.id,
+      agent: "work",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "default" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gateA, void 0)
+    const exitA = yield* Fiber.await(fiberA)
+    expect(Exit.isSuccess(exitA)).toBe(true)
+
+    yield* Deferred.succeed(gateB, void 0)
+    const exitB = yield* Fiber.await(fiberB)
+    expect(Exit.isSuccess(exitB)).toBe(true)
+
+    // Requests arrive as: A turn1, B turn1, A turn2, B turn2.
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(4)
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs[1]?.model).toBe("test-model")
+    expect(inputs[2]?.model).toBe("test-model-b")
+    expect(inputs[3]?.model).toBe("test-model")
+
+    const other = yield* sessions.get(two.id)
+    expect(other.model).toEqual({ id: ref.modelID, providerID: ref.providerID, variant: "default" })
+  }),
+  15_000,
+)
+
+it.instance("stored selection recorded for another agent does not apply to the running task", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      title: "Agent scope",
+    })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
+    yield* llm.text("second")
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    // The selection is recorded for a different agent than the one running
+    // the task; the task must keep its own configuration.
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "plan",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "default" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gate, void 0)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs[1]?.model).toBe("test-model")
+  }),
+  15_000,
+)
+
+it.instance("compaction triggered after a mid-task switch uses the new selection", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(switchProviderCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      title: "Compact",
+    })
+
+    // A tool-calls finish keeps the loop iterating, so the next iteration
+    // reaches the overflow check and schedules compaction.
+    yield* llm.push(
+      reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }).usage({ input: 200_000, output: 100 }),
+    )
+    yield* llm.hang
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "work",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "default" },
+      time: Date.now(),
+    })
+
+    yield* Deferred.succeed(gate, void 0)
+
+    // The overflowed turn schedules compaction with the turn's selection.
+    yield* pollWithTimeout(
+      sessions.messages({ sessionID: chat.id }).pipe(
+        Effect.map((msgs) =>
+          msgs.some((msg) => msg.info.role === "user" && msg.parts.some((part) => part.type === "compaction"))
+            ? (true as const)
+            : undefined,
+        ),
+      ),
+      "timed out waiting for the compaction turn",
+      "10 seconds",
+    )
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    const compaction = msgs.find((msg) => msg.info.role === "user" && msg.parts.some((part) => part.type === "compaction"))
+    if (!compaction || compaction.info.role !== "user") throw new Error("expected compaction user message")
+    expect(compaction.info.model).toEqual({ providerID: modelB.providerID, modelID: modelB.modelID })
+
+    yield* Fiber.interrupt(fiber)
+  }),
+  15_000,
+)
+
+function subtaskSwitchCfg(url: string) {
+  const base = switchProviderCfg(url)
+  return {
+    ...base,
+    agent: {
+      ...base.agent,
+      // The subagent's configured model is missing, so the background child
+      // fails fast without consuming responses queued for the parent loop.
+      general: { model: "test/missing-model", finishTool: false },
+    },
+  }
+}
+
+it.instance("subtask turns receive the mid-task selection snapshot", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(subtaskSwitchCfg)
+    const gate = yield* Deferred.make<void>()
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      title: "Subtask",
+    })
+
+    yield* llm.push(reply().wait(deferredAsPromise(gate)).tool("first", { value: "first" }))
+    yield* llm.text("done")
+
+    const fiber = yield* prompt
+      .prompt({
+        sessionID: chat.id,
+        agent: "work",
+        model: ref,
+        parts: [{ type: "text", text: "first" }],
+      })
+      .pipe(Effect.forkChild)
+    yield* llm.wait(1)
+    yield* waitForBusy(chat.id)
+
+    // Both the selection change and a follow-up subtask instruction land
+    // while turn one is still streaming, so the subtask turn must start from
+    // the same snapshot as the next agent turn.
+    yield* sessions.setAgentModel({
+      sessionID: chat.id,
+      agent: "work",
+      model: { providerID: modelB.providerID, id: modelB.modelID, variant: "high" },
+      time: Date.now(),
+    })
+    const followup = yield* user(chat.id, "and look into the cache key path")
+    yield* addSubtask(chat.id, followup.id)
+
+    yield* Deferred.succeed(gate, void 0)
+    const exit = yield* Fiber.await(fiber)
+    expect(Exit.isSuccess(exit)).toBe(true)
+
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    const subtaskMsg = msgs.find((msg) => msg.info.role === "assistant" && msg.info.agent === "general")
+    if (!subtaskMsg || subtaskMsg.info.role !== "assistant") throw new Error("expected subtask assistant message")
+    // The subtask keeps its own model but receives the snapshot's effort.
+    expect(subtaskMsg.info.modelID).toBe(ref.modelID)
+    expect(subtaskMsg.info.variant).toBe("high")
+
+    const inputs = turnInputs(yield* llm.inputs)
+    expect(inputs[0]?.model).toBe("test-model")
+    expect(inputs.some((input) => input.model === "test-model-b")).toBe(true)
+  }),
+  15_000,
 )
 
 it.instance("assertNotBusy fails with BusyError when loop running", () =>

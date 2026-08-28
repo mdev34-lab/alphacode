@@ -50,6 +50,9 @@ export const UpdatePayload = Schema.Struct({
   title: Schema.optional(Schema.String),
   metadata: Schema.optional(Session.Metadata),
   permission: Schema.optional(PermissionV1.Ruleset),
+  // The session's selected model/variant. Updating it while a task is running
+  // applies the selection at the next agent-turn boundary.
+  model: Schema.optional(Session.Model),
   time: Schema.optional(
     Schema.Struct({
       archived: Schema.optional(Session.ArchivedTimestamp),

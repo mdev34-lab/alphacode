@@ -7,6 +7,7 @@ import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SkillV2 } from "@opencode-ai/core/skill"
+import { RuntimeFlags } from "@opencode-ai/core/effect/runtime-flags"
 import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 import { host } from "../plugin/host"
@@ -41,6 +42,7 @@ describe("ConfigSkillPlugin.Plugin", () => {
       ).pipe(
         Effect.provideService(Global.Service, Global.Service.of({ ...Global.make(), home: "/home/test" })),
         Effect.provideService(Location.Service, Location.Service.of(location({ directory }))),
+        Effect.provideService(RuntimeFlags.Service, RuntimeFlags.Service.of({ factoryDefault: false })),
         Effect.provideService(
           Config.Service,
           Config.Service.of({
