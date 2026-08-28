@@ -36,27 +36,34 @@ export const ripgrepLayer = Layer.effect(
     const ripgrep = yield* Ripgrep.Service
     const index = yield* Ref.make<IndexState>({ files: [], incomplete: false })
     // The index is intentionally best-effort: it is built once and cached for
-    // the service lifetime. If it is truncated (100k files) or the 30s build
-    // budget is exhausted, `incomplete` stays true for the rest of the service
-    // lifetime and future `find` calls use the partial snapshot rather than
-    // repeatedly scanning the tree. Files are accumulated in a local array and
-    // published once, so the inner accumulation is O(n) and never copies the
-    // whole index for every entry.
+    // the service lifetime. If it is truncated (more than 100k files) or the
+    // 30s build budget is exhausted, `incomplete` stays true for the rest of
+    // the service lifetime and future `find` calls use the partial snapshot
+    // rather than repeatedly scanning the tree. Files are accumulated in a
+    // local array and published once, so the inner accumulation is O(n) and
+    // never copies the whole index for every entry.
     const buildIndex = yield* Effect.cached(
       Effect.gen(function* () {
         const collected: string[] = []
         let incomplete = false
+        const publish = Effect.gen(function* () {
+          // Request one extra entry so a tree that overflows the cap is
+          // distinguishable from one that ends exactly at the cap. The extra
+          // entry is observed here, discarded from the cached index, and used
+          // only to flag the snapshot as incomplete.
+          if (collected.length > MAX_INDEX_FILES) {
+            collected.length = MAX_INDEX_FILES
+            incomplete = true
+          }
+          yield* Ref.set(index, { files: collected, incomplete })
+        })
         const build = ripgrep
           .find({
             cwd: location.directory,
             pattern: "*",
-            limit: MAX_INDEX_FILES,
+            limit: MAX_INDEX_FILES + 1,
             onEntry: (entry) =>
               Effect.sync(() => {
-                if (collected.length >= MAX_INDEX_FILES) {
-                  incomplete = true
-                  return
-                }
                 collected.push(entry.path)
               }),
           })
@@ -74,7 +81,7 @@ export const ripgrepLayer = Layer.effect(
               }),
             ),
           )
-        yield* build.pipe(Effect.ensuring(Ref.set(index, { files: collected, incomplete })))
+        yield* build.pipe(Effect.ensuring(publish))
       }).pipe(Effect.asVoid),
     )
     return Service.of({
