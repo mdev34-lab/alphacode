@@ -357,7 +357,7 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User 
       expect(result).toBe("/Users/fsuser/Desktop")
     })
 
-    test("FSUtil.requireDesktopDir throws FileSystemError on resolution failure", () => {
+    test("FSUtil.requireDesktopDir throws on resolution failure", () => {
       expect(() =>
         FSUtil.requireDesktopDir({
           platform: "win32",
