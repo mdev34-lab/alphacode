@@ -3,25 +3,20 @@ import { dirname, isAbsolute, join, relative, resolve as pathResolve, sep } from
 import { realpathSync } from "fs"
 import * as NFS from "fs/promises"
 import { lookup } from "mime-types"
-import { Context, Effect, FileSystem, Layer, Schema } from "effect"
+import { Context, Effect, FileSystem, Layer } from "effect"
 import type { PlatformError } from "effect/PlatformError"
+import { FileSystemError as FileSystemErrorClass } from "./fs-error"
 import { Glob } from "./util/glob"
 import { serviceUse } from "./effect/service-use"
 import { makeGlobalNode } from "./effect/app-node"
 import { filesystem } from "./effect/app-node-platform"
+import { resolveDesktop, requireDesktop, type DesktopResolverOptions } from "./filesystem/desktop"
 
 export namespace FSUtil {
-  export class FileSystemError extends Schema.TaggedErrorClass<FileSystemError>()("FileSystemError", {
-    method: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  }) {
-    override get message() {
-      const detail = this.cause instanceof Error ? this.cause.message : this.cause && String(this.cause)
-      return `Filesystem operation failed: ${this.method}${detail ? `: ${detail}` : ""}`
-    }
-  }
+  export type FileSystemError = FileSystemErrorClass
+  export const FileSystemError = FileSystemErrorClass
 
-  export type Error = PlatformError | FileSystemError
+  export type Error = PlatformError | FileSystemErrorClass
 
   export interface DirEntry {
     readonly name: string
@@ -271,4 +266,9 @@ export namespace FSUtil {
     const result = relative(parent, child)
     return result === "" || (!isAbsolute(result) && result !== ".." && !result.startsWith(`..${sep}`))
   }
+
+  export const desktopDir = resolveDesktop
+  export const requireDesktopDir = requireDesktop
+
+  export type DesktopResolverOptions = import("./filesystem/desktop").DesktopResolverOptions
 }

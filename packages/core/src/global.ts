@@ -6,6 +6,7 @@ import { Context, Effect, Layer } from "effect"
 import { Flock } from "./util/flock"
 import { Flag } from "./flag/flag"
 import { makeGlobalNode } from "./effect/app-node"
+import { FSUtil } from "./fs-util"
 
 const app = "opencode"
 const data = path.join(xdgData!, app)
@@ -17,6 +18,9 @@ const tmp = path.join(os.tmpdir(), app)
 const paths = {
   get home() {
     return process.env.OPENCODE_TEST_HOME ?? os.homedir()
+  },
+  get desktop() {
+    return FSUtil.desktopDir()
   },
   data,
   bin: path.join(cache, "bin"),
@@ -46,6 +50,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Gl
 
 export interface Interface {
   readonly home: string
+  readonly desktop?: string
   readonly data: string
   readonly cache: string
   readonly config: string
@@ -59,6 +64,7 @@ export interface Interface {
 export function make(input: Partial<Interface> = {}): Interface {
   return {
     home: Path.home,
+    desktop: Path.desktop,
     data: Path.data,
     cache: Path.cache,
     config: Flag.OPENCODE_CONFIG_DIR ?? Path.config,

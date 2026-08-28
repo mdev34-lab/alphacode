@@ -653,4 +653,29 @@ describe("filesystem", () => {
       expect(Filesystem.normalizePathPattern(path.join(root, "*"))).toBe(path.join(root, "*"))
     })
   })
+
+  describe("desktopDir()", () => {
+    test("resolves Desktop folder via canonical discovery", () => {
+      const desktop = Filesystem.desktopDir()
+      if (desktop !== undefined) {
+        expect(typeof desktop).toBe("string")
+      }
+    })
+
+    test("passes options through to FSUtil.desktopDir", () => {
+      const custom = Filesystem.desktopDir({
+        platform: "darwin",
+        homedir: "/Users/customuser",
+      })
+      expect(custom).toBe("/Users/customuser/Desktop")
+    })
+
+    test("requireDesktopDir succeeds when desktop is resolved", () => {
+      const custom = Filesystem.requireDesktopDir({
+        platform: "darwin",
+        homedir: "/Users/customuser",
+      })
+      expect(custom).toBe("/Users/customuser/Desktop")
+    })
+  })
 })

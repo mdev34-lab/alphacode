@@ -248,4 +248,12 @@ export async function globUp(pattern: string, start: string, stop?: string) {
   return result
 }
 
+export function desktopDir(options?: FSUtil.DesktopResolverOptions): string | undefined {
+  return FSUtil.desktopDir(options)
+}
+
+export function requireDesktopDir(options?: FSUtil.DesktopResolverOptions): string {
+  return FSUtil.requireDesktopDir(options)
+}
+
 export * as Filesystem from "./filesystem"
