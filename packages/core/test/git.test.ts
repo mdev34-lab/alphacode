@@ -32,26 +32,32 @@ describe("Git", () => {
     ),
   )
 
-  it.live("fetches, checks out, and resets remote changes", () =>
-    withRemote((fixture) =>
-      Effect.gen(function* () {
-        const git = yield* Git.Service
-        const target = AbsolutePath.make(path.join(fixture.root, "checkout"))
-        const repository = yield* git.repo.clone({ remote: fixture.remote, directory: target })
+  it.live(
+    "fetches, checks out, and resets remote changes",
+    () =>
+      withRemote((fixture) =>
+        Effect.gen(function* () {
+          const git = yield* Git.Service
+          const target = AbsolutePath.make(path.join(fixture.root, "checkout"))
+          const repository = yield* git.repo.clone({ remote: fixture.remote, directory: target })
 
-        yield* Effect.promise(() => commit(fixture.source, "two\n", "second"))
-        yield* git.sync.fetchRemotes(repository)
-        yield* git.sync.resetHard(repository, "origin/main")
-        expect(yield* read(path.join(target, "README.md"))).toBe("two\n")
+          yield* Effect.promise(() => commit(fixture.source, "two\n", "second"))
+          yield* git.sync.fetchRemotes(repository)
+          yield* git.sync.resetHard(repository, "origin/main")
+          expect(yield* read(path.join(target, "README.md"))).toBe("two\n")
 
-        yield* Effect.promise(() => branch(fixture.source, "feature/docs", "feature\n"))
-        yield* git.sync.fetchBranch(repository, { branch: "feature/docs" })
-        yield* git.sync.checkoutRemoteBranch(repository, { branch: "feature/docs" })
-        yield* git.sync.resetHard(repository, "origin/feature/docs")
-        expect(yield* git.history.branch(repository)).toBe("feature/docs")
-        expect(yield* read(path.join(target, "README.md"))).toBe("feature\n")
-      }),
-    ),
+          yield* Effect.promise(() => branch(fixture.source, "feature/docs", "feature\n"))
+          yield* git.sync.fetchBranch(repository, { branch: "feature/docs" })
+          yield* git.sync.checkoutRemoteBranch(repository, { branch: "feature/docs" })
+          yield* git.sync.resetHard(repository, "origin/feature/docs")
+          expect(yield* git.history.branch(repository)).toBe("feature/docs")
+          expect(yield* read(path.join(target, "README.md"))).toBe("feature\n")
+        }),
+      ),
+    // A fresh clone plus remote fetch/reset can exceed Bun's 5s default on
+    // Windows CI. Give the test a more generous budget without changing what
+    // it asserts.
+    15_000,
   )
 })
 
