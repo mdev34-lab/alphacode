@@ -120,6 +120,29 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User 
       expect(result).toBe("D:\\Redirected\\Desktop")
     })
 
+    test("resolves Desktop via known-folder GUID value name (regression for malformed GUID)", () => {
+      const execCommand = (cmd: string, args: string[]) => {
+        if (args.some((a) => a.includes("User Shell Folders"))) {
+          return `
+HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders
+    {B4BFCC3A-DB2C-424C-B029-7FE99A87C641}    REG_SZ    D:\\KnownFolderDesktop
+`
+        }
+        throw new Error("unexpected command")
+      }
+
+      const result = resolveDesktop({
+        platform: "win32",
+        env: {
+          SystemRoot: "C:\\Windows",
+          USERPROFILE: "C:\\Users\\GUIDUser",
+        },
+        execCommand,
+      })
+
+      expect(result).toBe("D:\\KnownFolderDesktop")
+    })
+
     test("resolves redirected Desktop on a UNC network share", () => {
       const execCommand = (cmd: string, args: string[]) => {
         if (args.some((a) => a.includes("User Shell Folders"))) {

@@ -2,6 +2,7 @@ import os from "node:os"
 import path from "node:path"
 import fs from "node:fs"
 import { spawnSync } from "node:child_process"
+import { FSUtil } from "../fs-util"
 
 export interface DesktopResolverOptions {
   platform?: NodeJS.Platform
@@ -81,7 +82,7 @@ function parseRegQueryDesktop(stdout: string, valueName?: string): string | unde
     const match = stdout.match(new RegExp(`^\\s*${escaped}\\s+REG_(?:EXPAND_)?SZ\\s+(.+)$`, "im"))
     if (match) return match[1].trim()
   }
-  const match = stdout.match(/^\s*(?:Desktop|\{754AC886-DF64-4C2C-865E-37E494E293C6\})\s+REG_(?:EXPAND_)?SZ\s+(.+)$/im)
+  const match = stdout.match(/^\s*(?:Desktop|\{B4BFCC3A-DB2C-424C-B029-7FE99A87C641\})\s+REG_(?:EXPAND_)?SZ\s+(.+)$/im)
   return match ? match[1].trim() : undefined
 }
 
@@ -94,7 +95,7 @@ function resolveWindowsDesktop(options: DesktopResolverOptions): string | undefi
   const regCommands = [regExe, "reg.exe", "reg"]
 
   const userShellFolderKeys = [
-    "{754AC886-DF64-4C2C-865E-37E494E293C6}",
+    "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
     "Desktop",
   ]
 
@@ -270,7 +271,10 @@ export function clearDesktopCache(): void {
 export function requireDesktop(options?: DesktopResolverOptions): string {
   const dir = resolveDesktop(options)
   if (!dir) {
-    throw new Error("Failed to resolve operating system Desktop directory")
+    throw new FSUtil.FileSystemError({
+      method: "resolveDesktop",
+      cause: new Error("Failed to resolve operating system Desktop directory"),
+    })
   }
   return dir
 }

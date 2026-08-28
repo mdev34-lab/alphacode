@@ -84,16 +84,45 @@ describe("Protected filesystem paths", () => {
   })
 
   describe("Protected names", () => {
-    test("Windows names include Desktop and custom desktop basename if redirected", () => {
+    test("Windows names protect basename of Desktop located inside home", () => {
+      const home = "C:\\Users\\TestUser"
       const names = Protected.names({
         platform: "win32",
+        home,
+        desktop: path.join(home, "MyDesk"),
+      })
+
+      expect(names.has("MyDesk")).toBe(true)
+      expect(names.has("AppData")).toBe(true)
+      expect(names.has("Downloads")).toBe(true)
+    })
+
+    test("Windows names do not protect basename of Desktop redirected outside home", () => {
+      const home = "C:\\Users\\TestUser"
+      const names = Protected.names({
+        platform: "win32",
+        home,
         desktop: "D:\\CustomDesk",
       })
 
+      // Must not skip an unrelated same-basename folder inside home
+      expect(names.has("CustomDesk")).toBe(false)
+      expect(names.has("Desktop")).toBe(false)
+      // Absolute path is still protected via paths()
+      expect(Protected.paths({ platform: "win32", home, desktop: "D:\\CustomDesk" })).toContain(
+        "D:\\CustomDesk",
+      )
+    })
+
+    test("Windows names protect conventional Desktop basename at home", () => {
+      const home = "C:\\Users\\TestUser"
+      const names = Protected.names({
+        platform: "win32",
+        home,
+        desktop: path.join(home, "Desktop"),
+      })
+
       expect(names.has("Desktop")).toBe(true)
-      expect(names.has("CustomDesk")).toBe(true)
-      expect(names.has("AppData")).toBe(true)
-      expect(names.has("Downloads")).toBe(true)
     })
 
     test("Darwin names include standard macOS folders", () => {
