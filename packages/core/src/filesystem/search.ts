@@ -5,17 +5,30 @@ import path from "path"
 import { Context, Duration, Effect, Layer, Ref } from "effect"
 import { Fff } from "#fff"
 import fuzzysort from "fuzzysort"
-import { FileSystem } from "../filesystem"
+import { FileSystem } from "@opencode-ai/schema/filesystem"
 import { FSUtil } from "../fs-util"
 import { Location } from "../location"
 import { Ripgrep } from "../ripgrep"
 import { RelativePath } from "../schema"
 import { Flag } from "../flag/flag"
 
+export interface GlobInput {
+  readonly pattern: string
+  readonly path?: RelativePath
+  readonly limit?: number
+}
+
+export interface GrepInput {
+  readonly pattern: string
+  readonly path?: RelativePath
+  readonly include?: string
+  readonly limit?: number
+}
+
 export interface Interface {
   readonly find: (input: FileSystem.FindInput) => Effect.Effect<FileSystem.Entry[]>
-  readonly glob: (input: FileSystem.GlobInput) => Effect.Effect<readonly FileSystem.Entry[]>
-  readonly grep: (input: FileSystem.GrepInput) => Effect.Effect<readonly FileSystem.Match[]>
+  readonly glob: (input: GlobInput) => Effect.Effect<readonly FileSystem.Entry[]>
+  readonly grep: (input: GrepInput) => Effect.Effect<readonly FileSystem.Match[]>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/FileSystem/Search") {}

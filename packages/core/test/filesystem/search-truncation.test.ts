@@ -1,10 +1,11 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Logger } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { FileSystem } from "@opencode-ai/core/filesystem"
+import { FileSystemSearch } from "@opencode-ai/core/filesystem/search"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Location } from "@opencode-ai/core/location"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
-import { RelativePath, AbsolutePath } from "@opencode-ai/core/schema"
+import { RelativePath } from "@opencode-ai/core/schema"
 import { Entry } from "@opencode-ai/schema/filesystem"
 import { tempLocationLayer } from "../fixture/location"
 import { testEffect } from "../lib/effect"
@@ -40,7 +41,12 @@ describe("FileSystemSearch index", () => {
         grep: () => Effect.succeed([]),
       }),
     )
-    const searchLayer = LayerNode.compile(FileSystem.node, [
+    const searchNode = LayerNode.make({
+      service: FileSystemSearch.Service,
+      layer: FileSystemSearch.ripgrepLayer,
+      deps: [FSUtil.node, Location.node, Ripgrep.node],
+    })
+    const searchLayer = LayerNode.compile(searchNode, [
       [Location.node, tempLocationLayer],
       [Ripgrep.node, fakeRipgrep],
     ])
@@ -50,7 +56,7 @@ describe("FileSystemSearch index", () => {
     })
 
     return Effect.gen(function* () {
-      const service = yield* FileSystem.Service
+      const service = yield* FileSystemSearch.Service
       const result = yield* service.find({ query: "file-100000", type: "file", limit: 50 })
 
       expect(calls).toBe(1)
