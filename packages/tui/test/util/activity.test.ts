@@ -167,7 +167,7 @@ describe("computeActivityGroups", () => {
     expect(result.byID.get("act-t2")?.items.map((item) => item.part.id)).toEqual(["t2", "t3"])
   })
 
-  test("splits a group at reasoning", () => {
+  test("keeps a group together across reasoning parts", () => {
     const rows: ActivityRow[] = [
       {
         message: assistant("m1", 1),
@@ -175,9 +175,57 @@ describe("computeActivityGroups", () => {
       },
     ]
     const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(1)
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+    expect(result.groupOf.get("t2")).toBe("act-t1")
+  })
+
+  test("keeps one group across multiple model turns with CoT interleaved with tool calls", () => {
+    const rows: ActivityRow[] = [
+      { message: assistant("m1", 1), parts: [tool("m1", "t1", completed(0, 1))] },
+      { message: assistant("m2", 2), parts: [tool("m2", "t2", completed(1, 2))] },
+      {
+        message: assistant("m3", 3),
+        parts: [
+          reasoning("m3", "r1", "thinking about the trace"),
+          tool("m3", "t3", completed(2, 3)),
+          tool("m3", "t4", completed(2, 4)),
+        ],
+      },
+      {
+        message: assistant("m4", 4),
+        parts: [
+          reasoning("m4", "r2", "thinking again"),
+          tool("m4", "t5", completed(4, 5)),
+          tool("m4", "t6", completed(4, 6)),
+        ],
+      },
+      { message: assistant("m5", 5), parts: [tool("m5", "t7", completed(6, 7))] },
+      { message: assistant("m6", 6), parts: [tool("m6", "t8", completed(7, 8), "finish")] },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(1)
+    const group = result.byID.get("act-t1")
+    expect(group?.items.map((item) => item.part.id)).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"])
+    expect(result.groupOf.get("t8")).toBe("act-t1")
+  })
+
+  test("still splits a group at assistant text when reasoning is present", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1)),
+          reasoning("m1", "r1", "thinking"),
+          text("m1", "x1", "Let me summarize."),
+          tool("m1", "t2", completed(1, 2)),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
     expect(result.byID.size).toBe(2)
-    expect(result.byID.has("act-t1")).toBe(true)
-    expect(result.byID.has("act-t2")).toBe(true)
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1"])
+    expect(result.byID.get("act-t2")?.items.map((item) => item.part.id)).toEqual(["t2"])
   })
 
   test("splits a group at user messages", () => {
