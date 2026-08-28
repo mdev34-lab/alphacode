@@ -160,6 +160,34 @@ describe("structured-output.AssistantMessage", () => {
     const result = decodeAssistant(baseAssistantMessage)
     expect(Exit.isSuccess(result)).toBe(true)
   })
+
+  test("assistant message accepts optional generation metrics", () => {
+    const result = decodeAssistant({
+      ...baseAssistantMessage,
+      ttft: 842,
+      tokensPerSecond: 48.7,
+    })
+    expect(Exit.isSuccess(result)).toBe(true)
+    if (Exit.isSuccess(result)) {
+      expect(result.value.ttft).toBe(842)
+      expect(result.value.tokensPerSecond).toBe(48.7)
+    }
+  })
+
+  test("assistant message omits generation metrics when absent", () => {
+    const result = decodeAssistant(baseAssistantMessage)
+    expect(Exit.isSuccess(result)).toBe(true)
+    if (Exit.isSuccess(result)) {
+      expect(result.value.ttft).toBeUndefined()
+      expect(result.value.tokensPerSecond).toBeUndefined()
+    }
+  })
+
+  test("assistant message encode omits undefined generation metrics", () => {
+    const encoded = Schema.encodeUnknownSync(SessionV1.Assistant)(baseAssistantMessage) as Record<string, unknown>
+    expect(Object.hasOwn(encoded, "ttft")).toBe(false)
+    expect(Object.hasOwn(encoded, "tokensPerSecond")).toBe(false)
+  })
 })
 
 describe("structured-output.createStructuredOutputTool", () => {

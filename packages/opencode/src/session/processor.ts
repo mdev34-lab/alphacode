@@ -25,6 +25,7 @@ import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { createGenerationClock } from "./generation-metrics"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue"
@@ -113,6 +114,7 @@ const layer = Layer.effect(
         reasoningMap: {},
       }
       let aborted = false
+      const clock = createGenerationClock()
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -537,6 +539,10 @@ const layer = Layer.effect(
       })
 
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
+        const metrics = clock.finish(Date.now())
+        if (metrics.ttft !== undefined) ctx.assistantMessage.ttft = metrics.ttft
+        if (metrics.tokensPerSecond !== undefined) ctx.assistantMessage.tokensPerSecond = metrics.tokensPerSecond
+
         if (ctx.snapshot) {
           const patch = yield* snapshot.patch(ctx.snapshot)
           if (patch.files.length) {
@@ -638,9 +644,13 @@ const layer = Layer.effect(
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
             const stream = llm.stream(streamInput)
+            clock.startRequest(Date.now())
 
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap((event) => {
+                clock.observe(event, Date.now())
+                return handleEvent(event)
+              }),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
