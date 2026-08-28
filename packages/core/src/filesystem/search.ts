@@ -35,34 +35,46 @@ export const ripgrepLayer = Layer.effect(
     const location = yield* Location.Service
     const ripgrep = yield* Ripgrep.Service
     const index = yield* Ref.make<IndexState>({ files: [], incomplete: false })
-    const markIncomplete = Ref.update(index, (current) =>
-      current.incomplete ? current : { ...current, incomplete: true },
-    )
     // The index is intentionally best-effort: it is built once and cached for
     // the service lifetime. If it is truncated (100k files) or the 30s build
     // budget is exhausted, `incomplete` stays true and future `find` calls use
-    // the partial snapshot rather than repeatedly scanning the tree.
+    // the partial snapshot rather than repeatedly scanning the tree. Files are
+    // accumulated in a local array and published once, so the inner accumulation
+    // is O(n) and never copies the whole index for every entry.
     const buildIndex = yield* Effect.cached(
-      ripgrep
-        .find({
-          cwd: location.directory,
-          pattern: "*",
-          limit: MAX_INDEX_FILES,
-          onEntry: (entry) =>
-            Ref.update(index, (current) => {
-              if (current.files.length >= MAX_INDEX_FILES) return { ...current, incomplete: true }
-              current.files.push(entry.path)
-              return current
+      Effect.gen(function* () {
+        const collected: string[] = []
+        let incomplete = false
+        const build = ripgrep
+          .find({
+            cwd: location.directory,
+            pattern: "*",
+            limit: MAX_INDEX_FILES,
+            onEntry: (entry) =>
+              Effect.sync(() => {
+                if (collected.length >= MAX_INDEX_FILES) {
+                  incomplete = true
+                  return
+                }
+                collected.push(entry.path)
+              }),
+          })
+          .pipe(
+            Effect.timeoutOrElse({
+              duration: INDEX_BUILD_TIMEOUT,
+              orElse: () =>
+                Effect.sync(() => {
+                  incomplete = true
+                }),
             }),
-        })
-        .pipe(
-          Effect.timeoutOrElse({
-            duration: INDEX_BUILD_TIMEOUT,
-            orElse: () => markIncomplete.pipe(Effect.as([] as readonly FileSystem.Entry[])),
-          }),
-          Effect.catch(() => markIncomplete.pipe(Effect.as([] as readonly FileSystem.Entry[]))),
-          Effect.asVoid,
-        ),
+            Effect.catch(() =>
+              Effect.sync(() => {
+                incomplete = true
+              }),
+            ),
+          )
+        yield* build.pipe(Effect.ensuring(Ref.set(index, { files: collected, incomplete })))
+      }).pipe(Effect.asVoid),
     )
     return Service.of({
       glob: (input) =>
