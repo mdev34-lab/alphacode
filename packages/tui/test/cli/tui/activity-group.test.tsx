@@ -5,7 +5,7 @@ import { createMemo, createSignal, For, Match, Switch, onCleanup } from "solid-j
 import { createStore } from "solid-js/store"
 import { testRender, useRenderer, type JSX } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
-import type { AssistantMessage, Message, Part, Provider, TextPart, ToolPart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, Message, Part, Provider, ReasoningPart, TextPart, ToolPart } from "@opencode-ai/sdk/v2"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { tmpdir } from "../../fixture/fixture"
@@ -56,6 +56,10 @@ function assistant(id: string, created: number) {
 
 function textPart(messageID: string, value: string): TextPart {
   return { id: nextPartID(), sessionID: SESSION, messageID, type: "text", text: value }
+}
+
+function reasoningPart(messageID: string, value: string): ReasoningPart {
+  return { id: nextPartID(), sessionID: SESSION, messageID, type: "reasoning", text: value, time: { start: at(0) } }
 }
 
 function toolPart(messageID: string, tool: string, input: Record<string, unknown>, state: ToolPart["state"]): ToolPart {
@@ -516,6 +520,29 @@ describe("activity group TUI", () => {
       expect(expanded).toContain("Read src/a.ts")
       expect(expanded).toContain("Read src/b.ts")
       expect(expanded).not.toContain("pwd")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("keeps one Working group across per-turn reasoning interleaved with tool calls", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m2.id, "grep", { pattern: "todo" }, 1100)
+      const t3 = running(m3.id, "bash", { command: "ls" }, 1200)
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [reasoningPart(m2.id, "thinking"), t2] },
+        { message: m3, parts: [reasoningPart(m3.id, "thinking again"), t3] },
+      ])
+      const frame = () => frameOf(app)
+      await app.waitForFrame((f) => f.match(/Working... 3 tool calls/g)?.length === 1)
+      expect(frame()).toContain("Working... 3 tool calls")
+      expect(frame()).not.toContain("Working... 2 tool calls")
     } finally {
       app.renderer.destroy()
     }
