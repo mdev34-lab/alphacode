@@ -37,10 +37,11 @@ export const ripgrepLayer = Layer.effect(
     const index = yield* Ref.make<IndexState>({ files: [], incomplete: false })
     // The index is intentionally best-effort: it is built once and cached for
     // the service lifetime. If it is truncated (100k files) or the 30s build
-    // budget is exhausted, `incomplete` stays true and future `find` calls use
-    // the partial snapshot rather than repeatedly scanning the tree. Files are
-    // accumulated in a local array and published once, so the inner accumulation
-    // is O(n) and never copies the whole index for every entry.
+    // budget is exhausted, `incomplete` stays true for the rest of the service
+    // lifetime and future `find` calls use the partial snapshot rather than
+    // repeatedly scanning the tree. Files are accumulated in a local array and
+    // published once, so the inner accumulation is O(n) and never copies the
+    // whole index for every entry.
     const buildIndex = yield* Effect.cached(
       Effect.gen(function* () {
         const collected: string[] = []
