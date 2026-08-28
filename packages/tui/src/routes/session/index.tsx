@@ -1537,6 +1537,16 @@ export function AssistantMessageRow(props: { message: AssistantMessage; parts: P
     return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
   })
 
+  // A finish-only turn is an assistant message that contains only tool parts
+  // (no text or reasoning). It exists solely to invoke the finish tool and
+  // must not render its own standalone model footer — the preceding
+  // substantive turn already owns the footer.
+  const isFinishOnly = createMemo(() => {
+    return (
+      props.parts.length > 0 && !props.parts.some(p => p.type === "text" || p.type === "reasoning")
+    )
+  })
+
   const duration = createMemo(() => {
     if (!final()) return 0
     if (!props.message.time.completed) return 0
@@ -1651,7 +1661,7 @@ export function AssistantMessageRow(props: { message: AssistantMessage; parts: P
         </box>
       </Show>
       <Switch>
-        <Match when={props.last || final() || props.message.error?.name === "MessageAbortedError"}>
+        <Match when={((props.last || final()) && !isFinishOnly()) || props.message.error?.name === "MessageAbortedError"}>
           <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
             <text marginTop={1}>
               <span

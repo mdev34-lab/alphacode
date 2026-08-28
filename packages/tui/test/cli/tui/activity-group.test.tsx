@@ -620,4 +620,141 @@ describe("activity group TUI", () => {
       app.renderer.destroy()
     }
   })
+
+  test("does not render a second model footer for a finish-only turn", async () => {
+    const { app, sync } = await mountActivity({
+      render: (storeSync) => {
+        const messages = storeSync.data.message[SESSION] ?? []
+        const lastId = messages[messages.length - 1]?.id
+        return (
+          <For each={messages}>
+            {(message) => {
+              const isLast = message.id === lastId
+              return (
+                <Switch>
+                  <Match when={message.role === "user"}>
+                    <text>
+                      {(storeSync.data.part[message.id] ?? [])
+                        .filter((part): part is TextPart => part.type === "text")
+                        .map((part) => part.text)
+                        .join(" ")}
+                    </text>
+                  </Match>
+                  <Match when={true}>
+                    <AssistantMessageRow
+                      message={message as AssistantMessage}
+                      parts={storeSync.data.part[message.id] ?? []}
+                      last={isLast}
+                    />
+                  </Match>
+                </Switch>
+              )
+            }}
+          </For>
+        )
+      },
+    })
+    try {
+      const mainMsg = assistant("m_main", at(1))
+      const finishOnlyMsg = assistant("m_finish", at(2))
+      const mainText = textPart(mainMsg.id, "I will investigate this.")
+      const finishTool = running(finishOnlyMsg.id, "finish", { reason: "complete" }, 1100)
+      const userMsg = {
+        id: "msg_user",
+        sessionID: SESSION,
+        role: "user" as const,
+        time: { created: at(0) },
+        parentID: "",
+        model: { providerID: "test", modelID: "model" },
+        modelID: "model",
+        providerID: "test",
+        mode: "work",
+        agent: "work",
+        path: { cwd: "/tmp", root: "/tmp" },
+      }
+      // main turn gets finish:"stop" so it is the substantive turn with a footer
+      seed(sync, [
+        { message: userMsg, parts: [] },
+        { message: { ...mainMsg, finish: "stop" }, parts: [mainText] },
+        { message: finishOnlyMsg, parts: [finishTool] },
+      ])
+      await app.waitForFrame((frame: string) => frame.includes("Work · model"))
+      const frame = frameOf(app)
+      // Exactly one footer marker: the substantive turn's footer.
+      // The finish-only turn must not produce a second standalone footer.
+      const footerMarkers = (frame.match(/▣/g) || []).length
+      expect(footerMarkers).toBe(1)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("genuine separate model turns each render their own footer", async () => {
+    const { app, sync } = await mountActivity({
+      render: (storeSync) => {
+        const messages = storeSync.data.message[SESSION] ?? []
+        const lastId = messages[messages.length - 1]?.id
+        return (
+          <For each={messages}>
+            {(message) => {
+              const isLast = message.id === lastId
+              return (
+                <Switch>
+                  <Match when={message.role === "user"}>
+                    <text>
+                      {(storeSync.data.part[message.id] ?? [])
+                        .filter((part): part is TextPart => part.type === "text")
+                        .map((part) => part.text)
+                        .join(" ")}
+                    </text>
+                  </Match>
+                  <Match when={true}>
+                    <AssistantMessageRow
+                      message={message as AssistantMessage}
+                      parts={storeSync.data.part[message.id] ?? []}
+                      last={isLast}
+                    />
+                  </Match>
+                </Switch>
+              )
+            }}
+          </For>
+        )
+      },
+    })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m2.id, "grep", { pattern: "todo" }, 1100)
+      const t3 = running(m3.id, "bash", { command: "ls" }, 1200)
+      const userMsg = {
+        id: "msg_user",
+        sessionID: SESSION,
+        role: "user" as const,
+        time: { created: at(0) },
+        parentID: "",
+        model: { providerID: "test", modelID: "model" },
+        modelID: "model",
+        providerID: "test",
+        mode: "work",
+        agent: "work",
+        path: { cwd: "/tmp", root: "/tmp" },
+      }
+      seed(sync, [
+        { message: userMsg, parts: [] },
+        { message: { ...m1, finish: "stop" }, parts: [textPart(m1.id, "Step one."), t1] },
+        { message: { ...m2, finish: "stop" }, parts: [textPart(m2.id, "Step two."), t2] },
+        { message: { ...m3, finish: "stop" }, parts: [textPart(m3.id, "Done."), t3] },
+      ])
+      await app.waitForFrame((frame: string) => frame.includes("Work · model"))
+      const frame = frameOf(app)
+      // Three substantive turns, each with content, each gets its own footer
+      const footerMarkers = (frame.match(/▣/g) || []).length
+      expect(footerMarkers).toBe(3)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
 })
