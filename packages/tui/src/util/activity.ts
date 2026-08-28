@@ -22,16 +22,16 @@ export type ActivityRow = {
   parts: readonly Part[]
 }
 
-// A group is a maximal run of consecutive tool parts in the conversation
-// stream. Runs break at user messages and at assistant text parts because
-// those are the parts that render as visible conversation content and mark a
-// new task/response boundary. Reasoning parts (per-turn CoT) do not break a
-// run: a model producing an intermediate reasoning turn has not finished the
-// ongoing agent work, so tool calls on either side of it still belong to the
-// same logical activity block. Invisible parts (step-start/finish, snapshots,
-// patches, ...) also do not break a run. The group id is derived from the first
-// part of the run so it stays stable while the run grows at its tail during
-// streaming.
+// A group is a maximal run of tool parts that belong to one logical task in
+// the conversation stream. Runs break at user messages and at assistant text
+// parts because those are the parts that render as visible conversation
+// content and mark a new task/response boundary. Reasoning parts (per-turn
+// CoT) do not break a run: a model producing an intermediate reasoning turn
+// has not finished the ongoing agent work, so tool calls on either side of it
+// still belong to the same logical activity block. Invisible parts
+// (step-start/finish, snapshots, patches, ...) also do not break a run. The
+// group id is derived from the first part of the run so it stays stable while
+// the run grows at its tail during streaming.
 export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGroups {
   const byID = new Map<string, ActivityGroup>()
   const groupOf = new Map<string, string>()
