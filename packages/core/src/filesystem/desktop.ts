@@ -2,7 +2,7 @@ import os from "node:os"
 import path from "node:path"
 import fs from "node:fs"
 import { spawnSync } from "node:child_process"
-import { FSUtil } from "../fs-util"
+import { FileSystemError } from "../fs-error"
 
 export interface DesktopResolverOptions {
   platform?: NodeJS.Platform
@@ -271,7 +271,7 @@ export function clearDesktopCache(): void {
 export function requireDesktop(options?: DesktopResolverOptions): string {
   const dir = resolveDesktop(options)
   if (!dir) {
-    throw new FSUtil.FileSystemError({
+    throw new FileSystemError({
       method: "resolveDesktop",
       cause: new Error("Failed to resolve operating system Desktop directory"),
     })
