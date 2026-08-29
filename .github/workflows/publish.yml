@@ -42,10 +42,6 @@ jobs:
 
       - uses: ./.github/actions/setup-bun
 
-      - name: Install AlphaCode
-        if: inputs.bump || inputs.version
-        run: bun i -g alphacode
-
       - id: version
         run: |
           ./script/version.ts

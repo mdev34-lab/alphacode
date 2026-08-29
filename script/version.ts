@@ -7,7 +7,13 @@ const output = [`version=${Script.version}`]
 const sha = process.env.GITHUB_SHA ?? (await $`git rev-parse HEAD`.text()).trim()
 
 if (!Script.preview) {
-  await $`bun script/changelog.ts --to ${sha}`.cwd(process.cwd())
+  try {
+    await $`bun script/changelog.ts --to ${sha}`.cwd(process.cwd())
+  } catch {
+    // Changelog generation is best-effort; fall back to a static note if the
+    // CLI is not yet available (e.g. first publish before the package exists
+    // on npm).
+  }
   const file = `${process.cwd()}/UPCOMING_CHANGELOG.md`
   const body = await Bun.file(file)
     .text()
