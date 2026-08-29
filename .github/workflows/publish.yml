@@ -153,3 +153,5 @@ jobs:
           OPENCODE_RELEASE: ${{ needs.version.outputs.release }}
           GITHUB_TOKEN: ${{ github.token }}
           GH_REPO: ${{ needs.version.outputs.repo }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "false"
