@@ -12,15 +12,27 @@ async function published(name: string, version: string) {
 }
 
 async function publish(dir: string, name: string, version: string) {
-  // GitHub artifact downloads can drop the executable bit, and Docker uses the
-  // unpacked dist binaries directly rather than the published tarball.
   if (process.platform !== "win32") await $`chmod -R 755 .`.cwd(dir)
   if (await published(name, version)) {
     console.log(`already published ${name}@${version}`)
     return
   }
   await $`bun pm pack`.cwd(dir)
-  await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+      return
+    } catch (e) {
+      const stderr = typeof e.stderr === "string" ? e.stderr : String(e.stderr ?? "")
+      if (stderr.includes("E429") && attempt < 2) {
+        const delay = Math.pow(2, attempt) * 5000
+        console.log(`rate limited publishing ${name}, retrying in ${delay}ms...`)
+        await Bun.sleep(delay)
+        continue
+      }
+      throw e
+    }
+  }
 }
 
 const binaries: Record<string, string> = {}
@@ -72,10 +84,10 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
   ),
 )
 
-const tasks = Object.entries(binaries).map(async ([name]) => {
+for (const [name] of Object.entries(binaries)) {
   await publish(`./dist/${name}`, name, binaries[name])
-})
-await Promise.all(tasks)
+  await Bun.sleep(2000)
+}
 await publish(`./dist/${pkg.name}`, `${pkg.name}-ai`, version)
 
 const image = "ghcr.io/mdev34-lab/alphacode"
