@@ -84,11 +84,12 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
   ),
 )
 
+await publish(`./dist/${pkg.name}`, `${pkg.name}-ai`, version)
+
 for (const [name] of Object.entries(binaries)) {
   await publish(`./dist/${name}`, name, binaries[name])
   await Bun.sleep(300000)
 }
-await publish(`./dist/${pkg.name}`, `${pkg.name}-ai`, version)
 
 const image = "ghcr.io/mdev34-lab/alphacode"
 const platforms = "linux/amd64,linux/arm64"
