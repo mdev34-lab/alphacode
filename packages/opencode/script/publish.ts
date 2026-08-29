@@ -22,7 +22,7 @@ async function publish(dir: string, name: string, version: string) {
     try {
       await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
       return
-    } catch (e) {
+    } catch (e: any) {
       const stderr = typeof e.stderr === "string" ? e.stderr : String(e.stderr ?? "")
       if (stderr.includes("E429") && attempt < 2) {
         const delay = Math.pow(2, attempt) * 5000
