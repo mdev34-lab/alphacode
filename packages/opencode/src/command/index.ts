@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { CommandV2 } from "@opencode-ai/core/command"
 import path from "path"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
@@ -158,6 +159,25 @@ const layer = Layer.effect(
 
     const state = yield* InstanceState.make<State>((ctx) => init(ctx))
 
+    const { commands } = yield* InstanceState.get(state)
+    const commandV2 = yield* CommandV2.Service
+    yield* commandV2.transform((draft) => {
+      for (const existing of draft.list()) {
+        draft.remove(existing.name)
+      }
+      for (const [name, info] of Object.entries(commands)) {
+        const templateValue = info.template
+        const templateStr = typeof templateValue === "string" ? templateValue : ""
+        draft.update(name, (cmd) => {
+          cmd.name = info.name
+          cmd.template = templateStr
+          cmd.description = info.description
+          cmd.agent = info.agent
+          cmd.subtask = info.subtask
+        })
+      }
+    })
+
     const get = Effect.fn("Command.get")(function* (name: string) {
       const s = yield* InstanceState.get(state)
       return s.commands[name]
@@ -172,6 +192,6 @@ const layer = Layer.effect(
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [Config.node, MCP.node, Skill.node] })
+export const node = LayerNode.make({ service: Service, layer, deps: [Config.node, MCP.node, Skill.node, CommandV2.node] })
 
 export * as Command from "."
