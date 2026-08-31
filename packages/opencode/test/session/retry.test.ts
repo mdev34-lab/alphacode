@@ -4,7 +4,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Cause, Duration, Effect, Option, Ref, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -515,4 +515,197 @@ describe("session.message-v2.fromError", () => {
       message: "An error occurred while processing your request.",
     })
   })
+})
+
+describe("session.retry.policy invalidate", () => {
+  it.instance("fails with RetryInvalidated when invalidate returns true", () =>
+    Effect.gen(function* () {
+      const error = apiError({ "retry-after-ms": "0" })
+      const setCalls: number[] = []
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) =>
+            Effect.sync(() => {
+              setCalls.push(info.attempt)
+            }),
+          invalidate: () => Effect.succeed(true),
+        }),
+      )
+      // First call: invalidate returns true → step fails with RetryInvalidated
+      const exit = yield* step(error).pipe(Effect.exit)
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+        expect(SessionRetry.isRetryInvalidated(error)).toBe(true)
+      }
+      expect(setCalls).toEqual([])
+    }),
+  )
+
+  it.instance("continues retrying when invalidate returns false", () =>
+    Effect.gen(function* () {
+      const error = apiError({ "retry-after-ms": "500" })
+      const setCalls: number[] = []
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) =>
+            Effect.sync(() => {
+              setCalls.push(info.attempt)
+            }),
+          invalidate: () => Effect.succeed(false),
+        }),
+      )
+      // First call: invalidate returns false → normal retry continues.
+      // With invalidate provided, the delay is handled in chunks
+      // internally, so the schedule reports Duration.zero to avoid
+      // sleeping a second time.
+      const result = yield* step(error)
+      expect(result.attempt).toBe(1)
+      expect(Duration.toMillis(result.duration)).toBe(0)
+      expect(setCalls).toEqual([1])
+    }),
+  )
+
+  it.instance("respects invalidate on second attempt after first succeeds", () =>
+    Effect.gen(function* () {
+      const error = apiError({ "retry-after-ms": "0" })
+      const counter = yield* Ref.make(0)
+      const setCalls: number[] = []
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) =>
+            Effect.sync(() => {
+              setCalls.push(info.attempt)
+            }),
+          // First attempt: not invalidated; second attempt: invalidated
+          invalidate: () =>
+            Effect.gen(function* () {
+              const count = yield* Ref.getAndUpdate(counter, (n) => n + 1)
+              return count >= 1
+            }),
+        }),
+      )
+      // First attempt: invalidate returns false → retry
+      const result1 = yield* step(error)
+      expect(result1.attempt).toBe(1)
+      expect(setCalls).toEqual([1])
+
+      // Second attempt: invalidate returns true → fails with RetryInvalidated
+      const exit = yield* step(error).pipe(Effect.exit)
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+        expect(SessionRetry.isRetryInvalidated(error)).toBe(true)
+      }
+      expect(setCalls).toEqual([1])
+    }),
+  )
+
+  it.instance("works without invalidate (backward compatible)", () =>
+    Effect.gen(function* () {
+      const error = apiError({ "retry-after-ms": "0" })
+      const setCalls: number[] = []
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) =>
+            Effect.sync(() => {
+              setCalls.push(info.attempt)
+            }),
+        }),
+      )
+      // No invalidate → normal retry behavior
+      const result = yield* step(error)
+      expect(result.attempt).toBe(1)
+      expect(Duration.toMillis(result.duration)).toBe(0)
+      expect(setCalls).toEqual([1])
+    }),
+  )
+
+  it.instance("cancels mid-backoff when invalidate becomes true during delay", () =>
+    Effect.gen(function* () {
+      // Use a 1-second delay to verify mid-backoff cancellation
+      const error = apiError({ "retry-after-ms": "1000" })
+      const counter = yield* Ref.make(0)
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: () => Effect.void,
+          // First check (before sleep): not invalidated
+          // Second check (after first chunk): invalidated
+          invalidate: () =>
+            Effect.gen(function* () {
+              const count = yield* Ref.getAndUpdate(counter, (n) => n + 1)
+              return count >= 1
+            }),
+        }),
+      )
+
+      const start = yield* Effect.sync(() => Date.now())
+      const exit = yield* step(error).pipe(Effect.exit)
+      const elapsed = Date.now() - (yield* Effect.sync(() => start))
+
+      // Should fail with RetryInvalidated
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+        expect(SessionRetry.isRetryInvalidated(error)).toBe(true)
+      }
+
+      // Should have cancelled well before the full 1000ms delay
+      // (after ~200ms, which is RETRY_INVALIDATE_POLL_MS)
+      expect(elapsed).toBeLessThan(800)
+      expect(elapsed).toBeGreaterThanOrEqual(150)
+    }),
+    2000, // 2 second timeout
+  )
+
+  it.instance("does not retry when invalidate becomes true after the final chunk", () =>
+    Effect.gen(function* () {
+      // Regression test for the final-chunk race: previously the loop
+      // skipped the invalidation check after the last chunk, so a model
+      // switch landing during it was only observed after the stale retry
+      // had already started.
+      //
+      // With a 1000ms delay there are 5 chunks. The invalidate hook is
+      // exercised once before sleeping and once after every chunk, i.e.
+      // 6 times; it only reports a switch on the 6th (final) check. If
+      // the final check is skipped, the step would continue instead of
+      // failing with RetryInvalidated.
+      const error = apiError({ "retry-after-ms": "1000" })
+      const counter = yield* Ref.make(0)
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: () => Effect.void,
+          invalidate: () =>
+            Effect.gen(function* () {
+              const count = yield* Ref.getAndUpdate(counter, (n) => n + 1)
+              // 0-based invocation: 0=pre-sleep, 1..4=after chunks 1-4,
+              // 5=after the final chunk.
+              return count >= 5
+            }),
+        }),
+      )
+
+      const exit = yield* step(error).pipe(Effect.exit)
+
+      // A retry may only proceed after a successful post-delay check.
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause))
+        expect(SessionRetry.isRetryInvalidated(error)).toBe(true)
+      }
+    }),
+    3000, // 3 second timeout (waits out the full 1000ms delay)
+  )
 })
