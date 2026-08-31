@@ -1074,6 +1074,31 @@ describe("tool.shell abort", () => {
   )
 
   it.live(
+    "does not leak shell_metadata tags into metadata.output on timeout with no prior output",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          // A command that produces no output before timing out triggers the
+          // bug path where last=="" and metadata.output fell back to
+          // preview(output) — which already contained <shell_metadata>.
+          const result = yield* run({
+            command: `sleep 60`,
+            timeout: 500,
+          })
+          // Model-facing output must still carry the metadata block.
+          expect(result.output).toContain("<shell_metadata>")
+          expect(result.output).toContain("</shell_metadata>")
+          // TUI-facing preview must never expose the protocol envelope.
+          const tuiPreview = (result.metadata as { output?: string }).output ?? ""
+          expect(tuiPreview).not.toContain("<shell_metadata>")
+          expect(tuiPreview).not.toContain("</shell_metadata>")
+        }),
+      ),
+    15_000,
+  )
+
+  it.live(
     "uses RuntimeFlags bashDefaultTimeoutMs when timeout is omitted",
     () =>
       runIn(
