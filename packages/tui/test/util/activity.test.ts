@@ -237,7 +237,10 @@ describe("computeActivityGroups", () => {
     const result = computeActivityGroups(rows)
     expect(result.byID.size).toBe(1)
     const group = result.byID.get("act-t1")
-    expect(group?.items.map((item) => item.part.id)).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"])
+    // The trailing `finish` call is orchestration: it neither counts toward
+    // the work run nor breaks it, so the group keeps just the concrete tools
+    // and their interleaved reasoning.
+    expect(group?.items.map((item) => item.part.id)).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7"])
     expect(group?.parts.map((item) => item.part.id)).toEqual([
       "t1",
       "t2",
@@ -248,11 +251,10 @@ describe("computeActivityGroups", () => {
       "t5",
       "t6",
       "t7",
-      "t8",
     ])
     expect(result.groupOf.get("r1")).toBe("act-t1")
     expect(result.groupOf.get("r2")).toBe("act-t1")
-    expect(result.groupOf.get("t8")).toBe("act-t1")
+    expect(result.groupOf.get("t8")).toBeUndefined()
   })
 
   test("still splits a group at assistant text when reasoning is present", () => {
@@ -344,6 +346,90 @@ describe("computeActivityGroups", () => {
     const result = computeActivityGroups(rows)
     expect(result.byID.size).toBe(0)
     expect(result.groupOf.size).toBe(0)
+  })
+
+  test("excludes orchestration/protocol tools from a mixed run", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "todowrite"),
+          tool("m1", "t2", completed(0, 2)),
+          tool("m1", "t3", completed(1, 3), "task"),
+          tool("m1", "t4", completed(1, 4), "read"),
+          tool("m1", "t5", completed(2, 5), "edit"),
+          tool("m1", "t6", completed(3, 6), "finish"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(1)
+    // The group id comes from the first included tool, and only the concrete
+    // operational tools (bash, read, edit) are counted.
+    expect(result.byID.get("act-t2")?.items.map((item) => item.part.id)).toEqual(["t2", "t4", "t5"])
+    // Excluded tools are not mapped to any group so the renderer keeps them
+    // visible as their own native inline rows.
+    expect(result.groupOf.get("t1")).toBeUndefined()
+    expect(result.groupOf.get("t3")).toBeUndefined()
+    expect(result.groupOf.get("t6")).toBeUndefined()
+    expect(result.groupOf.get("t2")).toBe("act-t2")
+    expect(result.groupOf.get("t4")).toBe("act-t2")
+    expect(result.groupOf.get("t5")).toBe("act-t2")
+  })
+
+  test("does not break a run across excluded tools", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "read"),
+          tool("m1", "t2", completed(1, 2), "finish"),
+          tool("m1", "t3", completed(2, 3), "grep"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(1)
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t3"])
+  })
+
+  test("does not create a group for an all-excluded sequence", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "todowrite"),
+          tool("m1", "t2", completed(1, 2), "finish"),
+          tool("m1", "t3", completed(2, 3), "task"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(0)
+    expect(result.groupOf.size).toBe(0)
+  })
+
+  test("excludes orchestration tools from summaries, counts, and failures", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(100, 120), "todowrite"),
+          tool("m1", "t2", completed(150, 160)),
+          tool("m1", "t3", failed(160, 170, "boom"), "task"),
+          tool("m1", "t4", completed(180, 220), "read"),
+          tool("m1", "t5", failed(230, 240, "command not found")),
+          tool("m1", "t6", completed(250, 260), "finish"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    const group = result.byID.values().next().value
+    const summary = summarizeActivity(group!.items.map((item) => item.part))
+    // Only the concrete tools (t2 bash, t4 read, t5 bash) remain; the failed
+    // task tool is excluded and the failing bash is counted.
+    expect(summary).toMatchObject({ count: 3, working: false, failed: 1 })
+    expect(summary.durationMs).toBe(240 - 150)
   })
 })
 
