@@ -1149,6 +1149,97 @@ describe("session.llm.stream", () => {
   )
 
   it.instance(
+    "finish stays visible to deny-by-default agents while denied tools are filtered",
+    () =>
+      Effect.gen(function* () {
+        const fixture = loadFixture(alibabaQwenFixture.providerID, alibabaQwenFixture.modelID)
+        const request = waitRequest(
+          "/chat/completions",
+          new Response(createChatStream("Hello"), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        )
+
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(alibabaQwenFixture.providerID),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const sessionID = SessionID.make("session-test-finish-tool")
+        // The review subagent's ruleset: deny-by-default with read-only allows.
+        const agent = {
+          name: "review",
+          mode: "subagent",
+          options: {},
+          permission: Permission.fromConfig({
+            "*": "deny",
+            read: "allow",
+            grep: "allow",
+            glob: "allow",
+            list: "allow",
+            webfetch: "allow",
+          }),
+        } satisfies Agent.Info
+
+        const user = {
+          id: MessageID.make("msg_user-finish-tool"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderV2.ID.make(alibabaQwenFixture.providerID), modelID: resolved.id },
+        } satisfies SessionV1.User
+
+        yield* drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          permission: [{ permission: "task", pattern: "*", action: "deny" }],
+          system: ["You are a reviewer."],
+          messages: [{ role: "user", content: "Review this diff" }],
+          tools: {
+            finish: tool({
+              description: "Finish",
+              inputSchema: z.object({ result: z.string() }),
+              execute: async () => ({ output: "" }),
+            }),
+            read: tool({
+              description: "Read",
+              inputSchema: z.object({ path: z.string() }),
+              execute: async () => ({ output: "" }),
+            }),
+            bash: tool({
+              description: "Shell",
+              inputSchema: z.object({ command: z.string() }),
+              execute: async () => ({ output: "" }),
+            }),
+          },
+        })
+
+        const capture = yield* Effect.promise(() => request)
+        const tools = capture.body.tools as Array<{ function?: { name?: string } }> | undefined
+        const names = tools?.map((item) => item.function?.name)
+        // The denied capability tool is filtered, but the finish protocol tool
+        // survives: without it a subagent cannot end its turn and the session
+        // wedges in finish nudges.
+        expect(names).toContain("finish")
+        expect(names).toContain("read")
+        expect(names).not.toContain("bash")
+      }),
+    {
+      config: () => ({
+        enabled_providers: [alibabaQwenFixture.providerID],
+        provider: {
+          [alibabaQwenFixture.providerID]: {
+            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+          },
+        },
+      }),
+    },
+  )
+
+  it.instance(
     "sends responses API payload for OpenAI models",
     () =>
       Effect.gen(function* () {

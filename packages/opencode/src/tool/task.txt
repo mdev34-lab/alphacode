@@ -7,6 +7,11 @@ When NOT to use the Task tool:
 - If you are searching for a specific class definition like "class Foo", use the Grep tool instead, to find the match more quickly
 - If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Task tool, to find the match more quickly
 - If no available agent is a good fit for the task, use other tools directly
+- If the turn is conversational and changed no files, do not dispatch a review agent for it
+
+## Review handoffs
+
+When a unit of your own work is complete and changed files, hand it to the `review` subagent for independent verification instead of reviewing your own diff (follow the review-loop policy in your instructions). Pass `background: false` so the verdict returns before you claim completion. When the user explicitly asks for a code review, dispatch `review` with the requirements and the diff rather than reviewing the code yourself.
 
 
 Usage notes:

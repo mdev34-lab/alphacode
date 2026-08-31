@@ -207,12 +207,25 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
 })
 
+// Turn-protocol tools, as opposed to capability tools. Permission rules gate
+// capabilities — what the agent may do to the workspace. Protocol tools exist
+// so any agent can operate its own turn: without `finish`, an agent whose
+// ruleset is deny-by-default (review, explore) can never end its turn and the
+// session loop wedges it in finish nudges. They stay visible to every agent
+// unless the user disables them per message (`user.tools[name] === false`).
+// Extend this set only for tools with the same "the loop cannot proceed
+// without it" property, never to smuggle a capability past a permission rule.
+const PROTOCOL_TOOLS = new Set(["finish"])
+
 function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {
   const disabled = Permission.disabled(
     Object.keys(input.tools),
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
-  return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+  return Record.filter(
+    input.tools,
+    (_, k) => input.user.tools?.[k] !== false && (PROTOCOL_TOOLS.has(k) || !disabled.has(k)),
+  )
 }
 
 export function hasToolCalls(messages: ModelMessage[]): boolean {
