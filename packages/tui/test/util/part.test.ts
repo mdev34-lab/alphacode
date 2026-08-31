@@ -25,6 +25,10 @@ function text(overrides: Partial<TextPart> = {}): TextPart {
   }
 }
 
+function partText(part: Part): string {
+  return (part as TextPart | ReasoningPart).text
+}
+
 test("preserves streamed reasoning text when an empty snapshot arrives", () => {
   const current = reasoning({ text: "already streamed chain of thought" })
   const incoming = reasoning({ text: "" })
@@ -89,17 +93,17 @@ test("part updated reducer inserts a new part in id order", () => {
 test("part updated reducer preserves streamed text across a live event sequence", () => {
   // reasoning-start: the durable snapshot is persisted with empty text.
   let parts = applyPartUpdated(undefined, reasoning({ text: "" }))
-  expect(parts[0].text).toBe("")
+  expect(partText(parts[0])).toBe("")
 
   // message.part.delta: live deltas append to the part.
   parts = applyPartDelta(parts, "part-1", "text", "hello")!
   parts = applyPartDelta(parts, "part-1", "text", " world")!
-  expect(parts[0].text).toBe("hello world")
+  expect(partText(parts[0])).toBe("hello world")
 
   // message.part.updated: a stale empty snapshot arrives after streaming.
   parts = applyPartUpdated(parts, reasoning({ text: "", time: { start: 1, end: 10 } }))
 
-  expect(parts[0].text).toBe("hello world")
+  expect(partText(parts[0])).toBe("hello world")
   expect((parts[0] as ReasoningPart).time.end).toBe(10)
 })
 
@@ -107,7 +111,7 @@ test("part updated reducer applies a non-empty snapshot verbatim", () => {
   let parts = applyPartUpdated(undefined, reasoning({ text: "" }))
   parts = applyPartDelta(parts, "part-1", "text", "partial")!
   parts = applyPartUpdated(parts, reasoning({ text: "partial full text" }))
-  expect(parts[0].text).toBe("partial full text")
+  expect(partText(parts[0])).toBe("partial full text")
 })
 
 test("part delta reducer returns undefined when there is no part to append to", () => {
