@@ -1,5 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CommandV2 } from "@opencode-ai/core/command"
+import { ModelV2 } from "@opencode-ai/core/model"
 import path from "path"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
@@ -150,18 +151,40 @@ const layer = Layer.effect(
           }
         }
 
+        const resolvedCommands = yield* Effect.forEach(
+          Object.entries(commands),
+          ([name, info]) =>
+            Effect.gen(function* () {
+              const templateValue = info.template
+              const templateStr =
+                typeof templateValue === "string"
+                  ? templateValue
+                  : yield* Effect.tryPromise(() => templateValue).pipe(Effect.orDie)
+              return [
+                name,
+                {
+                  ...info,
+                  template: templateStr,
+                },
+              ] as const
+            }),
+        )
+        const resolved = Object.fromEntries(resolvedCommands)
+
         yield* commandV2.transform((draft) => {
           for (const existing of draft.list()) {
             draft.remove(existing.name)
           }
-          for (const [name, info] of Object.entries(commands)) {
-            const templateValue = info.template
-            const templateStr = typeof templateValue === "string" ? templateValue : ""
+          for (const [name, info] of Object.entries(resolved)) {
             draft.update(name, (cmd) => {
               cmd.name = info.name
-              cmd.template = templateStr
+              cmd.template = info.template
               cmd.description = info.description
               cmd.agent = info.agent
+              if (info.model) {
+                const parsed = ModelV2.parse(info.model)
+                cmd.model = { id: parsed.modelID, providerID: parsed.providerID, variant: cmd.model?.variant }
+              }
               cmd.subtask = info.subtask
             })
           }
