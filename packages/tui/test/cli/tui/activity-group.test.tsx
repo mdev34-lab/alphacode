@@ -604,6 +604,64 @@ describe("activity group TUI", () => {
     }
   })
 
+  test("excluded orchestration tools do not count and render outside the group", async () => {
+    const { app, sync } = await mountActivity()
+    try {
+      const m1 = assistant("m1", at(1))
+      const t1 = running(m1.id, "bash", { command: "bun test" }, 1000)
+      const t2 = running(m1.id, "finish", { reason: "complete" }, 1100)
+      const t3 = running(m1.id, "read", { filePath: "src/a.ts" }, 1200)
+      const t4 = running(m1.id, "todowrite", { todos: [] }, 1300)
+      seed(sync, [{ message: m1, parts: [t1, t2, t3, t4] }])
+      await app.waitForFrame((frame: string) => frame.includes("Working... 2 tool calls"))
+
+      const frame = frameOf(app)
+      // Only the concrete tools (bash, read) count toward the summary.
+      expect(frame).toContain("Working... 2 tool calls")
+      expect(frame).not.toContain("Working... 3 tool calls")
+      expect(frame).not.toContain("Working... 4 tool calls")
+      // The excluded orchestration calls stay available as their own rows
+      // even while the group is collapsed.
+      expect(frame).toContain("Completing task...")
+      expect(frame).toContain("Updating todos...")
+      // The included tools are hidden behind the collapsed group.
+      expect(frame).not.toContain("bun test")
+      expect(frame).not.toContain("Read src/a.ts")
+
+      // Expanding reveals only the included tools inside the group; the
+      // orchestration rows remain separate and visible.
+      await app.mockMouse.click(5, rowOf(frame, "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      const expanded = frameOf(app)
+      expect(expanded).toContain("bun test")
+      expect(expanded).toContain("Read src/a.ts")
+      expect(expanded).toContain("Completing task...")
+      expect(expanded).toContain("Updating todos...")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("does not render an activity header for an all-excluded sequence", async () => {
+    const { app, sync } = await mountActivity()
+    try {
+      const m1 = assistant("m1", at(1))
+      const t1 = running(m1.id, "todowrite", { todos: [] }, 1000)
+      const t2 = running(m1.id, "finish", { reason: "complete" }, 1100)
+      seed(sync, [{ message: m1, parts: [t1, t2] }])
+      await app.waitForFrame((frame: string) => frame.includes("Completing task..."))
+
+      const frame = frameOf(app)
+      expect(frame).not.toContain("Working...")
+      expect(frame).not.toContain("Worked for")
+      // The excluded calls render as their own native rows regardless.
+      expect(frame).toContain("Completing task...")
+      expect(frame).toContain("Updating todos...")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
   test("expanding and collapsing keeps the scroll position", async () => {
     const { app, sync, scroll } = await mountActivity({ height: 6, width: 60 })
     try {
