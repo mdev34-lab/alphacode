@@ -1,4 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { CommandV2 } from "@opencode-ai/core/command"
+import { ModelV2 } from "@opencode-ai/core/model"
 import path from "path"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
@@ -61,11 +63,15 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const mcp = yield* MCP.Service
     const skill = yield* Skill.Service
+    const commandV2 = yield* CommandV2.Service
 
     const init = Effect.fn("Command.state")(function* (ctx: InstanceContext) {
       const cfg = yield* config.get()
       const bridge = yield* EffectBridge.make()
       const commands: Record<string, Info> = {}
+      // MCP command templates are lazy: reading one resolves the remote MCP
+      // prompt, so record their names instead of materializing them here.
+      const lazyTemplates = new Set<string>()
 
       commands[Default.INIT] = {
         name: Default.INIT,
@@ -103,6 +109,7 @@ const layer = Layer.effect(
       }
 
       for (const [name, prompt] of Object.entries(yield* mcp.prompts())) {
+        lazyTemplates.add(name)
         commands[name] = {
           name,
           source: "mcp",
@@ -151,6 +158,47 @@ const layer = Layer.effect(
         }
       }
 
+      // Bridge this instance's commands into the V2 command store, which the
+      // TUI command launcher (GET /api/command) reads.
+      //
+      // The bridge owns only the entries it writes itself: each run removes
+      // the commands it bridged previously that are no longer present and
+      // upserts the current set. Entries contributed by other V2 producers
+      // (config and plugin command providers) are left untouched.
+      //
+      // Templates are bridged without forcing lazy resolution. Only MCP
+      // command templates are lazy promises — reading one resolves the remote
+      // MCP prompt — so materializing every template here would execute all
+      // MCP prompts during command initialization, and one slow, unavailable,
+      // or failing prompt would take command initialization down with it.
+      // Concrete templates are copied verbatim; lazy ones stay unresolved in
+      // the V2 store and are materialized when the command is executed.
+      const bridgedNames = new Set<string>()
+      yield* commandV2.transform((draft) => {
+        for (const name of bridgedNames) {
+          draft.remove(name)
+        }
+        bridgedNames.clear()
+        for (const [name, info] of Object.entries(commands)) {
+          bridgedNames.add(name)
+          draft.update(name, (cmd) => {
+            cmd.name = info.name
+            // Non-MCP templates are concrete strings; MCP templates are lazy
+            // promises that must not be read here, so they are bridged
+            // unresolved.
+            const template = lazyTemplates.has(name) ? "" : info.template
+            cmd.template = typeof template === "string" ? template : ""
+            cmd.description = info.description
+            cmd.agent = info.agent
+            if (info.model) {
+              const parsed = ModelV2.parse(info.model)
+              cmd.model = { id: parsed.modelID, providerID: parsed.providerID }
+            }
+            cmd.subtask = info.subtask
+          })
+        }
+      })
+
       return {
         commands,
       }
@@ -172,6 +220,10 @@ const layer = Layer.effect(
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [Config.node, MCP.node, Skill.node] })
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [Config.node, MCP.node, Skill.node, CommandV2.node],
+})
 
 export * as Command from "."
