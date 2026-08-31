@@ -242,7 +242,7 @@ const layer = Layer.effect(
               }),
               user,
             ),
-            description: `Read-only code reviewer. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this after completing a unit of work (implementation, fix, refactor, or feature) to catch issues before they cascade.`,
+            description: `Read-only code reviewer. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files (implementation, fix, refactor, or feature), before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
             prompt: PROMPT_REVIEW,
             options: {},
             mode: "subagent",

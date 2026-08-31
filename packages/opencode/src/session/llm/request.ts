@@ -212,7 +212,11 @@ function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission"
     Object.keys(input.tools),
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
-  return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+  // The finish tool is turn protocol, not a capability: agents with a
+  // deny-by-default ruleset (review, explore) still need it to end their turn,
+  // since the session loop only releases them once finish completes. Only an
+  // explicit per-message user toggle may remove it.
+  return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && (k === "finish" || !disabled.has(k)))
 }
 
 export function hasToolCalls(messages: ModelMessage[]): boolean {

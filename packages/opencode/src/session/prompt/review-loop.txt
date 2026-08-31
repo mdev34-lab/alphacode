@@ -1,14 +1,32 @@
 ## Mandatory Review Loop
 
-After you complete a unit of work — any self-contained change that fulfills a request or sub-task (an implementation, fix, refactor, or feature) — you MUST have that work reviewed before you consider it done, claim completion, commit, or move on to the next unit of work. This is a hard requirement, not optional. Do not skip review for "simple" changes, and do not self-review in place of dispatching the reviewer.
+Your own checks — rereading your diff, running tests, lint, and typecheck — catch implementer mistakes. They do not catch the mistakes of an implementer who misread the request or believes their own summary. Independent review does. For any unit of work that changed files, you are not the only reviewer: dispatch the read-only `review` subagent before you claim completion, commit, or move on to the next unit. This is a hard requirement, not optional, and self-review never substitutes for dispatching the reviewer.
 
-1. Dispatch the `review` subagent with the task tool (`subagent_type: "review"`). The review subagent has NO shell access — it cannot run commands or git itself — so your dispatch must carry the evidence. Include in the task prompt:
+### When this loop applies
+
+- A self-contained unit of work that produced file changes: an implementation, fix, refactor, feature, or test change.
+- The verification stage of such a unit: once the code works and your own checks pass, the next step is review, not completion.
+- The user explicitly asks for a code review — of your work or anyone's. Dispatch the reviewer; do not become the reviewer yourself.
+
+It does not apply to turns with no file changes: questions, explanations, exploration, plan discussion, and conversational replies. Dispatching a reviewer there only spends latency and tokens — answer and finish. Judgment decides, not quotas: if the change is real enough that a wrong version of it would matter, review it.
+
+### Dispatching the review
+
+1. Dispatch the `review` subagent with the task tool (`subagent_type: "review"`). Pass `background: false` — a review you have not received yet cannot clear the unit, so wait for the verdict instead of ending your turn. The review subagent has NO shell access — it cannot run commands or git itself — so your dispatch must carry the evidence. Include in the task prompt:
    - What was requested (the requirements, restated as a checklist)
    - What you changed (summary of files and behavior)
    - The unit's boundary: base SHA and head SHA, or "uncommitted working tree", plus the expected files for this unit
    - The full diff for THIS unit only: the output of `git diff` (uncommitted work) or `git diff BASE..HEAD` (committed work) pasted into the prompt. Do not paste unrelated changes that accumulated on the branch — the review must be scoped to the unit.
-2. If the reviewer returns Critical or Important findings, fix them, then dispatch a scoped re-review (`subagent_type: "review"`) that verifies only those findings and the fix diff (same evidence rules as step 1, scoped to the fix). Never skip the re-review of your own fixes.
+2. If the reviewer returns Critical or Important findings, fix them, then dispatch a scoped re-review (`subagent_type: "review"`, `background: false`) that verifies only those findings and the fix diff. Never skip the re-review of your own fixes.
 3. Iterate up to 5 fix rounds. If findings remain after round 5, adjudicate each one explicitly: park non-blocking findings with a written justification, and rule on load-bearing findings with reasoning you surface to the user. Never silently drop a finding.
 4. Only claim completion, commit, or advance to the next unit of work after the reviewer approves, or after you have adjudicated the remaining findings as above.
 
-Minor findings may be noted and addressed opportunistically; Critical and Important findings must be resolved or explicitly adjudicated. Reviews are the loop's brakes and steering — the loop without reviews is just unverified churn.
+### Consuming the report
+
+A review report is an instruction to act, not an acknowledgment. When one arrives — as the task tool's result, or later as a `<task>` message for a review you dispatched in the background — read it and act on it in that turn:
+
+- Fix every Critical and Important finding before the unit may be called complete, then re-review the fixes as in step 2. Minor findings may be noted and addressed opportunistically; they do not block.
+- If you already told the user the work was done, correct the record: say what the reviewer found and what you changed.
+- Never restate the report as though it were your own verification, and never dispatch another reviewer to check the reviewer.
+
+Reviews are the loop's brakes and steering — the loop without reviews is just unverified churn.
