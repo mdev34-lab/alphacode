@@ -606,13 +606,19 @@ export const ShellTool = Tool.define(
         output = `...output truncated...\n\nFull output saved to: ${file}\n\n` + output
       }
 
+      // Capture the user-visible preview before appending protocol metadata.
+      // metadata.output is rendered verbatim in the TUI, so <shell_metadata>
+      // must never appear there. The model-facing `output` field retains the
+      // full block so recovery/retry hints reach the model unchanged.
+      const tuiPreview = last || preview(output)
+
       if (meta.length > 0) {
         output += "\n\n<shell_metadata>\n" + meta.join("\n") + "\n</shell_metadata>"
       }
       return {
         title: input.command,
         metadata: {
-          output: last || preview(output),
+          output: tuiPreview,
           exit: code,
           truncated: cut,
           ...(cut && file ? { outputPath: file } : {}),
