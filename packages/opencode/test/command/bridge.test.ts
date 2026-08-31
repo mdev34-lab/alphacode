@@ -4,17 +4,36 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { GetPromptRequestSchema, ListPromptsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CommandV2 } from "@opencode-ai/core/command"
+import {
+  LocationServiceMap,
+  type LocationServices,
+} from "@opencode-ai/core/location-services"
+import { Location } from "@opencode-ai/core/location"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
-import { Effect, Exit } from "effect"
+import { Effect, Exit, Layer, LayerMap } from "effect"
 import { testEffect } from "../lib/effect"
 import { Command } from "../../src/command"
 import { Config } from "../../src/config/config"
 import { MCP } from "../../src/mcp"
 import { Skill } from "../../src/skill"
 
+// The bridge resolves the location-scoped CommandV2 through a
+// LocationServiceMap, the same way the server does. This stub map points every
+// location at the single CommandV2 layer the assertions read, so the bridge
+// and the test share one instance (same layer object, same memoization).
+const commandV2Layer = LayerNode.compile(LayerNode.group([CommandV2.node]))
+const locationServiceMap = {
+  get: (_ref: Location.Ref) => commandV2Layer,
+} as unknown as LayerMap.LayerMap<Location.Ref, LocationServices>
+
 const it = testEffect(
-  LayerNode.compile(LayerNode.group([Command.node, CommandV2.node, Config.node, MCP.node, Skill.node])),
+  Layer.merge(
+    LayerNode.compile(LayerNode.group([Command.node, Config.node, MCP.node, Skill.node])).pipe(
+      Layer.provide(Layer.succeed(LocationServiceMap.Service, locationServiceMap)),
+    ),
+    commandV2Layer,
+  ),
 )
 
 const remote = (url: string) => ({ type: "remote" as const, url, oauth: false as const })
