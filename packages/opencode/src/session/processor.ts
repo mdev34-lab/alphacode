@@ -2,7 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Option, Ref, Scope, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -637,6 +637,11 @@ const layer = Layer.effect(
         })
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        // Tracks whether the retry loop was terminated because the user
+        // switched to a different model/provider mid-backoff. When true,
+        // the processor returns "continue" (not "stop") so the outer
+        // runLoop can pick up the new selection on the next iteration.
+        const retryInvalidated = yield* Ref.make(false)
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
@@ -680,13 +685,44 @@ const layer = Layer.effect(
                     next: info.next,
                   })
                 },
+                // Cancel stale retries when the user has switched to a
+                // different model/provider since this turn started. The
+                // outer runLoop will pick up the new selection on the next
+                // iteration via turnSelection().
+                invalidate: () =>
+                  Effect.gen(function* () {
+                    const current = yield* session.get(ctx.sessionID).pipe(Effect.option)
+                    if (Option.isNone(current)) return false
+                    const currentModel = current.value.model
+                    if (!currentModel) return false
+                    return (
+                      currentModel.providerID !== input.model.providerID ||
+                      currentModel.id !== input.model.id
+                    )
+                  }),
               }),
+            ),
+            Effect.catchIf(
+              (error) => SessionRetry.isRetryInvalidated(error),
+              () =>
+                Effect.gen(function* () {
+                  yield* Ref.set(retryInvalidated, true)
+                  yield* Effect.logInfo("retry invalidated: model changed mid-backoff", {
+                    "session.id": ctx.sessionID,
+                    "old.model": input.model.id,
+                    "old.provider": input.model.providerID,
+                  })
+                }),
             ),
             Effect.catch(halt),
             Effect.ensuring(cleanup()),
           )
 
           if (ctx.needsCompaction) return "compact"
+          // If retries were invalidated by a model switch, continue the loop
+          // so runLoop can pick up the new selection.
+          const wasInvalidated = yield* Ref.get(retryInvalidated)
+          if (wasInvalidated) return "continue"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
         })

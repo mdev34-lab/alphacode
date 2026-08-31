@@ -1,6 +1,6 @@
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Clock, Duration, Effect, Schedule } from "effect"
+import { Cause, Clock, Data, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
@@ -180,10 +180,43 @@ function parseJSON(value: unknown) {
   })
 }
 
+/**
+ * Sentinel error used to terminate the retry schedule when the caller's
+ * invalidation check signals that the retry context has been superseded
+ * (e.g. the user switched to a different model mid-backoff). The processor
+ * catches this error and returns "continue" so the outer runLoop picks up
+ * the new model selection on the next turn.
+ */
+export class RetryInvalidated extends Data.TaggedError("RetryInvalidated")<{}> {}
+
+export function isRetryInvalidated(error: unknown): error is RetryInvalidated {
+  return error instanceof RetryInvalidated
+}
+
+/**
+ * Polling interval (ms) used when splitting the retry backoff sleep into
+ * interruptible chunks. A model switch will be observed within this
+ * many milliseconds of occurring, rather than only after the full
+ * exponential-backoff delay completes.
+ */
+export const RETRY_INVALIDATE_POLL_MS = 200
+
 export function policy(opts: {
   provider: string
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
+  /**
+   * Optional check run before and periodically during each retry delay.
+   * If the returned Effect resolves to `true`, the retry schedule
+   * terminates immediately via a `RetryInvalidated` error so the caller
+   * can detect that the pending retry was superseded (e.g. the session
+   * model changed mid-backoff).
+   *
+   * When provided, the delay is split into `RETRY_INVALIDATE_POLL_MS`
+   * chunks so a model switch during a long backoff is observed promptly,
+   * not only after the full delay elapses.
+   */
+  invalidate?: () => Effect.Effect<boolean>
 }) {
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
@@ -192,6 +225,14 @@ export function policy(opts: {
       if (!retry) return Cause.done(meta.attempt)
       if (meta.attempt > RETRY_MAX_RETRIES) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
+        // If a caller-supplied invalidation check signals that the retry
+        // context has been superseded (e.g. the user switched models),
+        // fail with RetryInvalidated so the processor can distinguish
+        // this from a normal retry exhaustion.
+        if (opts.invalidate) {
+          const stale = yield* opts.invalidate()
+          if (stale) return yield* Effect.fail(new RetryInvalidated())
+        }
         const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
@@ -200,6 +241,27 @@ export function policy(opts: {
           action: retry.action,
           next: now + wait,
         })
+        if (opts.invalidate) {
+          // Sleep in small chunks so a model switch during a long
+          // backoff is observed promptly, not only after the full
+          // delay elapses. If invalidation fires mid-sleep, fail
+          // immediately with RetryInvalidated.
+          //
+          // The check runs after EVERY chunk, including the final one,
+          // so the invariant holds: a retry can only proceed after a
+          // successful post-delay invalidation check.
+          let remaining = wait
+          while (remaining > 0) {
+            const chunk = Math.min(RETRY_INVALIDATE_POLL_MS, remaining)
+            yield* Effect.sleep(Duration.millis(chunk))
+            remaining -= chunk
+            const stale = yield* opts.invalidate()
+            if (stale) return yield* Effect.fail(new RetryInvalidated())
+          }
+          // We handled the delay ourselves; tell Effect.retry to
+          // retry immediately rather than adding its own sleep.
+          return [meta.attempt, Duration.zero] as [number, Duration.Duration]
+        }
         return [meta.attempt, Duration.millis(wait)] as [number, Duration.Duration]
       })
     }),
