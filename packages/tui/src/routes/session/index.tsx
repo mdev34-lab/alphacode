@@ -83,6 +83,7 @@ import {
   computeActivityGroups,
   summarizeActivity,
   toolPartOutcome,
+  type ActivityGroupPart,
   type ActivityGroups,
 } from "../../util/activity"
 import { collapseDiff } from "../../util/collapse-diff"
@@ -1585,18 +1586,18 @@ export function AssistantMessageRow(props: { message: AssistantMessage; parts: P
       </Show>
       <For each={props.parts}>
         {(part, index) => {
-          // A tool part belongs to an activity group when it is part of a
-          // consecutive run of two or more tool calls. Only the first part of
-          // the run (the owner) renders the group; the rest are hidden here
-          // because they are rendered inside it.
+          // Tool and reasoning parts belong to an activity group when their
+          // run contains two or more tool calls. Only the first visible part
+          // of the run (the owner) renders the group; the rest are rendered
+          // inside it when expanded.
           const group = createMemo(() => {
-            if (part.type !== "tool") return undefined
+            if (part.type !== "tool" && part.type !== "reasoning") return undefined
             const activity = ctx.activity()
             const groupID = activity.groupOf.get(part.id)
             if (!groupID) return undefined
             const info = activity.byID.get(groupID)
             if (!info || info.items.length < 2) return undefined
-            return { groupID, owner: info.items[0].part.id === part.id }
+            return { groupID, owner: info.parts[0]?.part.id === part.id }
           })
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
           return (
@@ -1863,6 +1864,7 @@ export function ActivityGroup(props: { groupID: string }) {
 
   const group = createMemo(() => ctx.activity().byID.get(props.groupID))
   const items = createMemo(() => group()?.items ?? [])
+  const parts = createMemo(() => group()?.parts ?? [])
   const summary = createMemo(() => summarizeActivity(items().map((item) => item.part)))
   const expanded = createMemo(() => ctx.activityExpanded(props.groupID))
   const header = createMemo(() =>
@@ -1925,12 +1927,17 @@ export function ActivityGroup(props: { groupID: string }) {
         </Switch>
       </box>
       <Show when={expanded()}>
-        <For each={items()}>
-          {(item) => <ToolPart last={false} part={item.part} message={item.message} />}
-        </For>
+        <For each={parts()}>{(item) => <ActivityGroupPartRow item={item} />}</For>
       </Show>
     </box>
   )
+}
+
+function ActivityGroupPartRow(props: { item: ActivityGroupPart }) {
+  if (props.item.part.type === "reasoning") {
+    return <ReasoningPart last={false} part={props.item.part} message={props.item.message} />
+  }
+  return <ToolPart last={false} part={props.item.part} message={props.item.message} />
 }
 
 function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMessage }) {

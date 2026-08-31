@@ -543,6 +543,47 @@ describe("activity group TUI", () => {
       await app.waitForFrame((f) => f.match(/Working... 3 tool calls/g)?.length === 1)
       expect(frame()).toContain("Working... 3 tool calls")
       expect(frame()).not.toContain("Working... 2 tool calls")
+      expect(frame()).not.toContain("Thinking")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("keeps trailing reasoning inside the collapsed activity and reveals it when expanded", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const { m1, m2, t1, t2 } = twoRunningTools()
+      const m3 = assistant("m3", at(3))
+      const r1 = {
+        ...reasoningPart(m3.id, "**Inspecting grouping**\n\nFirst reasoning body."),
+        time: { start: 1200, end: 1700 },
+      }
+      const r2 = {
+        ...reasoningPart(m3.id, "**Verifying rendering**\n\nSecond reasoning body."),
+        time: { start: 1800, end: 2400 },
+      }
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2] },
+        { message: m3, parts: [r1, r2] },
+      ])
+      await app.waitForFrame((frame) => frame.includes("Working... 2 tool calls"))
+
+      const collapsed = frameOf(app)
+      expect(collapsed).not.toContain("Inspecting grouping")
+      expect(collapsed).not.toContain("Verifying rendering")
+
+      await app.mockMouse.click(5, rowOf(collapsed, "Working... 2 tool calls"))
+      await app.waitForFrame(
+        (frame) => frame.includes("Inspecting grouping") && frame.includes("Verifying rendering"),
+      )
+      const expanded = frameOf(app)
+      expect(rowOf(expanded, "Read src/a.ts")).toBeLessThan(rowOf(expanded, 'Grep "todo"'))
+      expect(rowOf(expanded, 'Grep "todo"')).toBeLessThan(rowOf(expanded, "Inspecting grouping"))
+      expect(rowOf(expanded, "Inspecting grouping")).toBeLessThan(rowOf(expanded, "Verifying rendering"))
+
+      await app.mockMouse.click(5, rowOf(expanded, "Working... 2 tool calls"))
+      await app.waitForFrame((frame) => !frame.includes("Inspecting grouping") && !frame.includes("Verifying rendering"))
     } finally {
       app.renderer.destroy()
     }

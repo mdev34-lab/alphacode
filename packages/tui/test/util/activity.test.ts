@@ -177,7 +177,38 @@ describe("computeActivityGroups", () => {
     const result = computeActivityGroups(rows)
     expect(result.byID.size).toBe(1)
     expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+    expect(result.byID.get("act-t1")?.parts.map((item) => item.part.id)).toEqual(["t1", "r1", "t2"])
+    expect(result.groupOf.get("r1")).toBe("act-t1")
     expect(result.groupOf.get("t2")).toBe("act-t1")
+  })
+
+  test("associates leading and trailing reasoning with the surrounding work run", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [reasoning("m1", "r1", "planning"), tool("m1", "t1", completed(0, 1))],
+      },
+      {
+        message: assistant("m2", 2),
+        parts: [tool("m2", "t2", running(1)), reasoning("m2", "r2", "checking the result")],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    const group = result.byID.get("act-t1")
+    expect(group?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+    expect(group?.parts.map((item) => item.part.id)).toEqual(["r1", "t1", "t2", "r2"])
+    expect(result.groupOf.get("r1")).toBe("act-t1")
+    expect(result.groupOf.get("r2")).toBe("act-t1")
+  })
+
+  test("keeps reasoning standalone when no tool run follows it", () => {
+    const rows: ActivityRow[] = [
+      { message: assistant("m1", 1), parts: [reasoning("m1", "r1", "thinking")] },
+      { message: assistant("m2", 2), parts: [text("m2", "x1", "Done.")] },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(0)
+    expect(result.groupOf.has("r1")).toBe(false)
   })
 
   test("keeps one group across multiple model turns with CoT interleaved with tool calls", () => {
@@ -207,6 +238,20 @@ describe("computeActivityGroups", () => {
     expect(result.byID.size).toBe(1)
     const group = result.byID.get("act-t1")
     expect(group?.items.map((item) => item.part.id)).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"])
+    expect(group?.parts.map((item) => item.part.id)).toEqual([
+      "t1",
+      "t2",
+      "r1",
+      "t3",
+      "t4",
+      "r2",
+      "t5",
+      "t6",
+      "t7",
+      "t8",
+    ])
+    expect(result.groupOf.get("r1")).toBe("act-t1")
+    expect(result.groupOf.get("r2")).toBe("act-t1")
     expect(result.groupOf.get("t8")).toBe("act-t1")
   })
 
@@ -225,7 +270,9 @@ describe("computeActivityGroups", () => {
     const result = computeActivityGroups(rows)
     expect(result.byID.size).toBe(2)
     expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1"])
+    expect(result.byID.get("act-t1")?.parts.map((item) => item.part.id)).toEqual(["t1", "r1"])
     expect(result.byID.get("act-t2")?.items.map((item) => item.part.id)).toEqual(["t2"])
+    expect(result.groupOf.get("r1")).toBe("act-t1")
   })
 
   test("splits a group at user messages", () => {
