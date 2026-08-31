@@ -162,12 +162,14 @@ const it = testEffect(root)
 
 // Finish stays enabled for `review` so the subagent path exercised here matches
 // production (subagents end their turn through the finish tool). The primary
-// agents opt out so trivial-turn tests can end with a plain reply.
+// agents opt out so scripted text-only replies can end their turns; `custom`
+// is a non-default primary agent used as the control arm for delegation.
 const cfg = {
   agent: {
     work: { finishTool: false },
     general: { finishTool: false },
     plan: { finishTool: false },
+    custom: { finishTool: false, mode: "primary" as const },
   },
   provider: {
     test: {
@@ -215,13 +217,13 @@ const useServerConfig = Effect.gen(function* () {
   return { dir, llm }
 })
 
-const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string) {
+const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string, agent = "work") {
   const session = yield* Session.Service
   const msg = yield* session.updateMessage({
     id: MessageID.ascending(),
     role: "user",
     sessionID,
-    agent: "work",
+    agent,
     model: ref,
     time: { created: Date.now() },
   })
@@ -242,12 +244,17 @@ const toolNames = (hit: { body: unknown }) =>
     .map((tool) => tool.function?.name ?? "")
     .toSorted()
 
-// Requests the default primary agent makes carry the review loop; reviewer
-// requests carry the reviewer prompt instead. Title requests are auto-answered
-// by the test server and never reach these matchers.
-const parentMatch = (hit: { body: unknown }) => {
+// A primary-agent request that carries the delegation policy, and one that
+// does not. Title requests are auto-answered by the test server and never
+// reach these matchers.
+const policyMatch = (hit: { body: unknown }) => {
   const body = bodyString(hit)
   return body.includes("Mandatory Review Loop") && !body.includes("Senior Code Reviewer")
+}
+
+const noPolicyMatch = (hit: { body: unknown }) => {
+  const body = bodyString(hit)
+  return body.includes("You are opencode") && !body.includes("Mandatory Review Loop")
 }
 
 const reviewMatch = (hit: { body: unknown }) => bodyString(hit).includes("Senior Code Reviewer")
@@ -272,13 +279,52 @@ const TASK_PROMPT = [
   "Diff: @@ -41,7 +41,7 @@ for (let i = 1; i <= entries.length; i++) {",
 ].join("\n")
 
+// A deterministic instruction-follower: it hands completed work to the review
+// subagent exactly when its request tells it to, and otherwise falls back to
+// the pre-fix behavior of reviewing its own diff. Scripting the decision this
+// way is what makes the causal claim testable offline: the SAME script must
+// delegate in one arm below and not in the other, with the presence of the
+// delegation policy as the only difference. Together the two arms verify the
+// chain instruction-in-request → tool call → dispatch → verdict → consumption.
+// They do NOT prove a real model's compliance — no offline test can — only
+// that the product ships the instruction, and that the instruction, when
+// followed, carries the turn all the way through.
+const scriptPolicyFollowingModel = Effect.gen(function* () {
+  const llm = yield* TestLLMServer
+  // Policy present: after finishing the unit, hand it to the reviewer
+  // synchronously with the evidence the read-only reviewer needs.
+  yield* llm.pushMatch(
+    policyMatch,
+    reply().tool("task", {
+      description: "Review cache fix",
+      subagent_type: "review",
+      background: false,
+      prompt: TASK_PROMPT,
+    }),
+  )
+  // The reviewer reports findings and ends its turn through finish.
+  yield* llm.pushMatch(
+    reviewMatch,
+    reply().text(REPORT).tool("finish", { result: "Needs fixes: one Important finding" }),
+  )
+  // Policy present, verdict received: consume it and fix the finding.
+  yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
+  // Policy absent (control arm): self-review, the old behavior.
+  yield* llm.pushMatch(
+    noPolicyMatch,
+    reply().text("I re-read the diff and the tests pass — the fix looks correct."),
+  )
+})
+
 type CompletedToolPart = SessionV1.ToolPart & { state: SessionV1.ToolStateCompleted }
 
-// Prompt-level coverage: the delegation policy must reach the model on every
-// turn of the default primary agent, and the task tool must describe the review
-// handoff and list the review agent as proactive.
+// Prompt-surface coverage only: the delegation policy text must reach the
+// model on every turn of the default primary agent, and the task tool must
+// describe the review handoff and list the review agent as proactive. This
+// pins the instruction surface; the two policy-follower arms below are what
+// connect it to behavior.
 it.instance(
-  "default primary prompt carries the review delegation policy and the task tool describes the handoff",
+  "default primary request surfaces the review delegation policy and the task tool describes the handoff",
   () =>
     Effect.gen(function* () {
       const { llm } = yield* useServerConfig
@@ -294,7 +340,7 @@ it.instance(
       yield* awaitWithTimeout(llm.wait(1), "timed out waiting for the model request", "10 seconds")
 
       const hits = yield* llm.hits
-      const parent = hits.find(parentMatch)
+      const parent = hits.find(policyMatch)
       expect(parent).toBeDefined()
       const body = bodyString(parent ?? { body: {} })
 
@@ -342,12 +388,15 @@ it.effect("gpt provider prompt routes review requests through the review subagen
   }),
 )
 
-// End-to-end wiring: after a non-trivial unit the main agent dispatches
-// `review`, the reviewer runs with its own read-only prompt (and no review loop
-// of its own — no recursion), and its findings land in the parent's next model
-// request next to the instructions for acting on them.
+// Behavioral arm (policy present): the default primary agent's requests carry
+// the delegation policy, so the scripted policy-follower dispatches `review`,
+// the reviewer runs with its own read-only prompt (and no review loop of its
+// own — no recursion), and its findings land in the parent's next model
+// request next to the instructions for acting on them. If the policy stops
+// being injected, the script's no-policy branch fires instead and this test
+// fails — the delegation is decided by the request contents, not hardcoded.
 it.instance(
-  "review delegation runs the reviewer and returns its findings to the main agent",
+  "policy-following model delegates review and consumes the findings (default primary)",
   () =>
     Effect.gen(function* () {
       const { llm } = yield* useServerConfig
@@ -357,33 +406,14 @@ it.instance(
         title: "Pinned",
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       })
-
-      // 1. The main agent finishes implementing and dispatches the reviewer
-      //    synchronously, carrying the evidence the read-only reviewer needs.
-      yield* llm.pushMatch(
-        parentMatch,
-        reply().tool("task", {
-          description: "Review cache fix",
-          subagent_type: "review",
-          background: false,
-          prompt: TASK_PROMPT,
-        }),
-      )
-      // 2. The reviewer reports findings and ends its turn through the finish
-      //    tool.
-      yield* llm.pushMatch(
-        reviewMatch,
-        reply().text(REPORT).tool("finish", { result: "Needs fixes: one Important finding" }),
-      )
-      // 3. The main agent consumes the report in its next turn.
-      yield* llm.pushMatch(parentMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
+      yield* scriptPolicyFollowingModel
 
       yield* user(chat.id, "fix the off-by-one in the cache key and add a test")
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")
 
       const hits = yield* llm.hits
-      const parentHits = hits.filter(parentMatch)
+      const policyHits = hits.filter(policyMatch)
       const reviewHits = hits.filter(reviewMatch)
       expect(reviewHits).toHaveLength(1)
 
@@ -404,7 +434,8 @@ it.instance(
       expect(reviewTools).not.toContain("bash")
       expect(reviewTools).not.toContain("task")
 
-      // The dispatch created a synchronous review-agent child session.
+      // The script's delegation branch fired: a synchronous review-agent
+      // child session exists for this parent.
       const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
       const taskPart = msgs
         .flatMap((msg) => msg.parts)
@@ -421,8 +452,8 @@ it.instance(
 
       // The findings were consumed: the parent's follow-up request contains
       // the report and the instructions to act on it.
-      expect(parentHits).toHaveLength(2)
-      const followUp = bodyString(parentHits[1])
+      expect(policyHits).toHaveLength(2)
+      const followUp = bodyString(policyHits[1])
       expect(followUp).toContain("Needs fixes")
       expect(followUp).toContain("src/cache.ts:42")
       expect(followUp).toContain("instruction to act, not an acknowledgment")
@@ -430,8 +461,57 @@ it.instance(
   20_000,
 )
 
+// Control arm (policy absent): same scripted model, non-default primary agent
+// — the loop only injects the delegation policy for the default primary, so
+// its requests do not carry it and the script must fall back to self-review.
+// This is the counterfactual that keeps the arm above honest: identical
+// script, the presence of the instruction is the only difference.
+it.instance(
+  "same model does not delegate when the delegation policy is absent (non-default primary)",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        agent: "custom",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* scriptPolicyFollowingModel
+
+      yield* user(chat.id, "fix the off-by-one in the cache key and add a test", "custom")
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+
+      const hits = yield* llm.hits
+
+      // Manipulation check: this agent's request really did lack the policy.
+      const noPolicyHits = hits.filter(noPolicyMatch)
+      expect(noPolicyHits).toHaveLength(1)
+      expect(bodyString(noPolicyHits[0])).not.toContain("Mandatory Review Loop")
+
+      // ...so the same model that delegated above did not dispatch a reviewer.
+      expect(hits.filter(policyMatch)).toHaveLength(0)
+      expect(hits.filter(reviewMatch)).toHaveLength(0)
+      const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
+      expect(
+        msgs.flatMap((msg) => msg.parts).some((part) => part.type === "tool" || part.type === "subtask"),
+      ).toBe(false)
+      expect(
+        msgs.some((msg) =>
+          msg.parts.some(
+            (part) => part.type === "text" && part.text.includes("I re-read the diff and the tests pass"),
+          ),
+        ),
+      ).toBe(true)
+    }),
+  20_000,
+)
+
 // Trivial conversational turn: the carve-out reaches the model, nothing
-// dispatches a reviewer, and the turn completes normally without synthetic
+// dispatches a reviewer (the scripted reply is text-only, matching what the
+// carve-out asks for), and the turn completes normally without synthetic
 // review injections.
 it.instance(
   "trivial conversational turn completes without review delegation",
@@ -451,7 +531,7 @@ it.instance(
       expect(result.info.role).toBe("assistant")
 
       const hits = yield* llm.hits
-      const parentHits = hits.filter(parentMatch)
+      const parentHits = hits.filter(policyMatch)
       expect(parentHits).toHaveLength(1)
 
       // The carve-out instruction reached the model on this trivial turn.
