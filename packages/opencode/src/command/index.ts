@@ -160,34 +160,23 @@ const layer = Layer.effect(
         }
       }
 
-      // Bridge this instance's commands into the V2 command store, which the
-      // TUI command launcher (GET /api/command) reads.
+      // Bridge this instance's commands into the V2 command store the TUI
+      // launcher reads (GET /api/command). The V2 store is location-scoped, so
+      // target the CommandV2 of this directory's location layer (shared with
+      // V2 requests via the LocationServiceMap), not any locally compiled
+      // instance. The transform is bound to this state's scope, so disposing
+      // or invalidating the instance unregisters it and the V2 store reloads
+      // without the bridged entries.
       //
-      // The V2 store is location-scoped: the V2 API serves CommandV2 from the
-      // location layer of the LocationServiceMap, a different instance from
-      // any CommandV2 compiled into this graph. The bridge therefore resolves
-      // the location layer for this instance's directory — memoized and
-      // shared with V2 requests for the same location — and registers the
-      // transform on that instance. The transform is bound to this state's
-      // scope, so when this instance's commands are disposed or invalidated
-      // the transform is unregistered and the V2 store reloads without them.
+      // The bridge owns only the entries it writes: each run removes the
+      // commands it previously bridged that are now gone, and leaves entries
+      // from other V2 producers untouched. MCP templates are lazy promises
+      // (reading one resolves the remote prompt), so they are bridged
+      // unresolved and materialized only when the command is executed;
+      // concrete templates are copied verbatim.
       //
-      // The bridge owns only the entries it writes itself: each run removes
-      // the commands it bridged previously that are no longer present and
-      // upserts the current set. Entries contributed by other V2 producers
-      // (config and plugin command providers) are left untouched.
-      //
-      // Templates are bridged without forcing lazy resolution. Only MCP
-      // command templates are lazy promises — reading one resolves the remote
-      // MCP prompt — so materializing every template here would execute all
-      // MCP prompts during command initialization, and one slow, unavailable,
-      // or failing prompt would take command initialization down with it.
-      // Concrete templates are copied verbatim; lazy ones stay unresolved in
-      // the V2 store and are materialized when the command is executed.
-      //
-      // The lookup is optional: contexts without a LocationServiceMap (e.g.
-      // the CLI runtime) have no V2 command store to bridge into, so the
-      // legacy store stands alone there.
+      // Optional lookup: runtimes without a LocationServiceMap (e.g. the CLI)
+      // have no V2 store to bridge into.
       const locationsOpt = Context.getOption(LocationServiceMap.Service)(yield* Effect.context())
       if (Option.isSome(locationsOpt)) {
         const locations = locationsOpt.value
@@ -220,10 +209,9 @@ const layer = Layer.effect(
           })
         }).pipe(
           Effect.provide(
-            // Build the location ref exactly as the V2 location middleware
-            // does (including the explicit undefined workspaceID): the
-            // location map keys entries by structural equality, where a
-            // missing key differs from a key set to undefined.
+            // Match the V2 location middleware's ref exactly: the location
+            // map keys by structural equality, where a missing key differs
+            // from an explicit undefined.
             locations.get(
               Location.Ref.make({ directory: AbsolutePath.make(ctx.directory), workspaceID: undefined }),
             ),
