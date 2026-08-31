@@ -12,10 +12,6 @@ import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
 import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
 
-type State = {
-  commands: Record<string, Info>
-}
-
 export const Event = {
   Executed: LegacyEvent.CommandExecuted,
 }
@@ -62,121 +58,120 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const mcp = yield* MCP.Service
     const skill = yield* Skill.Service
+    const commandV2 = yield* CommandV2.Service
 
-    const init = Effect.fn("Command.state")(function* (ctx: InstanceContext) {
-      const cfg = yield* config.get()
-      const bridge = yield* EffectBridge.make()
-      const commands: Record<string, Info> = {}
+    const state = yield* InstanceState.make(
+      Effect.fn("Command.state")(function* (ctx: InstanceContext) {
+        const cfg = yield* config.get()
+        const bridge = yield* EffectBridge.make()
+        const commands: Record<string, Info> = {}
 
-      commands[Default.INIT] = {
-        name: Default.INIT,
-        description: "guided AGENTS.md setup",
-        source: "command",
-        get template() {
-          return PROMPT_INITIALIZE.replace("${path}", ctx.worktree)
-        },
-        hints: hints(PROMPT_INITIALIZE),
-      }
-      commands[Default.REVIEW] = {
-        name: Default.REVIEW,
-        description: "review changes [commit|branch|pr], defaults to uncommitted",
-        source: "command",
-        get template() {
-          return PROMPT_REVIEW.replace("${path}", ctx.worktree)
-        },
-        subtask: true,
-        hints: hints(PROMPT_REVIEW),
-      }
-
-      for (const [name, command] of Object.entries(cfg.command ?? {})) {
-        commands[name] = {
-          name,
-          agent: command.agent,
-          model: command.model,
-          description: command.description,
+        commands[Default.INIT] = {
+          name: Default.INIT,
+          description: "guided AGENTS.md setup",
           source: "command",
           get template() {
-            return command.template
+            return PROMPT_INITIALIZE.replace("${path}", ctx.worktree)
           },
-          subtask: command.subtask,
-          hints: hints(command.template),
+          hints: hints(PROMPT_INITIALIZE),
         }
-      }
-
-      for (const [name, prompt] of Object.entries(yield* mcp.prompts())) {
-        commands[name] = {
-          name,
-          source: "mcp",
-          description: prompt.description,
+        commands[Default.REVIEW] = {
+          name: Default.REVIEW,
+          description: "review changes [commit|branch|pr], defaults to uncommitted",
+          source: "command",
           get template() {
-            return bridge.promise(
-              mcp
-                .getPrompt(
-                  prompt.client,
-                  prompt.name,
-                  prompt.arguments
-                    ? Object.fromEntries(prompt.arguments.map((argument, i) => [argument.name, `$${i + 1}`]))
-                    : {},
-                )
-                .pipe(
-                  Effect.map(
-                    (template) =>
-                      template?.messages
-                        .map((message) => (message.content.type === "text" ? message.content.text : ""))
-                        .join("\n") || "",
+            return PROMPT_REVIEW.replace("${path}", ctx.worktree)
+          },
+          subtask: true,
+          hints: hints(PROMPT_REVIEW),
+        }
+
+        for (const [name, command] of Object.entries(cfg.command ?? {})) {
+          commands[name] = {
+            name,
+            agent: command.agent,
+            model: command.model,
+            description: command.description,
+            source: "command",
+            get template() {
+              return command.template
+            },
+            subtask: command.subtask,
+            hints: hints(command.template),
+          }
+        }
+
+        for (const [name, prompt] of Object.entries(yield* mcp.prompts())) {
+          commands[name] = {
+            name,
+            source: "mcp",
+            description: prompt.description,
+            get template() {
+              return bridge.promise(
+                mcp
+                  .getPrompt(
+                    prompt.client,
+                    prompt.name,
+                    prompt.arguments
+                      ? Object.fromEntries(prompt.arguments.map((argument, i) => [argument.name, `$${i + 1}`]))
+                      : {},
+                  )
+                  .pipe(
+                    Effect.map(
+                      (template) =>
+                        template?.messages
+                          .map((message) => (message.content.type === "text" ? message.content.text : ""))
+                          .join("\n") || "",
+                    ),
                   ),
-                ),
-            )
-          },
-          hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],
+              )
+            },
+            hints: prompt.arguments?.map((_, i) => `$${i + 1}`) ?? [],
+          }
         }
-      }
 
-      for (const item of yield* skill.all()) {
-        if (commands[item.name]) continue
-        const dir = item.location === "<built-in>" ? undefined : path.dirname(item.location)
-        commands[item.name] = {
-          name: item.name,
-          description: item.description,
-          source: "skill",
-          get template() {
-            if (!dir) return item.content
-            return [
-              item.content,
-              "",
-              `Base directory for this skill: ${dir}`,
-              "Relative paths in this skill (e.g., scripts/, references/) are relative to this base directory.",
-            ].join("\n")
-          },
-          hints: [],
+        for (const item of yield* skill.all()) {
+          if (commands[item.name]) continue
+          const dir = item.location === "<built-in>" ? undefined : path.dirname(item.location)
+          commands[item.name] = {
+            name: item.name,
+            description: item.description,
+            source: "skill",
+            get template() {
+              if (!dir) return item.content
+              return [
+                item.content,
+                "",
+                `Base directory for this skill: ${dir}`,
+                "Relative paths in this skill (e.g., scripts/, references/) are relative to this base directory.",
+              ].join("\n")
+            },
+            hints: [],
+          }
         }
-      }
 
-      return {
-        commands,
-      }
-    })
-
-    const state = yield* InstanceState.make<State>((ctx) => init(ctx))
-
-    const { commands } = yield* InstanceState.get(state)
-    const commandV2 = yield* CommandV2.Service
-    yield* commandV2.transform((draft) => {
-      for (const existing of draft.list()) {
-        draft.remove(existing.name)
-      }
-      for (const [name, info] of Object.entries(commands)) {
-        const templateValue = info.template
-        const templateStr = typeof templateValue === "string" ? templateValue : ""
-        draft.update(name, (cmd) => {
-          cmd.name = info.name
-          cmd.template = templateStr
-          cmd.description = info.description
-          cmd.agent = info.agent
-          cmd.subtask = info.subtask
+        yield* commandV2.transform((draft) => {
+          for (const existing of draft.list()) {
+            draft.remove(existing.name)
+          }
+          for (const [name, info] of Object.entries(commands)) {
+            const templateValue = info.template
+            const templateStr = typeof templateValue === "string" ? templateValue : ""
+            draft.update(name, (cmd) => {
+              cmd.name = info.name
+              cmd.template = templateStr
+              cmd.description = info.description
+              cmd.agent = info.agent
+              cmd.subtask = info.subtask
+            })
+          }
         })
-      }
-    })
+
+        return {
+          commands,
+        }
+      }),
+    )
 
     const get = Effect.fn("Command.get")(function* (name: string) {
       const s = yield* InstanceState.get(state)
