@@ -1646,19 +1646,7 @@ export function AssistantMessageRow(props: { message: AssistantMessage; parts: P
         </box>
       </Show>
       <Show when={props.message.error && props.message.error.name !== "MessageAbortedError"}>
-        <box
-          ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
-          border={["left"]}
-          paddingTop={1}
-          paddingBottom={1}
-          paddingLeft={2}
-          marginTop={1}
-          backgroundColor={theme.backgroundPanel}
-          customBorderChars={SplitBorder.customBorderChars}
-          borderColor={theme.error}
-        >
-          <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
-        </box>
+        <AssistantMessageError error={props.message.error} />
       </Show>
       <Switch>
         <Match when={((props.last || final()) && !isFinishOnly()) || props.message.error?.name === "MessageAbortedError"}>
@@ -1690,6 +1678,44 @@ export function AssistantMessageRow(props: { message: AssistantMessage; parts: P
         </Match>
       </Switch>
     </>
+  )
+}
+
+export function AssistantMessageError(props: { error: unknown }) {
+  const ctx = use()
+  const { theme } = useTheme()
+  const renderer = useRenderer()
+  const [hover, setHover] = createSignal(false)
+  const [expanded, setExpanded] = createSignal(false)
+  const message = createMemo(() => errorMessage(props.error))
+  const maxLines = COLLAPSED_TOOL_PREVIEW_LINES
+  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
+  const collapsed = createMemo(() => collapseToolOutput(message(), maxLines, maxChars()))
+  const visible = createMemo(() => (expanded() || !collapsed().overflow ? message() : collapsed().output))
+
+  return (
+    <box
+      ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
+      border={["left"]}
+      paddingTop={1}
+      paddingBottom={1}
+      paddingLeft={2}
+      marginTop={1}
+      backgroundColor={hover() && collapsed().overflow ? theme.backgroundMenu : theme.backgroundPanel}
+      customBorderChars={SplitBorder.customBorderChars}
+      borderColor={theme.error}
+      onMouseOver={() => collapsed().overflow && setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseUp={() => {
+        if (renderer.getSelection()?.getSelectedText()) return
+        if (collapsed().overflow) setExpanded((prev) => !prev)
+      }}
+    >
+      <text fg={theme.textMuted}>{visible()}</text>
+      <Show when={collapsed().overflow}>
+        <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+      </Show>
+    </box>
   )
 }
 
