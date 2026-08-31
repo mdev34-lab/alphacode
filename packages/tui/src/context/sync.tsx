@@ -32,6 +32,7 @@ import { batch, onMount } from "solid-js"
 import path from "path"
 import { useKV } from "./kv"
 import { usePermission } from "./permission"
+import { mergePartText } from "../util/part"
 
 const emptyConsoleState: ConsoleState = {
   consoleManagedProviders: [],
@@ -382,7 +383,12 @@ export const {
           }
           const result = search(parts, event.properties.part.id, (part) => part.id)
           if (result.found) {
-            setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
+            setStore(
+              "part",
+              event.properties.part.messageID,
+              result.index,
+              reconcile(mergePartText(parts[result.index], event.properties.part)),
+            )
             break
           }
           setStore(
