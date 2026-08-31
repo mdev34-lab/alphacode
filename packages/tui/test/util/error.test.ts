@@ -22,6 +22,27 @@ describe("util.error", () => {
     expect(data.code).toBe("E_BAD")
   })
 
+  test("extracts message from nested data.message (e.g. APIError)", () => {
+    const apiError = {
+      name: "APIError",
+      data: {
+        message: "API error: Rate limit exceeded (429)",
+        statusCode: 429,
+        isRetryable: true,
+      },
+    }
+    expect(errorMessage(apiError)).toBe("API error: Rate limit exceeded (429)")
+
+    const authError = {
+      name: "ProviderAuthError",
+      data: {
+        providerID: "anthropic",
+        message: "Invalid API key provided",
+      },
+    }
+    expect(errorMessage(authError)).toBe("Invalid API key provided")
+  })
+
   test("never returns bare {} for opaque object errors", () => {
     expect(errorFormat({})).not.toBe("{}")
     expect(errorFormat({})).toContain("no message")
