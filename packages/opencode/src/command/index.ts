@@ -1,9 +1,14 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { CommandV2 } from "@opencode-ai/core/command"
+import { LocationServiceMap } from "@opencode-ai/core/location-services"
+import { Location } from "@opencode-ai/core/location"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { ModelV2 } from "@opencode-ai/core/model"
 import path from "path"
 import { InstanceState } from "@/effect/instance-state"
 import { EffectBridge } from "@/effect/bridge"
 import type { InstanceContext } from "@/project/instance-context"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Option } from "effect"
 import { Config } from "@/config/config"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
@@ -66,6 +71,9 @@ const layer = Layer.effect(
       const cfg = yield* config.get()
       const bridge = yield* EffectBridge.make()
       const commands: Record<string, Info> = {}
+      // MCP command templates are lazy: reading one resolves the remote MCP
+      // prompt, so record their names instead of materializing them here.
+      const lazyTemplates = new Set<string>()
 
       commands[Default.INIT] = {
         name: Default.INIT,
@@ -103,6 +111,7 @@ const layer = Layer.effect(
       }
 
       for (const [name, prompt] of Object.entries(yield* mcp.prompts())) {
+        lazyTemplates.add(name)
         commands[name] = {
           name,
           source: "mcp",
@@ -151,6 +160,65 @@ const layer = Layer.effect(
         }
       }
 
+      // Bridge this instance's commands into the V2 command store the TUI
+      // launcher reads (GET /api/command). The V2 store is location-scoped, so
+      // target the CommandV2 of this directory's location layer (shared with
+      // V2 requests via the LocationServiceMap), not any locally compiled
+      // instance. The transform is bound to this state's scope, so disposing
+      // or invalidating the instance unregisters it and the V2 store reloads
+      // without the bridged entries.
+      //
+      // The bridge owns only the entries it writes: each run removes the
+      // commands it previously bridged that are now gone, and leaves entries
+      // from other V2 producers untouched. MCP templates are lazy promises
+      // (reading one resolves the remote prompt), so they are bridged
+      // unresolved and materialized only when the command is executed;
+      // concrete templates are copied verbatim.
+      //
+      // Optional lookup: runtimes without a LocationServiceMap (e.g. the CLI)
+      // have no V2 store to bridge into.
+      const locationsOpt = Context.getOption(LocationServiceMap.Service)(yield* Effect.context())
+      if (Option.isSome(locationsOpt)) {
+        const locations = locationsOpt.value
+        const bridgedNames = new Set<string>()
+        yield* Effect.gen(function* () {
+          const commandV2 = yield* CommandV2.Service
+          yield* commandV2.transform((draft) => {
+            for (const name of bridgedNames) {
+              draft.remove(name)
+            }
+            bridgedNames.clear()
+            for (const [name, info] of Object.entries(commands)) {
+              bridgedNames.add(name)
+              draft.update(name, (cmd) => {
+                cmd.name = info.name
+                // Non-MCP templates are concrete strings; MCP templates are
+                // lazy promises that must not be read here, so they are
+                // bridged unresolved.
+                const template = lazyTemplates.has(name) ? "" : info.template
+                cmd.template = typeof template === "string" ? template : ""
+                cmd.description = info.description
+                cmd.agent = info.agent
+                if (info.model) {
+                  const parsed = ModelV2.parse(info.model)
+                  cmd.model = { id: parsed.modelID, providerID: parsed.providerID }
+                }
+                cmd.subtask = info.subtask
+              })
+            }
+          })
+        }).pipe(
+          Effect.provide(
+            // Match the V2 location middleware's ref exactly: the location
+            // map keys by structural equality, where a missing key differs
+            // from an explicit undefined.
+            locations.get(
+              Location.Ref.make({ directory: AbsolutePath.make(ctx.directory), workspaceID: undefined }),
+            ),
+          ),
+        )
+      }
+
       return {
         commands,
       }
@@ -172,6 +240,10 @@ const layer = Layer.effect(
   }),
 )
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [Config.node, MCP.node, Skill.node] })
+export const node = LayerNode.make({
+  service: Service,
+  layer: layer,
+  deps: [Config.node, MCP.node, Skill.node],
+})
 
 export * as Command from "."

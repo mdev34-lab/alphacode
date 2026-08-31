@@ -121,7 +121,23 @@ function mcpTool(name: string, description: string) {
   } as unknown as MCP.McpTool
 }
 
-function makeMcp(instructions: MCP.ServerInstructions[] = [], tools: Record<string, MCP.McpTool> = {}) {
+// Records every MCP getPrompt call (as "client/name") so tests can assert
+// when command templates are resolved against the MCP server.
+const mcpPromptCalls: string[] = []
+
+type McpPrompt = { name: string; description?: string; client: string }
+type McpPromptResult = { messages: Array<{ role: "user" | "assistant"; content: { type: "text"; text: string } }> }
+
+function makeMcp(
+  instructions: MCP.ServerInstructions[] = [],
+  tools: Record<string, MCP.McpTool> = {},
+  prompts: Record<string, McpPrompt> = {},
+  getPrompt: (
+    client: string,
+    name: string,
+    args?: Record<string, string>,
+  ) => Effect.Effect<McpPromptResult | undefined> = () => Effect.succeed(undefined),
+) {
   return Layer.succeed(
     MCP.Service,
     MCP.Service.of({
@@ -129,13 +145,16 @@ function makeMcp(instructions: MCP.ServerInstructions[] = [], tools: Record<stri
       clients: () => Effect.succeed({}),
       instructions: () => Effect.succeed(instructions),
       tools: () => Effect.succeed(tools),
-      prompts: () => Effect.succeed({}),
+      prompts: () => Effect.succeed(prompts),
       resources: () => Effect.succeed({}),
       resourceTemplates: () => Effect.succeed({}),
       add: () => Effect.succeed({ status: { status: "disabled" as const } }),
       connect: () => Effect.void,
       disconnect: () => Effect.void,
-      getPrompt: () => Effect.succeed(undefined),
+      getPrompt: (client: string, name: string, args?: Record<string, string>) =>
+        Effect.sync(() => {
+          mcpPromptCalls.push(`${client}/${name}`)
+        }).pipe(Effect.andThen(getPrompt(client, name, args))),
       readResource: () => Effect.succeed(undefined),
       startAuth: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
       authenticate: () => Effect.die("unexpected MCP auth in prompt-effect tests"),
@@ -236,13 +255,15 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
 function makeHttp(input?: {
   mcpInstructions?: MCP.ServerInstructions[]
   mcpTools?: Record<string, MCP.McpTool>
+  mcpPrompts?: Record<string, McpPrompt>
+  mcpGetPrompt?: (client: string, name: string, args?: Record<string, string>) => Effect.Effect<McpPromptResult | undefined>
   processor?: "blocking"
 }) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
-    [MCP.node, makeMcp(input?.mcpInstructions, input?.mcpTools)],
+    [MCP.node, makeMcp(input?.mcpInstructions, input?.mcpTools, input?.mcpPrompts, input?.mcpGetPrompt)],
     [RuntimeFlags.node, runtimeFlags],
   ] as const
   if (input?.processor === "blocking") {
@@ -258,6 +279,29 @@ function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[
 const it = testEffect(makeHttp())
 const noLLMServer = testEffect(makeHttpNoLLMServer())
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
+
+// Runners with an MCP prompt registered, for the command execution tests.
+// The TUI launcher lists commands from the command endpoint and executes the
+// selection through SessionPrompt.command, so these assert the full
+// discovery -> execution path against an MCP-backed command.
+const mcpReviewPrompts = {
+  "probe-mcp:review": { name: "review", description: "Review changes via MCP", client: "probe-mcp" },
+}
+const itMcpPrompt = testEffect(
+  makeHttp({
+    mcpPrompts: mcpReviewPrompts,
+    mcpGetPrompt: (client, name) =>
+      Effect.succeed({ messages: [{ role: "user", content: { type: "text", text: `MCP review output for ${name}` } }] }),
+  }),
+)
+// Mirrors MCP.withClient's failure semantics: the request is made but the
+// error is swallowed and the prompt resolves to undefined.
+const itMcpPromptUnavailable = testEffect(
+  makeHttp({
+    mcpPrompts: mcpReviewPrompts,
+    mcpGetPrompt: () => Effect.succeed(undefined),
+  }),
+)
 const withMcpInstructions = testEffect(
   makeHttp({
     mcpInstructions: [
@@ -3795,6 +3839,76 @@ unix(
         expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("configured")
       }),
     ),
+  30_000,
+)
+
+itMcpPrompt.instance(
+  "executes an MCP command from the command list through the session command path, resolving the prompt lazily",
+  () =>
+    Effect.gen(function* () {
+      mcpPromptCalls.length = 0
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, chat } = yield* boot()
+      const command = yield* Command.Service
+
+      // The TUI launcher lists commands from the command endpoint; the MCP
+      // command is listed without resolving its (lazy) prompt template.
+      const listed = (yield* command.list()).find((c) => c.name === "probe-mcp:review")
+      expect(listed).toBeDefined()
+      expect(listed?.description).toBe("Review changes via MCP")
+      expect(mcpPromptCalls).toHaveLength(0)
+
+      // The TUI executes the selection via POST /session/:id/command...
+      yield* llm.text("done")
+      const result = yield* prompt.command({
+        sessionID: chat.id,
+        command: "probe-mcp:review",
+        arguments: "",
+      })
+      expect(result.info.role).toBe("assistant")
+
+      // ...which resolved the MCP prompt exactly once, at execution...
+      expect(mcpPromptCalls).toEqual(["probe-mcp/review"])
+      // ...and the expanded prompt reached the model.
+      const inputs = yield* llm.inputs
+      expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("MCP review output for review")
+    }),
+  undefined,
+  30_000,
+)
+
+itMcpPromptUnavailable.instance(
+  "keeps an MCP command listed when its prompt is unavailable and degrades execution to the arguments",
+  () =>
+    Effect.gen(function* () {
+      mcpPromptCalls.length = 0
+      const { llm } = yield* useServerConfig(providerCfg)
+      const { prompt, chat } = yield* boot()
+      const command = yield* Command.Service
+
+      // The command still appears in the launcher view despite the prompt
+      // being unavailable.
+      expect((yield* command.list()).find((c) => c.name === "probe-mcp:review")).toBeDefined()
+      expect(mcpPromptCalls).toHaveLength(0)
+
+      yield* llm.text("done")
+      const result = yield* prompt.command({
+        sessionID: chat.id,
+        command: "probe-mcp:review",
+        arguments: "fix the flaky build",
+      })
+      expect(result.info.role).toBe("assistant")
+
+      // Execution attempted the prompt...
+      expect(mcpPromptCalls).toEqual(["probe-mcp/review"])
+      // ...and, with the prompt unavailable (legacy MCP error-swallowing
+      // semantics), the user's arguments become the prompt instead of a
+      // silent empty command.
+      const inputs = yield* llm.inputs
+      expect(JSON.stringify(inputs.at(-1)?.messages)).toContain("fix the flaky build")
+      expect(JSON.stringify(inputs.at(-1)?.messages)).not.toContain("MCP review output")
+    }),
+  undefined,
   30_000,
 )
 
