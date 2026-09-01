@@ -56,7 +56,7 @@ export const Definitions = {
   app_toggle_session_directory_filter: keybind("none", "Toggle session directory filtering"),
   command_list: keybind("ctrl+p", "List available commands"),
   help_show: keybind("none", "Open help dialog"),
-  docs_open: keybind("none", "Open documentation"),
+  docs_open: keybind("none", "Open repository in browser"),
   diff_open: keybind("none", "Open diff viewer"),
   diff_close: keybind("escape,q", "Close diff viewer"),
   diff_toggle: keybind("enter,space", "Toggle diff viewer item"),
