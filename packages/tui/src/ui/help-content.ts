@@ -14,7 +14,7 @@ export const HELP_SECTIONS: HelpSection[] = [
   {
     title: "Start",
     commands: [
-      { command: "/help", desc: "Show this help dialog" },
+      { command: "/help", desc: "Open this help dialog" },
       { command: "/connect", desc: "Connect an AI provider to start coding" },
       { command: "/models", desc: "Switch the active AI model" },
       { command: "/agents", desc: "Switch agent (Work, Plan, or subagents)" },
