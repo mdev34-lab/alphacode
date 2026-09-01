@@ -180,91 +180,102 @@ const systemContext = Layer.effectDiscard(
 const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 
-const config = Layer.succeed(
-  Config.Service,
-  Config.Service.of({
-    entries: () =>
-      Effect.succeed([
-        new Config.Document({
-          type: "document",
-          info: new Config.Info({
-            context: new ConfigContext.Info({
-              purge_errors: new ConfigContext.PurgeErrors({ turns: 1 }),
-              protection: new ConfigContext.Protection({ recent_turns: 1 }),
+const configWith = (payloadBytes?: number) =>
+  Layer.succeed(
+    Config.Service,
+    Config.Service.of({
+      entries: () =>
+        Effect.succeed([
+          new Config.Document({
+            type: "document",
+            info: new Config.Info({
+              context: new ConfigContext.Info({
+                purge_errors: new ConfigContext.PurgeErrors({ turns: 1 }),
+                protection: new ConfigContext.Protection({ recent_turns: 1 }),
+                payload_bytes: payloadBytes,
+              }),
             }),
           }),
-        }),
+        ]),
+    }),
+  )
+
+const config = configWith()
+
+const runnerLayerWith = (config: Layer.Layer<Config.Service>) =>
+  AppNodeBuilder.build(SessionRunnerLLM.node, [
+    [Snapshot.node, Snapshot.noopLayer],
+    [LayerNodePlatform.llmClient, client],
+    [SessionRunnerModel.node, models],
+    [SystemContextRegistry.node, systemContext],
+    [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
+    [SkillGuidance.node, skillGuidance],
+    [ReferenceGuidance.node, referenceGuidance],
+    [PermissionV2.node, permission],
+    [Config.node, config],
+  ])
+
+const executionWith = (config: Layer.Layer<Config.Service>) =>
+  Layer.effect(
+    SessionExecution.Service,
+    Effect.gen(function* () {
+      const sessionRunner = yield* SessionRunner.Service
+      const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError>({
+        drain: (sessionID, force) => sessionRunner.run({ sessionID, force }),
+      })
+      return SessionExecution.Service.of({
+        active: coordinator.active,
+        resume: coordinator.run,
+        wake: coordinator.wake,
+        interrupt: coordinator.interrupt,
+      })
+    }),
+  ).pipe(Layer.provide(runnerLayerWith(config)))
+
+const harness = (config: Layer.Layer<Config.Service>) =>
+  testEffect(
+    AppNodeBuilder.build(
+      LayerNode.group([
+        Database.node,
+        EventV2.node,
+        QuestionV2.node,
+        SessionProjector.node,
+        SessionStore.node,
+        ApplicationTools.node,
+        AgentV2.node,
+        ToolRegistry.node,
+        ToolRegistry.toolsNode,
+        toolsNode,
+        ContextManager.node,
+        CompressTool.node,
+        SessionRunnerModel.node,
+        SystemContextRegistry.node,
+        SkillGuidance.node,
+        ReferenceGuidance.node,
+        Config.node,
+        Snapshot.node,
+        SessionRunnerLLM.node,
+        SessionExecution.node,
+        SessionV2.node,
       ]),
-  }),
-)
+      [
+        [LayerNodePlatform.llmClient, client],
+        [PermissionV2.node, permission],
+        [SessionRunnerModel.node, models],
+        [SystemContextRegistry.node, systemContext],
+        [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
+        [SkillGuidance.node, skillGuidance],
+        [ReferenceGuidance.node, referenceGuidance],
+        [Snapshot.node, Snapshot.noopLayer],
+        [SessionExecution.node, executionWith(config)],
+        [Config.node, config],
+      ],
+    ),
+  )
 
-const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
-  [Snapshot.node, Snapshot.noopLayer],
-  [LayerNodePlatform.llmClient, client],
-  [SessionRunnerModel.node, models],
-  [SystemContextRegistry.node, systemContext],
-  [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
-  [SkillGuidance.node, skillGuidance],
-  [ReferenceGuidance.node, referenceGuidance],
-  [PermissionV2.node, permission],
-  [Config.node, config],
-])
-
-const execution = Layer.effect(
-  SessionExecution.Service,
-  Effect.gen(function* () {
-    const sessionRunner = yield* SessionRunner.Service
-    const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError>({
-      drain: (sessionID, force) => sessionRunner.run({ sessionID, force }),
-    })
-    return SessionExecution.Service.of({
-      active: coordinator.active,
-      resume: coordinator.run,
-      wake: coordinator.wake,
-      interrupt: coordinator.interrupt,
-    })
-  }),
-).pipe(Layer.provide(runnerLayer))
-
-const it = testEffect(
-  AppNodeBuilder.build(
-    LayerNode.group([
-      Database.node,
-      EventV2.node,
-      QuestionV2.node,
-      SessionProjector.node,
-      SessionStore.node,
-      ApplicationTools.node,
-      AgentV2.node,
-      ToolRegistry.node,
-      ToolRegistry.toolsNode,
-      toolsNode,
-      ContextManager.node,
-      CompressTool.node,
-      SessionRunnerModel.node,
-      SystemContextRegistry.node,
-      SkillGuidance.node,
-      ReferenceGuidance.node,
-      Config.node,
-      Snapshot.node,
-      SessionRunnerLLM.node,
-      SessionExecution.node,
-      SessionV2.node,
-    ]),
-    [
-      [LayerNodePlatform.llmClient, client],
-      [PermissionV2.node, permission],
-      [SessionRunnerModel.node, models],
-      [SystemContextRegistry.node, systemContext],
-      [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
-      [SkillGuidance.node, skillGuidance],
-      [ReferenceGuidance.node, referenceGuidance],
-      [Snapshot.node, Snapshot.noopLayer],
-      [SessionExecution.node, execution],
-      [Config.node, config],
-    ],
-  ),
-)
+const it = harness(config)
+/** A ceiling small enough that a couple of file reads already blow past it. */
+const itBounded = harness(configWith(3_000))
 
 const sessionID = SessionV2.ID.make("ses_context_manager_test")
 
@@ -511,6 +522,77 @@ describe("ContextManager", () => {
       const placeholder = userTexts(last).find((text) => text.includes("<compressed-conversation-section>"))
       expect(placeholder).toContain("combined summary covering both ranges")
       expect(userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))).toHaveLength(1)
+    }),
+  )
+
+  it.effect("absorbs a partially overlapping summary instead of stranding it", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five")]
+
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+      yield* ask(session, "Step four")
+      yield* ask(session, "Step five")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const first = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[2]!.id,
+        endMessageID: history[5]!.id,
+      })
+      if ("failure" in first) throw new Error(`first compression failed: ${first.failure}`)
+
+      summary = "## State\n- combined summary of the overlapping ranges"
+      // Overlaps the first block on one side only: neither range contains the other.
+      const second = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[3]!.id,
+      })
+      if ("failure" in second) throw new Error(`second compression failed: ${second.failure}`)
+
+      // The range grew to swallow the block it overlapped, so no summary is left unreachable.
+      expect(second.block.startMessageID).toBe(history[0]!.id)
+      expect(second.block.endMessageID).toBe(history[5]!.id)
+      expect(second.block.nested).toContain(first.block.id)
+
+      const { db } = yield* Database.Service
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).toEqual([second.block.id])
+
+      turns = [say("After compression")]
+      yield* ask(session, "Keep going")
+      const last = agentTurns().at(-1)!
+      const placeholders = userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholders).toHaveLength(1)
+      expect(placeholders[0]).toContain("combined summary of the overlapping ranges")
+      expect(userTexts(last)).not.toContain("Step one")
+    }),
+  )
+
+  itBounded.effect("compresses on the payload byte ceiling even when the token window is nearly empty", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const failures = yield* collect(SessionEvent.Context.CompressionFailed)
+      turns = [call("call-1", "inspect", { file: "src/index.ts" }), say("First"), say("Second"), say("Third")]
+
+      yield* ask(session, "Inspect the entry point")
+      yield* ask(session, "Keep going")
+      yield* ask(session, "And again")
+
+      const context = yield* ContextManager.Service
+      const stats = yield* context.stats(sessionID)
+      // The 200k token window is barely touched: only the byte ceiling can have forced this.
+      expect(stats.utilization).toBeLessThan(0.6)
+      expect(stats.compressionCount).toBeGreaterThan(0)
+      expect(requests.some(isCompression)).toBe(true)
+      expect(stats.tokensSaved).toBeGreaterThan(0)
+      // A payload that the ladder still cannot fit is reported rather than silently oversized.
+      expect(failures.map((event) => event.reason).join("|")).toContain("payload byte budget")
     }),
   )
 

@@ -141,6 +141,7 @@ const layer = Layer.effect(
         recommendation: "none",
         utilization: limit === undefined || limit <= 0 ? 0 : tokens / limit,
         limit,
+        overBudget: false,
         blocks: [],
         revision,
       }
@@ -206,16 +207,28 @@ const layer = Layer.effect(
       // The byte ceiling covers the serialized request, so the envelope spends from it too.
       const payloadBudget =
         settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - overhead.bytes, 1)
-      const gated =
+      const reduction =
         payloadBudget === undefined || ContextBudget.bytes(reduced) <= payloadBudget
-          ? reduced
+          ? undefined
           : ContextBudget.reduce({
               messages: reduced,
               policy: settings.protection,
               protection,
               toolPolicies: input.toolPolicies,
               limit: payloadBudget,
-            }).messages
+            })
+      const gated = reduction?.messages ?? reduced
+      // The ladder is a ceiling, not a suggestion. When even protected content alone exceeds it,
+      // the only remaining lever is compression, so say so instead of sending an oversized request.
+      const overBudget = reduction !== undefined && !reduction.within
+      if (reduction !== undefined)
+        yield* Effect.logDebug("context.prepare.payload", {
+          sessionID: input.sessionID,
+          steps: reduction.steps,
+          within: reduction.within,
+          limit: payloadBudget,
+          bytes: ContextBudget.bytes(gated) + overhead.bytes,
+        })
 
       const violations = ContextInvariants.check(input.messages, gated)
       if (violations.length > 0) {
@@ -236,7 +249,9 @@ const layer = Layer.effect(
         purgedErrors: errors.size,
       }
       const utilization = limit === undefined ? 0 : preparedTokens / limit
-      const preparedRecommendation = ContextBudget.recommend(utilization, settings.compression)
+      const preparedRecommendation = overBudget
+        ? ("mandatory" as const)
+        : ContextBudget.recommend(utilization, settings.compression)
       cache.set(input.sessionID, { revision, stats, plan, utilization, limit, recommendation: preparedRecommendation })
       return {
         sessionID: input.sessionID,
@@ -246,6 +261,7 @@ const layer = Layer.effect(
         recommendation: preparedRecommendation,
         utilization,
         limit,
+        overBudget,
         blocks: placed.blocks,
         revision,
       } satisfies ContextTypes.PreparedContext
@@ -280,14 +296,41 @@ const layer = Layer.effect(
         },
         toolPolicies: input.toolPolicies ?? policies.get(input.sessionID),
       })
-      const start =
+      const requestedStart =
         input.startMessageID === undefined ? 0 : messages.findIndex((message) => message.id === input.startMessageID)
-      const end =
+      const requestedEnd =
         input.endMessageID === undefined
           ? protection.recentFrom - 1
           : messages.findIndex((message) => message.id === input.endMessageID)
-      if (start < 0 || end < 0) return { failure: "invalid-range" as const }
+      if (requestedStart < 0 || requestedEnd < 0) return { failure: "invalid-range" as const }
+      if (requestedEnd >= protection.recentFrom) return { failure: "protected-range" as const }
+
+      // Compression must never leave two blocks partially overlapping: the projection would have to
+      // choose between them and one summary would become unreachable. A new range therefore grows
+      // to cover every block it intersects, and absorbs all of them.
+      const existing = yield* ContextState.list(db, input.sessionID)
+      const index = ContextPlaceholder.positions(messages)
+      const located = existing.flatMap((block) => {
+        const range = ContextPlaceholder.locate(index, block)
+        return range === undefined ? [] : [range]
+      })
+      let start = requestedStart
+      let end = requestedEnd
+      let grew = true
+      while (grew) {
+        grew = false
+        for (const range of located) {
+          if (range.start > end || range.end < start) continue
+          if (range.start >= start && range.end <= end) continue
+          start = Math.min(start, range.start)
+          end = Math.max(end, range.end)
+          grew = true
+        }
+      }
+      // Growing into the protected window is not allowed, so the caller is told instead.
       if (end >= protection.recentFrom) return { failure: "protected-range" as const }
+      const covered = located.filter((range) => range.start >= start && range.end <= end).map((range) => range.block)
+
       // Protected messages inside the requested range stay verbatim: they are excluded from the
       // summary input and re-emitted around the placeholder. The caller is told how many, because
       // the compressed block then covers less than the range that was asked for.
@@ -308,12 +351,6 @@ const layer = Layer.effect(
         yield* fail(input.sessionID, "no model is available for compression")
         return { failure: "no-model" as const }
       }
-      const existing = yield* ContextState.list(db, input.sessionID)
-      const covered = existing.filter((block) => {
-        const blockStart = messages.findIndex((message) => message.id === block.startMessageID)
-        const blockEnd = messages.findIndex((message) => message.id === block.endMessageID)
-        return blockStart >= start && blockEnd >= 0 && blockEnd <= end
-      })
       // Automatic compression runs inside the turn the user is waiting on, so the summary request
       // is bounded: a slow provider degrades to an uncompressed turn instead of a stalled one.
       const answered = yield* ContextCompressor.summarize(llm, {
@@ -379,6 +416,20 @@ const layer = Layer.effect(
       return yield* models.resolve(session).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
     })
 
+    /**
+     * A payload that is still over the configured byte ceiling is a policy failure, not a detail:
+     * it is reported on the event bus so a client can surface it, and logged for operators.
+     */
+    const reportOverBudget = Effect.fnUntraced(function* (prepared: ContextTypes.PreparedContext) {
+      if (!prepared.overBudget) return
+      yield* Effect.logWarning("context.prepare.over-budget", {
+        sessionID: prepared.sessionID,
+        preparedTokens: prepared.stats.preparedTokens,
+        limit: settings.payloadBytes,
+      })
+      yield* fail(prepared.sessionID, "the prepared context still exceeds the configured payload byte budget")
+    })
+
     const prepare = Effect.fn("ContextManager.prepare")(function* (input: PrepareInput) {
       const first = yield* prepareOnce(input)
       if (
@@ -387,6 +438,7 @@ const layer = Layer.effect(
         !settings.compression.enabled ||
         !settings.compression.automatic
       ) {
+        yield* reportOverBudget(first)
         yield* publishPrepared(first)
         return first
       }
@@ -398,10 +450,12 @@ const layer = Layer.effect(
         http: input.http,
       })
       if ("failure" in compressed) {
+        yield* reportOverBudget(first)
         yield* publishPrepared(first)
         return first
       }
       const second = yield* prepareOnce(input)
+      yield* reportOverBudget(second)
       yield* publishPrepared(second)
       return second
     })

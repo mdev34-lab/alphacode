@@ -120,6 +120,8 @@ export interface PreparedContext {
   /** Fraction of the model context window the prepared context is expected to occupy. */
   readonly utilization: number
   readonly limit: number | undefined
+  /** True when the deterministic byte ladder could not bring the request under `payload_bytes`. */
+  readonly overBudget: boolean
   readonly blocks: readonly CompressionBlock[]
   /** Increments whenever the compiler recomputes its reduction plan for a session. */
   readonly revision: number

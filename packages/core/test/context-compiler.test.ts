@@ -335,12 +335,39 @@ describe("compression placeholders", () => {
     ])
   })
 
+  test("keeps both summaries when two compressed ranges partially overlap", () => {
+    const first = block({ id: "cmp_1", start: "msg_1", end: "msg_3", summary: "first half", createdAt: 1 })
+    const second = block({ id: "cmp_2", start: "msg_2", end: "msg_5", summary: "second half", createdAt: 2 })
+    const applied = ContextPlaceholder.apply(sessionID, conversation, [first, second])
+
+    // Neither block contains the other, so dropping one would strand its summary forever.
+    expect(applied.blocks.map((item) => item.id)).toEqual(["cmp_1", "cmp_2"])
+    expect(applied.messages.map((message) => message.id)).toEqual([
+      SessionMessage.ID.make("msg_cmp_1"),
+      SessionMessage.ID.make("msg_cmp_2"),
+      SessionMessage.ID.make("msg_6"),
+    ])
+    // The overlapping message must be summarized, not duplicated.
+    expect(applied.compressedMessages).toBe(5)
+    expect(applied.stale).toEqual([])
+  })
+
   test("reports blocks whose boundaries no longer exist as stale instead of failing", () => {
     const applied = ContextPlaceholder.apply(sessionID, conversation, [
       block({ id: "cmp_1", start: "msg_gone", end: "msg_also_gone", summary: "compacted away" }),
     ])
     expect(applied.messages).toEqual(conversation)
     expect(applied.stale.map((item) => item.id)).toEqual(["cmp_1"])
+  })
+
+  test("reports a block as stale when only one of its boundaries survives", () => {
+    const applied = ContextPlaceholder.apply(sessionID, conversation, [
+      block({ id: "cmp_1", start: "msg_2", end: "msg_gone", summary: "half compacted" }),
+      block({ id: "cmp_2", start: "msg_4", end: "msg_3", summary: "inverted" }),
+    ])
+    // A half-anchored or inverted block can never be projected, so it must be cleaned up.
+    expect(applied.messages).toEqual(conversation)
+    expect(applied.stale.map((item) => item.id)).toEqual(["cmp_1", "cmp_2"])
   })
 })
 

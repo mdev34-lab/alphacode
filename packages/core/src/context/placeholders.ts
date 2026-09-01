@@ -36,20 +36,40 @@ export const message = (sessionID: SessionSchema.ID, block: CompressionBlock): S
   time: { created: DateTime.makeUnsafe(block.createdAt) },
 })
 
+export interface Range {
+  readonly block: CompressionBlock
+  readonly start: number
+  readonly end: number
+}
+
+/** Positions of both boundaries, or undefined when the block no longer resolves. */
+export const locate = (index: ReadonlyMap<SessionMessage.ID, number>, block: CompressionBlock): Range | undefined => {
+  const start = index.get(block.startMessageID)
+  const end = index.get(block.endMessageID)
+  if (start === undefined || end === undefined || end < start) return undefined
+  return { block, start, end }
+}
+
+export const positions = (messages: readonly ContextMessage[]) =>
+  new Map(messages.map((message, position) => [message.id, position]))
+
 /**
- * Blocks that still resolve against the canonical history, outermost first.
+ * Blocks that still resolve against the canonical history, oldest range first.
  *
  * Boundaries that no longer exist — after native compaction, a revert, or a session move — are
  * dropped instead of failing the turn. Blocks fully covered by a later, wider compression are
  * dropped as well: their content was folded into the wider summary.
+ *
+ * Partially overlapping ranges are kept, not discarded. Compression normally absorbs everything it
+ * intersects, so overlap only survives history rewrites, and dropping the overlapping block would
+ * silently lose a summary. `apply` emits both placeholders and clips the second range to the part
+ * that has not been replaced yet.
  */
 export const resolve = (messages: readonly ContextMessage[], blocks: readonly CompressionBlock[]) => {
-  const index = new Map(messages.map((message, position) => [message.id, position]))
+  const index = positions(messages)
   const ranges = blocks.flatMap((block) => {
-    const start = index.get(block.startMessageID)
-    const end = index.get(block.endMessageID)
-    if (start === undefined || end === undefined || end < start) return []
-    return [{ block, start, end }]
+    const range = locate(index, block)
+    return range === undefined ? [] : [range]
   })
   const active = ranges.filter(
     (range) =>
@@ -62,8 +82,7 @@ export const resolve = (messages: readonly ContextMessage[], blocks: readonly Co
           (other.end - other.start > range.end - range.start || other.block.createdAt > range.block.createdAt),
       ),
   )
-  const sorted = active.toSorted((left, right) => left.start - right.start)
-  return sorted.filter((range, position) => position === 0 || range.start > sorted[position - 1]!.end)
+  return active.toSorted((left, right) => left.start - right.start || left.end - right.end)
 }
 
 export interface Applied {
@@ -82,26 +101,25 @@ export const apply = (
 ): Applied => {
   if (blocks.length === 0) return { messages, blocks: [], stale: [], compressedMessages: 0 }
   const ranges = resolve(messages, blocks)
-  const applied = ranges.map((range) => range.block.id)
-  const stale = blocks.filter(
-    (block) => !applied.includes(block.id) && !messages.some((message) => message.id === block.startMessageID),
-  )
+  const index = positions(messages)
+  // A block is stale only when the canonical history can no longer place it: either boundary is
+  // gone, or they crossed. A block that merely lost to a wider compression is absorbed, not stale.
+  const stale = blocks.filter((block) => locate(index, block) === undefined)
   const result: ContextMessage[] = []
+  const applied: CompressionBlock[] = []
   let compressedMessages = 0
   let position = 0
   for (const range of ranges) {
+    // Ranges are sorted by start, so anything before this one is already emitted or replaced.
+    if (range.end < position) continue
     result.push(...messages.slice(position, range.start))
-    const covered = messages.slice(range.start, range.end + 1)
+    const covered = messages.slice(Math.max(range.start, position), range.end + 1)
     const retained = covered.filter((message) => protectedIDs.has(message.id))
     result.push(message(sessionID, range.block), ...retained)
+    applied.push(range.block)
     compressedMessages += covered.length - retained.length
     position = range.end + 1
   }
   result.push(...messages.slice(position))
-  return {
-    messages: result,
-    blocks: ranges.map((range) => range.block),
-    stale,
-    compressedMessages,
-  }
+  return { messages: result, blocks: applied, stale, compressedMessages }
 }
