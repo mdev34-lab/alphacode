@@ -1,7 +1,7 @@
 export * as ContextManager from "./manager"
 
 import { LLMClient, type LLMRequest, type Model } from "@opencode-ai/llm"
-import { Context, DateTime, Effect, Layer } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, Option } from "effect"
 import { Config } from "../config"
 import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
@@ -31,6 +31,11 @@ export interface PrepareInput {
   readonly model?: Model
   readonly toolPolicies?: Readonly<Record<string, ContextTypes.ToolContextPolicy>>
   readonly http?: LLMRequest["http"]
+  /**
+   * Non-history material the same provider request will carry: system prompt, tool definitions and
+   * any request-level extras. Budgeting without it under-reports utilization on every turn.
+   */
+  readonly envelope?: ContextBudget.Envelope
   /** Output tokens the provider turn reserves; subtracted from the usable context window. */
   readonly reserve?: number
   /** Allow the compiler to run an automatic compression when utilization becomes critical. */
@@ -46,6 +51,11 @@ export interface CompressInput {
   /** Assistant turns to leave verbatim when no explicit end boundary is given. */
   readonly keepRecentTurns?: number
   readonly focus?: string
+  /**
+   * Tool context policies for this session. Defaults to the ones the last prepared turn declared,
+   * so a tool that declares itself protected is protected from compression as well as from pruning.
+   */
+  readonly toolPolicies?: Readonly<Record<string, ContextTypes.ToolContextPolicy>>
   readonly model?: Model
   readonly http?: LLMRequest["http"]
 }
@@ -57,6 +67,7 @@ export type CompressFailure =
   | "invalid-range"
   | "protected-range"
   | "summary-unavailable"
+  | "timeout"
 
 export interface Interface {
   readonly prepare: (input: PrepareInput) => Effect.Effect<ContextTypes.PreparedContext>
@@ -96,15 +107,37 @@ const layer = Layer.effect(
     const models = yield* SessionRunnerModel.Service
     const settings = resolveSettings(yield* (yield* Config.Service).entries())
     const cache = new Map<SessionSchema.ID, Cached>()
+    // Last envelope a runner declared for a session, so a stats request that arrives between turns
+    // still reports utilization against the whole prompt rather than the message list alone.
+    const envelopes = new Map<SessionSchema.ID, ContextBudget.EnvelopeCost>()
+    // Tool-declared context policies, remembered per session for callers that do not materialize
+    // tools themselves, such as the compress tool and the manual /compress command.
+    const policies = new Map<SessionSchema.ID, Readonly<Record<string, ContextTypes.ToolContextPolicy>>>()
     let revision = 0
 
-    const passthrough = (input: PrepareInput, limit: number | undefined): ContextTypes.PreparedContext => {
-      const tokens = ContextBudget.tokens(input.messages)
+    const envelopeFor = (input: PrepareInput) => {
+      if (input.envelope === undefined) return envelopes.get(input.sessionID) ?? ContextBudget.emptyEnvelope
+      const cost = ContextBudget.envelope(input.envelope)
+      envelopes.set(input.sessionID, cost)
+      return cost
+    }
+
+    const passthrough = (
+      input: PrepareInput,
+      limit: number | undefined,
+      overhead: ContextBudget.EnvelopeCost,
+    ): ContextTypes.PreparedContext => {
+      const tokens = ContextBudget.tokens(input.messages) + overhead.tokens
       return {
         sessionID: input.sessionID,
         purpose: input.purpose,
         messages: input.messages,
-        stats: { ...ContextTypes.emptyStats, rawTokens: tokens, preparedTokens: tokens },
+        stats: {
+          ...ContextTypes.emptyStats,
+          rawTokens: tokens,
+          preparedTokens: tokens,
+          overheadTokens: overhead.tokens,
+        },
         recommendation: "none",
         utilization: limit === undefined || limit <= 0 ? 0 : tokens / limit,
         limit,
@@ -122,12 +155,14 @@ const layer = Layer.effect(
 
     const prepareOnce = Effect.fnUntraced(function* (input: PrepareInput) {
       const limit = usableLimit(input)
-      if (ContextTypes.isolated(input.purpose)) return passthrough(input, limit)
+      const overhead = envelopeFor(input)
+      if (input.toolPolicies) policies.set(input.sessionID, input.toolPolicies)
+      if (ContextTypes.isolated(input.purpose)) return passthrough(input, limit, overhead)
       yield* events.publish(SessionEvent.Context.Preparing, {
         sessionID: input.sessionID,
         timestamp: yield* DateTime.now,
         messageCount: input.messages.length,
-        rawTokens: ContextBudget.tokens(input.messages),
+        rawTokens: ContextBudget.tokens(input.messages) + overhead.tokens,
         limit,
       })
 
@@ -143,7 +178,7 @@ const layer = Layer.effect(
           placed.stale.map((block) => block.id),
         )
 
-      const rawTokens = ContextBudget.tokens(input.messages)
+      const rawTokens = ContextBudget.tokens(input.messages) + overhead.tokens
       // Both plans are deterministic and monotonic: a call that is superseded, or an error input
       // that is stale, stays that way. The request prefix therefore only changes when a genuinely
       // new duplicate or newly stale failure appears, which keeps provider prompt caching useful.
@@ -168,28 +203,32 @@ const layer = Layer.effect(
       if (cached?.plan !== plan) revision++
 
       const reduced = ContextPurgeErrors.apply(ContextDeduplicate.apply(placed.messages, duplicates), errors)
+      // The byte ceiling covers the serialized request, so the envelope spends from it too.
+      const payloadBudget =
+        settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - overhead.bytes, 1)
       const gated =
-        settings.payloadBytes === undefined || ContextBudget.bytes(reduced) <= settings.payloadBytes
+        payloadBudget === undefined || ContextBudget.bytes(reduced) <= payloadBudget
           ? reduced
           : ContextBudget.reduce({
               messages: reduced,
               policy: settings.protection,
               protection,
               toolPolicies: input.toolPolicies,
-              limit: settings.payloadBytes,
+              limit: payloadBudget,
             }).messages
 
       const violations = ContextInvariants.check(input.messages, gated)
       if (violations.length > 0) {
         // Context management must never make a session unusable: fall back to canonical history.
         yield* Effect.logWarning("context.prepare.invariant", { sessionID: input.sessionID, violations })
-        return passthrough(input, limit)
+        return passthrough(input, limit, overhead)
       }
 
-      const preparedTokens = ContextBudget.tokens(gated)
+      const preparedTokens = ContextBudget.tokens(gated) + overhead.tokens
       const stats: ContextTypes.ContextStats = {
         rawTokens,
         preparedTokens,
+        overheadTokens: overhead.tokens,
         tokensSaved: Math.max(rawTokens - preparedTokens, 0),
         compressionCount: placed.blocks.length,
         compressedMessages: placed.compressedMessages,
@@ -219,6 +258,7 @@ const layer = Layer.effect(
         timestamp: yield* DateTime.now,
         rawTokens: prepared.stats.rawTokens,
         preparedTokens: prepared.stats.preparedTokens,
+        overheadTokens: prepared.stats.overheadTokens,
         tokensSaved: prepared.stats.tokensSaved,
         compressionCount: prepared.stats.compressionCount,
         compressedMessages: prepared.stats.compressedMessages,
@@ -238,6 +278,7 @@ const layer = Layer.effect(
           ...settings.protection,
           recentTurns: input.keepRecentTurns ?? settings.protection.recentTurns,
         },
+        toolPolicies: input.toolPolicies ?? policies.get(input.sessionID),
       })
       const start =
         input.startMessageID === undefined ? 0 : messages.findIndex((message) => message.id === input.startMessageID)
@@ -247,7 +288,11 @@ const layer = Layer.effect(
           : messages.findIndex((message) => message.id === input.endMessageID)
       if (start < 0 || end < 0) return { failure: "invalid-range" as const }
       if (end >= protection.recentFrom) return { failure: "protected-range" as const }
-      const selected = messages.slice(start, end + 1).filter((message) => !protection.messageIDs.has(message.id))
+      // Protected messages inside the requested range stay verbatim: they are excluded from the
+      // summary input and re-emitted around the placeholder. The caller is told how many, because
+      // the compressed block then covers less than the range that was asked for.
+      const requested = messages.slice(start, end + 1)
+      const selected = requested.filter((message) => !protection.messageIDs.has(message.id))
       if (selected.length < 2 || start > end) return { failure: "empty-range" as const }
 
       yield* events.publish(SessionEvent.Context.Compressing, {
@@ -269,13 +314,20 @@ const layer = Layer.effect(
         const blockEnd = messages.findIndex((message) => message.id === block.endMessageID)
         return blockStart >= start && blockEnd >= 0 && blockEnd <= end
       })
-      const summary = yield* ContextCompressor.summarize(llm, {
+      // Automatic compression runs inside the turn the user is waiting on, so the summary request
+      // is bounded: a slow provider degrades to an uncompressed turn instead of a stalled one.
+      const answered = yield* ContextCompressor.summarize(llm, {
         model,
         http: input.http,
         messages: selected,
         focus: input.focus,
         nested: covered.map((block) => block.summary),
-      })
+      }).pipe(Effect.timeoutOption(Duration.millis(settings.compression.timeoutMillis)))
+      if (Option.isNone(answered)) {
+        yield* fail(input.sessionID, "the summary model did not answer within the compression time budget")
+        return { failure: "timeout" as const }
+      }
+      const summary = answered.value
       if (summary === undefined) {
         yield* fail(input.sessionID, "the summary model returned no usable summary")
         return { failure: "summary-unavailable" as const }
@@ -309,6 +361,7 @@ const layer = Layer.effect(
       return {
         block,
         tokensSaved: Math.max(block.sourceTokenCount - block.summaryTokenCount, 0),
+        excludedMessages: requested.length - selected.length,
       }
     })
 

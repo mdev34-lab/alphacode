@@ -17,7 +17,7 @@ Between `SessionHistory.entriesForRunner` and `toLLMMessages`, `ContextManager.p
 deterministic pipeline over canonical `SessionMessage.Message[]`:
 
 ```
-canonical history
+canonical history + request envelope
   → compression placeholders   (ContextPlaceholder.apply)
   → duplicate tool output      (ContextDeduplicate)
   → stale failed tool inputs   (ContextPurgeErrors)
@@ -27,6 +27,20 @@ canonical history
   → invariant check            (ContextInvariants)
   → provider request
 ```
+
+### Measuring the whole request
+
+Utilization is measured over the **prompt envelope**, not just the message list. The session runner
+declares what the same request will carry besides history — the assembled system prompt, the tool
+definitions, and request-level extras such as the max-steps prompt — as `prepare({ envelope })`, and
+`ContextBudget.envelope` measures it exactly the way history is measured. `overheadTokens` is
+reported in the prepared stats, the `session.next.context.prepared` event, and
+`GET /api/session/:id/context/stats`, and the same figure is subtracted from `context.payload_bytes`
+before the byte ladder runs. Without this a session with a large toolset believes it is at 70% while
+the provider sees 95%.
+
+The last declared envelope is remembered per session so a stats request between turns still reports
+against the real request rather than the history alone.
 
 Every stage is pure and monotonic: once a call is superseded or an error input is stale, it stays
 that way. The request prefix therefore only changes when something genuinely new happens, which
@@ -46,7 +60,11 @@ management can never make a session unusable.
    always returns the original content.
 
 Editing recorded tool _results_ and stale failed tool _inputs_ is allowed — those are AlphaCode's
-own recordings, not model output.
+own recordings, not model output — but only through the four transformations this subsystem owns:
+the duplicate marker, the purged-input marker, the payload-budget truncation, and the superseded
+todo marker. `ContextInvariants` recognizes each of them from the canonical part it replaced; any
+other edit to a recorded call counts as fabrication. Message order is checked too: reduction may
+remove and summarize messages, never resequence them.
 
 ## Modules (`packages/core/src/context/`)
 
@@ -78,8 +96,26 @@ call the same `ContextManager.compress` engine, as does automatic compression.
 - The result is rendered as a deterministic `<compressed-conversation-section>` placeholder carried
   by a **synthetic** message, lowered to a user-role message. It states that it is historical
   context, not instructions — summaries are untrusted content.
+- Protected messages inside an explicitly requested range are **not** summarized: they stay verbatim
+  around the placeholder, and the caller is told how many were kept (`excludedMessages` on the
+  endpoint, `protected_messages_kept` plus the real `start_message_id`/`end_message_id` on the tool
+  output). The block therefore covers the range that was actually compressed, not the one requested.
+- Summaries are durable state, so they are capped deterministically at
+  `ContextCompressor.MAX_SUMMARY_CHARS` (16 KB) before being stored; a truncated summary ends with a
+  marker. `maxTokens` is a request to the provider, not a guarantee, and nested compression reads
+  stored summaries back as source material.
 - Failures are values, never exceptions: `disabled`, `no-model`, `empty-range`, `invalid-range`,
-  `protected-range`, `summary-unavailable`. The turn continues with the canonical context.
+  `protected-range`, `summary-unavailable`, `timeout`. The turn continues with the canonical context.
+
+### Latency of automatic compression
+
+Automatic compression is deliberately synchronous with the turn that triggered it: `prepare` →
+`mandatory` → summarize → persist → `prepare` again → the real request. That costs one extra model
+round trip on the turn that crosses the threshold, which is the accepted tradeoff for never sending
+an oversized request. It is bounded by `dynamic_compression.timeout_ms` (default 90s); on timeout
+the compression is abandoned, `session.next.context.compression.failed` is published, and the turn
+proceeds with the reduced-but-uncompressed context. Only the `mandatory` band compresses on its own;
+`nudge` and `prefer` merely advise the model and the TUI.
 
 ## Protection
 
@@ -89,7 +125,9 @@ Never compressed, deduplicated, or purged:
   message.
 - Protected tools: `task`, `skill`, `todowrite`, `todoread`, `compress`, `plan_enter`, `plan_exit`,
   `write`, `edit`, `apply_patch`, `question` — plus anything a tool marks itself with
-  `contextPolicy: { protect: true }`.
+  `contextPolicy: { protect: true }`. A protected call protects the message that carries it, so it
+  survives compression as well as output pruning. Tool-declared policies are remembered per session,
+  so `/compress` and the `compress` tool honor them even though they do not materialize tools.
 - State-changing tools are never deduplicated (`bash`, `write`, `edit`, `apply_patch`, ...).
 - `system`, `compaction`, `agent-switched`, and `model-switched` messages.
 - User messages, when `protection.user_messages` is enabled (default off).
@@ -113,6 +151,7 @@ scaffolding → collapse todos → drop oldest.
       "automatic": true,
       "min_context": 0.6,
       "max_context": 0.85,
+      "timeout_ms": 90000,
     },
     "deduplication": { "enabled": true },
     "purge_errors": { "enabled": true, "turns": 4 },
@@ -166,7 +205,10 @@ persistence lives in the session history and the `session_context_block` table.
   prompt, dedup/purge visible only in the provider request, compression round-trip, nested
   compression, graceful failure, protected ranges, statistics events.
 - `packages/core/test/context-provider-shape.test.ts` — OpenAI Chat, Anthropic Messages, and Gemini
-  request bodies keep one system prompt, paired tool calls, and user-side placeholders.
+  request bodies keep one system prompt, paired tool calls, and user-side placeholders, including
+  the awkward case: a compressed range that contains a protected tool interaction followed by a
+  further user turn. Each provider is checked for strict call/result adjacency, not just matching
+  id sets.
 
 ## Non-goals
 

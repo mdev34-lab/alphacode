@@ -492,6 +492,7 @@ export namespace Context {
       ...Base,
       rawTokens: NonNegativeInt,
       preparedTokens: NonNegativeInt,
+      overheadTokens: NonNegativeInt,
       tokensSaved: NonNegativeInt,
       compressionCount: NonNegativeInt,
       compressedMessages: NonNegativeInt,

@@ -535,9 +535,11 @@ export type SessionsCompressOutput = {
           readonly summaryTokenCount: number
           readonly nested: ReadonlyArray<string>
         }
+        readonly excludedMessages: number
         readonly stats: {
           readonly rawTokens: number
           readonly preparedTokens: number
+          readonly overheadTokens: number
           readonly tokensSaved: number
           readonly compressionCount: number
           readonly compressedMessages: number
@@ -554,6 +556,7 @@ export type SessionsCompressOutput = {
         readonly stats: {
           readonly rawTokens: number
           readonly preparedTokens: number
+          readonly overheadTokens: number
           readonly tokensSaved: number
           readonly compressionCount: number
           readonly compressedMessages: number
@@ -572,6 +575,7 @@ export type SessionsContextStatsOutput = {
   readonly data: {
     readonly rawTokens: number
     readonly preparedTokens: number
+    readonly overheadTokens: number
     readonly tokensSaved: number
     readonly compressionCount: number
     readonly compressedMessages: number

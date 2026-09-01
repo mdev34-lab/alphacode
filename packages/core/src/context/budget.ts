@@ -15,6 +15,37 @@ export const tokens = (messages: readonly ContextMessage[]) => Token.estimate(JS
 export const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8")
 
 /**
+ * Everything a provider request carries besides the conversation itself.
+ *
+ * Utilization measured from history alone is a lie: the system prompt and the tool definitions are
+ * resent on every turn and are frequently larger than the recent conversation. The caller that owns
+ * the request — the session runner — declares them here so the budget bands describe the real
+ * prompt envelope instead of just its message list.
+ */
+export interface Envelope {
+  /** System prompt blocks, in the order the request will send them. */
+  readonly system?: readonly string[]
+  /** Tool definitions advertised to the provider for this turn. */
+  readonly tools?: unknown
+  /** Request-level material that is neither history nor tools, such as the max-steps prompt. */
+  readonly extra?: readonly string[]
+}
+
+export interface EnvelopeCost {
+  readonly tokens: number
+  readonly bytes: number
+}
+
+export const emptyEnvelope: EnvelopeCost = { tokens: 0, bytes: 0 }
+
+/** Measure the non-history part of a provider request the same way history itself is measured. */
+export const envelope = (input: Envelope | undefined): EnvelopeCost => {
+  if (input === undefined) return emptyEnvelope
+  const serialized = JSON.stringify([input.system ?? [], input.tools ?? [], input.extra ?? []])
+  return { tokens: Token.estimate(serialized), bytes: Buffer.byteLength(serialized, "utf8") }
+}
+
+/**
  * Map context utilization onto a policy action.
  *
  * Large context is not by itself a problem, so the low bands deliberately do nothing. Only the top

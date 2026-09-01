@@ -1226,6 +1226,7 @@ export type GlobalEvent = {
           sessionID: string
           rawTokens: number
           preparedTokens: number
+          overheadTokens: number
           tokensSaved: number
           compressionCount: number
           compressedMessages: number
@@ -4059,6 +4060,7 @@ export type SessionContextBlock = {
 export type SessionContextStats = {
   rawTokens: number
   preparedTokens: number
+  overheadTokens: number
   tokensSaved: number
   compressionCount: number
   compressedMessages: number
@@ -4072,6 +4074,7 @@ export type SessionContextStats = {
 export type SessionContextCompressed = {
   status: "compressed"
   block: SessionContextBlock
+  excludedMessages: number
   stats: SessionContextStats
 }
 
@@ -5552,6 +5555,7 @@ export type SessionNextContextPrepared = {
     sessionID: string
     rawTokens: number
     preparedTokens: number
+    overheadTokens: number
     tokensSaved: number
     compressionCount: number
     compressedMessages: number
@@ -6956,6 +6960,7 @@ export type EventSessionNextContextPrepared = {
     sessionID: string
     rawTokens: number
     preparedTokens: number
+    overheadTokens: number
     tokensSaved: number
     compressionCount: number
     compressedMessages: number

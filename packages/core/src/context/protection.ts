@@ -82,9 +82,15 @@ export const resolve = (
     if (message.type !== "assistant") return
     for (const part of message.content) {
       if (part.type !== "tool") continue
-      if (recent || isProtectedTool(part.name, input.policy, input.toolPolicies)) callIDs.add(part.id)
-      if (input.policy.filePatterns.length > 0 && touchesProtectedFile(part, input.policy.filePatterns))
-        callIDs.add(part.id)
+      if (recent) callIDs.add(part.id)
+      const protectedCall =
+        isProtectedTool(part.name, input.policy, input.toolPolicies) ||
+        (input.policy.filePatterns.length > 0 && touchesProtectedFile(part, input.policy.filePatterns))
+      if (!protectedCall) continue
+      callIDs.add(part.id)
+      // A protected call is protected from compression too, not only from output pruning: the
+      // message that carries it stays verbatim even when it falls inside a compressed range.
+      messageIDs.add(message.id)
     }
   })
   // The newest user message always survives, even when the recent window is configured to zero.

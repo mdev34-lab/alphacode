@@ -8,6 +8,19 @@ import type { CompressionBlock, ContextMessage } from "./types"
 
 const MAX_OUTPUT_TOKENS = 4_096
 
+/**
+ * Hard ceiling on a stored summary.
+ *
+ * `maxTokens` is a request to the provider, not a guarantee, and a summary is durable state that
+ * later compressions read back as source material. Capping it deterministically keeps nested
+ * compression from turning context reduction into database growth.
+ */
+export const MAX_SUMMARY_CHARS = MAX_OUTPUT_TOKENS * 4
+export const TRUNCATED_MARKER = "[summary truncated at the compression output budget]"
+
+const cap = (summary: string) =>
+  summary.length <= MAX_SUMMARY_CHARS ? summary : `${summary.slice(0, MAX_SUMMARY_CHARS)}\n${TRUNCATED_MARKER}`
+
 const INSTRUCTIONS = `You are compressing a completed section of a coding agent's conversation into a technical state summary.
 
 The summary replaces the original messages in the agent's future context. Optimize it for another agent continuing the work, not for a human reader.
@@ -114,7 +127,7 @@ export const summarize = Effect.fn("ContextCompressor.summarize")(function* (
     )
   const summary = chunks.join("").trim()
   if (!completed || failed || summary.length === 0) return undefined
-  return summary
+  return cap(summary)
 })
 
 /** Assemble the durable metadata for a completed compression. */

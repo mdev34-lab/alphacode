@@ -11,6 +11,8 @@ export type Recommendation = typeof Recommendation.Type
 export const Stats = Schema.Struct({
   rawTokens: NonNegativeInt,
   preparedTokens: NonNegativeInt,
+  /** Tokens spent on the system prompt, tool definitions and other non-history request material. */
+  overheadTokens: NonNegativeInt,
   tokensSaved: NonNegativeInt,
   compressionCount: NonNegativeInt,
   compressedMessages: NonNegativeInt,
@@ -38,6 +40,8 @@ export interface Block extends Schema.Schema.Type<typeof Block> {}
 export const Compressed = Schema.Struct({
   status: Schema.Literal("compressed"),
   block: Block,
+  /** Protected messages inside the requested range that were kept verbatim instead of summarized. */
+  excludedMessages: NonNegativeInt,
   stats: Stats,
 }).annotate({ identifier: "SessionContext.Compressed" })
 

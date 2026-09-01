@@ -5,7 +5,14 @@ import { ContextProtection } from "./protection"
 import type { Settings } from "./types"
 
 export const defaults: Settings = {
-  compression: { enabled: true, mode: "range", automatic: true, minContext: 0.6, maxContext: 0.85 },
+  compression: {
+    enabled: true,
+    mode: "range",
+    automatic: true,
+    minContext: 0.6,
+    maxContext: 0.85,
+    timeoutMillis: 90_000,
+  },
   deduplication: { enabled: true },
   purgeErrors: { enabled: true, turns: 4 },
   protection: ContextProtection.defaultPolicy,
@@ -25,6 +32,7 @@ export const settings = (documents: readonly Config.Entry[]): Settings =>
           automatic: current.dynamic_compression?.automatic ?? result.compression.automatic,
           minContext: current.dynamic_compression?.min_context ?? result.compression.minContext,
           maxContext: current.dynamic_compression?.max_context ?? result.compression.maxContext,
+          timeoutMillis: current.dynamic_compression?.timeout_ms ?? result.compression.timeoutMillis,
         },
         deduplication: { enabled: current.deduplication?.enabled ?? result.deduplication.enabled },
         purgeErrors: {

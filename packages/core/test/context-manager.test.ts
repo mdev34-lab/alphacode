@@ -7,6 +7,7 @@ import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigContext } from "@opencode-ai/core/config/context"
+import { ContextBudget } from "@opencode-ai/core/context/budget"
 import { ContextDeduplicate } from "@opencode-ai/core/context/deduplicate"
 import { ContextManager } from "@opencode-ai/core/context/manager"
 import { ContextPurgeErrors } from "@opencode-ai/core/context/purge-errors"
@@ -141,6 +142,15 @@ const tools = Layer.effectDiscard(
         input: Schema.Struct({ script: Schema.String }),
         output: Schema.Struct({ text: Schema.String }),
         execute: () => Effect.fail(new Tool.Failure({ message: "exit code 1: syntax error" })),
+      }),
+      snapshot: Tool.make({
+        description: "Record the current plan",
+        // Declared protected, exactly like todowrite or task in the real registry.
+        contextPolicy: { protect: true, deduplicate: false },
+        input: Schema.Struct({ plan: Schema.String }),
+        output: Schema.Struct({ text: Schema.String }),
+        toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
+        execute: ({ plan }) => Effect.succeed({ text: `snapshot of the plan: ${plan}` }),
       }),
     }),
   ),
@@ -567,6 +577,68 @@ describe("ContextManager", () => {
       expect(last.deduplicatedMessages).toBe(1)
       expect(last.limit).toBe(199_000)
       expect(last.recommendation).toBe("none")
+    }),
+  )
+
+  it.effect("budgets the system prompt and tool definitions, not just the history", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      turns = [say("Done")]
+
+      yield* ask(session, "Say something")
+
+      const request = agentTurns().at(-1)!
+      const envelope = ContextBudget.envelope({
+        system: request.system.map((part) => part.text),
+        tools: request.tools,
+        extra: [],
+      })
+      const last = prepared.at(-1)!
+      // The measured overhead is the request's own system prompt and tool definitions, so a large
+      // toolset can no longer hide from the utilization bands.
+      expect(last.overheadTokens).toBe(envelope.tokens)
+      expect(last.overheadTokens).toBeGreaterThan(0)
+      expect(last.preparedTokens).toBeGreaterThan(last.overheadTokens)
+      expect(last.utilization).toBeCloseTo(last.preparedTokens / 199_000, 10)
+    }),
+  )
+
+  it.effect("keeps a protected tool call verbatim inside an explicitly compressed range", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [call("call-snap", "snapshot", { plan: "ship the parser" }), say("Recorded"), say("Two"), say("Three")]
+
+      yield* ask(session, "Record the plan")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const snapshotMessage = history.find(
+        (message) =>
+          message.type === "assistant" &&
+          message.content.some((part) => part.type === "tool" && part.name === "snapshot"),
+      )!
+      const end = history.findIndex((message) => message.id === snapshotMessage.id) + 2
+      const result = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[end]!.id,
+      })
+      if ("failure" in result) throw new Error(`compression failed: ${result.failure}`)
+
+      // The protected message inside the requested range is reported, not silently swallowed.
+      expect(result.excludedMessages).toBe(1)
+      expect(result.block.sourceMessageCount).toBe(end)
+
+      turns = [say("Four")]
+      yield* ask(session, "Step four")
+
+      const last = agentTurns().at(-1)!
+      expect(userTexts(last).some((text) => text.includes("<compressed-conversation-section>"))).toBe(true)
+      expect(JSON.stringify(last.messages)).toContain("snapshot of the plan: ship the parser")
     }),
   )
 

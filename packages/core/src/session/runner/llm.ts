@@ -247,14 +247,24 @@ const layer = Layer.effect(
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
+      const systemParts = [agent.info?.system, contextManager.guidance(), system.baseline].filter(
+        (part): part is string => part !== undefined && part.length > 0,
+      )
       // One canonical context pipeline: canonical history in, prepared provider context out. The
-      // request below never sees the reduction decisions, only their result.
+      // request below never sees the reduction decisions, only their result. The envelope tells the
+      // compiler what the same request spends outside the message list, so utilization and the byte
+      // ceiling describe the request that is actually sent.
       const prepared = yield* contextManager.prepare({
         sessionID: session.id,
         messages: context,
         purpose: "agent-turn",
         model,
         toolPolicies: toolMaterialization?.policies,
+        envelope: {
+          system: systemParts,
+          tools: toolMaterialization?.definitions ?? [],
+          extra: isLastStep ? [MAX_STEPS_PROMPT] : [],
+        },
         automatic: true,
       })
       const request = LLM.request({
@@ -267,9 +277,7 @@ const layer = Layer.effect(
           },
         },
         providerOptions: { openai: { promptCacheKey } },
-        system: [agent.info?.system, contextManager.guidance(), system.baseline]
-          .filter((part): part is string => part !== undefined && part.length > 0)
-          .map(SystemPart.make),
+        system: systemParts.map(SystemPart.make),
         messages: [
           ...(yield* toLLMMessages(prepared.messages, model).pipe(Effect.provideService(FSUtil.Service, fsys))),
           ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),

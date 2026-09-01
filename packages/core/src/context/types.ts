@@ -39,6 +39,8 @@ export interface CompressionBlock {
 export interface ContextStats {
   readonly rawTokens: number
   readonly preparedTokens: number
+  /** Tokens the request spends on the system prompt, tool definitions and other non-history material. */
+  readonly overheadTokens: number
   readonly tokensSaved: number
   readonly compressionCount: number
   readonly compressedMessages: number
@@ -49,6 +51,7 @@ export interface ContextStats {
 export const emptyStats: ContextStats = {
   rawTokens: 0,
   preparedTokens: 0,
+  overheadTokens: 0,
   tokensSaved: 0,
   compressionCount: 0,
   compressedMessages: 0,
@@ -99,6 +102,8 @@ export interface Settings {
     readonly automatic: boolean
     readonly minContext: number
     readonly maxContext: number
+    /** Upper bound on one summarization request, which runs inside the turn that triggered it. */
+    readonly timeoutMillis: number
   }
   readonly deduplication: { readonly enabled: boolean }
   readonly purgeErrors: { readonly enabled: boolean; readonly turns: number }
@@ -123,6 +128,8 @@ export interface PreparedContext {
 export interface CompressionResult {
   readonly block: CompressionBlock
   readonly tokensSaved: number
+  /** Protected messages inside the requested range that were kept verbatim instead of summarized. */
+  readonly excludedMessages: number
 }
 
 export type CompressionReason = "model" | "manual" | "auto"

@@ -22,6 +22,9 @@ export class DynamicCompression extends Schema.Class<DynamicCompression>("Config
   max_context: Fraction.pipe(Schema.optional).annotate({
     description: "Utilization above which context reduction is mandatory",
   }),
+  timeout_ms: PositiveInt.pipe(Schema.optional).annotate({
+    description: "Time budget for one summarization request before the turn continues uncompressed",
+  }),
 }) {}
 
 export class Deduplication extends Schema.Class<Deduplication>("ConfigV2.Context.Deduplication")({

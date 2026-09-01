@@ -31,6 +31,12 @@ export const Output = Schema.Struct({
   detail: Schema.String,
   messages: Schema.Int,
   tokens_saved: Schema.Int,
+  /** First message the resulting summary actually covers. */
+  start_message_id: Schema.String.pipe(Schema.optional),
+  /** Last message the resulting summary actually covers. */
+  end_message_id: Schema.String.pipe(Schema.optional),
+  /** Protected messages inside the requested range that stayed verbatim. */
+  protected_messages_kept: Schema.Int.pipe(Schema.optional),
 })
 export type Output = typeof Output.Type
 
@@ -82,11 +88,22 @@ const layer = Layer.effectDiscard(
                   messages: 0,
                   tokens_saved: 0,
                 }
+              // Report the range that was actually summarized: protected messages inside the
+              // requested range stay verbatim, so the block can be narrower than what was asked for.
+              const kept =
+                result.excludedMessages === 0
+                  ? ""
+                  : ` ${result.excludedMessages} protected message${result.excludedMessages === 1 ? "" : "s"} in that range stayed verbatim.`
               return {
                 compressed: true,
-                detail: `Compressed ${result.block.sourceMessageCount} messages into a ${result.block.summaryTokenCount} token summary.`,
+                detail:
+                  `Compressed ${result.block.sourceMessageCount} messages (${result.block.startMessageID} to ${result.block.endMessageID}) into a ${result.block.summaryTokenCount} token summary.` +
+                  kept,
                 messages: result.block.sourceMessageCount,
                 tokens_saved: result.tokensSaved,
+                start_message_id: result.block.startMessageID,
+                end_message_id: result.block.endMessageID,
+                protected_messages_kept: result.excludedMessages,
               }
             }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to compress the conversation" }))),
         }),
@@ -100,7 +117,9 @@ const explain = (failure: ContextManager.CompressFailure) => {
   if (failure === "no-model") return "No model is available to produce a summary right now."
   if (failure === "invalid-range") return "That message range does not exist in this session."
   if (failure === "protected-range") return "That range overlaps recent turns, which stay verbatim."
-  if (failure === "empty-range") return "Nothing outside the protected recent window is worth compressing yet."
+  if (failure === "empty-range")
+    return "Nothing outside the protected recent window and the protected messages in that range is worth compressing yet."
+  if (failure === "timeout") return "The summary model did not answer within the compression time budget."
   return "The summary model did not return a usable summary; the context is unchanged."
 }
 

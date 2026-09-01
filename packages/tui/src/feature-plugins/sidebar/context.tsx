@@ -51,6 +51,9 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
       </text>
       <text fg={theme().textMuted}>{state().tokens.toLocaleString()} tokens</text>
       <text fg={theme().textMuted}>{state().percent ?? 0}% used</text>
+      <Show when={prepared()?.overheadTokens}>
+        {(overhead) => <text fg={theme().textMuted}>{overhead().toLocaleString()} tokens of prompt overhead</text>}
+      </Show>
       <Show when={prepared()?.tokensSaved}>
         {(saved) => <text fg={theme().textMuted}>{saved().toLocaleString()} tokens reclaimed</text>}
       </Show>

@@ -479,6 +479,7 @@ const layer = Layer.effect(
               summaryTokenCount: outcome.block.summaryTokenCount,
               nested: outcome.block.nested,
             },
+            excludedMessages: outcome.excludedMessages,
             stats,
           }
         }).pipe(Effect.provide(locations.get(session.location)))

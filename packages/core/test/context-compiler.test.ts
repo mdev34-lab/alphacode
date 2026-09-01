@@ -1,5 +1,7 @@
 import { expect, describe, test } from "bun:test"
-import { DateTime } from "effect"
+import { DateTime, Effect, Stream } from "effect"
+import { Model } from "@opencode-ai/llm"
+import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { ContextBudget } from "@opencode-ai/core/context/budget"
 import { ContextCompressor } from "@opencode-ai/core/context/compressor"
 import { ContextDeduplicate } from "@opencode-ai/core/context/deduplicate"
@@ -231,6 +233,21 @@ describe("context protection", () => {
     expect(protection.messageIDs.has(SessionMessage.ID.make("msg_1"))).toBe(true)
   })
 
+  test("protects the message that carries a protected tool call, not only its output", () => {
+    const protection = ContextProtection.resolve(
+      [
+        user("msg_1", "start"),
+        assistant("msg_2", [tool({ id: "call_1", name: "todowrite", args: { todos: [] } })]),
+        user("msg_3", "continue"),
+        assistant("msg_4", [text("t1", "done")]),
+      ],
+      { policy: { ...ContextProtection.defaultPolicy, recentTurns: 0 } },
+    )
+    expect(protection.callIDs.has("call_1")).toBe(true)
+    // Compression consults messageIDs, so a protected call must protect its message too.
+    expect(protection.messageIDs.has(SessionMessage.ID.make("msg_2"))).toBe(true)
+  })
+
   test("always keeps the newest user and assistant message", () => {
     const protection = ContextProtection.resolve(conversation, {
       policy: { ...ContextProtection.defaultPolicy, recentTurns: 0 },
@@ -343,6 +360,52 @@ describe("compression prompt", () => {
   })
 })
 
+describe("compression output budget", () => {
+  const events = (text: string) => [
+    { type: "text-delta" as const, id: "t1", text },
+    { type: "finish" as const, reason: "stop" as const },
+  ]
+
+  test("caps a stored summary at the compression output budget", async () => {
+    const oversized = "s".repeat(ContextCompressor.MAX_SUMMARY_CHARS * 2)
+    const summary = await Effect.runPromise(
+      ContextCompressor.summarize(
+        { stream: () => Stream.fromIterable(events(oversized)) as never },
+        {
+          model: Model.make({
+            id: "fake-model",
+            provider: "fake",
+            route: OpenAIChat.route.with({ limits: { context: 200_000, output: 8_000 } }),
+          }),
+          messages: [user("msg_1", "hello")],
+        },
+      ),
+    )
+
+    expect(summary).toBeDefined()
+    expect(summary!.length).toBe(ContextCompressor.MAX_SUMMARY_CHARS + ContextCompressor.TRUNCATED_MARKER.length + 1)
+    expect(summary!.endsWith(ContextCompressor.TRUNCATED_MARKER)).toBe(true)
+  })
+
+  test("returns a short summary unchanged", async () => {
+    const summary = await Effect.runPromise(
+      ContextCompressor.summarize(
+        { stream: () => Stream.fromIterable(events("  a terse summary  ")) as never },
+        {
+          model: Model.make({
+            id: "fake-model",
+            provider: "fake",
+            route: OpenAIChat.route.with({ limits: { context: 200_000, output: 8_000 } }),
+          }),
+          messages: [user("msg_1", "hello")],
+        },
+      ),
+    )
+
+    expect(summary).toBe("a terse summary")
+  })
+})
+
 describe("context invariants", () => {
   const conversation = [
     user("msg_1", "hello"),
@@ -390,6 +453,55 @@ describe("context invariants", () => {
     expect(ContextInvariants.check(conversation, prepared)).toEqual(["assistant message msg_4 rewrote model text"])
   })
 
+  test("rejects a tool result rewritten outside a known reduction", () => {
+    const rewritten = conversation.map((message) =>
+      message.id !== SessionMessage.ID.make("msg_2")
+        ? message
+        : assistant("msg_2", [
+            text("t1", "hi"),
+            tool({ id: "call_1", name: "read", args: { filePath: "a.ts" }, output: "a summary of the file" }),
+          ]),
+    )
+    expect(ContextInvariants.check(conversation, rewritten)).toEqual([
+      "assistant message msg_2 rewrote tool call call_1 outside a known reduction",
+    ])
+  })
+
+  test("accepts the payload-budget truncation and the superseded todo marker", () => {
+    const long = assistant("msg_2", [
+      text("t1", "hi"),
+      tool({
+        id: "call_1",
+        name: "read",
+        args: { filePath: "a.ts" },
+        output: `${"head".repeat(200)}${"tail".repeat(200)}`,
+      }),
+    ])
+    const source = [conversation[0]!, long, ...conversation.slice(2)]
+    const truncated = [
+      conversation[0]!,
+      assistant("msg_2", [
+        text("t1", "hi"),
+        tool({
+          id: "call_1",
+          name: "read",
+          args: { filePath: "a.ts" },
+          output: `${"head".repeat(10)}\n${ContextBudget.TRUNCATED_MARKER}\n${"tail".repeat(10)}`,
+        }),
+      ]),
+      ...conversation.slice(2),
+    ]
+    expect(ContextInvariants.check(source, truncated)).toEqual([])
+  })
+
+  test("rejects a reordered prepared context", () => {
+    const reordered = [conversation[2]!, conversation[0]!, conversation[1]!, conversation[3]!]
+    expect(ContextInvariants.check(conversation, reordered)).toEqual([
+      "prepared context reordered message msg_1",
+      "prepared context reordered message msg_2",
+    ])
+  })
+
   test("rejects an appended system message", () => {
     const prepared: SessionMessage.Message[] = [
       ...conversation,
@@ -420,7 +532,14 @@ describe("context invariants", () => {
 })
 
 describe("context budget", () => {
-  const compression = { enabled: true, mode: "range" as const, automatic: true, minContext: 0.6, maxContext: 0.85 }
+  const compression = {
+    enabled: true,
+    mode: "range" as const,
+    automatic: true,
+    minContext: 0.6,
+    maxContext: 0.85,
+    timeoutMillis: 90_000,
+  }
 
   test("maps utilization onto the configured policy bands", () => {
     expect(ContextBudget.recommend(0.4, compression)).toBe("none")
@@ -428,6 +547,17 @@ describe("context budget", () => {
     expect(ContextBudget.recommend(0.8, compression)).toBe("nudge")
     expect(ContextBudget.recommend(0.87, compression)).toBe("prefer")
     expect(ContextBudget.recommend(0.95, compression)).toBe("mandatory")
+  })
+
+  test("measures the system prompt and tool definitions as part of the request", () => {
+    expect(ContextBudget.envelope(undefined)).toEqual({ tokens: 0, bytes: 0 })
+    const cost = ContextBudget.envelope({
+      system: ["You are a coding agent.".repeat(20)],
+      tools: [{ name: "read", parameters: { filePath: "string" } }],
+      extra: ["max steps reached"],
+    })
+    expect(cost.tokens).toBeGreaterThan(0)
+    expect(cost.bytes).toBeGreaterThan(cost.tokens)
   })
 
   test("reduces an oversized payload in deterministic order without touching protected content", () => {
@@ -453,7 +583,14 @@ describe("context budget", () => {
 describe("context settings", () => {
   test("uses DCP-compatible defaults", () => {
     expect(ContextSettings.settings([])).toEqual({
-      compression: { enabled: true, mode: "range", automatic: true, minContext: 0.6, maxContext: 0.85 },
+      compression: {
+        enabled: true,
+        mode: "range",
+        automatic: true,
+        minContext: 0.6,
+        maxContext: 0.85,
+        timeoutMillis: 90_000,
+      },
       deduplication: { enabled: true },
       purgeErrors: { enabled: true, turns: 4 },
       protection: ContextProtection.defaultPolicy,
@@ -467,7 +604,11 @@ describe("context settings", () => {
         type: "document",
         info: new Config.Info({
           context: new ConfigContext.Info({
-            dynamic_compression: new ConfigContext.DynamicCompression({ enabled: false, max_context: 0.9 }),
+            dynamic_compression: new ConfigContext.DynamicCompression({
+              enabled: false,
+              max_context: 0.9,
+              timeout_ms: 15_000,
+            }),
             purge_errors: new ConfigContext.PurgeErrors({ turns: 2 }),
             protection: new ConfigContext.Protection({ tools: ["deploy"], user_messages: true }),
             payload_bytes: 1_000,
@@ -478,6 +619,7 @@ describe("context settings", () => {
 
     expect(resolved.compression.enabled).toBe(false)
     expect(resolved.compression.maxContext).toBe(0.9)
+    expect(resolved.compression.timeoutMillis).toBe(15_000)
     expect(resolved.purgeErrors.turns).toBe(2)
     expect(resolved.protection.userMessages).toBe(true)
     expect(resolved.protection.tools).toContain("deploy")
