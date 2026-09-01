@@ -42,6 +42,7 @@ import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
+import { ContextManager } from "@opencode-ai/core/context/manager"
 import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import {
@@ -364,6 +365,15 @@ const setupOverflowRecovery = Effect.gen(function* () {
   requests.length = 0
   return session
 })
+
+/**
+ * System parts contributed by the System Context pipeline.
+ *
+ * The runner also adds one stable context-management instruction to every request. It is asserted
+ * on its own in `context-manager.test.ts`, so these System Context assertions ignore it.
+ */
+const systemBaselines = (request: LLMRequest) =>
+  request.system.map((part) => part.text).filter((text) => text !== ContextManager.GUIDANCE)
 
 const messageTexts = (request: LLMRequest, role: "user" | "system") =>
   request.messages.flatMap((message) =>
@@ -756,7 +766,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Second" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      expect(requests.map(systemBaselines)).toEqual([
         ["Initial context"],
         ["Initial context"],
       ])
@@ -794,7 +804,7 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-build", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Build agent instructions", "Initial context"])
+      expect(systemBaselines(requests.at(-1)!)).toEqual(["Build agent instructions", "Initial context"])
     }),
   )
 
@@ -820,7 +830,7 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-reviewer", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+      expect(systemBaselines(requests.at(-1)!)).toEqual(["Reviewer instructions", "Initial context"])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
@@ -849,7 +859,7 @@ describe("SessionRunnerLLM", () => {
       response = fragmentFixture("text", "text-selected", ["Done"]).completeEvents
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
+      expect(systemBaselines(requests.at(-1)!)).toEqual(["Reviewer instructions", "Initial context"])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
     }),
   )
@@ -875,7 +885,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Second" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      expect(requests.map(systemBaselines)).toEqual([
         ["Initial context\n\nBuild skills"],
         ["Initial context\n\nBuild skills"],
       ])
@@ -909,7 +919,7 @@ describe("SessionRunnerLLM", () => {
       response = []
       yield* session.resume(sessionID)
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      expect(requests.map(systemBaselines)).toEqual([
         ["Initial context\n\nBuild skills"],
       ])
     }),
@@ -939,7 +949,7 @@ describe("SessionRunnerLLM", () => {
       response = []
       yield* session.resume(sessionID)
       expect(requests.map((request) => request.model)).toEqual([model])
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([["Initial context"]])
+      expect(requests.map(systemBaselines)).toEqual([["Initial context"]])
     }),
   )
 
@@ -987,7 +997,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      expect(requests.map(systemBaselines)).toEqual([
         ["Initial context"],
         ["Initial context"],
         ["Initial context"],
@@ -1033,7 +1043,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      expect(requests.map(systemBaselines)).toEqual([
         ["Initial context"],
         ["Initial context"],
         ["Initial context"],
@@ -1070,7 +1080,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Second" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      expect(requests.map(systemBaselines)).toEqual([
         ["Initial context"],
         ["Replacement context"],
       ])
@@ -1371,7 +1381,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Initial context"])
+      expect(systemBaselines(requests.at(-1)!)).toEqual(["Initial context"])
       expect(systemTexts(requests.at(-1)!)).toContain("Changed context")
     }),
   )
@@ -1569,7 +1579,7 @@ describe("SessionRunnerLLM", () => {
       yield* Fiber.join(run)
 
       expect(requests.map((request) => request.model)).toEqual([model, replacementModel])
-      expect(requests.map((request) => request.system.map((part) => part.text))).toEqual([
+      expect(requests.map(systemBaselines)).toEqual([
         ["Initial context"],
         ["Initial context"],
       ])

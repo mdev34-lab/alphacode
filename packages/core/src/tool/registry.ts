@@ -9,7 +9,16 @@ import { SessionSchema } from "../session/schema"
 import { ToolOutputStore } from "../tool-output-store"
 import { Wildcard } from "../util/wildcard"
 import { ApplicationTools } from "./application-tools"
-import { definition, permission, settle, validateName, type AnyTool, type RegistrationError } from "./tool"
+import {
+  contextPolicy,
+  definition,
+  permission,
+  settle,
+  validateName,
+  Tool,
+  type AnyTool,
+  type RegistrationError,
+} from "./tool"
 import { Tools } from "./tools"
 import { makeLocationNode } from "../effect/app-node"
 
@@ -28,6 +37,8 @@ export interface Interface {
 
 export interface Materialization {
   readonly definitions: ReadonlyArray<ToolDefinition>
+  /** Per-tool context-management declarations, consumed by the context compiler. */
+  readonly policies: Readonly<Record<string, Tool.ContextPolicy>>
   readonly settle: (input: ExecuteInput) => Effect.Effect<Settlement, ToolOutputStore.Error>
 }
 
@@ -113,6 +124,12 @@ const registryLayer = Layer.effect(
           if (whollyDisabled(permission(registration.tool, name), permissions)) registrations.delete(name)
         return {
           definitions: Array.from(registrations, ([name, registration]) => definition(name, registration.tool)),
+          policies: Object.fromEntries(
+            Array.from(registrations).flatMap(([name, registration]) => {
+              const policy = contextPolicy(registration.tool)
+              return policy ? [[name, policy] as const] : []
+            }),
+          ),
           settle: (input) => {
             const registration = registrations.get(input.call.name)
             if (registration) return settleWith(input, registration.identity)

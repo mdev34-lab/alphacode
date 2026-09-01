@@ -25,6 +25,7 @@ import { useSDK } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
+import { useData } from "../../context/data"
 import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
@@ -159,6 +160,7 @@ export function Prompt(props: PromptProps) {
   const route = useRoute()
   const project = useProject()
   const sync = useSync()
+  const data = useData()
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
   const toast = useToast()
@@ -266,6 +268,25 @@ export function Prompt(props: PromptProps) {
   const usage = createMemo(() => {
     if (!props.sessionID) return
     const session = sync.session.get(props.sessionID)
+    const cost = session?.cost ?? 0
+    const spent = cost > 0 ? money.format(cost) : undefined
+    // The context compiler measures what the next provider turn actually sends, so prefer it over
+    // the raw token counters of the last assistant message once a turn has been prepared.
+    const prepared = data.session.context.get(props.sessionID)
+    if (prepared) {
+      const pct = prepared.limit ? `${Math.round(prepared.utilization * 100)}%` : undefined
+      const saved = prepared.tokensSaved > 0 ? `-${Locale.number(prepared.tokensSaved)}` : undefined
+      return {
+        context: [
+          pct ? `${Locale.number(prepared.preparedTokens)} (${pct})` : Locale.number(prepared.preparedTokens),
+          saved,
+        ]
+          .filter(Boolean)
+          .join(" "),
+        cost: spent,
+        urgent: prepared.recommendation === "prefer" || prepared.recommendation === "mandatory",
+      }
+    }
     const msg = sync.data.message[props.sessionID] ?? []
     const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
     if (!last) return
@@ -276,10 +297,10 @@ export function Prompt(props: PromptProps) {
 
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
-    const cost = session?.cost ?? 0
     return {
       context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      cost: cost > 0 ? money.format(cost) : undefined,
+      cost: spent,
+      urgent: false,
     }
   })
 
@@ -1519,9 +1540,7 @@ export function Prompt(props: PromptProps) {
                           <Show when={showVision()}>
                             <text fg={fadeColor(theme.textMuted, visionMetaAlpha())}>·</text>
                             <text>
-                              <span style={{ fg: fadeColor(theme.accent, visionMetaAlpha()), bold: true }}>
-                                vision
-                              </span>
+                              <span style={{ fg: fadeColor(theme.accent, visionMetaAlpha()), bold: true }}>vision</span>
                             </text>
                           </Show>
                         </box>
@@ -1723,7 +1742,7 @@ export function Prompt(props: PromptProps) {
                   <Switch>
                     <Match when={usage()}>
                       {(item) => (
-                        <text fg={theme.textMuted} wrapMode="none">
+                        <text fg={item().urgent ? theme.warning : theme.textMuted} wrapMode="none">
                           {[item().context, item().cost].filter(Boolean).join(" · ")}
                         </text>
                       )}

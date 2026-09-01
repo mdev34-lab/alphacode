@@ -11,6 +11,7 @@ import {
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
+import { ContextManager } from "../../context/manager"
 import { Database } from "../../database/database"
 import { EventV2 } from "../../event"
 import { FSUtil } from "../../fs-util"
@@ -107,6 +108,7 @@ const layer = Layer.effect(
     const skillGuidance = yield* SkillGuidance.Service
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
+    const contextManager = yield* ContextManager.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
     const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
@@ -121,9 +123,7 @@ const layer = Layer.effect(
       return yield* store.context(sessionID)
     })
 
-    const registerAttachments = Effect.fn("SessionRunner.registerAttachments")(function* (
-      sessionID: SessionSchema.ID,
-    ) {
+    const registerAttachments = Effect.fn("SessionRunner.registerAttachments")(function* (sessionID: SessionSchema.ID) {
       const registry = systemContext
       const store = Option.getOrElse(yield* Effect.serviceOption(AttachmentStore.Service), () => undefined)
       if (!store) return
@@ -247,6 +247,16 @@ const layer = Layer.effect(
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
+      // One canonical context pipeline: canonical history in, prepared provider context out. The
+      // request below never sees the reduction decisions, only their result.
+      const prepared = yield* contextManager.prepare({
+        sessionID: session.id,
+        messages: context,
+        purpose: "agent-turn",
+        model,
+        toolPolicies: toolMaterialization?.policies,
+        automatic: true,
+      })
       const request = LLM.request({
         model,
         http: {
@@ -257,18 +267,22 @@ const layer = Layer.effect(
           },
         },
         providerOptions: { openai: { promptCacheKey } },
-        system: [agent.info?.system, system.baseline]
+        system: [agent.info?.system, contextManager.guidance(), system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
         messages: [
-          ...(yield* toLLMMessages(context, model).pipe(Effect.provideService(FSUtil.Service, fsys))),
+          ...(yield* toLLMMessages(prepared.messages, model).pipe(Effect.provideService(FSUtil.Service, fsys))),
           ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
         ],
         tools: toolMaterialization?.definitions ?? [],
         toolChoice: isLastStep ? "none" : undefined,
       })
-      if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
+      if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request })) {
+        // Native compaction rewrites the projected history, so every compression boundary that
+        // pointed into it is now stale.
+        yield* contextManager.invalidate(session.id)
         return yield* Effect.die(continueAfterCompaction(currentStep))
+      }
       const startSnapshot = yield* snapshots.capture()
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
@@ -339,8 +353,10 @@ const layer = Layer.effect(
             !publisher.hasAssistantStarted() &&
             isContextOverflowFailure(overflowFailure ?? failure) &&
             (yield* restore(recoverOverflow({ sessionID: session.id, entries, model, request })))
-          )
+          ) {
+            yield* contextManager.invalidate(session.id)
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
+          }
           if (overflowFailure) yield* publish(overflowFailure)
           const llmFailure = failure instanceof LLMError ? failure : undefined
           if (llmFailure && !publisher.hasProviderError()) {
@@ -485,5 +501,6 @@ export const node = makeLocationNode({
     Config.node,
     Snapshot.node,
     Database.node,
+    ContextManager.node,
   ],
 })
