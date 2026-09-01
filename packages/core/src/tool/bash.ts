@@ -12,6 +12,7 @@ import { AppProcess } from "../process"
 import { PermissionV2 } from "../permission"
 import { PositiveInt } from "../schema"
 import { ToolRegistry } from "./registry"
+import { NarrationDetector } from "./narration"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 
@@ -115,10 +116,18 @@ const layer = Layer.effectDiscard(
             ...(output.exit === undefined ? {} : { exit: output.exit }),
             ...(output.timeout === undefined ? {} : { timeout: output.timeout }),
           }),
-          toModelOutput: ({ output }) => [
-            { type: "text", text: output.output },
-            { type: "text", text: modelOutput(output) },
-          ],
+          toModelOutput: ({ input, output }) => {
+            const parts: Array<{ type: "text"; text: string }> = [
+              { type: "text", text: output.output },
+              { type: "text", text: modelOutput(output) },
+            ]
+            if (NarrationDetector.isNarrationOnly(input.command))
+              parts[parts.length - 1] = {
+                type: "text",
+                text: parts[parts.length - 1]!.text + NarrationDetector.GUIDANCE,
+              }
+            return parts
+          },
           execute: (input, context) =>
             Effect.gen(function* () {
               const source = {
