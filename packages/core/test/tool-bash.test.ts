@@ -15,6 +15,7 @@ import { AppProcess } from "@opencode-ai/core/process"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { BashTool } from "@opencode-ai/core/tool/bash"
+import { NarrationDetector } from "@opencode-ai/core/tool/narration"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { location } from "./fixture/location"
@@ -417,6 +418,340 @@ describe("BashTool", () => {
     ),
   )
 })
+
+describe("BashTool — narration-only guidance", () => {
+  // 1. Narration receives guidance — output preserved, guidance appended
+  it.live("appends harness guidance after narration-only command output", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        result = {
+          ...result,
+          exitCode: 0,
+          output: Buffer.from("Calling session_list\n"),
+        }
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'echo "Calling session_list"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              // Original stdout is intact as the first content part
+              expect(settled.output?.content[0]).toEqual({
+                type: "text",
+                text: "Calling session_list\n",
+              })
+              // Guidance is appended to the final content part (not injected into stdout)
+              const lastPart = settled.output?.content[settled.output.content.length - 1]
+              expect(lastPart?.text).toContain("[AlphaCode]")
+              expect(lastPart?.text).toContain("described an intended action")
+              // Exit code handling is not affected
+              expect(settled.output?.structured).toMatchObject({ exit: 0, truncated: false })
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  // 2. Multiple narration patterns (echo / printf / Write-Output)
+  it.live("appends guidance for echo Using pattern", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'echo "Using devin_session_search instead"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              const lastPart = settled.output?.content[settled.output.content.length - 1]
+              expect(lastPart?.text).toContain("[AlphaCode]")
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("appends guidance for printf Calling pattern", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'printf "Calling session_list"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              const lastPart = settled.output?.content[settled.output.content.length - 1]
+              expect(lastPart?.text).toContain("[AlphaCode]")
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("appends guidance for Write-Output Calling pattern", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'Write-Output "Calling session_list"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              const lastPart = settled.output?.content[settled.output.content.length - 1]
+              expect(lastPart?.text).toContain("[AlphaCode]")
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  // 3. Legitimate shell output is untouched — no guidance
+  it.live("does not append guidance for echo with variable expansion", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'echo "$PATH"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("does not append guidance for printf with variable", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: `printf '%s\\n' "$result"` })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("does not append guidance for redirect to file", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: `echo '{"foo":"bar"}' > file.json` })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  // 4. Shell failure — exit code behavior unchanged; guidance still appended when narration
+  it.live("preserves non-zero exit code when narration command fails", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        result = { ...result, exitCode: 1, output: Buffer.from("some error output\n") }
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'echo "Calling session_list"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              // Exit code is reported normally
+              expect(settled.output?.structured).toMatchObject({ exit: 1 })
+              const lastPart = settled.output?.content[settled.output.content.length - 1]
+              // Guidance still appended
+              expect(lastPart?.text).toContain("[AlphaCode]")
+              // Exit-code text still present
+              expect(lastPart?.text).toContain("Command exited with code 1")
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  // ── printf regression tests (from PR review) ─────────────────────────────
+  // The old implementation concatenated all printf arguments and matched the
+  // prefix against "Calling %s session_list", which is a false positive.
+  // These tests lock in the correct behaviour: multi-argument printf is never
+  // treated as narration regardless of the first argument's text.
+  it.live("does not append guidance for printf with format + positional arg", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'printf "Calling %s" session_list' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("does not append guidance for printf with format+newline + positional arg", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'printf "Calling %s\\n" session_list' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("does not append guidance for printf with format + two positional args", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'printf "Calling %s %s" foo bar' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  // ── Ambiguous-prefix tests (from PR review) ────────────────────────────
+  // "running", "sending", "getting" were removed from the prefix list because
+  // they appear too often in legitimate log lines. These tests lock in that
+  // they do NOT trigger the detector.
+  it.live("does not flag 'Running tests' (running removed from prefix list)", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'echo "Running tests"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("does not flag 'Sending request' (sending removed from prefix list)", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'echo "Sending request"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("does not flag 'Getting coffee' (getting removed from prefix list)", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        return withTool(tmp.path, (registry) =>
+          settleTool(registry, call({ command: 'echo "Getting coffee"' })),
+        ).pipe(
+          Effect.andThen((settled) =>
+            Effect.sync(() => {
+              for (const part of settled.output?.content ?? []) {
+                expect(part.text).not.toContain("[AlphaCode]")
+              }
+            }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  // 5. Guidance is harness-generated (detector reachable as pure function)
+  test("harness detector is available as a pure function independent of shell execution", () => {
+    expect(NarrationDetector.isNarrationOnly('echo "Calling session_list"')).toBe(true)
+    expect(NarrationDetector.isNarrationOnly('echo "$PATH"')).toBe(false)
+    expect(NarrationDetector.isNarrationOnly('printf "Calling %s" foo')).toBe(false)
+    expect(NarrationDetector.isNarrationOnly('echo "Running tests"')).toBe(false)
+    expect(NarrationDetector.GUIDANCE).toContain("[AlphaCode]")
+  })
+})
+
 
 test("keeps locked deferred parity TODOs visible", async () => {
   const source = await fs.readFile(new URL("../src/tool/bash.ts", import.meta.url), "utf8")
