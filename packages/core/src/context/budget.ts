@@ -21,6 +21,11 @@ export const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value)
  * resent on every turn and are frequently larger than the recent conversation. The caller that owns
  * the request — the session runner — declares them here so the budget bands describe the real
  * prompt envelope instead of just its message list.
+ *
+ * This is an estimate, not the wire payload: it measures the canonical inputs a request is built
+ * from, not the provider-native body they are lowered into. That is the right trade for planning
+ * decisions, which have to be made before the request exists. Enforcement of the hard byte ceiling
+ * measures the serialized body itself — see `ContextManager.payload`.
  */
 export interface Envelope {
   /** System prompt blocks, in the order the request will send them. */
@@ -38,7 +43,7 @@ export interface EnvelopeCost {
 
 export const emptyEnvelope: EnvelopeCost = { tokens: 0, bytes: 0 }
 
-/** Measure the non-history part of a provider request the same way history itself is measured. */
+/** Estimate the non-history part of a provider request the same way history itself is estimated. */
 export const envelope = (input: Envelope | undefined): EnvelopeCost => {
   if (input === undefined) return emptyEnvelope
   const serialized = JSON.stringify([input.system ?? [], input.tools ?? [], input.extra ?? []])

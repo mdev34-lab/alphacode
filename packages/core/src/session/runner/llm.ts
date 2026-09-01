@@ -305,6 +305,24 @@ const layer = Layer.effect(
       const withPublication = Semaphore.makeUnsafe(1).withPermit
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
+      // The configured payload ceiling is a hard limit, so it is enforced on the serialized request
+      // rather than on the estimate that drove the reduction. Native compaction is the last lever
+      // left once compression has already run; if it cannot help, the turn fails here instead of
+      // sending a request that is known to be too large.
+      const size = yield* contextManager.payload(request)
+      if (!size.within) {
+        if (recoverOverflow && (yield* recoverOverflow({ sessionID: session.id, entries, model, request }))) {
+          yield* contextManager.invalidate(session.id)
+          return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
+        }
+        yield* publish(
+          LLMEvent.providerError({
+            message: `The request is ${size.bytes} bytes and exceeds the configured context payload budget of ${size.limit} bytes. Compression and compaction could not reduce it further; start a new session or raise context.payload_bytes.`,
+          }),
+        )
+        yield* withPublication(publisher.flush())
+        return { needsContinuation: false, step: currentStep }
+      }
       let overflowFailure: ProviderErrorEvent | undefined
       const providerStream = llm.stream(request).pipe(
         Stream.runForEach((event) =>

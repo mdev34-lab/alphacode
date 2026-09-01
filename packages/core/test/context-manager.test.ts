@@ -276,6 +276,8 @@ const harness = (config: Layer.Layer<Config.Service>) =>
 const it = harness(config)
 /** A ceiling small enough that a couple of file reads already blow past it. */
 const itBounded = harness(configWith(3_000))
+/** A ceiling nothing can fit under, not even an empty conversation with its tools. */
+const itUnfittable = harness(configWith(200))
 
 const sessionID = SessionV2.ID.make("ses_context_manager_test")
 
@@ -593,6 +595,26 @@ describe("ContextManager", () => {
       expect(stats.tokensSaved).toBeGreaterThan(0)
       // A payload that the ladder still cannot fit is reported rather than silently oversized.
       expect(failures.map((event) => event.reason).join("|")).toContain("payload byte budget")
+    }),
+  )
+
+  itUnfittable.effect("never sends a request that cannot be reduced under the payload ceiling", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      turns = [say("This turn must never reach the provider")]
+
+      yield* ask(session, "Hello")
+
+      // Nothing that carries tools is an agent turn, so an empty list here means the oversized
+      // request was never handed to the client. The queued provider turn is still unconsumed.
+      expect(requests.filter((request) => request.tools.length > 0)).toEqual([])
+      expect(turns).toHaveLength(1)
+      // The turn fails loudly instead of silently sending or silently stopping.
+      expect(JSON.stringify(failures)).toContain("context payload budget")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      expect(history.flatMap((message) => (message.type === "user" ? [message.text] : []))).toEqual(["Hello"])
     }),
   )
 

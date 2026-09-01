@@ -1,7 +1,7 @@
 export * as ContextManager from "./manager"
 
 import { LLMClient, type LLMRequest, type Model } from "@opencode-ai/llm"
-import { Context, DateTime, Duration, Effect, Layer, Option } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, Option, Schema } from "effect"
 import { Config } from "../config"
 import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
@@ -79,6 +79,20 @@ export interface Interface {
   readonly invalidate: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   /** Stable system-prompt guidance describing the context tools, or undefined when disabled. */
   readonly guidance: () => string | undefined
+  /**
+   * Exact size of the request that would go on the wire, against the configured byte ceiling.
+   *
+   * Everything else in this module estimates, because reduction decisions have to be made before a
+   * request exists. Enforcement does not get to estimate: the request is lowered into its
+   * provider-native body and that serialization is what is measured.
+   */
+  readonly payload: (request: LLMRequest) => Effect.Effect<PayloadSize>
+}
+
+export interface PayloadSize {
+  readonly bytes: number
+  readonly limit: number | undefined
+  readonly within: boolean
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ContextManager") {}
@@ -410,6 +424,20 @@ const layer = Layer.effect(
       })
     })
 
+    const payload = Effect.fnUntraced(function* (request: LLMRequest) {
+      const limit = settings.payloadBytes
+      if (limit === undefined) return { bytes: 0, limit, within: true } satisfies PayloadSize
+      const route = request.model.route
+      // A request that cannot even be lowered is not a budget problem, so fall back to the canonical
+      // request material rather than blocking the turn on a lowering failure.
+      const serialized = yield* route.body.from(request).pipe(
+        Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(route.body.schema))),
+        Effect.catchCause(() => Effect.succeed(JSON.stringify([request.system, request.messages, request.tools]))),
+      )
+      const bytes = Buffer.byteLength(serialized, "utf8")
+      return { bytes, limit, within: bytes <= limit } satisfies PayloadSize
+    })
+
     const resolveModel = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return undefined
@@ -427,7 +455,7 @@ const layer = Layer.effect(
         preparedTokens: prepared.stats.preparedTokens,
         limit: settings.payloadBytes,
       })
-      yield* fail(prepared.sessionID, "the prepared context still exceeds the configured payload byte budget")
+      yield* fail(prepared.sessionID, "the prepared context is expected to exceed the configured payload byte budget")
     })
 
     const prepare = Effect.fn("ContextManager.prepare")(function* (input: PrepareInput) {
@@ -492,6 +520,7 @@ const layer = Layer.effect(
         yield* ContextState.reset(db, sessionID)
       }),
       guidance: () => (settings.compression.enabled ? GUIDANCE : undefined),
+      payload,
     })
   }),
 )
