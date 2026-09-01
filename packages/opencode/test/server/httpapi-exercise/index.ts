@@ -1144,6 +1144,21 @@ const scenarios: Scenario[] = [
     }))
     .status(404, undefined, "status"),
   http.protected
+    .post("/api/session/{sessionID}/compress", "v2.session.compress")
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/compress", { sessionID: "ses_httpapi_missing" }),
+      headers: { ...ctx.headers(), "content-type": "application/json" },
+      body: {},
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .get("/api/session/{sessionID}/context/stats", "v2.session.contextStats")
+    .at((ctx) => ({
+      path: route("/api/session/{sessionID}/context/stats", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
     .post("/api/session/{sessionID}/wait", "v2.session.wait")
     .at((ctx) => ({
       path: route("/api/session/{sessionID}/wait", { sessionID: "ses_httpapi_missing" }),

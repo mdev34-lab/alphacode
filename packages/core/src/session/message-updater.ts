@@ -392,6 +392,8 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
       "session.next.revert.committed": () => Effect.void,
       // Context management reports what the next provider request will contain. It never changes
       // the canonical projection.
+      "session.next.context.preparing": () => Effect.void,
+      "session.next.context.compressing": () => Effect.void,
       "session.next.context.compressed": () => Effect.void,
       "session.next.context.compression.failed": () => Effect.void,
       "session.next.context.prepared": () => Effect.void,

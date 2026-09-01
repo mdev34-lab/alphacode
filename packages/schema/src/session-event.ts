@@ -439,6 +439,29 @@ export namespace Compaction {
  * separately persisted compression blocks already describe the recoverable state.
  */
 export namespace Context {
+  export const Preparing = Event.define({
+    type: "session.next.context.preparing",
+    schema: {
+      ...Base,
+      messageCount: NonNegativeInt,
+      rawTokens: NonNegativeInt,
+      limit: NonNegativeInt.pipe(optional),
+    },
+  })
+  export type Preparing = typeof Preparing.Type
+
+  export const Compressing = Event.define({
+    type: "session.next.context.compressing",
+    schema: {
+      ...Base,
+      reason: Schema.Literals(["model", "manual", "auto"]),
+      startMessageID: SessionMessage.ID,
+      endMessageID: SessionMessage.ID,
+      messageCount: NonNegativeInt,
+    },
+  })
+  export type Compressing = typeof Compressing.Type
+
   export const Compressed = Event.define({
     type: "session.next.context.compressed",
     schema: {
@@ -557,6 +580,8 @@ export const Definitions = Event.inventory(
   Compaction.Started,
   Compaction.Delta,
   Compaction.Ended,
+  Context.Preparing,
+  Context.Compressing,
   Context.Compressed,
   Context.CompressionFailed,
   Context.Prepared,

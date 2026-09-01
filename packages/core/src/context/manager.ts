@@ -123,6 +123,13 @@ const layer = Layer.effect(
     const prepareOnce = Effect.fnUntraced(function* (input: PrepareInput) {
       const limit = usableLimit(input)
       if (ContextTypes.isolated(input.purpose)) return passthrough(input, limit)
+      yield* events.publish(SessionEvent.Context.Preparing, {
+        sessionID: input.sessionID,
+        timestamp: yield* DateTime.now,
+        messageCount: input.messages.length,
+        rawTokens: ContextBudget.tokens(input.messages),
+        limit,
+      })
 
       const blocks = settings.compression.enabled ? yield* ContextState.list(db, input.sessionID) : []
       const protection = ContextProtection.resolve(input.messages, {
@@ -243,6 +250,14 @@ const layer = Layer.effect(
       const selected = messages.slice(start, end + 1).filter((message) => !protection.messageIDs.has(message.id))
       if (selected.length < 2 || start > end) return { failure: "empty-range" as const }
 
+      yield* events.publish(SessionEvent.Context.Compressing, {
+        sessionID: input.sessionID,
+        timestamp: yield* DateTime.now,
+        reason: input.reason,
+        startMessageID: selected[0]!.id,
+        endMessageID: selected.at(-1)!.id,
+        messageCount: selected.length,
+      })
       const model = input.model ?? (yield* resolveModel(input.sessionID))
       if (!model) {
         yield* fail(input.sessionID, "no model is available for compression")

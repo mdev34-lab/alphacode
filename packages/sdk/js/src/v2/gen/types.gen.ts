@@ -45,6 +45,8 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
+  | EventSessionNextContextPreparing
+  | EventSessionNextContextCompressing
   | EventSessionNextContextCompressed
   | EventSessionNextContextCompressionFailed
   | EventSessionNextContextPrepared
@@ -1167,6 +1169,29 @@ export type GlobalEvent = {
           reason: "auto" | "manual"
           text: string
           recent: string
+        }
+      }
+    | {
+        id: string
+        type: "session.next.context.preparing"
+        properties: {
+          timestamp: number
+          sessionID: string
+          messageCount: number
+          rawTokens: number
+          limit?: number
+        }
+      }
+    | {
+        id: string
+        type: "session.next.context.compressing"
+        properties: {
+          timestamp: number
+          sessionID: string
+          reason: "model" | "manual" | "auto"
+          startMessageID: string
+          endMessageID: string
+          messageCount: number
         }
       }
     | {
@@ -2958,6 +2983,8 @@ export type V2Event =
   | SessionNextCompactionStarted
   | SessionNextCompactionDelta
   | SessionNextCompactionEnded
+  | SessionNextContextPreparing
+  | SessionNextContextCompressing
   | SessionNextContextCompressed
   | SessionNextContextCompressionFailed
   | SessionNextContextPrepared
@@ -5421,6 +5448,49 @@ export type SessionNextCompactionDelta = {
   }
 }
 
+export type SessionNextContextPreparing = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.context.preparing"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    messageCount: number
+    rawTokens: number
+    limit?: number
+  }
+}
+
+export type SessionNextContextCompressing = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.context.compressing"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    reason: "model" | "manual" | "auto"
+    startMessageID: string
+    endMessageID: string
+    messageCount: number
+  }
+}
+
 export type SessionNextContextCompressed = {
   id: string
   metadata?: {
@@ -6824,6 +6894,31 @@ export type EventSessionNextCompactionEnded = {
     reason: "auto" | "manual"
     text: string
     recent: string
+  }
+}
+
+export type EventSessionNextContextPreparing = {
+  id: string
+  type: "session.next.context.preparing"
+  properties: {
+    timestamp: number
+    sessionID: string
+    messageCount: number
+    rawTokens: number
+    limit?: number
+  }
+}
+
+export type EventSessionNextContextCompressing = {
+  id: string
+  type: "session.next.context.compressing"
+  properties: {
+    timestamp: number
+    sessionID: string
+    reason: "model" | "manual" | "auto"
+    startMessageID: string
+    endMessageID: string
+    messageCount: number
   }
 }
 

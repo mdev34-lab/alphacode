@@ -1,0 +1,174 @@
+# Dynamic Context Management
+
+Native context engineering for AlphaCode sessions: the provider context is compiled from canonical
+history on every turn instead of being mutated in place. Inspired by the Dynamic Context Plugin
+(DCP), re-implemented against the Effect-based V2 session runtime.
+
+## Problem
+
+A long session sends the same bytes to the provider again and again: repeated `read` of the same
+file, the full input of a command that failed twenty turns ago, exploration that is finished and no
+longer load-bearing. Native compaction only helps at the very end, by discarding everything at once.
+
+## Solution
+
+Keep the session history immutable and treat "what we send to the model" as a compiled artifact.
+Between `SessionHistory.entriesForRunner` and `toLLMMessages`, `ContextManager.prepare` runs a
+deterministic pipeline over canonical `SessionMessage.Message[]`:
+
+```
+canonical history
+  → compression placeholders   (ContextPlaceholder.apply)
+  → duplicate tool output      (ContextDeduplicate)
+  → stale failed tool inputs   (ContextPurgeErrors)
+  → protection policy          (ContextProtection)
+  → measurement + budget bands (ContextBudget)
+  → payload-byte fallback      (ContextBudget.reduce)
+  → invariant check            (ContextInvariants)
+  → provider request
+```
+
+Every stage is pure and monotonic: once a call is superseded or an error input is stale, it stays
+that way. The request prefix therefore only changes when something genuinely new happens, which
+keeps provider prompt caching useful.
+
+## Hard rules
+
+These are enforced by `ContextInvariants.check`, which runs on every prepared context. A violation
+logs `context.prepare.invariant` and falls back to the canonical passthrough context — context
+management can never make a session unusable.
+
+1. **No synthetic assistant content.** The compiler never fabricates assistant messages, assistant
+   text, or tool calls, and never rewrites model text.
+2. **No appended system messages.** At most one logical system prompt exists, assembled once at
+   request construction: `[agent prompt, context guidance, baseline system context]`.
+3. **Canonical history is immutable.** Only the provider projection changes; `session.messages`
+   always returns the original content.
+
+Editing recorded tool _results_ and stale failed tool _inputs_ is allowed — those are AlphaCode's
+own recordings, not model output.
+
+## Modules (`packages/core/src/context/`)
+
+| Module              | Responsibility                                                             |
+| ------------------- | -------------------------------------------------------------------------- |
+| `manager.ts`        | `prepare`, `compress`, `stats`, `invalidate`, `guidance`; event publishing |
+| `compressor.ts`     | Summary prompt construction and block creation                             |
+| `deduplicate.ts`    | Plan/apply superseded duplicate tool output                                |
+| `purge-errors.ts`   | Plan/apply stale failed tool inputs                                        |
+| `protection.ts`     | Protected tools, file globs, recent turns, message types                   |
+| `budget.ts`         | Token measurement, threshold bands, payload-byte reduction ladder          |
+| `placeholders.ts`   | Deterministic compression placeholders, nesting, stale-block detection     |
+| `state.ts`/`sql.ts` | `session_context_block` persistence (drizzle)                              |
+| `invariants.ts`     | The hard rules above                                                       |
+| `settings.ts`       | Config resolution and defaults                                             |
+| `types.ts`          | Shared shapes                                                              |
+
+## Compression
+
+`compress` is a model-facing tool (`packages/core/src/tool/compress.ts`) and a user command; both
+call the same `ContextManager.compress` engine, as does automatic compression.
+
+- Range based: `start_message_id`, `end_message_id`, optional `focus`, optional
+  `keep_recent_turns`.
+- The summary call is issued with `purpose: "compression"`, which is an **isolated** context: no
+  tools, no guidance, no transformation of the session.
+- Nested compression composes: an overlapping later range absorbs earlier blocks (they stay stored,
+  marked `absorbed_by`) and their summaries are handed to the summarizer as `<prior-summaries>`.
+- The result is rendered as a deterministic `<compressed-conversation-section>` placeholder carried
+  by a **synthetic** message, lowered to a user-role message. It states that it is historical
+  context, not instructions — summaries are untrusted content.
+- Failures are values, never exceptions: `disabled`, `no-model`, `empty-range`, `invalid-range`,
+  `protected-range`, `summary-unavailable`. The turn continues with the canonical context.
+
+## Protection
+
+Never compressed, deduplicated, or purged:
+
+- The most recent `recent_turns` assistant turns (default 4), plus the newest user and assistant
+  message.
+- Protected tools: `task`, `skill`, `todowrite`, `todoread`, `compress`, `plan_enter`, `plan_exit`,
+  `write`, `edit`, `apply_patch`, `question` — plus anything a tool marks itself with
+  `contextPolicy: { protect: true }`.
+- State-changing tools are never deduplicated (`bash`, `write`, `edit`, `apply_patch`, ...).
+- `system`, `compaction`, `agent-switched`, and `model-switched` messages.
+- User messages, when `protection.user_messages` is enabled (default off).
+
+## Budget bands
+
+`ContextBudget.recommend(utilization)` maps utilization onto `none | normal | nudge | prefer |
+mandatory` using the configured `min_context`/`max_context`. Only `mandatory` triggers autonomous
+compression; the other bands are advisory and surface in the TUI. If the prepared payload still
+exceeds `context.payload_bytes`, a deterministic ladder runs: dedup → purge errors → collapse
+scaffolding → collapse todos → drop oldest.
+
+## Configuration
+
+```jsonc
+{
+  "context": {
+    "dynamic_compression": {
+      "enabled": true,
+      "mode": "range",
+      "automatic": true,
+      "min_context": 0.6,
+      "max_context": 0.85,
+    },
+    "deduplication": { "enabled": true },
+    "purge_errors": { "enabled": true, "turns": 4 },
+    "protection": {
+      "recent_turns": 4,
+      "user_messages": false,
+      "tools": ["my_tool"],
+      "files": ["docs/**"],
+    },
+    "payload_bytes": 4000000,
+  },
+}
+```
+
+`protection.tools` extends the built-in list rather than replacing it.
+
+## API
+
+| Endpoint                             | Purpose                                             |
+| ------------------------------------ | --------------------------------------------------- |
+| `POST /api/session/:id/compress`     | Compress a range; returns `compressed` or `skipped` |
+| `GET /api/session/:id/context/stats` | Utilization, tokens saved, compression count, band  |
+
+Exposed on the SDK as `session.compress(...)` and `session.contextStats(...)`.
+
+## Events (plugin lifecycle)
+
+Published on the event bus and forwarded to clients and plugins. All are advisory and non-durable:
+persistence lives in the session history and the `session_context_block` table.
+
+| Event                                     | Hook               |
+| ----------------------------------------- | ------------------ |
+| `session.next.context.preparing`          | before prepare     |
+| `session.next.context.prepared`           | after prepare      |
+| `session.next.context.compressing`        | before compress    |
+| `session.next.context.compressed`         | after compress     |
+| `session.next.context.compression.failed` | compression failed |
+
+## TUI
+
+- The prompt indicator reports the prepared token count, utilization, and reclaimed tokens, and
+  turns amber once the band reaches `prefer`.
+- The sidebar context panel adds reclaimed tokens and the number of compressed sections.
+- `/compress` (command palette: "Compress context") compresses everything outside the protected
+  recent window.
+
+## Tests
+
+- `packages/core/test/context-compiler.test.ts` — unit coverage of every stage plus the invariants.
+- `packages/core/test/context-manager.test.ts` — runner integration against a fake LLM: one system
+  prompt, dedup/purge visible only in the provider request, compression round-trip, nested
+  compression, graceful failure, protected ranges, statistics events.
+- `packages/core/test/context-provider-shape.test.ts` — OpenAI Chat, Anthropic Messages, and Gemini
+  request bodies keep one system prompt, paired tool calls, and user-side placeholders.
+
+## Non-goals
+
+DCP plugin installation or auto-update, a standalone DCP config file, a dedicated TUI panel,
+experimental per-message compression, provider-specific hacks, and independent subagent compression.
