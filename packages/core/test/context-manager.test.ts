@@ -903,7 +903,7 @@ describe("ContextManager", () => {
     }),
   )
 
-  it.effect("measures the real provider body when no ceiling is configured", () =>
+  it.effect("skips measurement entirely when no ceiling is configured", () =>
     Effect.gen(function* () {
       yield* setup
       const context = yield* ContextManager.Service
@@ -912,7 +912,77 @@ describe("ContextManager", () => {
       const size = yield* context.payload(
         LLM.request({ model: brokenModel, messages: [Message.user("hello")], tools: [] }),
       )
-      expect(size).toEqual({ bytes: 0, limit: undefined, within: true, measured: true })
+      expect(size).toEqual({ bytes: 0, limit: undefined, within: true, measured: false })
+    }),
+  )
+
+  it.effect("normalizes overlapping compression boundaries in storage on the next turn", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const { db } = yield* Database.Service
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+      yield* ask(session, "Step four")
+      yield* ask(session, "Step five")
+
+      // Two blocks that overlap on one side only. Compression cannot produce this any more, so it
+      // stands in for state written by an older version, or left behind by a history rewrite.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const overlapping = (id: string, start: number, end: number, summary: string, createdAt: number) => ({
+        id: `${ContextState.PREFIX}${id}`,
+        startMessageID: history[start]!.id,
+        endMessageID: history[end]!.id,
+        summary,
+        createdAt,
+        sourceMessageCount: end - start + 1,
+        sourceTokenCount: 400,
+        summaryTokenCount: 20,
+        nested: [],
+      })
+      yield* ContextState.insert(db, sessionID, overlapping("older", 0, 3, "summary of the first stretch", 1))
+      yield* ContextState.insert(db, sessionID, overlapping("newer", 2, 5, "summary of the second stretch", 2))
+
+      turns = [say("After normalization")]
+      yield* ask(session, "Keep going")
+
+      // One authoritative range remains, covering exactly what the projection replaced.
+      const blocks = yield* ContextState.list(db, sessionID)
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0]!.id).toBe(`${ContextState.PREFIX}newer`)
+      expect(blocks[0]!.startMessageID).toBe(history[0]!.id)
+      expect(blocks[0]!.endMessageID).toBe(history[5]!.id)
+      expect(blocks[0]!.sourceMessageCount).toBe(6)
+      expect(blocks[0]!.nested).toContain(`${ContextState.PREFIX}older`)
+
+      // Neither summary was stranded, and the request carries a single placeholder for the range.
+      const last = agentTurns().at(-1)!
+      const placeholders = userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholders).toHaveLength(1)
+      expect(placeholders[0]).toContain("summary of the first stretch")
+      expect(placeholders[0]).toContain("summary of the second stretch")
+      expect(placeholders[0]).toContain(`messages: ${history[0]!.id}-${history[5]!.id} (6)`)
+    }),
+  )
+
+  itBounded.effect("stops paying for automatic compression once the summarizer keeps failing", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      turns = [call("call-1", "inspect", { file: "src/index.ts" }), say("First"), say("Second"), say("Third")]
+      yield* ask(session, "Inspect the entry point")
+      // From here the byte ceiling keeps asking for compression and the summarizer keeps refusing.
+      summaryAvailable = false
+      const before = requests.filter(isCompression).length
+
+      yield* ask(session, "Keep going")
+      yield* ask(session, "And again")
+      yield* ask(session, "And once more")
+
+      // One failed attempt, then silence: a broken summarizer costs its latency once, not on every
+      // turn for the rest of the session.
+      const attempts = requests.filter(isCompression).length - before
+      expect(attempts).toBe(1)
     }),
   )
 
@@ -958,6 +1028,18 @@ describe("ContextManager", () => {
       const chained = kinds.findIndex((kind, index) => kind === "compress" && kinds[index + 1] === "compact")
       expect(chained, kinds.join(",")).toBeGreaterThanOrEqual(0)
       expect(kinds.indexOf("agent", chained)).toBeGreaterThan(chained + 1)
+
+      // Bounded latency: a turn inserts at most one summarization and one compaction ahead of the
+      // model call, so no turn can pay for an unbounded ladder of internal requests.
+      const perTurn = kinds.reduce<string[][]>(
+        (groups, kind) =>
+          kind === "agent" ? [...groups, []] : [...groups.slice(0, -1), [...(groups.at(-1) ?? []), kind]],
+        [[]],
+      )
+      for (const group of perTurn) {
+        expect(group.filter((kind) => kind === "compress").length).toBeLessThanOrEqual(1)
+        expect(group.filter((kind) => kind === "compact").length).toBeLessThanOrEqual(1)
+      }
 
       // No oversized request ever reached the provider, on either side of the escalation.
       const provider = requests.filter((request) => request.tools.length > 0)

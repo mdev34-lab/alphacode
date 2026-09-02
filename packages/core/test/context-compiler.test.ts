@@ -1,6 +1,6 @@
 import { expect, describe, test } from "bun:test"
 import { DateTime, Effect, Stream } from "effect"
-import { Message, Model, SystemPart } from "@opencode-ai/llm"
+import { Message, Model, SystemPart, ToolCallPart, ToolResultPart } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { ContextBudget } from "@opencode-ai/core/context/budget"
 import { ContextCompressor } from "@opencode-ai/core/context/compressor"
@@ -335,21 +335,47 @@ describe("compression placeholders", () => {
     ])
   })
 
-  test("keeps both summaries when two compressed ranges partially overlap", () => {
+  test("normalizes two partially overlapping ranges into one authoritative range", () => {
     const first = block({ id: "cmp_1", start: "msg_1", end: "msg_3", summary: "first half", createdAt: 1 })
     const second = block({ id: "cmp_2", start: "msg_2", end: "msg_5", summary: "second half", createdAt: 2 })
     const applied = ContextPlaceholder.apply(sessionID, conversation, [first, second])
 
-    // Neither block contains the other, so dropping one would strand its summary forever.
-    expect(applied.blocks.map((item) => item.id)).toEqual(["cmp_1", "cmp_2"])
+    // Neither block contains the other, and neither may advertise a range the other consumed, so
+    // the projection carries a single placeholder covering exactly what it replaced.
+    expect(applied.blocks.map((item) => item.id)).toEqual(["cmp_2"])
     expect(applied.messages.map((message) => message.id)).toEqual([
-      SessionMessage.ID.make("msg_cmp_1"),
       SessionMessage.ID.make("msg_cmp_2"),
       SessionMessage.ID.make("msg_6"),
     ])
-    // The overlapping message must be summarized, not duplicated.
+    const merged = applied.blocks[0]!
+    expect(merged.startMessageID).toBe(SessionMessage.ID.make("msg_1"))
+    expect(merged.endMessageID).toBe(SessionMessage.ID.make("msg_5"))
+    expect(merged.sourceMessageCount).toBe(5)
+    // Dropping either summary would strand what it condensed, so both are carried.
+    expect(merged.summary).toContain("first half")
+    expect(merged.summary).toContain("second half")
+    expect(merged.nested).toContain("cmp_1")
+
+    // The placeholder text describes the range it actually replaces.
+    const rendered = applied.messages[0]!
+    expect(rendered.type === "synthetic" && rendered.text).toContain("messages: msg_1-msg_5 (5)")
+
+    // The caller is told to persist the normalization rather than re-deriving it every turn.
+    expect(applied.merged.map((item) => [item.block.id, item.absorbed])).toEqual([["cmp_2", ["cmp_1"]]])
     expect(applied.compressedMessages).toBe(5)
     expect(applied.stale).toEqual([])
+  })
+
+  test("keeps a normalized range stable on the next turn", () => {
+    const first = block({ id: "cmp_1", start: "msg_1", end: "msg_3", summary: "first half", createdAt: 1 })
+    const second = block({ id: "cmp_2", start: "msg_2", end: "msg_5", summary: "second half", createdAt: 2 })
+    const applied = ContextPlaceholder.apply(sessionID, conversation, [first, second])
+    // What the caller persists: the widened block, with the absorbed one no longer active.
+    const next = ContextPlaceholder.apply(sessionID, conversation, [applied.merged[0]!.block])
+
+    expect(next.merged).toEqual([])
+    expect(next.messages.map((message) => message.id)).toEqual(applied.messages.map((message) => message.id))
+    expect(next.blocks[0]!.summary).toBe(applied.blocks[0]!.summary)
   })
 
   test("reports blocks whose boundaries no longer exist as stale instead of failing", () => {
@@ -555,6 +581,61 @@ describe("context invariants", () => {
       },
     ])
     expect(ContextInvariants.check(conversation, prepared.messages)).toEqual([])
+  })
+})
+
+describe("lowered tool-call pairing", () => {
+  const call = (id: string, providerExecuted?: boolean) =>
+    ToolCallPart.make({ id, name: "read", input: { file: "src/index.ts" }, providerExecuted })
+  const result = (id: string, providerExecuted?: boolean) =>
+    ToolResultPart.make({ id, name: "read", result: "contents", providerExecuted })
+  const assistant = (...content: (ToolCallPart | ToolResultPart)[]) => Message.make({ role: "assistant", content })
+
+  test("accepts calls answered by the messages that follow them", () => {
+    expect(
+      ContextInvariants.pairing([
+        Message.user("read both files"),
+        assistant(call("a"), call("b")),
+        Message.tool(result("a")),
+        Message.tool(result("b")),
+        Message.assistant("here they are"),
+      ]),
+    ).toEqual([])
+  })
+
+  test("rejects a call that is never answered", () => {
+    expect(ContextInvariants.pairing([assistant(call("a")), Message.assistant("here you go")]).join("; ")).toContain(
+      "tool call a is separated from its result",
+    )
+  })
+
+  test("rejects a result that answers nothing", () => {
+    expect(ContextInvariants.pairing([Message.user("hello"), Message.tool(result("a"))]).join("; ")).toContain(
+      "tool result a does not answer the preceding tool call",
+    )
+  })
+
+  test("rejects a message inserted between a call and its result", () => {
+    // Exactly what an over-eager reduction would produce: a summary placeholder in the middle of a
+    // tool interaction. Every provider rejects this, each with a different error.
+    expect(
+      ContextInvariants.pairing([
+        assistant(call("a")),
+        Message.user("<compressed-conversation-section>"),
+        Message.tool(result("a")),
+      ]).join("; "),
+    ).toContain("tool call a is separated from its result")
+  })
+
+  test("rejects results delivered in the wrong order", () => {
+    expect(
+      ContextInvariants.pairing([assistant(call("a"), call("b")), Message.tool(result("b")), Message.tool(result("a"))])
+        .length,
+    ).toBeGreaterThan(0)
+  })
+
+  test("accepts a provider-executed call, which carries its result in place", () => {
+    expect(ContextInvariants.pairing([assistant(call("a", true), result("a", true))])).toEqual([])
   })
 })
 

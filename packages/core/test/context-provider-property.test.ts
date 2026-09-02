@@ -260,9 +260,18 @@ describe("provider tool adjacency under arbitrary compression boundaries", () =>
       )
         covered.retained++
 
+      const lowered = await Effect.runPromise(
+        toLLMMessages(messages, Model.make({ id: "fake-model", provider: "fake", route: OpenAIChat.route })).pipe(
+          Effect.provide(fsys),
+          Effect.orDie,
+        ),
+      )
       const openai = await Effect.runPromise(openaiBody(messages))
       const anthropic = await Effect.runPromise(anthropicBody(messages))
       const gemini = await Effect.runPromise(geminiBody(messages))
+
+      // The same gate the runner runs before transmission, on the same lowering.
+      expect(ContextInvariants.pairing(lowered), context).toEqual([])
 
       assertAdjacency(openaiSteps(openai.messages as never))
       assertAdjacency(anthropicSteps(anthropic.messages as never))

@@ -1,5 +1,6 @@
 export * as ContextInvariants from "./invariants"
 
+import type { Message } from "@opencode-ai/llm"
 import type { SessionMessage } from "../session/message"
 import { TODO_MARKER, TRUNCATED_MARKER } from "./budget"
 import { MARKER as DUPLICATE_MARKER } from "./deduplicate"
@@ -57,6 +58,45 @@ export const check = (canonical: readonly ContextMessage[], prepared: readonly C
   const systemAfter = prepared.filter((message) => message.type === "system").length
   if (systemAfter > systemBefore) violations.push("prepared context appended a system message")
 
+  return violations
+}
+
+/**
+ * Tool-call pairing on the lowered message list, the last check before transmission.
+ *
+ * Every provider rejects a conversation where a tool call is not answered, or where a result
+ * answers nothing, and each one expresses the pairing differently — `tool_calls`/`tool` messages,
+ * `tool_use`/`tool_result` blocks, `functionCall`/`functionResponse` parts. The property is the same
+ * underneath, so it is checked once here, on the provider-independent lowering, instead of being an
+ * incidental consequence of how canonical messages happen to be shaped.
+ *
+ * Calls the provider executed itself carry their result inside the assistant message and are
+ * therefore paired in place.
+ */
+export const pairing = (messages: readonly Message[]) => {
+  const violations: string[] = []
+  let pending: string[] = []
+  for (const message of messages) {
+    const parts = typeof message.content === "string" ? [] : message.content
+    const results = parts.flatMap((part) => (part.type === "tool-result" && !part.providerExecuted ? [part.id] : []))
+    for (const [position, id] of results.entries()) {
+      if (pending[position] === id) continue
+      violations.push(`tool result ${id} does not answer the preceding tool call`)
+    }
+    if (results.length > 0) {
+      if (results.length > pending.length) violations.push("more tool results than the preceding message requested")
+      pending = pending.slice(results.length)
+    }
+    const calls = parts.flatMap((part) => (part.type === "tool-call" && !part.providerExecuted ? [part.id] : []))
+    if (calls.length === 0) {
+      if (pending.length > 0 && results.length === 0)
+        violations.push(`tool call ${pending[0]} is separated from its result`)
+      continue
+    }
+    if (pending.length > 0) violations.push(`tool call ${pending[0]} was never answered`)
+    pending = calls
+  }
+  if (pending.length > 0) violations.push(`tool call ${pending[0]} was never answered`)
   return violations
 }
 

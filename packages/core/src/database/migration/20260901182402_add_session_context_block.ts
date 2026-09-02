@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import type { DatabaseMigration } from "../migration"
 
 export default {
-  id: "20260901182402_small_supreme_intelligence",
+  id: "20260901182402_add_session_context_block",
   up(tx) {
     return Effect.gen(function* () {
       yield* tx.run(`

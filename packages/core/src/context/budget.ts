@@ -21,6 +21,18 @@ export const tokens = (messages: readonly ContextMessage[]) => Token.estimate(JS
 export const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8")
 
 /**
+ * Token and byte size of one message list from a single serialization.
+ *
+ * `prepare` runs on every turn and needs both numbers for both the canonical and the reduced list.
+ * Serializing a large history is the dominant cost of the whole pipeline, so it is done once per
+ * list instead of once per metric.
+ */
+export const measure = (messages: readonly ContextMessage[]) => {
+  const serialized = JSON.stringify(messages) ?? ""
+  return { tokens: Token.estimate(serialized), bytes: Buffer.byteLength(serialized, "utf8") }
+}
+
+/**
  * Everything a provider request carries besides the conversation itself.
  *
  * Utilization measured from history alone is a lie: the system prompt and the tool definitions are

@@ -97,19 +97,43 @@ export interface PayloadSize {
   readonly limit: number | undefined
   readonly within: boolean
   /**
-   * Whether `bytes` came from the real provider body. False means the body could not be built, so
-   * the ceiling could not be enforced; `within` is false in that case.
+   * Whether `bytes` came from the real provider body.
+   *
+   * False in the two cases where no measurement happened: no ceiling is configured, so nothing had
+   * to be measured (`within` is true, there is nothing to enforce), or the body could not be built,
+   * so the ceiling could not be enforced (`within` is false, because an unknown size is not
+   * permission to send).
    */
   readonly measured: boolean
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ContextManager") {}
 
+/** Failures that cost a summarization round trip, so repeating them immediately costs it again. */
+const COSTLY_FAILURES = new Set<CompressFailure>(["timeout", "summary-unavailable", "no-model"])
+
+/** How many preparations skip automatic compression after such a failure. */
+const BACKOFF_PREPARATIONS = 3
+
 export const GUIDANCE = `Context management:
 When a completed portion of this conversation is no longer needed verbatim, call the compress tool
 to replace it with a compact technical summary. Compression preserves the session history; it only
 reduces what is resent to the model. Prefer compressing finished work over losing recent context.`
 
+/**
+ * The last preparation decision for a session.
+ *
+ * This is deliberately not a cache of the prepared projection: the message list is different on
+ * every turn, so a projection cached from the previous turn could never be reused, and reusing one
+ * would be the exact failure this subsystem exists to avoid — sending a model a context that no
+ * longer matches the session. What is worth remembering is the *decision*: the reduction plan, the
+ * numbers derived from it, and the revision it belongs to, so that repeated reads (`stats`, the TUI
+ * indicator, a client polling between turns) are free, and so the revision only moves when the plan
+ * genuinely changes, which keeps provider prompt caching effective.
+ *
+ * Recompiling from scratch each turn is affordable by design; `script/context-benchmark.ts` reports
+ * the cost of a preparation with nothing to reduce.
+ */
 interface Cached {
   readonly revision: number
   readonly stats: ContextTypes.ContextStats
@@ -135,6 +159,16 @@ const layer = Layer.effect(
     // Tool-declared context policies, remembered per session for callers that do not materialize
     // tools themselves, such as the compress tool and the manual /compress command.
     const policies = new Map<SessionSchema.ID, Readonly<Record<string, ContextTypes.ToolContextPolicy>>>()
+    /**
+     * Preparations left to skip before automatic compression is attempted again, per session.
+     *
+     * Automatic compression runs inside the turn the user is waiting on, so a summarizer that is
+     * down, throttled or slower than the compression budget must cost that latency once, not on
+     * every turn until the session ends. Only failures that cost a round trip — or that say no
+     * model is available — arm this; a structurally impossible range is free and is retried
+     * immediately.
+     */
+    const backoff = new Map<SessionSchema.ID, number>()
     let revision = 0
 
     const envelopeFor = (input: PrepareInput, observe: boolean) => {
@@ -208,8 +242,25 @@ const layer = Layer.effect(
           db,
           placed.stale.map((block) => block.id),
         )
+      // Overlapping ranges cannot both describe what they replace, so the compiler merged them.
+      // Persist that decision instead of re-deriving it every turn: the widened block becomes the
+      // authoritative range and the blocks folded into it are marked absorbed.
+      if (placed.merged.length > 0 && !observe)
+        yield* Effect.forEach(placed.merged, (item) =>
+          Effect.gen(function* () {
+            yield* Effect.logWarning("context.prepare.overlap-normalized", {
+              sessionID: input.sessionID,
+              blockID: item.block.id,
+              absorbed: item.absorbed,
+              startMessageID: item.block.startMessageID,
+              endMessageID: item.block.endMessageID,
+            })
+            yield* ContextState.widen(db, item.block)
+            yield* ContextState.absorb(db, item.absorbed, item.block.id)
+          }),
+        )
 
-      const rawTokens = ContextBudget.tokens(input.messages) + overhead.tokens
+      const rawTokens = ContextBudget.measure(input.messages).tokens + overhead.tokens
       // Both plans are deterministic and monotonic: a call that is superseded, or an error input
       // that is stale, stays that way. The request prefix therefore only changes when a genuinely
       // new duplicate or newly stale failure appears, which keeps provider prompt caching useful.
@@ -241,8 +292,9 @@ const layer = Layer.effect(
 
       const payloadBudget =
         settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - overhead.bytes, 1)
+      const measured = ContextBudget.measure(reduced)
       const reduction =
-        payloadBudget === undefined || ContextBudget.bytes(reduced) <= payloadBudget
+        payloadBudget === undefined || measured.bytes <= payloadBudget
           ? undefined
           : ContextBudget.reduce({
               messages: reduced,
@@ -271,7 +323,9 @@ const layer = Layer.effect(
         return passthrough(input, limit, overhead)
       }
 
-      const preparedTokens = ContextBudget.tokens(gated) + overhead.tokens
+      // Only a ladder pass changes the list, so the measurement above is reused when it did not run.
+      const preparedTokens =
+        (reduction === undefined ? measured : ContextBudget.measure(gated)).tokens + overhead.tokens
       const stats: ContextTypes.ContextStats = {
         rawTokens,
         preparedTokens,
@@ -454,15 +508,14 @@ const layer = Layer.effect(
 
     const payload = Effect.fnUntraced(function* (request: LLMRequest) {
       const limit = settings.payloadBytes
-      // Nothing to enforce: no ceiling is configured, so the body is never built for measurement.
-      if (limit === undefined) return { bytes: 0, limit, within: true, measured: true } satisfies PayloadSize
+      // Nothing to enforce: no ceiling is configured, so the body is never built and nothing is
+      // measured. `measured` says exactly that rather than claiming a size that was never taken.
+      if (limit === undefined) return { bytes: 0, limit, within: true, measured: false } satisfies PayloadSize
       const route = request.model.route
-      const serialized = yield* route.body
-        .from(request)
-        .pipe(
-          Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(route.body.schema))),
-          Effect.catchCause(() => Effect.succeed(undefined)),
-        )
+      const serialized = yield* route.body.from(request).pipe(
+        Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(route.body.schema))),
+        Effect.catchCause(() => Effect.succeed(undefined)),
+      )
       if (serialized === undefined) {
         // The body could not be built, so the wire size is unknown. This is the hard enforcement
         // point, and an unknown size cannot be declared within budget: the request is treated
@@ -501,14 +554,30 @@ const layer = Layer.effect(
       yield* fail(prepared.sessionID, "the prepared context is expected to exceed the configured payload byte budget")
     })
 
+    /**
+     * Prepare, and escalate to compression at most once.
+     *
+     * The worst case a turn can pay here is one summarization request before the real request. The
+     * runner may add one native compaction on top when the measured payload is still too large, and
+     * that retry prepares with `automatic` off, so the ladder cannot recurse: at most two internal
+     * requests are ever inserted ahead of the model call the user is waiting for.
+     */
     const prepare = Effect.fn("ContextManager.prepare")(function* (input: PrepareInput) {
       const first = yield* prepareOnce(input)
-      if (
-        first.recommendation !== "mandatory" ||
-        input.automatic !== true ||
-        !settings.compression.enabled ||
-        !settings.compression.automatic
-      ) {
+      const skips = backoff.get(input.sessionID) ?? 0
+      const attempt =
+        first.recommendation === "mandatory" &&
+        input.automatic === true &&
+        settings.compression.enabled &&
+        settings.compression.automatic
+      if (attempt && skips > 0) {
+        backoff.set(input.sessionID, skips - 1)
+        yield* Effect.logDebug("context.prepare.compression-backoff", {
+          sessionID: input.sessionID,
+          remaining: skips - 1,
+        })
+      }
+      if (!attempt || skips > 0) {
         yield* reportOverBudget(first)
         yield* publishPrepared(first)
         return first
@@ -521,10 +590,13 @@ const layer = Layer.effect(
         http: input.http,
       })
       if ("failure" in compressed) {
+        if (compressed.failure !== undefined && COSTLY_FAILURES.has(compressed.failure))
+          backoff.set(input.sessionID, BACKOFF_PREPARATIONS)
         yield* reportOverBudget(first)
         yield* publishPrepared(first)
         return first
       }
+      backoff.delete(input.sessionID)
       const second = yield* prepareOnce(input)
       yield* reportOverBudget(second)
       yield* publishPrepared(second)
@@ -564,6 +636,7 @@ const layer = Layer.effect(
       }),
       invalidate: Effect.fn("ContextManager.invalidate")(function* (sessionID) {
         cache.delete(sessionID)
+        backoff.delete(sessionID)
         yield* ContextState.reset(db, sessionID)
       }),
       guidance: () => (settings.compression.enabled ? GUIDANCE : undefined),

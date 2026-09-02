@@ -11,6 +11,7 @@ import {
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
+import { ContextInvariants } from "../../context/invariants"
 import { ContextManager } from "../../context/manager"
 import { Database } from "../../database/database"
 import { EventV2 } from "../../event"
@@ -267,6 +268,26 @@ const layer = Layer.effect(
         envelope: { system: systemPrompt, tools: toolDefinitions, extra: trailingMessages },
         automatic: true,
       })
+      const lower = (messages: readonly (typeof context)[number][]) =>
+        toLLMMessages(messages, model).pipe(Effect.provideService(FSUtil.Service, fsys))
+      // Mandatory final invariant, on the lowered messages rather than the canonical ones: every
+      // provider rejects a tool call that is not answered next, and only the lowering shows where
+      // the calls and results actually land. A reduction that would break the pairing loses to the
+      // canonical history — but only when the canonical history was itself well formed, since
+      // falling back cannot repair a conversation that was already broken.
+      const reducedMessages = yield* lower(prepared.messages)
+      const unpaired = ContextInvariants.pairing(reducedMessages)
+      const canonicalMessages = unpaired.length === 0 ? undefined : yield* lower(context)
+      const loweredMessages =
+        canonicalMessages !== undefined && ContextInvariants.pairing(canonicalMessages).length === 0
+          ? canonicalMessages
+          : reducedMessages
+      if (unpaired.length > 0)
+        yield* Effect.logWarning("context.prepare.pairing", {
+          sessionID: session.id,
+          violations: unpaired,
+          recovered: loweredMessages === canonicalMessages,
+        })
       const request = LLM.request({
         model,
         http: {
@@ -278,10 +299,7 @@ const layer = Layer.effect(
         },
         providerOptions: { openai: { promptCacheKey } },
         system: systemPrompt,
-        messages: [
-          ...(yield* toLLMMessages(prepared.messages, model).pipe(Effect.provideService(FSUtil.Service, fsys))),
-          ...trailingMessages,
-        ],
+        messages: [...loweredMessages, ...trailingMessages],
         tools: toolDefinitions,
         toolChoice: isLastStep ? "none" : undefined,
       })

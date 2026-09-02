@@ -46,6 +46,28 @@ Every stage is pure and monotonic: once a call is superseded or an error input i
 that way. The request prefix therefore only changes when something genuinely new happens, which
 keeps provider prompt caching useful.
 
+### Runtime cost
+
+`prepare` runs before every provider request, so the case that matters is the one where nothing
+needs reducing. `packages/core/script/context-benchmark.ts` measures exactly that — no compression
+blocks, no duplicates, no stale failures — and reports, on a development machine:
+
+| History        | Serialized | Preparation |
+| -------------- | ---------- | ----------- |
+| 100 messages   | 62 KiB     | ~1.4 ms     |
+| 500 messages   | 313 KiB    | ~4.2 ms     |
+| 2,000 messages | 1.2 MiB    | ~16.6 ms    |
+
+The curve is linear in serialized history size, and serialization dominates it: `ContextBudget.measure`
+returns tokens and bytes from a single `JSON.stringify` so the pipeline serializes each list once.
+Against a provider request measured in seconds this is noise, but it is measured rather than assumed,
+and the script is committed so a regression is one command away.
+
+What is remembered between turns is the reduction _decision_, not the projection. Caching a
+projection would be unsound — the message list differs on every turn — while remembering the plan
+keeps repeated reads (`stats`, the TUI indicator) free and keeps the revision, and therefore the
+provider prompt prefix, stable when nothing has changed.
+
 ## Hard rules
 
 These are enforced by `ContextInvariants.check`, which runs on every prepared context. A violation
@@ -58,6 +80,14 @@ management can never make a session unusable.
    request construction: `[agent prompt, context guidance, baseline system context]`.
 3. **Canonical history is immutable.** Only the provider projection changes; `session.messages`
    always returns the original content.
+4. **Tool calls stay paired.** `ContextInvariants.pairing` runs on the _lowered_ message list
+   immediately before the request is built: every tool call must be answered by the messages that
+   follow it, and no result may answer nothing. Providers express this differently — `tool_calls`
+   and `tool` messages, `tool_use` and `tool_result` blocks, `functionCall` and `functionResponse`
+   parts — so it is checked once, provider-independently, rather than left as an incidental
+   property of canonical message shape. A reduction that would break the pairing loses to the
+   canonical history, unless the canonical history was itself already unpaired, since falling back
+   cannot repair what was already broken.
 
 Editing recorded tool _results_ and stale failed tool _inputs_ is allowed — those are AlphaCode's
 own recordings, not model output — but only through the four transformations this subsystem owns:
@@ -131,6 +161,36 @@ Never compressed, deduplicated, or purged:
 - State-changing tools are never deduplicated (`bash`, `write`, `edit`, `apply_patch`, ...).
 - `system`, `compaction`, `agent-switched`, and `model-switched` messages.
 - User messages, when `protection.user_messages` is enabled (default off).
+
+### Overlapping ranges
+
+Two compression blocks may not describe overlapping ranges. Compression cannot create that state —
+a new range grows over every block it intersects and absorbs them — but a history rewrite or state
+written by an older version can. When the compiler meets it, it merges the ranges into one that
+describes exactly what it replaces: recomputed boundaries, message count and token count, with both
+summaries carried so neither is stranded. The merge is then persisted (the surviving block is
+widened, the other is marked absorbed), so the stored state converges on one authoritative range
+instead of the projection re-deriving it every turn.
+
+The alternative — emitting both placeholders and clipping the second to whatever is left — was
+rejected: the second placeholder would then advertise a range the first had already consumed, and
+its stored `sourceMessageCount` would describe messages it did not replace. Metadata that disagrees
+with the projection is worse than a merge.
+
+### Escalation latency
+
+Automatic compression happens inside the turn the user is waiting on, so its cost is bounded
+explicitly:
+
+- at most **one** summarization request per preparation, and the compaction retry prepares with
+  automatic compression disabled, so the worst case a turn can pay is one summarization plus one
+  native compaction ahead of the real request — never a ladder;
+- the summarization request is bounded by `dynamic_compression.timeout_ms`, after which the turn
+  proceeds uncompressed rather than stalling;
+- a failure that cost a round trip (timeout, no usable summary, no model) makes the next three
+  preparations skip automatic compression, so a summarizer that is down costs its latency once
+  rather than on every turn for the rest of the session. A structurally impossible range costs
+  nothing and is retried immediately.
 
 ## Budget bands
 

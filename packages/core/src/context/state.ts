@@ -64,6 +64,30 @@ export const insert = Effect.fn("ContextState.insert")(function* (
     .pipe(Effect.orDie)
 })
 
+/**
+ * Rewrite a block in place, used when the compiler normalizes overlapping ranges.
+ *
+ * The compiler cannot leave two blocks describing overlapping ranges, so the range it actually
+ * projected is written back and becomes the authoritative one.
+ */
+export const widen = Effect.fn("ContextState.widen")(function* (db: DatabaseService, block: CompressionBlock) {
+  yield* db
+    .update(SessionContextBlockTable)
+    .set({
+      start_message_id: block.startMessageID,
+      end_message_id: block.endMessageID,
+      summary: block.summary,
+      focus: block.focus,
+      source_message_count: block.sourceMessageCount,
+      source_token_count: block.sourceTokenCount,
+      summary_token_count: block.summaryTokenCount,
+      nested: [...block.nested],
+    })
+    .where(eq(SessionContextBlockTable.id, block.id))
+    .run()
+    .pipe(Effect.orDie)
+})
+
 /** Mark blocks whose content a wider compression has folded in. */
 export const absorb = Effect.fn("ContextState.absorb")(function* (
   db: DatabaseService,
