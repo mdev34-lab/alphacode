@@ -1,6 +1,6 @@
 import { expect, describe, test } from "bun:test"
 import { DateTime, Effect, Stream } from "effect"
-import { Model } from "@opencode-ai/llm"
+import { Message, Model, SystemPart } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { ContextBudget } from "@opencode-ai/core/context/budget"
 import { ContextCompressor } from "@opencode-ai/core/context/compressor"
@@ -579,12 +579,42 @@ describe("context budget", () => {
   test("measures the system prompt and tool definitions as part of the request", () => {
     expect(ContextBudget.envelope(undefined)).toEqual({ tokens: 0, bytes: 0 })
     const cost = ContextBudget.envelope({
-      system: ["You are a coding agent.".repeat(20)],
+      system: [SystemPart.make("You are a coding agent.".repeat(20))],
       tools: [{ name: "read", parameters: { filePath: "string" } }],
-      extra: ["max steps reached"],
+      extra: [Message.assistant("max steps reached")],
     })
     expect(cost.tokens).toBeGreaterThan(0)
     expect(cost.bytes).toBeGreaterThan(cost.tokens)
+    // Whatever the runner puts in the request is what gets measured, message shape included.
+    expect(cost.bytes).toBeGreaterThan(
+      ContextBudget.envelope({ system: [SystemPart.make("You are a coding agent.".repeat(20))] }).bytes,
+    )
+  })
+
+  test("drops the oldest messages without letting the protected window shift into range", () => {
+    const large = "z".repeat(2_000)
+    const messages = [
+      user("msg_1", large),
+      assistant("msg_2", [text("t1", large)]),
+      user("msg_3", large),
+      assistant("msg_4", [text("t2", large)]),
+      user("msg_5", large),
+      assistant("msg_6", [text("t3", large)]),
+      user("msg_7", "the question that must survive"),
+      assistant("msg_8", [text("t4", "answering")]),
+    ]
+    const { policy, protection } = resolve(messages, { recentTurns: 2 })
+    expect(protection.recentFrom).toBe(4)
+
+    const result = ContextBudget.reduce({ messages, policy, protection, limit: 1_000 })
+    // Dropping shifts every later message one index to the left, so the eligible prefix is decided
+    // once, up front: the whole recent window survives no matter how many messages disappear.
+    expect(result.messages.map((message) => message.id)).toEqual(messages.slice(4).map((message) => message.id))
+    // The eligible prefix ran out while the payload was still too large, which is the signal that
+    // only compression can help now.
+    expect(result.within).toBe(false)
+    expect(result.needsCompression).toBe(true)
+    expect(ContextInvariants.check(messages, result.messages)).toEqual([])
   })
 
   test("reduces an oversized payload in deterministic order without touching protected content", () => {
@@ -652,5 +682,24 @@ describe("context settings", () => {
     expect(resolved.protection.tools).toContain("deploy")
     expect(resolved.protection.tools).toContain("todowrite")
     expect(resolved.payloadBytes).toBe(1_000)
+  })
+
+  test("accumulates protection across configuration documents", () => {
+    const document = (tools: readonly string[], files: readonly string[]) =>
+      new Config.Document({
+        type: "document",
+        info: new Config.Info({
+          context: new ConfigContext.Info({ protection: new ConfigContext.Protection({ tools, files }) }),
+        }),
+      })
+    const resolved = ContextSettings.settings([document(["deploy"], ["infra/**"]), document(["migrate"], ["ops/**"])])
+
+    // A later document extends protection; it never silently unprotects what an earlier one asked
+    // for, and the built-in list survives both.
+    expect(resolved.protection.tools).toContain("deploy")
+    expect(resolved.protection.tools).toContain("migrate")
+    expect(resolved.protection.tools).toContain("todowrite")
+    expect(resolved.protection.tools.filter((tool) => tool === "todowrite")).toHaveLength(1)
+    expect(resolved.protection.filePatterns).toEqual(["infra/**", "ops/**"])
   })
 })

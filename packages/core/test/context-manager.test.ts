@@ -2,9 +2,10 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, expect } from "bun:test"
-import { LLMClient, LLMEvent, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
+import { LLMClient, LLMEvent, Message, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { ConfigAgent } from "@opencode-ai/core/config/agent"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigContext } from "@opencode-ai/core/config/context"
 import { ContextBudget } from "@opencode-ai/core/context/budget"
@@ -35,6 +36,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
+import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { SessionTable } from "@opencode-ai/core/session/sql"
@@ -180,7 +182,7 @@ const systemContext = Layer.effectDiscard(
 const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 
-const configWith = (payloadBytes?: number) =>
+const configWith = (input?: { readonly payloadBytes?: number; readonly steps?: number }) =>
   Layer.succeed(
     Config.Service,
     Config.Service.of({
@@ -189,10 +191,11 @@ const configWith = (payloadBytes?: number) =>
           new Config.Document({
             type: "document",
             info: new Config.Info({
+              agents: input?.steps === undefined ? undefined : { build: new ConfigAgent.Info({ steps: input.steps }) },
               context: new ConfigContext.Info({
                 purge_errors: new ConfigContext.PurgeErrors({ turns: 1 }),
                 protection: new ConfigContext.Protection({ recent_turns: 1 }),
-                payload_bytes: payloadBytes,
+                payload_bytes: input?.payloadBytes,
               }),
             }),
           }),
@@ -275,9 +278,11 @@ const harness = (config: Layer.Layer<Config.Service>) =>
 
 const it = harness(config)
 /** A ceiling small enough that a couple of file reads already blow past it. */
-const itBounded = harness(configWith(3_000))
+const itBounded = harness(configWith({ payloadBytes: 3_000 }))
+/** One step per turn, so the very first provider request is already the max-steps request. */
+const itLastStep = harness(configWith({ steps: 1 }))
 /** A ceiling nothing can fit under, not even an empty conversation with its tools. */
-const itUnfittable = harness(configWith(200))
+const itUnfittable = harness(configWith({ payloadBytes: 200 }))
 
 const sessionID = SessionV2.ID.make("ses_context_manager_test")
 
@@ -693,11 +698,9 @@ describe("ContextManager", () => {
       yield* ask(session, "Say something")
 
       const request = agentTurns().at(-1)!
-      const envelope = ContextBudget.envelope({
-        system: request.system.map((part) => part.text),
-        tools: request.tools,
-        extra: [],
-      })
+      // Measured from the request objects themselves, not from a parallel description of them: the
+      // runner hands the compiler the very arrays it then sends.
+      const envelope = ContextBudget.envelope({ system: request.system, tools: request.tools, extra: [] })
       const last = prepared.at(-1)!
       // The measured overhead is the request's own system prompt and tool definitions, so a large
       // toolset can no longer hide from the utilization bands.
@@ -705,6 +708,35 @@ describe("ContextManager", () => {
       expect(last.overheadTokens).toBeGreaterThan(0)
       expect(last.preparedTokens).toBeGreaterThan(last.overheadTokens)
       expect(last.utilization).toBeCloseTo(last.preparedTokens / 199_000, 10)
+    }),
+  )
+
+  it.effect("budgets the max-steps message exactly as the request carries it", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      // One step per turn, so the very first provider request is already the max-steps request.
+      yield* (yield* AgentV2.Service).transform((editor) =>
+        editor.update(AgentV2.defaultID, (info) => {
+          info.steps = 1
+        }),
+      )
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      turns = [say("Done")]
+
+      yield* ask(session, "Say something")
+
+      const request = agentTurns().at(-1)!
+      const trailing = request.messages.at(-1)!
+      // The runner appends the max-steps prompt as an assistant message rather than as request
+      // metadata, so the compiler has to be told about it in that exact shape.
+      expect(trailing).toEqual(Message.assistant(MAX_STEPS_PROMPT))
+      expect(request.tools).toEqual([])
+      const envelope = ContextBudget.envelope({
+        system: request.system,
+        tools: request.tools,
+        extra: [trailing],
+      })
+      expect(prepared.at(-1)!.overheadTokens).toBe(envelope.tokens)
     }),
   )
 

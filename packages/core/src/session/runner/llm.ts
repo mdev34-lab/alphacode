@@ -247,24 +247,24 @@ const layer = Layer.effect(
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
-      const systemParts = [agent.info?.system, contextManager.guidance(), system.baseline].filter(
-        (part): part is string => part !== undefined && part.length > 0,
-      )
+      // Everything the request carries besides the projected history is built once, here, and then
+      // handed to both the compiler and the request. Budgeting a different representation than the
+      // one that is sent — a bare string where the provider gets an assistant message, say — makes
+      // the reported utilization quietly wrong.
+      const systemPrompt = [agent.info?.system, contextManager.guidance(), system.baseline]
+        .filter((part): part is string => part !== undefined && part.length > 0)
+        .map(SystemPart.make)
+      const toolDefinitions = toolMaterialization?.definitions ?? []
+      const trailingMessages = isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []
       // One canonical context pipeline: canonical history in, prepared provider context out. The
-      // request below never sees the reduction decisions, only their result. The envelope tells the
-      // compiler what the same request spends outside the message list, so utilization and the byte
-      // ceiling describe the request that is actually sent.
+      // request below never sees the reduction decisions, only their result.
       const prepared = yield* contextManager.prepare({
         sessionID: session.id,
         messages: context,
         purpose: "agent-turn",
         model,
         toolPolicies: toolMaterialization?.policies,
-        envelope: {
-          system: systemParts,
-          tools: toolMaterialization?.definitions ?? [],
-          extra: isLastStep ? [MAX_STEPS_PROMPT] : [],
-        },
+        envelope: { system: systemPrompt, tools: toolDefinitions, extra: trailingMessages },
         automatic: true,
       })
       const request = LLM.request({
@@ -277,12 +277,12 @@ const layer = Layer.effect(
           },
         },
         providerOptions: { openai: { promptCacheKey } },
-        system: systemParts.map(SystemPart.make),
+        system: systemPrompt,
         messages: [
           ...(yield* toLLMMessages(prepared.messages, model).pipe(Effect.provideService(FSUtil.Service, fsys))),
-          ...(isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
+          ...trailingMessages,
         ],
-        tools: toolMaterialization?.definitions ?? [],
+        tools: toolDefinitions,
         toolChoice: isLastStep ? "none" : undefined,
       })
       if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request })) {

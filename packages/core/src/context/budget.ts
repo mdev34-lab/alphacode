@@ -28,12 +28,12 @@ export const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value)
  * measures the serialized body itself — see `ContextManager.payload`.
  */
 export interface Envelope {
-  /** System prompt blocks, in the order the request will send them. */
-  readonly system?: readonly string[]
+  /** System prompt parts, exactly as the request will send them. */
+  readonly system?: unknown
   /** Tool definitions advertised to the provider for this turn. */
   readonly tools?: unknown
-  /** Request-level material that is neither history nor tools, such as the max-steps prompt. */
-  readonly extra?: readonly string[]
+  /** Request material that is neither projected history nor tools, such as the max-steps message. */
+  readonly extra?: unknown
 }
 
 export interface EnvelopeCost {
@@ -132,7 +132,7 @@ export const reduce = (input: ReduceInput): ReduceResult => {
     if (done()) return { messages, steps, within: true, needsCompression: false }
   }
 
-  const dropped = dropOldest(messages, input)
+  const dropped = dropOldestBeforeRecentWindow(messages, input)
   if (dropped.messages !== messages) {
     messages = dropped.messages
     steps.push("drop-oldest")
@@ -207,20 +207,26 @@ const collapseTodos = (messages: readonly ContextMessage[], input: ReduceInput) 
 }
 
 /**
- * Remove the oldest unprotected messages, one at a time, until the payload fits.
+ * Drop unprotected messages, oldest first, until the payload fits.
  *
- * `exhausted` reports that only protected content is left, which means the caller must compress or
- * fail the turn rather than silently sending an oversized request.
+ * This deliberately only ever considers the prefix *before* the protected recent window: dropping
+ * a recent turn is worse than sending an oversized request, because the model would answer a
+ * question it can no longer see. So "until it fits" is a best effort, not a guarantee — do not
+ * "fix" this by letting the loop run to the end of the list.
+ *
+ * `exhausted` reports that the eligible prefix ran out with the payload still too large, which
+ * means the caller must compress or fail the turn rather than silently sending it.
  */
-const dropOldest = (messages: readonly ContextMessage[], input: ReduceInput) => {
+const dropOldestBeforeRecentWindow = (messages: readonly ContextMessage[], input: ReduceInput) => {
+  // Eligibility is decided against the original positions, because removing a message shifts every
+  // later index left and would otherwise walk the boundary into the protected window.
+  const droppable = messages
+    .slice(0, input.protection.recentFrom)
+    .filter((message) => !input.protection.messageIDs.has(message.id))
   const kept = [...messages]
-  for (let index = 0; index < kept.length; index++) {
+  for (const message of droppable) {
     if (bytes(kept) <= input.limit) return { messages: kept, exhausted: false }
-    const message = kept[index]!
-    if (index >= input.protection.recentFrom) break
-    if (input.protection.messageIDs.has(message.id)) continue
-    kept.splice(index, 1)
-    index--
+    kept.splice(kept.indexOf(message), 1)
   }
   return { messages: kept, exhausted: bytes(kept) > input.limit }
 }

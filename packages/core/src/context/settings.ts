@@ -40,10 +40,14 @@ export const settings = (documents: readonly Config.Entry[]): Settings =>
           turns: current.purge_errors?.turns ?? result.purgeErrors.turns,
         },
         protection: {
+          // Accumulate across documents: a workspace file that protects one tool must not discard
+          // what the user file protected, and the built-in list is already in `result`.
           tools: current.protection?.tools
-            ? [...ContextProtection.DEFAULT_TOOLS, ...current.protection.tools]
+            ? [...new Set([...result.protection.tools, ...current.protection.tools])]
             : result.protection.tools,
-          filePatterns: current.protection?.files ? [...current.protection.files] : result.protection.filePatterns,
+          filePatterns: current.protection?.files
+            ? [...new Set([...result.protection.filePatterns, ...current.protection.files])]
+            : result.protection.filePatterns,
           messageTypes: result.protection.messageTypes,
           recentTurns: current.protection?.recent_turns ?? result.protection.recentTurns,
           userMessages: current.protection?.user_messages ?? result.protection.userMessages,

@@ -73,8 +73,7 @@ export const apply = (messages: readonly ContextMessage[], pruned: ReadonlySet<s
   })
 }
 
-export const signature = (tool: SessionMessage.AssistantTool) =>
-  `${tool.name}:${stable(tool.state.status === "pending" ? tool.state.input : tool.state.input)}`
+export const signature = (tool: SessionMessage.AssistantTool) => `${tool.name}:${stable(tool.state.input)}`
 
 /** Order-independent JSON so `{a,b}` and `{b,a}` count as the same call. */
 const stable = (value: unknown): string => {
