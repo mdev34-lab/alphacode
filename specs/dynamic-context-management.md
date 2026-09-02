@@ -140,6 +140,27 @@ compression; the other bands are advisory and surface in the TUI. If the prepare
 exceeds `context.payload_bytes`, a deterministic ladder runs: dedup → purge errors → collapse
 scaffolding → collapse todos → drop oldest.
 
+### The ladder is a pre-pass, the payload check is the enforcement
+
+`ContextBudget.reduce` works on an _estimate_: it sizes messages and the declared envelope without
+serializing the provider body, because the body does not exist yet when the reduction is planned.
+It is therefore an approximate pre-pass whose job is to make the request plausibly small, not to
+prove it fits.
+
+The authoritative measurement is `ContextManager.payload(request)`, which serializes the request the
+provider will actually receive and compares it against `context.payload_bytes`. The runner calls it
+immediately before `llm.stream` and never sends a request it rejects. When the estimate is
+optimistic the cost is one extra escalation step, never an oversized request:
+
+```
+prepare (estimate over budget) → automatic compression → prepare again
+  → payload(request) still over → native compaction → retry the turn
+  → payload(request) still over → the turn fails loudly with a provider error
+```
+
+Both directions of estimator error are safe by construction. Pessimistic: the context is reduced
+slightly more than it had to be. Optimistic: `payload` catches it and the escalation above runs.
+
 ## Configuration
 
 ```jsonc
@@ -166,7 +187,27 @@ scaffolding → collapse todos → drop oldest.
 }
 ```
 
-`protection.tools` extends the built-in list rather than replacing it.
+### Merge semantics
+
+Configuration documents are folded in order, from the broadest to the most specific. Scalars
+(`enabled`, `automatic`, `recent_turns`, `payload_bytes`, ...) are last-wins, so the workspace file
+decides. The protection arrays (`tools`, `files`) accumulate instead, deduplicated: `protection.tools`
+extends the built-in list rather than replacing it, and a project file that protects one more tool
+does not silently discard what a broader file protected.
+
+This is intentional and it has a deliberate consequence: a narrower document can only _add_
+protection, never remove an inherited entry. Reducing protection is still possible, but only through
+choices that read as choices — lowering `recent_turns`, leaving `user_messages` off, or disabling a
+stage outright — rather than through the accident of one file shadowing another's safety rule.
+
+### Feature gates
+
+Every stage is individually switchable, and the switches are the rollout mechanism:
+`dynamic_compression.enabled` turns the whole compression engine off (`/compress` and the `compress`
+tool then report `disabled`), `dynamic_compression.automatic` keeps the engine available for
+explicit use but never triggers it on its own, and `deduplication.enabled` / `purge_errors.enabled`
+gate the two automatic pruning stages. With all of them off the compiler is a passthrough, and
+internal requests (`ContextTypes.isolated` purposes) are a passthrough regardless.
 
 ## API
 
@@ -204,6 +245,13 @@ persistence lives in the session history and the `session_context_block` table.
 - `packages/core/test/context-manager.test.ts` — runner integration against a fake LLM: one system
   prompt, dedup/purge visible only in the provider request, compression round-trip, nested
   compression, graceful failure, protected ranges, statistics events.
+- `packages/core/test/context-manager.test.ts` also covers the escalation chain end to end —
+  automatic compression, a payload still over the ceiling, native compaction, and a coherent next
+  turn — and pins `stats()` as observational: it never publishes events, deletes stale boundaries,
+  or changes what the next turn prepares.
+- `packages/core/test/context-provider-property.test.ts` — 200 generated conversations (seeded, so
+  failures are reproducible) with random compression boundaries and protection policies lowered
+  through all three providers, asserting tool call/result adjacency survives arbitrary boundaries.
 - `packages/core/test/context-provider-shape.test.ts` — OpenAI Chat, Anthropic Messages, and Gemini
   request bodies keep one system prompt, paired tool calls, and user-side placeholders, including
   the awkward case: a compressed range that contains a protected tool interaction followed by a

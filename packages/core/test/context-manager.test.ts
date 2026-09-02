@@ -7,12 +7,14 @@ import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { ConfigAgent } from "@opencode-ai/core/config/agent"
 import { Config } from "@opencode-ai/core/config"
+import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { ConfigContext } from "@opencode-ai/core/config/context"
 import { ContextBudget } from "@opencode-ai/core/context/budget"
 import { ContextDeduplicate } from "@opencode-ai/core/context/deduplicate"
 import { ContextManager } from "@opencode-ai/core/context/manager"
 import { ContextPurgeErrors } from "@opencode-ai/core/context/purge-errors"
 import { ContextState } from "@opencode-ai/core/context/state"
+import type { ContextTypes } from "@opencode-ai/core/context/types"
 import { SessionContextBlockTable } from "@opencode-ai/core/context/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { makeLocationNode } from "@opencode-ai/core/effect/app-node"
@@ -134,10 +136,11 @@ const tools = Layer.effectDiscard(
     registry.register({
       inspect: Tool.make({
         description: "Read a file",
-        input: Schema.Struct({ file: Schema.String }),
+        // `repeat` exists so a single call can produce an output that dwarfs the byte ceiling.
+        input: Schema.Struct({ file: Schema.String, repeat: Schema.optional(Schema.Number) }),
         output: Schema.Struct({ text: Schema.String }),
         toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
-        execute: ({ file }) => Effect.succeed({ text: fileBody(file) }),
+        execute: ({ file, repeat }) => Effect.succeed({ text: fileBody(file).repeat(repeat ?? 1) }),
       }),
       generate: Tool.make({
         description: "Run a generated script",
@@ -182,7 +185,11 @@ const systemContext = Layer.effectDiscard(
 const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 
-const configWith = (input?: { readonly payloadBytes?: number; readonly steps?: number }) =>
+const configWith = (input?: {
+  readonly payloadBytes?: number
+  readonly steps?: number
+  readonly keepTokens?: number
+}) =>
   Layer.succeed(
     Config.Service,
     Config.Service.of({
@@ -191,6 +198,13 @@ const configWith = (input?: { readonly payloadBytes?: number; readonly steps?: n
           new Config.Document({
             type: "document",
             info: new Config.Info({
+              compaction:
+                input?.keepTokens === undefined
+                  ? undefined
+                  : new ConfigCompaction.Info({
+                      auto: false,
+                      keep: new ConfigCompaction.Keep({ tokens: input.keepTokens }),
+                    }),
               agents: input?.steps === undefined ? undefined : { build: new ConfigAgent.Info({ steps: input.steps }) },
               context: new ConfigContext.Info({
                 purge_errors: new ConfigContext.PurgeErrors({ turns: 1 }),
@@ -283,6 +297,11 @@ const itBounded = harness(configWith({ payloadBytes: 3_000 }))
 const itLastStep = harness(configWith({ steps: 1 }))
 /** A ceiling nothing can fit under, not even an empty conversation with its tools. */
 const itUnfittable = harness(configWith({ payloadBytes: 200 }))
+/**
+ * A ceiling that compression alone cannot satisfy once the protected recent turns are large,
+ * plus a keep window small enough that native compaction has something to summarise.
+ */
+const itTight = harness(configWith({ payloadBytes: 5_000, keepTokens: 100 }))
 
 const sessionID = SessionV2.ID.make("ses_context_manager_test")
 
@@ -803,6 +822,121 @@ describe("ContextManager", () => {
       turns = [say("After compaction")]
       yield* ask(session, "Continue")
       expect(userTexts(agentTurns().at(-1)!)).toContain("Step one")
+    }),
+  )
+
+  it.effect("reports statistics without mutating context state", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const { db } = yield* Database.Service
+      turns = [say("One"), say("Two"), say("Three")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const compressed = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[1]!.id,
+      })
+      if ("failure" in compressed) throw new Error(`compression failed: ${compressed.failure}`)
+      // A boundary the compiler considers stale: neither endpoint exists in the history.
+      const stale: ContextTypes.CompressionBlock = {
+        ...compressed.block,
+        id: `${ContextState.PREFIX}stale`,
+        startMessageID: SessionMessage.ID.make("msg_does_not_exist_start"),
+        endMessageID: SessionMessage.ID.make("msg_does_not_exist_end"),
+      }
+      yield* ContextState.insert(db, sessionID, stale)
+
+      const preparing = yield* collect(SessionEvent.Context.Preparing)
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      const before = requests.length
+
+      const first = yield* context.stats(sessionID)
+      const second = yield* context.stats(sessionID)
+
+      // Observation only: no provider traffic, no lifecycle events, no rows removed.
+      expect(second).toEqual(first)
+      expect(requests.length).toBe(before)
+      expect(preparing).toEqual([])
+      expect(prepared).toEqual([])
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).toContain(stale.id)
+
+      // The real pipeline still performs the cleanup that stats deliberately skipped.
+      turns = [say("Four")]
+      yield* ask(session, "Step four")
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).not.toContain(stale.id)
+      expect(preparing.length).toBeGreaterThan(0)
+    }),
+  )
+
+  itTight.effect("escalates from compression to native compaction and keeps the next turn coherent", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const { db } = yield* Database.Service
+      turns = [
+        call("call-1", "inspect", { file: "src/one.ts" }),
+        say("One"),
+        call("call-2", "inspect", { file: "src/two.ts" }),
+        say("Two"),
+        call("call-3", "inspect", { file: "src/three.ts" }),
+        say("Three"),
+        call("call-4", "inspect", { file: "src/four.ts" }),
+        say("Four"),
+        call("call-5", "inspect", { file: "src/five.ts" }),
+        say("Five"),
+        call("call-6", "inspect", { file: "src/six.ts", repeat: 8 }),
+        say("Six"),
+      ]
+      yield* ask(session, "Read the first file")
+      yield* ask(session, "Read the second file")
+      yield* ask(session, "Read the third file")
+      yield* ask(session, "Read the fourth file")
+      yield* ask(session, "Read the fifth file")
+      yield* ask(session, "Read the sixth file")
+      // The turn that follows the escalation must behave like any other turn.
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      yield* ask(session, "What is left to do")
+
+      // Both levers ran: dynamic compression first, native compaction once compression was not enough.
+      expect(compressions.length).toBeGreaterThan(0)
+      expect(compactions.length).toBeGreaterThan(0)
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      // The chain within a single turn: compression ran, the payload was still too large, native
+      // compaction took over, and the turn was retried successfully afterwards.
+      const chained = kinds.findIndex((kind, index) => kind === "compress" && kinds[index + 1] === "compact")
+      expect(chained, kinds.join(",")).toBeGreaterThanOrEqual(0)
+      expect(kinds.indexOf("agent", chained)).toBeGreaterThan(chained + 1)
+
+      // No oversized request ever reached the provider, on either side of the escalation.
+      const provider = requests.filter((request) => request.tools.length > 0)
+      for (const request of provider) expect((yield* context.payload(request)).within).toBe(true)
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      // The turn after the escalation carries the compaction summary plus the new question, and
+      // nothing from the compression boundaries that compaction invalidated.
+      const last = provider.at(-1)!
+      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
+      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(userTexts(last)).toContain("What is left to do")
+      expect(failures).toEqual([])
+      expect(history.at(-1)?.type).toBe("assistant")
+
+      // Compaction rewrote the history, so no surviving boundary may point at a message it dropped.
+      const ids = new Set(history.map((message) => message.id))
+      for (const block of yield* ContextState.list(db, sessionID)) {
+        expect(ids.has(block.startMessageID)).toBe(true)
+        expect(ids.has(block.endMessageID)).toBe(true)
+      }
     }),
   )
 })

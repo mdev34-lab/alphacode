@@ -129,10 +129,10 @@ const layer = Layer.effect(
     const policies = new Map<SessionSchema.ID, Readonly<Record<string, ContextTypes.ToolContextPolicy>>>()
     let revision = 0
 
-    const envelopeFor = (input: PrepareInput) => {
+    const envelopeFor = (input: PrepareInput, observe: boolean) => {
       if (input.envelope === undefined) return envelopes.get(input.sessionID) ?? ContextBudget.emptyEnvelope
       const cost = ContextBudget.envelope(input.envelope)
-      envelopes.set(input.sessionID, cost)
+      if (!observe) envelopes.set(input.sessionID, cost)
       return cost
     }
 
@@ -168,18 +168,26 @@ const layer = Layer.effect(
       return Math.max(limit - reserve, 1)
     }
 
-    const prepareOnce = Effect.fnUntraced(function* (input: PrepareInput) {
+    /**
+     * Compile one prepared context.
+     *
+     * `observe` runs the identical pipeline with none of its bookkeeping: no lifecycle event, no
+     * stale-block deletion, no remembered envelope or tool policies, no cache write and no revision
+     * bump. `stats` uses it so that reading context usage can never change context behaviour.
+     */
+    const prepareOnce = Effect.fnUntraced(function* (input: PrepareInput, observe = false) {
       const limit = usableLimit(input)
-      const overhead = envelopeFor(input)
-      if (input.toolPolicies) policies.set(input.sessionID, input.toolPolicies)
+      const overhead = envelopeFor(input, observe)
+      if (input.toolPolicies && !observe) policies.set(input.sessionID, input.toolPolicies)
       if (ContextTypes.isolated(input.purpose)) return passthrough(input, limit, overhead)
-      yield* events.publish(SessionEvent.Context.Preparing, {
-        sessionID: input.sessionID,
-        timestamp: yield* DateTime.now,
-        messageCount: input.messages.length,
-        rawTokens: ContextBudget.tokens(input.messages) + overhead.tokens,
-        limit,
-      })
+      if (!observe)
+        yield* events.publish(SessionEvent.Context.Preparing, {
+          sessionID: input.sessionID,
+          timestamp: yield* DateTime.now,
+          messageCount: input.messages.length,
+          rawTokens: ContextBudget.tokens(input.messages) + overhead.tokens,
+          limit,
+        })
 
       const blocks = settings.compression.enabled ? yield* ContextState.list(db, input.sessionID) : []
       const protection = ContextProtection.resolve(input.messages, {
@@ -187,7 +195,7 @@ const layer = Layer.effect(
         toolPolicies: input.toolPolicies,
       })
       const placed = ContextPlaceholder.apply(input.sessionID, input.messages, blocks, protection.messageIDs)
-      if (placed.stale.length > 0)
+      if (placed.stale.length > 0 && !observe)
         yield* ContextState.remove(
           db,
           placed.stale.map((block) => block.id),
@@ -215,10 +223,14 @@ const layer = Layer.effect(
         .map((items) => items.join(","))
         .join("|")
       const cached = cache.get(input.sessionID)
-      if (cached?.plan !== plan) revision++
+      if (cached?.plan !== plan && !observe) revision++
 
       const reduced = ContextPurgeErrors.apply(ContextDeduplicate.apply(placed.messages, duplicates), errors)
-      // The byte ceiling covers the serialized request, so the envelope spends from it too.
+      // The byte ceiling covers the whole request, so the envelope spends from it too. Both sides of
+      // this comparison are estimates; the authoritative check is `payload`, run by the runner on
+      // the lowered request. An optimistic estimate therefore costs a blocked turn, never an
+      // oversized one.
+
       const payloadBudget =
         settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - overhead.bytes, 1)
       const reduction =
@@ -266,7 +278,15 @@ const layer = Layer.effect(
       const preparedRecommendation = overBudget
         ? ("mandatory" as const)
         : ContextBudget.recommend(utilization, settings.compression)
-      cache.set(input.sessionID, { revision, stats, plan, utilization, limit, recommendation: preparedRecommendation })
+      if (!observe)
+        cache.set(input.sessionID, {
+          revision,
+          stats,
+          plan,
+          utilization,
+          limit,
+          recommendation: preparedRecommendation,
+        })
       return {
         sessionID: input.sessionID,
         purpose: input.purpose,
@@ -501,13 +521,17 @@ const layer = Layer.effect(
             recommendation: cached.recommendation,
           }
         // Nothing prepared yet this run: compile the current history once so a client asking for
-        // context usage before the first turn still gets real numbers.
-        const prepared = yield* prepareOnce({
-          sessionID,
-          messages: yield* SessionHistory.load(db, sessionID).pipe(Effect.orDie),
-          purpose: "agent-turn",
-          model: yield* resolveModel(sessionID),
-        })
+        // context usage before the first turn still gets real numbers. Observing only — a stats
+        // request must not decide anything for the next turn.
+        const prepared = yield* prepareOnce(
+          {
+            sessionID,
+            messages: yield* SessionHistory.load(db, sessionID).pipe(Effect.orDie),
+            purpose: "agent-turn",
+            model: yield* resolveModel(sessionID),
+          },
+          true,
+        )
         return {
           ...prepared.stats,
           utilization: prepared.utilization,

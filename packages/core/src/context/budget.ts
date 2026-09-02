@@ -12,6 +12,12 @@ const TRUNCATE_KEEP = 400
 
 export const tokens = (messages: readonly ContextMessage[]) => Token.estimate(JSON.stringify(messages))
 
+/**
+ * Serialized size of canonical context material.
+ *
+ * An estimate of the provider payload, deliberately: the wire body is protocol-specific and only
+ * exists once a request has been built. Planning uses this; enforcement uses `ContextManager.payload`.
+ */
 export const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8")
 
 /**
@@ -77,16 +83,25 @@ export interface ReduceInput {
 export interface ReduceResult {
   readonly messages: readonly ContextMessage[]
   readonly steps: readonly string[]
+  /** True when the *estimated* payload fits. Authoritative sizing is `ContextManager.payload`. */
   readonly within: boolean
   /** True when only an LLM-backed compression can still bring the payload under the limit. */
   readonly needsCompression: boolean
 }
 
 /**
- * Deterministic last-resort reduction for a serialized payload that exceeds a provider byte limit.
+ * Deterministic last-resort reduction for a payload that is expected to exceed a provider limit.
  *
  * Steps run in a fixed order from cheapest to most destructive and stop as soon as the payload
  * fits. Dropping messages is genuinely last and never touches protected content.
+ *
+ * This is an approximate pre-pass, not the enforcement point. It measures canonical messages with
+ * `bytes` while the provider receives a protocol-specific body built from them, so `within: true`
+ * means "expected to fit", not "will fit". The request is measured for real, after lowering, by
+ * `ContextManager.payload`, and that is the check the runner refuses to send against. Keeping the
+ * estimate here is deliberate: reduction has to choose what to keep before a request exists, and
+ * lowering every candidate payload through the provider protocol to compare sizes would cost far
+ * more than the ladder saves.
  */
 export const reduce = (input: ReduceInput): ReduceResult => {
   const steps: string[] = []

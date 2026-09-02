@@ -19,7 +19,20 @@ export const defaults: Settings = {
   payloadBytes: undefined,
 }
 
-/** Fold every configuration document into one resolved context policy. */
+/**
+ * Fold every configuration document into one resolved context policy.
+ *
+ * Two merge rules, both deliberate:
+ *
+ * - Scalars (`enabled`, `automatic`, `recent_turns`, `payload_bytes`, ...) are last-wins, so the
+ *   most specific document — the workspace file — decides.
+ * - The protection arrays (`tools`, `files`) accumulate instead, deduplicated. Protection is a
+ *   safety rule, and a project file that adds one tool to the list must not silently drop what a
+ *   broader file protected. The consequence is that a document can only *add* protection: an
+ *   inherited entry cannot be removed by a narrower document. Widening the reduction is possible
+ *   through the scalars (`recent_turns: 0`, `user_messages: false`) or by turning a stage off
+ *   entirely, which keeps "less protected" an explicit choice rather than an accident of layering.
+ */
 export const settings = (documents: readonly Config.Entry[]): Settings =>
   documents
     .filter((entry): entry is Config.Document => entry.type === "document")
