@@ -161,6 +161,12 @@ prepare (estimate over budget) → automatic compression → prepare again
 Both directions of estimator error are safe by construction. Pessimistic: the context is reduced
 slightly more than it had to be. Optimistic: `payload` catches it and the escalation above runs.
 
+An unmeasurable request is not a fitting request. If the provider body cannot be built at all,
+`payload` reports `measured: false` and `within: false` rather than falling back to an estimate: the
+ceiling is a hard rule, and "the size could not be checked" is not permission to send. Such a
+request takes the same path as an oversized one — one recovery attempt, then an explicit provider
+error naming the encoding failure.
+
 ## Configuration
 
 ```jsonc

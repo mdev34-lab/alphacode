@@ -308,7 +308,8 @@ const layer = Layer.effect(
       // The configured payload ceiling is a hard limit, so it is enforced on the serialized request
       // rather than on the estimate that drove the reduction. Native compaction is the last lever
       // left once compression has already run; if it cannot help, the turn fails here instead of
-      // sending a request that is known to be too large.
+      // sending a request that is known to be too large, or one whose size is unknown because the
+      // provider body could not be built.
       const size = yield* contextManager.payload(request)
       if (!size.within) {
         if (recoverOverflow && (yield* recoverOverflow({ sessionID: session.id, entries, model, request }))) {
@@ -317,7 +318,9 @@ const layer = Layer.effect(
         }
         yield* publish(
           LLMEvent.providerError({
-            message: `The request is ${size.bytes} bytes and exceeds the configured context payload budget of ${size.limit} bytes. Compression and compaction could not reduce it further; start a new session or raise context.payload_bytes.`,
+            message: size.measured
+              ? `The request is ${size.bytes} bytes and exceeds the configured context payload budget of ${size.limit} bytes. Compression and compaction could not reduce it further; start a new session or raise context.payload_bytes.`
+              : `The request could not be encoded into a ${model.provider} request body, so its size cannot be checked against the configured context payload budget of ${size.limit} bytes. Refusing to send an unmeasurable request.`,
           }),
         )
         yield* withPublication(publisher.flush())

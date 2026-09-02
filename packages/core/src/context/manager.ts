@@ -84,15 +84,23 @@ export interface Interface {
    *
    * Everything else in this module estimates, because reduction decisions have to be made before a
    * request exists. Enforcement does not get to estimate: the request is lowered into its
-   * provider-native body and that serialization is what is measured.
+   * provider-native body and that serialization is what is measured. A request whose body cannot be
+   * built is reported as unmeasured and not within budget, because "we could not check" is not
+   * permission to send.
    */
   readonly payload: (request: LLMRequest) => Effect.Effect<PayloadSize>
 }
 
 export interface PayloadSize {
+  /** Serialized size of the provider-native body, or a lower bound when `measured` is false. */
   readonly bytes: number
   readonly limit: number | undefined
   readonly within: boolean
+  /**
+   * Whether `bytes` came from the real provider body. False means the body could not be built, so
+   * the ceiling could not be enforced; `within` is false in that case.
+   */
+  readonly measured: boolean
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/ContextManager") {}
@@ -446,16 +454,31 @@ const layer = Layer.effect(
 
     const payload = Effect.fnUntraced(function* (request: LLMRequest) {
       const limit = settings.payloadBytes
-      if (limit === undefined) return { bytes: 0, limit, within: true } satisfies PayloadSize
+      // Nothing to enforce: no ceiling is configured, so the body is never built for measurement.
+      if (limit === undefined) return { bytes: 0, limit, within: true, measured: true } satisfies PayloadSize
       const route = request.model.route
-      // A request that cannot even be lowered is not a budget problem, so fall back to the canonical
-      // request material rather than blocking the turn on a lowering failure.
-      const serialized = yield* route.body.from(request).pipe(
-        Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(route.body.schema))),
-        Effect.catchCause(() => Effect.succeed(JSON.stringify([request.system, request.messages, request.tools]))),
-      )
+      const serialized = yield* route.body
+        .from(request)
+        .pipe(
+          Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(route.body.schema))),
+          Effect.catchCause(() => Effect.succeed(undefined)),
+        )
+      if (serialized === undefined) {
+        // The body could not be built, so the wire size is unknown. This is the hard enforcement
+        // point, and an unknown size cannot be declared within budget: the request is treated
+        // exactly like an oversized one, which gives the runner its recovery attempt and otherwise
+        // refuses the turn. The canonical material only provides a lower bound for the report.
+        const estimate = Buffer.byteLength(JSON.stringify([request.system, request.messages, request.tools]), "utf8")
+        yield* Effect.logWarning("context.payload.unmeasurable", {
+          provider: request.model.provider,
+          model: request.model.id,
+          estimate,
+          limit,
+        })
+        return { bytes: estimate, limit, within: false, measured: false } satisfies PayloadSize
+      }
       const bytes = Buffer.byteLength(serialized, "utf8")
-      return { bytes, limit, within: bytes <= limit } satisfies PayloadSize
+      return { bytes, limit, within: bytes <= limit, measured: true } satisfies PayloadSize
     })
 
     const resolveModel = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {

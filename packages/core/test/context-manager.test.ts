@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, expect } from "bun:test"
-import { LLMClient, LLMEvent, Message, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
+import { LLM, LLMClient, LLMEvent, Message, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { ConfigAgent } from "@opencode-ai/core/config/agent"
@@ -109,12 +109,16 @@ const call = (id: string, name: string, input: Record<string, unknown>) => [
   LLMEvent.finish({ reason: "tool-calls" }),
 ]
 
-const model = Model.make({
-  id: "fake-model",
+const route = OpenAIChat.route.with({ limits: { context: 200_000, output: 1_000 } })
+const model = Model.make({ id: "fake-model", provider: "fake", route })
+/** A model whose request body cannot be built, so its wire size is unknowable. */
+const brokenModel = Model.make({
+  id: "broken-model",
   provider: "fake",
-  route: OpenAIChat.route.with({ limits: { context: 200_000, output: 1_000 } }),
+  route: { ...route, body: { schema: route.body.schema, from: () => Effect.die("cannot lower this request") } },
 })
-const models = SessionRunnerModel.layerWith(() => Effect.succeed(model))
+let lowering: "works" | "fails" = "works"
+const models = SessionRunnerModel.layerWith(() => Effect.succeed(lowering === "works" ? model : brokenModel))
 
 const permission = Layer.succeed(
   PermissionV2.Service,
@@ -309,6 +313,7 @@ const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service
   requests.length = 0
   turns = []
+  lowering = "works"
   summary = "## State\n- implemented the authentication flow"
   summaryAvailable = true
   yield* db
@@ -871,6 +876,43 @@ describe("ContextManager", () => {
       yield* ask(session, "Step four")
       expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).not.toContain(stale.id)
       expect(preparing.length).toBeGreaterThan(0)
+    }),
+  )
+
+  itBounded.effect("refuses to send a request whose size it cannot measure", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      turns = [say("This turn must never reach the provider")]
+      lowering = "fails"
+
+      // Enforcement reports the failure instead of assuming the request fits.
+      const size = yield* context.payload(
+        LLM.request({ model: brokenModel, messages: [Message.user("hello")], tools: [] }),
+      )
+      expect(size.measured).toBe(false)
+      expect(size.within).toBe(false)
+      expect(size.bytes).toBeGreaterThan(0)
+
+      yield* ask(session, "Hello")
+
+      expect(requests.filter((request) => request.tools.length > 0)).toEqual([])
+      expect(turns).toHaveLength(1)
+      expect(JSON.stringify(failures)).toContain("Refusing to send an unmeasurable request")
+    }),
+  )
+
+  it.effect("measures the real provider body when no ceiling is configured", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const context = yield* ContextManager.Service
+      // Without `context.payload_bytes` there is nothing to enforce, so the body is never built and
+      // a route that cannot lower a request is not turned into a failure.
+      const size = yield* context.payload(
+        LLM.request({ model: brokenModel, messages: [Message.user("hello")], tools: [] }),
+      )
+      expect(size).toEqual({ bytes: 0, limit: undefined, within: true, measured: true })
     }),
   )
 
