@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode acp --help 1`] = `
-"opencode acp
+"alphacode acp
 
 start ACP (Agent Client Protocol) server
 
@@ -22,16 +22,16 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp --help 1`] = `
-"opencode mcp
+"alphacode mcp
 
 manage MCP (Model Context Protocol) servers
 
 Commands:
-  opencode mcp add [name]     add an MCP server
-  opencode mcp list           list MCP servers and their status                        [aliases: ls]
-  opencode mcp auth [name]    authenticate with an OAuth-enabled MCP server
-  opencode mcp logout [name]  remove OAuth credentials for an MCP server
-  opencode mcp debug <name>   debug OAuth connection for an MCP server
+  alphacode mcp add [name]     add an MCP server
+  alphacode mcp list           list MCP servers and their status                       [aliases: ls]
+  alphacode mcp auth [name]    authenticate with an OAuth-enabled MCP server
+  alphacode mcp logout [name]  remove OAuth credentials for an MCP server
+  alphacode mcp debug <name>   debug OAuth connection for an MCP server
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -42,9 +42,9 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode attach --help 1`] = `
-"opencode attach <url>
+"alphacode attach <url>
 
-attach to a running opencode server
+attach to a running alphacode server
 
 Positionals:
   url  http://localhost:4096                                                     [string] [required]
@@ -68,9 +68,9 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode run --help 1`] = `
-"opencode run [message..]
+"alphacode run [message..]
 
-run opencode with a message
+run alphacode with a message
 
 Positionals:
   message  message to send                                                     [array] [default: []]
@@ -92,7 +92,7 @@ Options:
                                           [string] [choices: "default", "json"] [default: "default"]
   -f, --file         file(s) to attach to message                                            [array]
       --title        title for the session (uses truncated prompt if no value provided)     [string]
-      --attach       attach to a running opencode server (e.g., http://localhost:4096)      [string]
+      --attach       attach to a running alphacode server (e.g., http://localhost:4096)     [string]
   -p, --password     basic auth password (defaults to OPENCODE_SERVER_PASSWORD)             [string]
   -u, --username     basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode')
                                                                                             [string]
@@ -108,24 +108,24 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode debug --help 1`] = `
-"opencode debug
+"alphacode debug
 
 debugging and troubleshooting tools
 
 Commands:
-  opencode debug config        show resolved configuration
-  opencode debug lsp           LSP debugging utilities
-  opencode debug rg            ripgrep debugging utilities
-  opencode debug file          file system debugging utilities
-  opencode debug scrap         list all known projects
-  opencode debug skill         list all available skills
-  opencode debug snapshot      snapshot debugging utilities
-  opencode debug startup       print startup timing
-  opencode debug agent <name>  show agent configuration details
-  opencode debug v2            debug v2 catalog and built-in plugins
-  opencode debug info          show debug information
-  opencode debug paths         show global paths (data, config, cache, state)
-  opencode debug wait          wait indefinitely (for debugging)
+  alphacode debug config        show resolved configuration
+  alphacode debug lsp           LSP debugging utilities
+  alphacode debug rg            ripgrep debugging utilities
+  alphacode debug file          file system debugging utilities
+  alphacode debug scrap         list all known projects
+  alphacode debug skill         list all available skills
+  alphacode debug snapshot      snapshot debugging utilities
+  alphacode debug startup       print startup timing
+  alphacode debug agent <name>  show agent configuration details
+  alphacode debug v2            debug v2 catalog and built-in plugins
+  alphacode debug info          show debug information
+  alphacode debug paths         show global paths (data, config, cache, state)
+  alphacode debug wait          wait indefinitely (for debugging)
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -136,14 +136,14 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers --help 1`] = `
-"opencode providers
+"alphacode providers
 
 manage AI providers and credentials
 
 Commands:
-  opencode providers list               list providers and credentials                 [aliases: ls]
-  opencode providers login [url]        log in to a provider
-  opencode providers logout [provider]  log out from a configured provider
+  alphacode providers list               list providers and credentials                [aliases: ls]
+  alphacode providers login [url]        log in to a provider
+  alphacode providers logout [provider]  log out from a configured provider
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -154,13 +154,13 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent --help 1`] = `
-"opencode agent
+"alphacode agent
 
 manage agents
 
 Commands:
-  opencode agent create  create a new agent
-  opencode agent list    list all available agents
+  alphacode agent create  create a new agent
+  alphacode agent list    list all available agents
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -171,9 +171,9 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode upgrade --help 1`] = `
-"opencode upgrade [target]
+"alphacode upgrade [target]
 
-upgrade opencode to the latest or a specific version
+upgrade alphacode to the latest or a specific version
 
 Positionals:
   target  version to upgrade to, for ex '0.1.48' or 'v0.1.48'                               [string]
@@ -189,9 +189,9 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode uninstall --help 1`] = `
-"opencode uninstall
+"alphacode uninstall
 
-uninstall opencode and remove all related files
+uninstall alphacode and remove all related files
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -206,9 +206,9 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode serve --help 1`] = `
-"opencode serve
+"alphacode serve
 
-starts a headless opencode server
+starts a headless alphacode server
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -232,30 +232,30 @@ exports[`opencode CLI help-text snapshots every documented command emits stable 
 ▀▀▀▀ ▀ █▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
 
 Commands:
-  opencode completion          generate shell completion script
-  opencode acp                 start ACP (Agent Client Protocol) server
-  opencode mcp                 manage MCP (Model Context Protocol) servers
-  opencode [project]           start opencode tui                                          [default]
-  opencode attach <url>        attach to a running opencode server
-  opencode run [message..]     run opencode with a message
-  opencode debug               debugging and troubleshooting tools
-  opencode providers           manage AI providers and credentials                   [aliases: auth]
-  opencode agent               manage agents
-  opencode upgrade [target]    upgrade opencode to the latest or a specific version
-  opencode uninstall           uninstall opencode and remove all related files
-  opencode serve               starts a headless opencode server
-  opencode models [provider]   list all available models
-  opencode stats               show token usage and cost statistics
-  opencode export [sessionID]  export session data as JSON
-  opencode import <file>       import session data from JSON file or URL
-  opencode github              manage GitHub agent
-  opencode pr <number>         fetch and checkout a GitHub PR branch, then run opencode
-  opencode session             manage sessions
-  opencode plugin <module>     install plugin and update config                      [aliases: plug]
-  opencode db                  database tools
+  alphacode completion          generate shell completion script
+  alphacode acp                 start ACP (Agent Client Protocol) server
+  alphacode mcp                 manage MCP (Model Context Protocol) servers
+  alphacode [project]           start alphacode tui                                        [default]
+  alphacode attach <url>        attach to a running alphacode server
+  alphacode run [message..]     run alphacode with a message
+  alphacode debug               debugging and troubleshooting tools
+  alphacode providers           manage AI providers and credentials                  [aliases: auth]
+  alphacode agent               manage agents
+  alphacode upgrade [target]    upgrade alphacode to the latest or a specific version
+  alphacode uninstall           uninstall alphacode and remove all related files
+  alphacode serve               starts a headless alphacode server
+  alphacode models [provider]   list all available models
+  alphacode stats               show token usage and cost statistics
+  alphacode export [sessionID]  export session data as JSON
+  alphacode import <file>       import session data from JSON file or URL
+  alphacode github              manage GitHub agent
+  alphacode pr <number>         fetch and checkout a GitHub PR branch, then run alphacode
+  alphacode session             manage sessions
+  alphacode plugin <module>     install plugin and update config                     [aliases: plug]
+  alphacode db                  database tools
 
 Positionals:
-  project  path to start opencode in                                                        [string]
+  project  path to start alphacode in                                                       [string]
 
 Options:
   -h, --help          show help                                                            [boolean]
@@ -285,7 +285,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode models --help 1`] = `
-"opencode models [provider]
+"alphacode models [provider]
 
 list all available models
 
@@ -303,7 +303,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode stats --help 1`] = `
-"opencode stats
+"alphacode stats
 
 show token usage and cost statistics
 
@@ -321,7 +321,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode export --help 1`] = `
-"opencode export [sessionID]
+"alphacode export [sessionID]
 
 export session data as JSON
 
@@ -338,7 +338,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode import --help 1`] = `
-"opencode import <file>
+"alphacode import <file>
 
 import session data from JSON file or URL
 
@@ -354,13 +354,13 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github --help 1`] = `
-"opencode github
+"alphacode github
 
 manage GitHub agent
 
 Commands:
-  opencode github install  install the GitHub agent
-  opencode github run      run the GitHub agent
+  alphacode github install  install the GitHub agent
+  alphacode github run      run the GitHub agent
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -371,9 +371,9 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode pr --help 1`] = `
-"opencode pr <number>
+"alphacode pr <number>
 
-fetch and checkout a GitHub PR branch, then run opencode
+fetch and checkout a GitHub PR branch, then run alphacode
 
 Positionals:
   number  PR number to checkout                                                  [number] [required]
@@ -387,13 +387,13 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session --help 1`] = `
-"opencode session
+"alphacode session
 
 manage sessions
 
 Commands:
-  opencode session list                list sessions
-  opencode session delete <sessionID>  delete a session
+  alphacode session list                list sessions
+  alphacode session delete <sessionID>  delete a session
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -404,7 +404,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode plugin --help 1`] = `
-"opencode plugin <module>
+"alphacode plugin <module>
 
 install plugin and update config
 
@@ -422,13 +422,13 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db --help 1`] = `
-"opencode db
+"alphacode db
 
 database tools
 
 Commands:
-  opencode db [query]     open an interactive sqlite3 shell or run a query                 [default]
-  opencode db path        print the database path
+  alphacode db [query]     open an interactive sqlite3 shell or run a query                [default]
+  alphacode db path        print the database path
 
 Positionals:
   query  SQL query to execute                                                               [string]
@@ -443,7 +443,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp list --help 1`] = `
-"opencode mcp list
+"alphacode mcp list
 
 list MCP servers and their status
 
@@ -456,7 +456,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp add --help 1`] = `
-"opencode mcp add [name]
+"alphacode mcp add [name]
 
 add an MCP server
 
@@ -475,12 +475,12 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp auth --help 1`] = `
-"opencode mcp auth [name]
+"alphacode mcp auth [name]
 
 authenticate with an OAuth-enabled MCP server
 
 Commands:
-  opencode mcp auth list  list OAuth-capable MCP servers and their auth status         [aliases: ls]
+  alphacode mcp auth list  list OAuth-capable MCP servers and their auth status        [aliases: ls]
 
 Positionals:
   name  name of the MCP server                                                              [string]
@@ -494,7 +494,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp logout --help 1`] = `
-"opencode mcp logout [name]
+"alphacode mcp logout [name]
 
 remove OAuth credentials for an MCP server
 
@@ -510,7 +510,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers list --help 1`] = `
-"opencode providers list
+"alphacode providers list
 
 list providers and credentials
 
@@ -523,12 +523,12 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers login --help 1`] = `
-"opencode providers login [url]
+"alphacode providers login [url]
 
 log in to a provider
 
 Positionals:
-  url  opencode auth provider                                                               [string]
+  url  alphacode auth provider                                                              [string]
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -541,7 +541,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers logout --help 1`] = `
-"opencode providers logout [provider]
+"alphacode providers logout [provider]
 
 log out from a configured provider
 
@@ -557,7 +557,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent create --help 1`] = `
-"opencode agent create
+"alphacode agent create
 
 create a new agent
 
@@ -577,7 +577,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent list --help 1`] = `
-"opencode agent list
+"alphacode agent list
 
 list all available agents
 
@@ -590,7 +590,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session list --help 1`] = `
-"opencode session list
+"alphacode session list
 
 list sessions
 
@@ -605,7 +605,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session delete --help 1`] = `
-"opencode session delete <sessionID>
+"alphacode session delete <sessionID>
 
 delete a session
 
@@ -621,7 +621,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github install --help 1`] = `
-"opencode github install
+"alphacode github install
 
 install the GitHub agent
 
@@ -634,7 +634,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github run --help 1`] = `
-"opencode github run
+"alphacode github run
 
 run the GitHub agent
 
@@ -649,7 +649,7 @@ Options:
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db path --help 1`] = `
-"opencode db path
+"alphacode db path
 
 print the database path
 
