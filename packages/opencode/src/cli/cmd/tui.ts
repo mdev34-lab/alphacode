@@ -137,6 +137,19 @@ export const TuiThreadCommand = cmd({
         type: "number",
         describe: "cap visible mini replay to the newest N messages",
       })
+      .option("factory-default", {
+        type: "boolean",
+        describe: "reset user-level config, data, and cache to factory defaults, then exit",
+      })
+      .option("dry-run", {
+        type: "boolean",
+        describe: "with --factory-default, print what would be removed without removing",
+      })
+      .option("yes", {
+        type: "boolean",
+        alias: ["y"],
+        describe: "with --factory-default, skip the confirmation prompt",
+      })
       .option("demo", {
         type: "boolean",
         hidden: true,

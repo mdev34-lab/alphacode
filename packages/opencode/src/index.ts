@@ -63,6 +63,16 @@ const cli = yargs(args)
     type: "boolean",
   })
   .middleware(async (opts) => {
+    // Handled before any command/worker startup: a factory reset must not
+    // boot the TUI, touch the config it is about to remove, or outlive its
+    // own work.
+    if (opts.factoryDefault) {
+      const { runFactoryDefault } = await import("./cli/factory-default")
+      await runFactoryDefault({ yes: opts.yes === true, dryRun: opts.dryRun === true })
+      process.exit()
+    }
+  })
+  .middleware(async (opts) => {
     if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
     if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel
     if (opts.pure) {
