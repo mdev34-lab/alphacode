@@ -258,29 +258,35 @@ Positionals:
   project  path to start alphacode in                                                       [string]
 
 Options:
-  -h, --help          show help                                                            [boolean]
-  -v, --version       show version number                                                  [boolean]
-      --print-logs    print logs to stderr                                                 [boolean]
-      --log-level     log level                 [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure          run without external plugins                                         [boolean]
-      --port          port to listen on                                        [number] [default: 0]
-      --hostname      hostname to listen on                          [string] [default: "127.0.0.1"]
-      --mdns          enable mDNS service discovery (defaults hostname to 0.0.0.0)
+  -h, --help             show help                                                         [boolean]
+  -v, --version          show version number                                               [boolean]
+      --print-logs       print logs to stderr                                              [boolean]
+      --log-level        log level              [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure             run without external plugins                                      [boolean]
+      --port             port to listen on                                     [number] [default: 0]
+      --hostname         hostname to listen on                       [string] [default: "127.0.0.1"]
+      --mdns             enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
-      --mdns-domain   custom domain name for mDNS service (default: opencode.local)
+      --mdns-domain      custom domain name for mDNS service (default: opencode.local)
                                                                 [string] [default: "opencode.local"]
-      --cors          additional domains to allow for CORS                     [array] [default: []]
-  -m, --model         model to use in the format of provider/model                          [string]
-  -c, --continue      continue the last session                                            [boolean]
-  -s, --session       session id to continue                                                [string]
-      --fork          fork the session when continuing (use with --continue or --session)  [boolean]
-      --prompt        prompt to use                                                         [string]
-      --agent         agent to use                                                          [string]
-      --auto          auto-approve permissions that are not explicitly denied (dangerous!)
+      --cors             additional domains to allow for CORS                  [array] [default: []]
+  -m, --model            model to use in the format of provider/model                       [string]
+  -c, --continue         continue the last session                                         [boolean]
+  -s, --session          session id to continue                                             [string]
+      --fork             fork the session when continuing (use with --continue or --session)
+                                                                                           [boolean]
+      --prompt           prompt to use                                                      [string]
+      --agent            agent to use                                                       [string]
+      --auto             auto-approve permissions that are not explicitly denied (dangerous!)
                                                                           [boolean] [default: false]
-      --mini          start the minimal interactive interface             [boolean] [default: false]
-      --no-replay     disable mini session history replay on resume and after resize       [boolean]
-      --replay-limit  cap visible mini replay to the newest N messages                      [number]
+      --mini             start the minimal interactive interface          [boolean] [default: false]
+      --no-replay        disable mini session history replay on resume and after resize    [boolean]
+      --replay-limit     cap visible mini replay to the newest N messages                   [number]
+      --factory-default  reset user-level config, data, state, and cache to factory defaults, then
+                         exit                                                              [boolean]
+      --dry-run          with --factory-default, print what would be removed without removing
+                                                                                           [boolean]
+  -y, --yes              with --factory-default, skip the confirmation prompt              [boolean]
 "
 `;
 
