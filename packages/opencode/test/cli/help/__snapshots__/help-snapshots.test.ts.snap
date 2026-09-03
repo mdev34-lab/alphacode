@@ -282,8 +282,8 @@ Options:
       --mini             start the minimal interactive interface          [boolean] [default: false]
       --no-replay        disable mini session history replay on resume and after resize    [boolean]
       --replay-limit     cap visible mini replay to the newest N messages                   [number]
-      --factory-default  reset user-level config, data, and cache to factory defaults, then exit
-                                                                                           [boolean]
+      --factory-default  reset user-level config, data, state, and cache to factory defaults, then
+                         exit                                                              [boolean]
       --dry-run          with --factory-default, print what would be removed without removing
                                                                                            [boolean]
   -y, --yes              with --factory-default, skip the confirmation prompt              [boolean]

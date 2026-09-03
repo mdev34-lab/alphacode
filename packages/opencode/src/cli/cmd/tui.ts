@@ -139,7 +139,7 @@ export const TuiThreadCommand = cmd({
       })
       .option("factory-default", {
         type: "boolean",
-        describe: "reset user-level config, data, and cache to factory defaults, then exit",
+        describe: "reset user-level config, data, state, and cache to factory defaults, then exit",
       })
       .option("dry-run", {
         type: "boolean",
