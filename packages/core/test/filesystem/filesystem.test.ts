@@ -376,12 +376,84 @@ describe("FSUtil", () => {
       if (process.platform === "win32") expect(FSUtil.contains("C:\\a", "D:\\b")).toBe(false)
     })
 
+    test("contains is case-insensitive on Windows", () => {
+      if (process.platform !== "win32") return
+      expect(FSUtil.contains("C:\\A", "C:\\a\\b")).toBe(true)
+      expect(FSUtil.contains("c:\\a", "C:\\A\\B\\c")).toBe(true)
+    })
+
+    test("contains normalizes trailing separators and dot segments", () => {
+      const seg = path.sep
+      expect(FSUtil.contains(`${seg}a${seg}b${seg}`, `${seg}a${seg}b${seg}c`)).toBe(true)
+      expect(FSUtil.contains(`${seg}a${seg}.${seg}b`, `${seg}a${seg}b${seg}c`)).toBe(true)
+      expect(FSUtil.contains(`${seg}a${seg}b${seg}..${seg}b`, `${seg}a${seg}b${seg}c`)).toBe(true)
+      expect(FSUtil.contains(`${seg}a${seg}b`, `${seg}a${seg}b${seg}c${seg}`)).toBe(true)
+    })
+
+    test("contains distinguishes sibling prefixes", () => {
+      const seg = path.sep
+      expect(FSUtil.contains(`${seg}a${seg}b`, `${seg}a${seg}bad`)).toBe(false)
+      expect(FSUtil.contains(`${seg}a${seg}ab`, `${seg}a${seg}b`)).toBe(false)
+    })
+
+    test("contains rejects paths outside the parent", () => {
+      const seg = path.sep
+      expect(FSUtil.contains(`${seg}a${seg}b`, `${seg}a`)).toBe(false)
+      expect(FSUtil.contains(`${seg}a${seg}b`, `${seg}a${seg}b${seg}..${seg}c`)).toBe(false)
+    })
+
+    test("contains is safe across Windows drives", () => {
+      if (process.platform !== "win32") return
+      expect(FSUtil.contains("C:\\a", "D:\\b")).toBe(false)
+      expect(FSUtil.contains("D:\\b\\c", "C:\\a")).toBe(false)
+    })
+
+    test("contains handles Windows UNC shares", () => {
+      if (process.platform !== "win32") return
+      expect(FSUtil.contains("\\\\server\\share\\a", "\\\\server\\share\\a\\b")).toBe(true)
+      expect(FSUtil.contains("\\\\server\\share\\a", "\\\\other\\share\\a\\b")).toBe(false)
+    })
+
     test("overlaps detects overlapping paths", () => {
       expect(FSUtil.overlaps("/a/b", "/a/b/c")).toBe(true)
       expect(FSUtil.overlaps("/a/b/c", "/a/b")).toBe(true)
       expect(FSUtil.overlaps("/a", "/b")).toBe(false)
       expect(FSUtil.overlaps("/a/b", "/a/bad")).toBe(false)
       if (process.platform === "win32") expect(FSUtil.overlaps("C:\\a", "D:\\b")).toBe(false)
+    })
+
+    test("overlaps is case-insensitive on Windows", () => {
+      if (process.platform !== "win32") return
+      expect(FSUtil.overlaps("C:\\A", "C:\\a\\b")).toBe(true)
+      expect(FSUtil.overlaps("C:\\a\\b", "C:\\A")).toBe(true)
+    })
+
+    test("overlaps handles trailing separators and dot segments", () => {
+      const seg = path.sep
+      expect(FSUtil.overlaps(`${seg}a${seg}b${seg}`, `${seg}a${seg}b${seg}c`)).toBe(true)
+      expect(FSUtil.overlaps(`${seg}a${seg}b${seg}c`, `${seg}a${seg}b${seg}.`)).toBe(true)
+    })
+
+    test("overlaps is safe across Windows drives", () => {
+      if (process.platform !== "win32") return
+      expect(FSUtil.overlaps("D:\\b", "C:\\a")).toBe(false)
+      expect(FSUtil.overlaps("C:\\a", "D:\\b")).toBe(false)
+    })
+
+    test("overlaps handles Windows UNC shares", () => {
+      if (process.platform !== "win32") return
+      expect(FSUtil.overlaps("\\\\server\\share\\a", "\\\\server\\share\\a\\b")).toBe(true)
+      expect(FSUtil.overlaps("\\\\server\\share\\a", "\\\\other\\share\\a\\b")).toBe(false)
+    })
+
+    test("contains resolves symlinks only when given a realpath (lexical comparison)", () => {
+      // FSUtil.contains is purely lexical: it does not realpath, so a path
+      // reached through a symlink/junction is not treated as contained. This
+      // documents the current boundary rather than asserting a stronger
+      // guarantee.
+      const seg = path.sep
+      expect(FSUtil.contains(`${seg}a${seg}link`, `${seg}a${seg}link${seg}target`)).toBe(true)
+      expect(FSUtil.contains(`${seg}a${seg}real`, `${seg}a${seg}link${seg}target`)).toBe(false)
     })
   })
 })

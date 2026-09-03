@@ -110,3 +110,68 @@ test("reset never deletes anything inside the working directory", async () => {
   expect(await fs.readFile(path.join(workdir, "keep.txt"), "utf8")).toBe("keep")
   await fs.rm(tmp, { recursive: true, force: true })
 })
+
+test("plan drops a root equal to the working directory", async () => {
+  const tmp = await tmpRoot("plan-eq")
+  const dir = path.join(tmp, "config")
+  await fs.mkdir(dir, { recursive: true })
+
+  const plan = planFactoryDefault({ cwd: dir, roots: [root(dir), root(path.join(tmp, "data"))] })
+
+  expect(plan.targets.map((t) => t.dir)).toEqual([path.join(tmp, "data")])
+  await fs.rm(tmp, { recursive: true, force: true })
+})
+
+test("plan drops a working directory nested under a root with a trailing separator", async () => {
+  const tmp = await tmpRoot("plan-trail")
+  const config = path.join(tmp, "config") + path.sep
+  const project = path.join(tmp, "config", "project")
+
+  // Trailing separator on the root must not defeat the overlap check.
+  const plan = planFactoryDefault({ cwd: project, roots: [root(config), root(path.join(tmp, "data"))] })
+
+  expect(plan.targets.map((t) => t.dir)).toEqual([path.join(tmp, "data")])
+  await fs.rm(tmp, { recursive: true, force: true })
+})
+
+test("plan drops a root whose normalized form equals the working directory", async () => {
+  const tmp = await tmpRoot("plan-dot")
+  const config = path.join(tmp, "config")
+  const dotConfig = path.join(config, "..", "config")
+
+  const plan = planFactoryDefault({ cwd: config, roots: [root(dotConfig), root(path.join(tmp, "data"))] })
+
+  expect(plan.targets.map((t) => t.dir)).toEqual([path.join(tmp, "data")])
+  await fs.rm(tmp, { recursive: true, force: true })
+})
+
+test("plan does not confuse sibling prefixes", async () => {
+  const tmp = await tmpRoot("plan-sib")
+  const config = path.join(tmp, "config")
+  const sibling = path.join(tmp, "config2")
+
+  // 'config2' is a sibling of the working directory, not a prefix overlap.
+  const plan = planFactoryDefault({ cwd: config, roots: [root(sibling)] })
+
+  expect(plan.targets.map((t) => t.dir)).toEqual([sibling])
+  await fs.rm(tmp, { recursive: true, force: true })
+})
+
+test("plan keeps roots on a different Windows drive from the working directory", () => {
+  if (process.platform !== "win32") return
+  const plan = planFactoryDefault({
+    cwd: "C:\\work\\project",
+    roots: [root("D:\\config"), root("E:\\data")],
+  })
+  expect(plan.targets.map((t) => t.dir).sort()).toEqual(["D:\\config", "E:\\data"].sort())
+})
+
+test("plan treats Windows drive-letter casing as overlapping", () => {
+  if (process.platform !== "win32") return
+  // Same drive, different case -> still one filesystem namespace.
+  const plan = planFactoryDefault({
+    cwd: "C:\\work",
+    roots: [root("c:\\work\\config")],
+  })
+  expect(plan.targets).toEqual([])
+})
