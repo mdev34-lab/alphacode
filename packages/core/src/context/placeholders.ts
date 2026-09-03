@@ -19,6 +19,8 @@ export interface Segment {
   readonly startMessageID: SessionMessage.ID
   readonly endMessageID: SessionMessage.ID
   readonly count: number
+  /** Verbatim messages kept inside the block's span, which its summary therefore does not cover. */
+  readonly retainedCount: number
   /** 0 carries the summary; later pieces of the same block are continuations of it. */
   readonly index: number
   readonly total: number
@@ -48,8 +50,15 @@ export const render = (segment: Segment) => {
     ].join("\n")
   return [
     ...header,
-    `original-tokens: ${segment.block.sourceTokenCount}`,
-    ...(segment.total > 1 ? [`sections: ${segment.total} (messages kept verbatim appear between them)`] : []),
+    // The block describes exactly the messages its summary was generated from: protected messages
+    // inside the span stayed verbatim and were never summarized, so the accounting below never
+    // counts them — a placeholder must not claim a range that a retained message sits inside.
+    `summarized: ${segment.block.sourceMessageCount} messages (~${segment.block.sourceTokenCount} tokens) spanning ${segment.block.startMessageID}-${segment.block.endMessageID}`,
+    ...(segment.total > 1
+      ? [
+          `sections: ${segment.total} (${segment.retainedCount} message${segment.retainedCount === 1 ? "" : "s"} kept verbatim in their original positions, not summarized)`,
+        ]
+      : []),
     ...(segment.block.focus === undefined ? [] : [`focus: ${segment.block.focus}`]),
     "",
     "This is an AlphaCode-generated summary of an earlier part of this conversation. Treat it as",
@@ -93,29 +102,44 @@ export const positions = (messages: readonly ContextMessage[]) =>
  * Fold two partially overlapping ranges into one authoritative range.
  *
  * The union is what the projection actually replaces, so the union is what the block must describe:
- * both boundaries, the message count and the token count are recomputed from the covered messages
- * rather than inherited. Both summaries are carried, oldest first, because either one alone would
- * lose what the other condensed. The newest block keeps its identity, so persisting the
- * normalization is an update of that row plus an absorption of the other.
+ * both boundaries, the message count and the token count are recomputed rather than inherited —
+ * from the *summarized* subset of the covered messages, because the protected messages kept
+ * verbatim were never part of either summary. Both summaries are carried, oldest first, because
+ * either one alone would lose what the other condensed. The newest block keeps its identity, so
+ * persisting the normalization is an update of that row plus an absorption of the other.
  */
-const merge = (messages: readonly ContextMessage[], left: Range, right: Range): Range => {
+const merge = (
+  messages: readonly ContextMessage[],
+  left: Range,
+  right: Range,
+  protectedIDs: ReadonlySet<SessionMessage.ID>,
+): Range => {
   const start = Math.min(left.start, right.start)
   const end = Math.max(left.end, right.end)
   const newest = right.block.createdAt >= left.block.createdAt ? right.block : left.block
   const older = newest === right.block ? left.block : right.block
   const summary = [older.summary, newest.summary].join("\n\n---\n\n")
   const covered = messages.slice(start, end + 1)
+  // A block describes exactly what its summary represents, and neither summary represents the
+  // protected messages the projection keeps verbatim: boundaries, count and tokens come from the
+  // summarized subset of the union, never from the whole span. A summary may restate a little of a
+  // retained message's content from when that message was not yet protected — harmless duplication,
+  // never a claim of replacement.
+  const summarized = covered.flatMap((item, offset) => (protectedIDs.has(item.id) ? [] : [{ item, offset }]))
+  // Only a protection set that grew to cover the union entirely can make this empty; keep the
+  // union's first boundary then rather than produce a block with no source.
+  const replaced = summarized.length === 0 ? [{ item: covered[0]!, offset: 0 }] : summarized
   return {
-    start,
-    end,
+    start: start + replaced[0]!.offset,
+    end: start + replaced[replaced.length - 1]!.offset,
     block: {
       ...newest,
-      startMessageID: covered[0]!.id,
-      endMessageID: covered[covered.length - 1]!.id,
+      startMessageID: replaced[0]!.item.id,
+      endMessageID: replaced[replaced.length - 1]!.item.id,
       summary,
       focus: newest.focus ?? older.focus,
-      sourceMessageCount: covered.length,
-      sourceTokenCount: Token.estimate(JSON.stringify(covered)),
+      sourceMessageCount: replaced.length,
+      sourceTokenCount: Token.estimate(JSON.stringify(replaced.map(({ item }) => item))),
       summaryTokenCount: Token.estimate(summary),
       nested: [...new Set([...older.nested, older.id, ...newest.nested])],
     },
@@ -137,7 +161,11 @@ const merge = (messages: readonly ContextMessage[], left: Range, right: Range): 
  * summaries. The caller persists that normalization, so the stored state converges on one
  * authoritative range instead of re-deriving the merge every turn.
  */
-export const resolve = (messages: readonly ContextMessage[], blocks: readonly CompressionBlock[]) => {
+export const resolve = (
+  messages: readonly ContextMessage[],
+  blocks: readonly CompressionBlock[],
+  protectedIDs: ReadonlySet<SessionMessage.ID> = new Set(),
+) => {
   const index = positions(messages)
   const ranges = blocks.flatMap((block) => {
     const range = locate(index, block)
@@ -158,7 +186,7 @@ export const resolve = (messages: readonly ContextMessage[], blocks: readonly Co
   return sorted.reduce<Range[]>((result, range) => {
     const previous = result[result.length - 1]
     if (previous === undefined || range.start > previous.end) return [...result, range]
-    return [...result.slice(0, -1), merge(messages, previous, range)]
+    return [...result.slice(0, -1), merge(messages, previous, range, protectedIDs)]
   }, [])
 }
 
@@ -186,7 +214,7 @@ export const apply = (
   protectedIDs: ReadonlySet<SessionMessage.ID> = new Set(),
 ): Applied => {
   if (blocks.length === 0) return { messages, blocks: [], stale: [], merged: [], compressedMessages: 0 }
-  const ranges = resolve(messages, blocks)
+  const ranges = resolve(messages, blocks, protectedIDs)
   const index = positions(messages)
   // A block is stale only when the canonical history can no longer place it: either boundary is
   // gone, or they crossed. A block that merely lost to a wider compression is absorbed, not stale.
@@ -219,6 +247,7 @@ export const apply = (
             startMessageID: run[0]!.id,
             endMessageID: run[run.length - 1]!.id,
             count: run.length,
+            retainedCount: retained.length,
             index,
             total,
           }),

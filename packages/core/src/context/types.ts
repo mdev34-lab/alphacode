@@ -21,15 +21,28 @@ export type Purpose = "agent-turn" | "compression" | "title-generation" | "inter
 /** Purposes that are prepared as isolated context: the compiler passes their messages through. */
 export const isolated = (purpose: Purpose) => purpose !== "agent-turn"
 
-/** One compressed contiguous range of canonical history. */
+/**
+ * One compressed contiguous range of canonical history.
+ *
+ * A block describes exactly the messages its summary represents — never the wider range that was
+ * requested. Protected messages inside the requested range stay verbatim and are excluded both
+ * from the summary and from everything below: the boundaries are the first and last *summarized*
+ * message, and `sourceMessageCount`/`sourceTokenCount` measure the summarized subset only. The
+ * placeholder, the statistics and the events therefore always agree with the projection, and the
+ * metadata cannot claim a range that a verbatim message sits inside.
+ */
 export interface CompressionBlock {
   readonly id: string
+  /** First message the summary represents; never a verbatim-kept protected message. */
   readonly startMessageID: SessionMessage.ID
+  /** Last message the summary represents; never a verbatim-kept protected message. */
   readonly endMessageID: SessionMessage.ID
   readonly summary: string
   readonly focus?: string
   readonly createdAt: number
+  /** Messages the summary was generated from, excluding anything kept verbatim. */
   readonly sourceMessageCount: number
+  /** Token estimate over exactly the same summarized subset. */
   readonly sourceTokenCount: number
   readonly summaryTokenCount: number
   /** Blocks whose summaries were folded into this one by an overlapping compression. */

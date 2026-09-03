@@ -17,6 +17,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { Token } from "@opencode-ai/core/util/token"
 
 const sessionID = SessionV2.ID.make("ses_context_compiler")
 const created = DateTime.makeUnsafe(0)
@@ -264,14 +265,16 @@ describe("compression placeholders", () => {
     readonly end: string
     readonly summary: string
     readonly createdAt?: number
+    readonly sourceMessageCount?: number
+    readonly sourceTokenCount?: number
   }): ContextTypes.CompressionBlock => ({
     id: input.id,
     startMessageID: SessionMessage.ID.make(input.start),
     endMessageID: SessionMessage.ID.make(input.end),
     summary: input.summary,
     createdAt: input.createdAt ?? 1,
-    sourceMessageCount: 2,
-    sourceTokenCount: 400,
+    sourceMessageCount: input.sourceMessageCount ?? 2,
+    sourceTokenCount: input.sourceTokenCount ?? 400,
     summaryTokenCount: 40,
     nested: [],
   })
@@ -330,7 +333,7 @@ describe("compression placeholders", () => {
     const applied = ContextPlaceholder.apply(
       sessionID,
       conversation,
-      [block({ id: "cmp_1", start: "msg_1", end: "msg_5", summary: "did the setup" })],
+      [block({ id: "cmp_1", start: "msg_1", end: "msg_5", summary: "did the setup", sourceMessageCount: 3 })],
       new Set([SessionMessage.ID.make("msg_2"), SessionMessage.ID.make("msg_4")]),
     )
 
@@ -348,7 +351,10 @@ describe("compression placeholders", () => {
       return message.type === "synthetic" ? message.text : ""
     }
     expect(text(0)).toContain("messages: msg_1-msg_1 (1)")
-    expect(text(0)).toContain("sections: 3")
+    // The block-level accounting declares the summarized subset — three messages, two of the span's
+    // five kept verbatim — and never reads as if the whole requested range were in the summary.
+    expect(text(0)).toContain("summarized: 3 messages (~400 tokens) spanning msg_1-msg_5")
+    expect(text(0)).toContain("sections: 3 (2 messages kept verbatim in their original positions, not summarized)")
     expect(text(2)).toContain("messages: msg_3-msg_3 (1)")
     expect(text(2)).toContain("continues: section 2 of 3")
     expect(text(4)).toContain("messages: msg_5-msg_5 (1)")
@@ -413,6 +419,40 @@ describe("compression placeholders", () => {
     expect(next.merged).toEqual([])
     expect(next.messages.map((message) => message.id)).toEqual(applied.messages.map((message) => message.id))
     expect(next.blocks[0]!.summary).toBe(applied.blocks[0]!.summary)
+  })
+
+  test("attributes only the summarized subset to a merged range bounded by protected messages", () => {
+    // The protected messages sit at the ends of the union, so the merged block may neither cover
+    // nor count them: neither summary represents them, and the bookkeeping must say so.
+    const first = block({ id: "cmp_1", start: "msg_1", end: "msg_3", summary: "first half", createdAt: 1 })
+    const second = block({ id: "cmp_2", start: "msg_2", end: "msg_5", summary: "second half", createdAt: 2 })
+    const protectedIDs = new Set([SessionMessage.ID.make("msg_1"), SessionMessage.ID.make("msg_5")])
+    const applied = ContextPlaceholder.apply(sessionID, conversation, [first, second], protectedIDs)
+
+    expect(applied.blocks).toHaveLength(1)
+    const merged = applied.blocks[0]!
+    expect(merged.startMessageID).toBe(SessionMessage.ID.make("msg_2"))
+    expect(merged.endMessageID).toBe(SessionMessage.ID.make("msg_4"))
+    expect(merged.sourceMessageCount).toBe(3)
+    expect(merged.sourceTokenCount).toBe(Token.estimate(JSON.stringify(conversation.slice(1, 4))))
+    expect(merged.nested).toContain("cmp_1")
+
+    // The verbatim messages keep their canonical positions outside the placeholder.
+    expect(applied.messages.map((message) => message.id)).toEqual([
+      SessionMessage.ID.make("msg_1"),
+      SessionMessage.ID.make("msg_cmp_2"),
+      SessionMessage.ID.make("msg_5"),
+      SessionMessage.ID.make("msg_6"),
+    ])
+    const rendered = applied.messages[1]!
+    expect(rendered.type === "synthetic" && rendered.text).toContain("summarized: 3 messages")
+    expect(rendered.type === "synthetic" && rendered.text).toContain("spanning msg_2-msg_4")
+    expect(applied.compressedMessages).toBe(3)
+
+    // The normalized block is itself stable under the same protection: nothing is re-derived.
+    const next = ContextPlaceholder.apply(sessionID, conversation, [merged], protectedIDs)
+    expect(next.merged).toEqual([])
+    expect(next.messages.map((message) => message.id)).toEqual(applied.messages.map((message) => message.id))
   })
 
   test("reports blocks whose boundaries no longer exist as stale instead of failing", () => {
@@ -817,7 +857,7 @@ describe("context settings", () => {
         automatic: true,
         minContext: 0.6,
         maxContext: 0.85,
-        timeoutMillis: 90_000,
+        timeoutMillis: 30_000,
       },
       deduplication: { enabled: true },
       purgeErrors: { enabled: true, turns: 4 },

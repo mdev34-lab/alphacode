@@ -11,7 +11,9 @@ export const defaults: Settings = {
     automatic: true,
     minContext: 0.6,
     maxContext: 0.85,
-    timeoutMillis: 90_000,
+    // One summarization runs inside the turn the user is waiting on, so the default bounds that
+    // turn's added latency, not the provider's worst case. A raised ceiling stays configurable.
+    timeoutMillis: 30_000,
   },
   deduplication: { enabled: true },
   purgeErrors: { enabled: true, turns: 4 },

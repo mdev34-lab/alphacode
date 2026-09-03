@@ -136,6 +136,12 @@ call the same `ContextManager.compress` engine, as does automatic compression.
   around the placeholder, and the caller is told how many were kept (`excludedMessages` on the
   endpoint, `protected_messages_kept` plus the real `start_message_id`/`end_message_id` on the tool
   output). The block therefore covers the range that was actually compressed, not the one requested.
+- A block is defined as the exact set of messages its summary represents. Its boundaries are the
+  first and last **summarized** message, and `sourceMessageCount`/`sourceTokenCount` measure that
+  subset only, never the wider requested range or a merged union. The first placeholder segment
+  declares the same accounting — `summarized: N messages (~T tokens) spanning <start>-<end>`, plus
+  how many messages were kept verbatim between the sections — so the metadata can never read as if
+  a retained message were part of the summary.
 - Summaries are durable state, so they are capped deterministically at
   `ContextCompressor.MAX_SUMMARY_CHARS` (16 KB) before being stored; a truncated summary ends with a
   marker. `maxTokens` is a request to the provider, not a guarantee, and nested compression reads
@@ -148,8 +154,10 @@ call the same `ContextManager.compress` engine, as does automatic compression.
 Automatic compression is deliberately synchronous with the turn that triggered it: `prepare` →
 `mandatory` → summarize → persist → `prepare` again → the real request. That costs one extra model
 round trip on the turn that crosses the threshold, which is the accepted tradeoff for never sending
-an oversized request. It is bounded by `dynamic_compression.timeout_ms` (default 90s); on timeout
-the compression is abandoned, `session.next.context.compression.failed` is published, and the turn
+an oversized request. It is bounded by `dynamic_compression.timeout_ms` (default **30s**), which
+caps the interactive latency a turn can pay for summarizing — a slow summarizer degrades to an
+uncompressed turn, and the failure backoff below keeps it from being paid twice. On timeout the
+compression is abandoned, `session.next.context.compression.failed` is published, and the turn
 proceeds with the reduced-but-uncompressed context. Only the `mandatory` band compresses on its own;
 `nudge` and `prefer` merely advise the model and the TUI.
 
@@ -173,10 +181,11 @@ Never compressed, deduplicated, or purged:
 Two compression blocks may not describe overlapping ranges. Compression cannot create that state —
 a new range grows over every block it intersects and absorbs them — but a history rewrite or state
 written by an older version can. When the compiler meets it, it merges the ranges into one that
-describes exactly what it replaces: recomputed boundaries, message count and token count, with both
-summaries carried so neither is stranded. The merge is then persisted (the surviving block is
-widened, the other is marked absorbed), so the stored state converges on one authoritative range
-instead of the projection re-deriving it every turn.
+describes exactly what it replaces: recomputed boundaries, message count and token count — all
+measured over the summarized subset of the union, since the protected messages kept verbatim were
+in neither summary — with both summaries carried so neither is stranded. The merge is then
+persisted (the surviving block is widened, the other is marked absorbed), so the stored state
+converges on one authoritative range instead of the projection re-deriving it every turn.
 
 The alternative — emitting both placeholders and clipping the second to whatever is left — was
 rejected: the second placeholder would then advertise a range the first had already consumed, and
@@ -258,7 +267,7 @@ error naming the encoding failure.
       "automatic": true,
       "min_context": 0.6,
       "max_context": 0.85,
-      "timeout_ms": 90000,
+      "timeout_ms": 30000,
     },
     "deduplication": { "enabled": true },
     "purge_errors": { "enabled": true, "turns": 4 },
