@@ -501,6 +501,8 @@ export namespace Context {
       utilization: Schema.Finite,
       limit: NonNegativeInt.pipe(optional),
       recommendation: Schema.Literals(["none", "normal", "nudge", "prefer", "mandatory"]),
+      /** The serialized request is expected to exceed the configured payload byte ceiling. */
+      payloadOverBudget: Schema.Boolean,
     },
   })
   export type Prepared = typeof Prepared.Type

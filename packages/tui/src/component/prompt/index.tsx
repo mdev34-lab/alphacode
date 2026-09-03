@@ -280,11 +280,15 @@ export function Prompt(props: PromptProps) {
         context: [
           pct ? `${Locale.number(prepared.preparedTokens)} (${pct})` : Locale.number(prepared.preparedTokens),
           saved,
+          // Byte pressure is not context-window pressure, so it is named rather than folded into
+          // the percentage, which can read as low while the request is still too large to send.
+          prepared.payloadOverBudget ? "over payload limit" : undefined,
         ]
           .filter(Boolean)
           .join(" "),
         cost: spent,
-        urgent: prepared.recommendation === "prefer" || prepared.recommendation === "mandatory",
+        urgent:
+          prepared.recommendation === "prefer" || prepared.recommendation === "mandatory" || prepared.payloadOverBudget,
       }
     }
     const msg = sync.data.message[props.sessionID] ?? []

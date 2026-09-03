@@ -118,8 +118,11 @@ export interface ReduceResult {
 export const reduce = (input: ReduceInput): ReduceResult => {
   const steps: string[] = []
   let messages = input.messages
-  const done = () => bytes(messages) <= input.limit
-  if (done()) return { messages, steps, within: true, needsCompression: false }
+  // Sizing is tracked explicitly instead of re-serializing behind a predicate: this ladder only
+  // runs on histories that are already too big to send, so every stray `JSON.stringify` of the
+  // whole conversation is paid at the worst possible moment.
+  let size = bytes(messages)
+  if (size <= input.limit) return { messages, steps, within: true, needsCompression: false }
 
   const duplicates = ContextDeduplicate.plan(messages, {
     policy: input.policy,
@@ -130,7 +133,8 @@ export const reduce = (input: ReduceInput): ReduceResult => {
   if (duplicates.size > 0) {
     messages = ContextDeduplicate.apply(messages, duplicates)
     steps.push("deduplicate")
-    if (done()) return { messages, steps, within: true, needsCompression: false }
+    size = bytes(messages)
+    if (size <= input.limit) return { messages, steps, within: true, needsCompression: false }
   }
 
   const errors = ContextPurgeErrors.plan(messages, {
@@ -142,21 +146,24 @@ export const reduce = (input: ReduceInput): ReduceResult => {
   if (errors.size > 0) {
     messages = ContextPurgeErrors.apply(messages, errors)
     steps.push("purge-errors")
-    if (done()) return { messages, steps, within: true, needsCompression: false }
+    size = bytes(messages)
+    if (size <= input.limit) return { messages, steps, within: true, needsCompression: false }
   }
 
   const collapsed = collapseScaffolding(messages, input)
   if (collapsed !== messages) {
     messages = collapsed
     steps.push("collapse-scaffolding")
-    if (done()) return { messages, steps, within: true, needsCompression: false }
+    size = bytes(messages)
+    if (size <= input.limit) return { messages, steps, within: true, needsCompression: false }
   }
 
   const todos = collapseTodos(messages, input)
   if (todos !== messages) {
     messages = todos
     steps.push("collapse-todos")
-    if (done()) return { messages, steps, within: true, needsCompression: false }
+    size = bytes(messages)
+    if (size <= input.limit) return { messages, steps, within: true, needsCompression: false }
   }
 
   const dropped = dropOldestBeforeRecentWindow(messages, input)
@@ -164,7 +171,9 @@ export const reduce = (input: ReduceInput): ReduceResult => {
     messages = dropped.messages
     steps.push("drop-oldest")
   }
-  return { messages, steps, within: done(), needsCompression: !done() || dropped.exhausted }
+  size = dropped.bytes
+  const within = size <= input.limit
+  return { messages, steps, within, needsCompression: !within || dropped.exhausted }
 }
 
 /** Truncate oversized completed outputs of stale, unprotected tool calls. */
@@ -245,15 +254,31 @@ const collapseTodos = (messages: readonly ContextMessage[], input: ReduceInput) 
  * means the caller must compress or fail the turn rather than silently sending it.
  */
 const dropOldestBeforeRecentWindow = (messages: readonly ContextMessage[], input: ReduceInput) => {
+  // `JSON.stringify` of an array is its elements' serializations joined by commas inside brackets,
+  // so the size of a candidate list is derived arithmetically from per-message sizes measured once.
+  // Re-serializing the whole history per drop candidate was quadratic in exactly the case this
+  // function exists for: a very long conversation that is far over the ceiling.
+  const each = messages.map((message) => Buffer.byteLength(JSON.stringify(message) ?? "null", "utf8"))
+  const total = (count: number, sum: number) => sum + Math.max(count - 1, 0) + 2
   // Eligibility is decided against the original positions, because removing a message shifts every
   // later index left and would otherwise walk the boundary into the protected window.
   const droppable = messages
     .slice(0, input.protection.recentFrom)
-    .filter((message) => !input.protection.messageIDs.has(message.id))
-  const kept = [...messages]
-  for (const message of droppable) {
-    if (bytes(kept) <= input.limit) return { messages: kept, exhausted: false }
-    kept.splice(kept.indexOf(message), 1)
+    .flatMap((message, index) => (input.protection.messageIDs.has(message.id) ? [] : [index]))
+  const dropped = new Set<number>()
+  let sum = each.reduce((carry, size) => carry + size, 0)
+  let count = messages.length
+  for (const index of droppable) {
+    if (total(count, sum) <= input.limit) break
+    dropped.add(index)
+    sum -= each[index] ?? 0
+    count -= 1
   }
-  return { messages: kept, exhausted: bytes(kept) > input.limit }
+  const size = total(count, sum)
+  if (dropped.size === 0) return { messages, exhausted: size > input.limit, bytes: size }
+  return {
+    messages: messages.filter((_, index) => !dropped.has(index)),
+    exhausted: size > input.limit,
+    bytes: size,
+  }
 }

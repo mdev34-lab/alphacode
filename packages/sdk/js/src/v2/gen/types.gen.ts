@@ -1235,6 +1235,7 @@ export type GlobalEvent = {
           utilization: number
           limit?: number
           recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
+          payloadOverBudget: boolean
         }
       }
     | {
@@ -4069,6 +4070,7 @@ export type SessionContextStats = {
   utilization: number
   limit?: number
   recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
+  payloadOverBudget: boolean
 }
 
 export type SessionContextCompressed = {
@@ -5564,6 +5566,7 @@ export type SessionNextContextPrepared = {
     utilization: number
     limit?: number
     recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
+    payloadOverBudget: boolean
   }
 }
 
@@ -6969,6 +6972,7 @@ export type EventSessionNextContextPrepared = {
     utilization: number
     limit?: number
     recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
+    payloadOverBudget: boolean
   }
 }
 

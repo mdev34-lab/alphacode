@@ -64,6 +64,14 @@ export interface ContextSnapshot extends ContextStats {
   readonly utilization: number
   readonly limit: number | undefined
   readonly recommendation: Recommendation
+  /**
+   * The serialized request is expected to exceed the configured payload byte ceiling.
+   *
+   * Separate from `recommendation` on purpose: that one describes context-window pressure, and the
+   * two conditions are independent — a barely-used token window can still produce a request that
+   * is too large in bytes.
+   */
+  readonly payloadOverBudget: boolean
 }
 
 export const emptySnapshot: ContextSnapshot = {
@@ -71,6 +79,7 @@ export const emptySnapshot: ContextSnapshot = {
   utilization: 0,
   limit: undefined,
   recommendation: "none",
+  payloadOverBudget: false,
 }
 
 /**

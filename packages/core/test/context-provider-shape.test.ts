@@ -250,9 +250,12 @@ describe("compressed range containing a protected tool interaction", () => {
   test("keeps the retained turn in canonical order and out of the summary", () => {
     const messages = preparedWithProtectedRange()
 
+    // The retained turn keeps its canonical position, so the replaced messages on either side of
+    // it are two placeholders rather than one that claims a range the retained turn sits inside.
     expect(messages.map((message) => message.id)).toEqual([
       SessionMessage.ID.make("msg_cmp_2"),
       SessionMessage.ID.make("msg_4"),
+      SessionMessage.ID.make("msg_cmp_2_2"),
       SessionMessage.ID.make("msg_6"),
       SessionMessage.ID.make("msg_7"),
     ])

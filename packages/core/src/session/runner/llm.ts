@@ -272,22 +272,26 @@ const layer = Layer.effect(
         toLLMMessages(messages, model).pipe(Effect.provideService(FSUtil.Service, fsys))
       // Mandatory final invariant, on the lowered messages rather than the canonical ones: every
       // provider rejects a tool call that is not answered next, and only the lowering shows where
-      // the calls and results actually land. A reduction that would break the pairing loses to the
-      // canonical history — but only when the canonical history was itself well formed, since
-      // falling back cannot repair a conversation that was already broken.
+      // the calls and results actually land. A reduction that breaks the pairing loses to the
+      // canonical history; if the canonical history is unpaired too, nothing here can repair it and
+      // the turn fails below instead of sending a conversation that is known to be malformed.
       const reducedMessages = yield* lower(prepared.messages)
       const unpaired = ContextInvariants.pairing(reducedMessages)
-      const canonicalMessages = unpaired.length === 0 ? undefined : yield* lower(context)
-      const loweredMessages =
-        canonicalMessages !== undefined && ContextInvariants.pairing(canonicalMessages).length === 0
-          ? canonicalMessages
-          : reducedMessages
+      const transmission = ContextInvariants.transmittable(
+        reducedMessages,
+        unpaired,
+        unpaired.length === 0 ? undefined : yield* lower(context),
+      )
       if (unpaired.length > 0)
         yield* Effect.logWarning("context.prepare.pairing", {
           sessionID: session.id,
           violations: unpaired,
-          recovered: loweredMessages === canonicalMessages,
+          recovered: transmission.recovered,
+          sendable: transmission.messages !== undefined,
         })
+      // Nothing sendable exists, but the request is still built so the failure below reports the
+      // same shape as any other refused turn.
+      const loweredMessages = transmission.messages ?? reducedMessages
       const request = LLM.request({
         model,
         http: {
@@ -328,6 +332,18 @@ const layer = Layer.effect(
       // left once compression has already run; if it cannot help, the turn fails here instead of
       // sending a request that is known to be too large, or one whose size is unknown because the
       // provider body could not be built.
+      if (transmission.messages === undefined) {
+        // Both the reduced and the canonical conversation would send a tool call that nothing
+        // answers. Every provider rejects that, so the turn fails here with the reason rather than
+        // in the provider's error handler with a generic one.
+        yield* publish(
+          LLMEvent.providerError({
+            message: `The conversation cannot be sent: ${transmission.violations[0]}. This session's tool history is malformed; compact the session or start a new one.`,
+          }),
+        )
+        yield* withPublication(publisher.flush())
+        return { needsContinuation: false, step: currentStep }
+      }
       const size = yield* contextManager.payload(request)
       if (!size.within) {
         if (recoverOverflow && (yield* recoverOverflow({ sessionID: session.id, entries, model, request }))) {

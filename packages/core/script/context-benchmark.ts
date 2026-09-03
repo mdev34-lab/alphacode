@@ -1,11 +1,16 @@
 #!/usr/bin/env bun
 
 /**
- * Cost of one context preparation when nothing needs reducing.
+ * Cost of one context preparation, with and without the deterministic reduction ladder.
  *
- * `ContextManager.prepare` runs on every agent turn, before every provider request, so the case
- * that matters is the boring one: a long session with no compression blocks, no duplicates and no
- * stale failures, where the whole pipeline is pure overhead. Run from `packages/core`:
+ * `ContextManager.prepare` runs on every agent turn, before every provider request, so the first
+ * case that matters is the boring one: a long session with no compression blocks, no duplicates and
+ * no stale failures, where the whole pipeline is pure overhead.
+ *
+ * The second case is the worst one: a history far over the byte ceiling, where `ContextBudget.reduce`
+ * runs every rung of the ladder and ends up dropping messages one at a time. That path is the only
+ * part of preparation whose work grows with *how far over* the limit the payload is, so it is
+ * measured separately with a ceiling small enough to force every stage. Run from `packages/core`:
  *
  *   bun script/context-benchmark.ts
  */
@@ -79,6 +84,12 @@ const prepare = (messages: readonly SessionMessage.Message[]) => {
   return raw.tokens + measured.bytes + ContextInvariants.check(messages, reduced).length
 }
 
+/** The ladder\'s worst case: every rung runs and the drop loop walks the whole eligible prefix. */
+const ladder = (messages: readonly SessionMessage.Message[], limit: number) => {
+  const protection = ContextProtection.resolve(messages, { policy: settings.protection })
+  return ContextBudget.reduce({ messages, policy: settings.protection, protection, limit }).steps.length
+}
+
 const milliseconds = (runs: number, run: () => unknown) => {
   run()
   const start = Bun.nanoseconds()
@@ -89,7 +100,12 @@ const milliseconds = (runs: number, run: () => unknown) => {
 for (const count of [100, 500, 2000]) {
   const messages = history(count)
   const size = (JSON.stringify(messages).length / 1024).toFixed(0)
+  // A ceiling of one kilobyte is unreachable for any of these histories, which is the point: the
+  // ladder cannot stop early and has to consider every droppable message.
+  const reduction = milliseconds(20, () => ladder(messages, 1024))
   console.log(
-    `${String(count).padStart(4)} messages (${size} KiB): ${milliseconds(20, () => prepare(messages)).toFixed(2)} ms`,
+    `${String(count).padStart(4)} messages (${size.padStart(4)} KiB): ` +
+      `prepare ${milliseconds(20, () => prepare(messages)).toFixed(2)} ms, ` +
+      `full ladder ${reduction.toFixed(2)} ms`,
   )
 }

@@ -48,18 +48,24 @@ keeps provider prompt caching useful.
 
 ### Runtime cost
 
-`prepare` runs before every provider request, so the case that matters is the one where nothing
-needs reducing. `packages/core/script/context-benchmark.ts` measures exactly that — no compression
-blocks, no duplicates, no stale failures — and reports, on a development machine:
+`prepare` runs before every provider request, so the first case that matters is the one where nothing
+needs reducing. The second is the worst one: a history far over the byte ceiling, where the
+deterministic ladder runs every rung and ends up dropping messages one at a time.
+`packages/core/script/context-benchmark.ts` measures both and reports, on a development machine:
 
-| History        | Serialized | Preparation |
-| -------------- | ---------- | ----------- |
-| 100 messages   | 62 KiB     | ~1.4 ms     |
-| 500 messages   | 313 KiB    | ~4.2 ms     |
-| 2,000 messages | 1.2 MiB    | ~16.6 ms    |
+| History        | Serialized | Preparation | Full ladder |
+| -------------- | ---------- | ----------- | ----------- |
+| 100 messages   | 62 KiB     | ~0.9 ms     | ~1.3 ms     |
+| 500 messages   | 313 KiB    | ~3.8 ms     | ~3.9 ms     |
+| 2,000 messages | 1.2 MiB    | ~15.5 ms    | ~17.4 ms    |
 
-The curve is linear in serialized history size, and serialization dominates it: `ContextBudget.measure`
-returns tokens and bytes from a single `JSON.stringify` so the pipeline serializes each list once.
+Both curves are linear in serialized history size, and serialization dominates them:
+`ContextBudget.measure` returns tokens and bytes from a single `JSON.stringify` so the pipeline
+serializes each list once, and the drop loop derives each candidate size arithmetically from
+per-message sizes measured once — `JSON.stringify` of an array is its elements joined by commas
+inside brackets, so a removal is a subtraction. Re-measuring the whole history per drop candidate
+would be quadratic on precisely the inputs the ladder exists for: at 2,000 messages that costs
+~5,200 ms instead of ~17 ms.
 Against a provider request measured in seconds this is noise, but it is measured rather than assumed,
 and the script is committed so a regression is one command away.
 
@@ -199,6 +205,20 @@ mandatory` using the configured `min_context`/`max_context`. Only `mandatory` tr
 compression; the other bands are advisory and surface in the TUI. If the prepared payload still
 exceeds `context.payload_bytes`, a deterministic ladder runs: dedup → purge errors → collapse
 scaffolding → collapse todos → drop oldest.
+
+### Byte pressure is reported separately from window pressure
+
+`recommendation` describes context-window utilization and nothing else. Byte pressure is a distinct
+condition — a session at 12% of a 200k-token window can still produce a request over the byte
+ceiling — so it is reported on its own boolean, `payloadOverBudget`, on
+`session.next.context.prepared` and on the context stats endpoint. Both conditions trigger
+autonomous compression; neither is described in the other's vocabulary. Reporting bytes as
+`mandatory` would tell every client the context window was critical while it was nearly empty.
+
+A payload the ladder still cannot fit is logged as `context.prepare.over-budget` and carried on that
+flag. It is deliberately _not_ a `session.next.context.compression.failed` event: nothing failed to
+summarize, and plugins that react to compression failures must not be woken by ordinary byte
+pressure.
 
 ### The ladder is a pre-pass, the payload check is the enforcement
 

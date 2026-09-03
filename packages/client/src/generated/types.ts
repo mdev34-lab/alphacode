@@ -548,6 +548,7 @@ export type SessionsCompressOutput = {
           readonly utilization: number
           readonly limit?: number
           readonly recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
+          readonly payloadOverBudget: boolean
         }
       }
     | {
@@ -565,6 +566,7 @@ export type SessionsCompressOutput = {
           readonly utilization: number
           readonly limit?: number
           readonly recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
+          readonly payloadOverBudget: boolean
         }
       }
 }["data"]
@@ -584,6 +586,7 @@ export type SessionsContextStatsOutput = {
     readonly utilization: number
     readonly limit?: number
     readonly recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
+    readonly payloadOverBudget: boolean
   }
 }["data"]
 

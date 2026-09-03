@@ -318,9 +318,46 @@ describe("compression placeholders", () => {
     expect(applied.messages.map((message) => message.id)).toEqual([
       SessionMessage.ID.make("msg_cmp_1"),
       SessionMessage.ID.make("msg_3"),
+      SessionMessage.ID.make("msg_cmp_1_2"),
       SessionMessage.ID.make("msg_5"),
       SessionMessage.ID.make("msg_6"),
     ])
+  })
+
+  test("keeps every protected message in its canonical position inside a compressed range", () => {
+    // msg_2 and msg_4 are protected, so the replaced messages form three runs around them and the
+    // projection must interleave them exactly as the canonical history did.
+    const applied = ContextPlaceholder.apply(
+      sessionID,
+      conversation,
+      [block({ id: "cmp_1", start: "msg_1", end: "msg_5", summary: "did the setup" })],
+      new Set([SessionMessage.ID.make("msg_2"), SessionMessage.ID.make("msg_4")]),
+    )
+
+    expect(applied.messages.map((message) => message.id)).toEqual([
+      SessionMessage.ID.make("msg_cmp_1"),
+      SessionMessage.ID.make("msg_2"),
+      SessionMessage.ID.make("msg_cmp_1_2"),
+      SessionMessage.ID.make("msg_4"),
+      SessionMessage.ID.make("msg_cmp_1_3"),
+      SessionMessage.ID.make("msg_6"),
+    ])
+    // Each placeholder describes exactly the messages it replaced, never the whole range.
+    const text = (index: number) => {
+      const message = applied.messages[index]!
+      return message.type === "synthetic" ? message.text : ""
+    }
+    expect(text(0)).toContain("messages: msg_1-msg_1 (1)")
+    expect(text(0)).toContain("sections: 3")
+    expect(text(2)).toContain("messages: msg_3-msg_3 (1)")
+    expect(text(2)).toContain("continues: section 2 of 3")
+    expect(text(4)).toContain("messages: msg_5-msg_5 (1)")
+    // The summary is written once, not repeated for every section.
+    expect(
+      applied.messages.filter((message) => message.type === "synthetic" && message.text.includes("did the setup")),
+    ).toHaveLength(1)
+    expect(applied.compressedMessages).toBe(3)
+    expect(ContextInvariants.check(conversation, applied.messages)).toEqual([])
   })
 
   test("a wider later compression supersedes the block nested inside it", () => {
@@ -637,6 +674,33 @@ describe("lowered tool-call pairing", () => {
   test("accepts a provider-executed call, which carries its result in place", () => {
     expect(ContextInvariants.pairing([assistant(call("a", true), result("a", true))])).toEqual([])
   })
+
+  describe("what may be transmitted", () => {
+    const paired = [assistant(call("a")), Message.tool(result("a"))]
+    const broken = [assistant(call("a")), Message.assistant("never answered")]
+
+    test("sends a paired reduction unchanged", () => {
+      const transmission = ContextInvariants.transmittable(paired, [], undefined)
+      expect(transmission.messages).toBe(paired)
+      expect(transmission.recovered).toBe(false)
+    })
+
+    test("falls back to canonical history when the reduction broke the pairing", () => {
+      const transmission = ContextInvariants.transmittable(broken, ContextInvariants.pairing(broken), paired)
+      expect(transmission.messages).toBe(paired)
+      expect(transmission.recovered).toBe(true)
+      expect(transmission.violations.length).toBeGreaterThan(0)
+    })
+
+    test("sends nothing when the canonical history is unpaired too", () => {
+      // Falling back cannot repair what was already broken, so the turn must fail instead of
+      // shipping a conversation every provider is going to reject.
+      const transmission = ContextInvariants.transmittable(broken, ContextInvariants.pairing(broken), broken)
+      expect(transmission.messages).toBeUndefined()
+      expect(transmission.recovered).toBe(false)
+      expect(transmission.violations.length).toBeGreaterThan(0)
+    })
+  })
 })
 
 describe("context budget", () => {
@@ -695,6 +759,32 @@ describe("context budget", () => {
     // only compression can help now.
     expect(result.within).toBe(false)
     expect(result.needsCompression).toBe(true)
+    expect(ContextInvariants.check(messages, result.messages)).toEqual([])
+  })
+
+  test("stops dropping the moment the real serialized size fits", () => {
+    // The drop loop derives candidate sizes arithmetically from per-message sizes instead of
+    // re-serializing the history each time. That is only sound if the arithmetic matches
+    // `JSON.stringify` exactly, so the boundary is pinned here: one message too many dropped, and
+    // the result would be smaller than it needs to be; one too few, and it would still be oversized.
+    const large = "z".repeat(2_000)
+    const messages = [
+      user("msg_1", large),
+      assistant("msg_2", [text("t1", large)]),
+      user("msg_3", large),
+      assistant("msg_4", [text("t2", large)]),
+      user("msg_5", "the question that must survive"),
+      assistant("msg_6", [text("t3", "answering")]),
+    ]
+    const { policy, protection } = resolve(messages, { recentTurns: 1 })
+    const limit = ContextBudget.bytes(messages.slice(2))
+
+    const result = ContextBudget.reduce({ messages, policy, protection, limit })
+    expect(result.steps).toEqual(["drop-oldest"])
+    expect(result.messages.map((message) => message.id)).toEqual(messages.slice(2).map((message) => message.id))
+    expect(ContextBudget.bytes(result.messages)).toBe(limit)
+    expect(result.within).toBe(true)
+    expect(result.needsCompression).toBe(false)
     expect(ContextInvariants.check(messages, result.messages)).toEqual([])
   })
 

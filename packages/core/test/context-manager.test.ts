@@ -609,6 +609,7 @@ describe("ContextManager", () => {
     Effect.gen(function* () {
       const session = yield* setup
       const failures = yield* collect(SessionEvent.Context.CompressionFailed)
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
       turns = [call("call-1", "inspect", { file: "src/index.ts" }), say("First"), say("Second"), say("Third")]
 
       yield* ask(session, "Inspect the entry point")
@@ -622,8 +623,11 @@ describe("ContextManager", () => {
       expect(stats.compressionCount).toBeGreaterThan(0)
       expect(requests.some(isCompression)).toBe(true)
       expect(stats.tokensSaved).toBeGreaterThan(0)
-      // A payload that the ladder still cannot fit is reported rather than silently oversized.
-      expect(failures.map((event) => event.reason).join("|")).toContain("payload byte budget")
+      // Byte pressure is reported on its own field, never by inflating the window recommendation
+      // and never as a failed compression: nothing failed to summarize here.
+      expect(prepared.some((event) => event.payloadOverBudget)).toBe(true)
+      expect(prepared.every((event) => event.recommendation === "none")).toBe(true)
+      expect(failures).toHaveLength(0)
     }),
   )
 

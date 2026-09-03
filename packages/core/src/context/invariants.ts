@@ -100,6 +100,26 @@ export const pairing = (messages: readonly Message[]) => {
   return violations
 }
 
+/**
+ * Decide which lowered conversation may be sent.
+ *
+ * Three outcomes, deliberately explicit because this is the last gate before a provider request:
+ * a paired reduction is sent as is; a broken reduction loses to a well-formed canonical history;
+ * and when the canonical history is unpaired too, nothing here can repair it, so nothing is sent.
+ * Falling back to a conversation that is equally malformed would only move the failure into the
+ * provider's error handler, with a worse message.
+ */
+export const transmittable = (
+  reduced: readonly Message[],
+  violations: readonly string[],
+  canonical: readonly Message[] | undefined,
+) => {
+  if (violations.length === 0) return { messages: reduced, recovered: false, violations }
+  if (canonical !== undefined && pairing(canonical).length === 0)
+    return { messages: canonical, recovered: true, violations }
+  return { messages: undefined, recovered: false, violations }
+}
+
 /** Throw for callers that treat a violated invariant as a defect, such as tests. */
 export const assertNoSyntheticAssistantContent = (
   canonical: readonly ContextMessage[],

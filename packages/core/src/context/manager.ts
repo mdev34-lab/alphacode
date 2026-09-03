@@ -141,6 +141,7 @@ interface Cached {
   readonly utilization: number
   readonly limit: number | undefined
   readonly recommendation: ContextTypes.Recommendation
+  readonly payloadOverBudget: boolean
 }
 
 const layer = Layer.effect(
@@ -337,9 +338,10 @@ const layer = Layer.effect(
         purgedErrors: errors.size,
       }
       const utilization = limit === undefined ? 0 : preparedTokens / limit
-      const preparedRecommendation = overBudget
-        ? ("mandatory" as const)
-        : ContextBudget.recommend(utilization, settings.compression)
+      // `recommendation` describes context-window pressure and nothing else. A payload that is too
+      // large in bytes is reported as `overBudget`, separately, because the two are independent:
+      // conflating them would tell a client the context window is critical when it is nearly empty.
+      const preparedRecommendation = ContextBudget.recommend(utilization, settings.compression)
       if (!observe)
         cache.set(input.sessionID, {
           revision,
@@ -348,6 +350,7 @@ const layer = Layer.effect(
           utilization,
           limit,
           recommendation: preparedRecommendation,
+          payloadOverBudget: overBudget,
         })
       return {
         sessionID: input.sessionID,
@@ -379,6 +382,7 @@ const layer = Layer.effect(
         utilization: prepared.utilization,
         limit: prepared.limit,
         recommendation: prepared.recommendation,
+        payloadOverBudget: prepared.overBudget,
       })
     })
 
@@ -541,8 +545,12 @@ const layer = Layer.effect(
     })
 
     /**
-     * A payload that is still over the configured byte ceiling is a policy failure, not a detail:
-     * it is reported on the event bus so a client can surface it, and logged for operators.
+     * A payload the deterministic ladder could not fit is logged, and surfaces to clients on the
+     * prepared event as `payloadOverBudget`.
+     *
+     * It is deliberately not a `compression.failed` event: nothing failed to compress. Reporting a
+     * byte-ladder outcome as a failed summarization would make plugins and clients treat ordinary
+     * payload pressure as a broken compression operation.
      */
     const reportOverBudget = Effect.fnUntraced(function* (prepared: ContextTypes.PreparedContext) {
       if (!prepared.overBudget) return
@@ -551,7 +559,6 @@ const layer = Layer.effect(
         preparedTokens: prepared.stats.preparedTokens,
         limit: settings.payloadBytes,
       })
-      yield* fail(prepared.sessionID, "the prepared context is expected to exceed the configured payload byte budget")
     })
 
     /**
@@ -565,8 +572,11 @@ const layer = Layer.effect(
     const prepare = Effect.fn("ContextManager.prepare")(function* (input: PrepareInput) {
       const first = yield* prepareOnce(input)
       const skips = backoff.get(input.sessionID) ?? 0
+      // Two independent reasons to compress on our own: the token window is critically full, or the
+      // request is too large in bytes. They are checked separately rather than folded into one
+      // value, so neither condition has to be described in the other's terms to be acted on.
       const attempt =
-        first.recommendation === "mandatory" &&
+        (first.recommendation === "mandatory" || first.overBudget) &&
         input.automatic === true &&
         settings.compression.enabled &&
         settings.compression.automatic
@@ -614,6 +624,7 @@ const layer = Layer.effect(
             utilization: cached.utilization,
             limit: cached.limit,
             recommendation: cached.recommendation,
+            payloadOverBudget: cached.payloadOverBudget,
           }
         // Nothing prepared yet this run: compile the current history once so a client asking for
         // context usage before the first turn still gets real numbers. Observing only — a stats
@@ -632,6 +643,7 @@ const layer = Layer.effect(
           utilization: prepared.utilization,
           limit: prepared.limit,
           recommendation: prepared.recommendation,
+          payloadOverBudget: prepared.overBudget,
         }
       }),
       invalidate: Effect.fn("ContextManager.invalidate")(function* (sessionID) {

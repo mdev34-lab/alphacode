@@ -21,6 +21,13 @@ export const Stats = Schema.Struct({
   utilization: Schema.Finite,
   limit: NonNegativeInt.pipe(optional),
   recommendation: Recommendation,
+  /**
+   * The serialized request is expected to exceed `context.payload_bytes`.
+   *
+   * Deliberately separate from `recommendation`, which describes context-window pressure only: a
+   * session can be at 12% of its token window and still be over the byte ceiling.
+   */
+  payloadOverBudget: Schema.Boolean,
 }).annotate({ identifier: "SessionContext.Stats" })
 export interface Stats extends Schema.Schema.Type<typeof Stats> {}
 
