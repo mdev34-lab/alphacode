@@ -119,3 +119,27 @@ test("part delta reducer returns undefined when there is no part to append to", 
   const parts = applyPartUpdated(undefined, reasoning({ text: "" }))
   expect(applyPartDelta(parts, "missing", "text", "x")).toBeUndefined()
 })
+
+test("streamed updates keep the part object identity stable", () => {
+  // Solid's <For> keys list items by object identity. Replacing the part for
+  // every delta would dispose and recreate the streaming component per token
+  // (full re-parse/re-layout per token = the streaming redraw/flicker), so the
+  // reducers must merge into the existing part, not return a substituted one.
+  let parts = applyPartUpdated(undefined, reasoning({ text: "" }))
+  const original = parts[0]
+  parts = applyPartDelta(parts, "part-1", "text", "hello")!
+  parts = applyPartDelta(parts, "part-1", "text", " world")!
+  // A stale empty durable snapshot arriving mid-stream must keep identity too.
+  parts = applyPartUpdated(parts, reasoning({ text: "", time: { start: 1, end: 10 } }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("hello world")
+  expect((parts[0] as ReasoningPart).time.end).toBe(10)
+})
+
+test("inserts a missing part without replacing the surrounding list identity", () => {
+  let parts = applyPartUpdated(undefined, { ...reasoning(), id: "part-2" })
+  const original = parts[0]
+  parts = applyPartUpdated(parts, { ...reasoning(), id: "part-1" })
+  expect(parts[1]).toBe(original)
+  expect(parts.map((part) => part.id)).toEqual(["part-1", "part-2"])
+})

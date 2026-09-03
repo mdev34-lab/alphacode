@@ -375,21 +375,41 @@ export const {
           break
         }
         case "message.part.updated": {
-          touchPart(event.properties.part.sessionID, event.properties.part.id)
+          const incoming = event.properties.part
+          touchPart(incoming.sessionID, incoming.id)
+          const parts = store.part[incoming.messageID]
+          if (!parts) {
+            setStore("part", incoming.messageID, [incoming])
+            break
+          }
+          // Mutate the existing part in place (via the store draft) so keyed
+          // `<For>` components over `part[messageID]` keep their identity and
+          // are not remounted for every streamed snapshot/delta — remounting
+          // rebuilds the markdown/syntax tree per token and shows up as
+          // aggressive redraw/flicker while streaming.
           setStore(
             "part",
-            event.properties.part.messageID,
-            applyPartUpdated(store.part[event.properties.part.messageID], event.properties.part),
+            incoming.messageID,
+            produce((draft) => {
+              applyPartUpdated(draft, incoming)
+            }),
           )
           break
         }
 
         case "message.part.delta": {
           const parts = store.part[event.properties.messageID]
-          const next = applyPartDelta(parts, event.properties.partID, event.properties.field, event.properties.delta)
-          if (!next) break
+          if (!parts) break
+          const result = search(parts, event.properties.partID, (part) => part.id)
+          if (!result.found) break
           touchPart(event.properties.sessionID, event.properties.partID)
-          setStore("part", event.properties.messageID, next)
+          setStore(
+            "part",
+            event.properties.messageID,
+            produce((draft) => {
+              applyPartDelta(draft, event.properties.partID, event.properties.field, event.properties.delta)
+            }),
+          )
           break
         }
 
