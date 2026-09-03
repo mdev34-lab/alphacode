@@ -47,9 +47,19 @@ export function planFactoryDefault(input: { cwd: string; roots?: FactoryDefaultT
   return { targets }
 }
 
-export async function applyFactoryDefault(plan: FactoryDefaultPlan): Promise<FactoryDefaultResult> {
+export async function applyFactoryDefault(
+  plan: FactoryDefaultPlan,
+  input?: { cwd?: string },
+): Promise<FactoryDefaultResult> {
+  // Defense-in-depth: revalidate the workspace-safety invariant at deletion
+  // time, not just at plan time. If any target overlaps the working directory
+  // -- whether by a bypassed planFactoryDefault, a future call site, or an
+  // internal regression -- drop it rather than recursively deleting it. The
+  // caller's cwd defaults to process.cwd() when not supplied.
+  const cwd = input?.cwd ?? process.cwd()
+  const safe = plan.targets.filter((target) => !FSUtil.overlaps(cwd, target.dir))
   const result: FactoryDefaultResult = { removed: [], failed: [] }
-  for (const p of await resolveRemovalPaths(plan)) {
+  for (const p of await resolveRemovalPaths({ targets: safe })) {
     const err = await fs
       .rm(p, { recursive: true, force: true })
       .then(() => null)
@@ -102,7 +112,7 @@ export async function runFactoryDefault(input: {
       return
     }
     const confirmed = await confirm({
-      message: "Remove all alphacode config, data, and cache? This cannot be undone.",
+      message: "Remove all alphacode config, data, state, and cache? This cannot be undone.",
       initialValue: false,
     })
     if (!confirmed || isCancel(confirmed)) {

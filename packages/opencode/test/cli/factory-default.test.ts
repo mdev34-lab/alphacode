@@ -111,6 +111,45 @@ test("reset never deletes anything inside the working directory", async () => {
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
+test("apply enforces the workspace-safety invariant even when handed a plan directly", async () => {
+  const tmp = await tmpRoot("apply-guard")
+  const cache = path.join(tmp, "cache")
+  const workdir = path.join(cache, "workspace")
+  await writeFile(path.join(cache, "log", "app.log"), "log")
+  await writeFile(path.join(cache, "bin", "alphacode"), "binary")
+  await writeFile(path.join(workdir, "keep.txt"), "keep")
+
+  // Deliberately bypass planFactoryDefault and hand apply a plan that
+  // overlaps cwd -- apply must refuse to delete inside the working directory.
+  const result = await applyFactoryDefault({ targets: [root(cache, "contents")] }, { cwd: workdir })
+
+  expect(result.removed).toEqual([])
+  expect(result.failed).toEqual([])
+  expect(await fs.readFile(path.join(workdir, "keep.txt"), "utf8")).toBe("keep")
+  expect(await fs.readFile(path.join(cache, "log", "app.log"), "utf8")).toBe("log")
+  await fs.rm(tmp, { recursive: true, force: true })
+})
+
+test("apply keeps unrelated targets when the cwd guard filters out an overlapping one", async () => {
+  const tmp = await tmpRoot("apply-mixed")
+  const cache = path.join(tmp, "cache")
+  const data = path.join(tmp, "data")
+  const workdir = path.join(cache, "workspace")
+  await writeFile(path.join(cache, "workspace", "keep.txt"), "keep")
+  await writeFile(path.join(data, "gone.txt"), "gone")
+
+  // cache overlaps cwd (dropped), data is unrelated (removed).
+  const result = await applyFactoryDefault(
+    { targets: [root(cache, "contents"), root(data)] },
+    { cwd: workdir },
+  )
+
+  expect(result.removed).toEqual([data])
+  expect(result.failed).toEqual([])
+  expect(await fs.readFile(path.join(workdir, "keep.txt"), "utf8")).toBe("keep")
+  await fs.rm(tmp, { recursive: true, force: true })
+})
+
 test("plan drops a root equal to the working directory", async () => {
   const tmp = await tmpRoot("plan-eq")
   const dir = path.join(tmp, "config")
