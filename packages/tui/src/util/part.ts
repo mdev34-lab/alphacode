@@ -19,41 +19,51 @@ function isTextLike(part: Part): part is TextPart | ReasoningPart {
   return part.type === "text" || part.type === "reasoning"
 }
 
-// A live `message.part.updated` event carries the durable part snapshot. For
-// streamed parts that snapshot can lag the deltas already applied to the
-// store: a reasoning block's "started" row is persisted with an empty `text`
-// before any `message.part.delta` events arrive, and that stale row can be
-// replayed or resynced while the part is still streaming (long reasoning runs,
-// SSE reconnects, or heavy CPU load delaying the durable event). Replacing the
-// part wholesale would erase already-rendered text, so preserve the streamed
-// content when the incoming snapshot has no text of its own.
+// `message.part.updated` carries a durable snapshot that can lag the deltas
+// already applied to the store: the part's "started" row is persisted with
+// empty `text` before its deltas, and a bootstrap/replay (SSE reconnect) can
+// redeliver an older row while the part is still streaming. Replacing the part
+// wholesale would erase rendered text, so streamed content is preserved.
 //
-// Merge decision for streamed text: never shorten what is already on screen.
-// - incoming has nothing (stale "started" row) → keep the streamed text;
-// - incoming has a prefix of the streamed text (durable row persisted between
-//   two deltas) → keep the longer streamed text;
-// - incoming is equal to or longer than the streamed text (authoritative
-//   snapshot, or a reconnect that persisted more than was replayed) → adopt.
+// The protocol gives us causality without a version number
+// (`packages/opencode/src/session/processor.ts`):
+// - `message.part.delta` text evolves only by append (`text-delta`,
+//   `reasoning-delta`), so a snapshot that is a strict prefix of what is
+//   already rendered is necessarily older — keep the longer streamed text;
+// - a snapshot that extends the rendered text accumulated more deltas — adopt;
+// - the only legitimate non-cumulative text write is the `text-end` snapshot
+//   (the `experimental.text.complete` plugin rewrites the final text) and it
+//   is published together with `time.end`; that snapshot is adopted;
+// - any other conflict (same length, different content; reordered rows) has no
+//   causal ordering, so never replace text already on screen.
 export function mergePartText(current: Part | undefined, incoming: Part): Part {
-  if (current && isTextLike(current) && isTextLike(incoming)) {
-    const text = incoming.text.length >= current.text.length ? incoming.text : current.text
-    if (text !== incoming.text) return { ...incoming, text }
-  }
-  return incoming
+  if (!current || !isTextLike(current) || !isTextLike(incoming)) return incoming
+  const currentText = current.text
+  const incomingText = incoming.text
+  if (incomingText === currentText) return incoming
+  if (currentText.startsWith(incomingText)) return { ...incoming, text: currentText }
+  if (incomingText.startsWith(currentText)) return incoming
+  const currentTerminal = current.time?.end !== undefined
+  const incomingTerminal = incoming.time?.end !== undefined
+  if (incomingTerminal && !currentTerminal) return incoming
+  return { ...incoming, text: currentText }
 }
 
-// `time` is monotonic during a turn: `end` is written once, by the durable
-// row, and a stale replay must not erase it or move it backwards. `start`
-// carries no such risk and follows the durable snapshot.
+// `time.start` is fixed when the part is created — the processor never rewrites
+// it (a replayed `tool-call` keeps the existing running state, and `text-end`
+// only adds `end`) — so the first value seen wins. `time.end` is monotonic:
+// written once by the terminal snapshot, so a stale replay must not erase it or
+// move it backwards.
 function mergeTime(current: PartTime | undefined, incoming: PartTime | undefined): PartTime | undefined {
-  if (!incoming) return current
+  if (!incoming) return current ? { ...current } : undefined
+  const start = current?.start ?? incoming.start
   const end =
     incoming.end === undefined ? current?.end : Math.max(incoming.end, current?.end ?? Number.NEGATIVE_INFINITY)
-  return { start: incoming.start, ...(end === undefined ? {} : { end }) }
+  return { start, ...(end === undefined ? {} : { end }) }
 }
 
-// A snapshot parsed by the processor records `metadata.interrupted` when a
-// tool call is cancelled. A later (stale) replay of an earlier row must not
+// `metadata.interrupted` is written by the abort path together with the
+// terminal error state. A later (stale) replay of an earlier row must not
 // clear it, or an interrupted tool renders as a plain failure.
 function mergeMetadata(
   current: Record<string, unknown> | undefined,
@@ -61,16 +71,25 @@ function mergeMetadata(
 ): Record<string, unknown> | undefined {
   if (incoming === undefined && current === undefined) return undefined
   const preserved = current?.interrupted === true ? { interrupted: true } : {}
-  if (incoming === undefined) return current
+  if (incoming === undefined) return { ...current }
   return { ...incoming, ...preserved }
 }
 
-// Tool state progresses pending → running → completed/error. A durable
-// snapshot replayed out of order (SSE reconnect is the common case) can carry
-// an older status; adopting it would make a finished tool render as running
-// again, and the identity-preserving merge would keep that wrong state alive.
-// The same applies to `output` (never shrink what is rendered) and `error`
-// (a terminal field must not be cleared by a stale replay).
+// Tool state transitions follow the processor's state machine:
+// pending → running → completed|error, and `completeToolCall`/`failToolCall`
+// only act when the part is `running`, so a part reaches a terminal state
+// exactly once. Projecting that state machine (not comparing payload sizes):
+// - a stale replay of an earlier status never rewinds the state;
+// - `output` / `error` are written once, by that single terminal transition;
+// - a second snapshot of the same status cannot carry newer `output`/`error`
+//   (the tool already finished), so fields both snapshots define stay as the
+//   current (older-to-us or equal-age) row has them — the incoming snapshot
+//   may only add fields we do not have yet (schema evolution);
+// - the running → running exception comes from `tool-call`, which the
+//   processor re-publishes while a tool is running to update `input`;
+// - `time` and `metadata` are monotonic (start immutable, end max,
+//   `interrupted` never cleared).
+const TOOL_TERMINAL: ReadonlySet<ToolState["status"]> = new Set(["completed", "error"])
 const TOOL_STATUS_RANK: Record<ToolState["status"], number> = {
   pending: 0,
   running: 1,
@@ -78,31 +97,50 @@ const TOOL_STATUS_RANK: Record<ToolState["status"], number> = {
   error: 2,
 }
 
+type LooseToolState = ToolState & {
+  output?: string
+  error?: string
+  title?: string
+  metadata?: Record<string, unknown>
+  time?: PartTime
+  attachments?: unknown[]
+}
+
 function mergeToolState(current: ToolState, incoming: ToolState): ToolState {
-  const status = TOOL_STATUS_RANK[incoming.status] < TOOL_STATUS_RANK[current.status] ? current.status : incoming.status
-  const merged: Record<string, unknown> = { ...incoming, status }
-  const currentMeta = (current as { metadata?: Record<string, unknown> }).metadata
-  const incomingMeta = (incoming as { metadata?: Record<string, unknown> }).metadata
-  const metadata = mergeMetadata(currentMeta, incomingMeta)
-  if (metadata !== undefined) merged.metadata = metadata
-  const time = mergeTime((current as { time?: PartTime }).time, (incoming as { time?: PartTime }).time)
-  if (time !== undefined) merged.time = time
-  const currentOutput = (current as { output?: string }).output
-  const incomingOutput = (incoming as { output?: string }).output
-  if (incomingOutput !== undefined || currentOutput !== undefined) {
-    merged.output =
-      incomingOutput !== undefined && (currentOutput === undefined || incomingOutput.length >= currentOutput.length)
-        ? incomingOutput
-        : currentOutput
+  const cur = current as LooseToolState
+  const inc = incoming as LooseToolState
+
+  // A part reaches a terminal state exactly once; never accept a transition
+  // out of it, a different terminal state, or an earlier status.
+  if (TOOL_TERMINAL.has(cur.status) && (!TOOL_TERMINAL.has(inc.status) || inc.status !== cur.status)) {
+    return current
   }
-  const incomingError = (incoming as { error?: string }).error
-  const currentError = (current as { error?: string }).error
-  const error = incomingError ?? currentError
-  if (error !== undefined) merged.error = error
-  const incomingTitle = (incoming as { title?: string }).title
-  const currentTitle = (current as { title?: string }).title
-  const title = incomingTitle ?? currentTitle
-  if (title !== undefined) merged.title = title
+  if (TOOL_STATUS_RANK[inc.status] < TOOL_STATUS_RANK[cur.status]) return current
+
+  const transitioning = inc.status !== cur.status
+  const merged: LooseToolState = transitioning ? { ...inc } : { ...cur }
+
+  if (!transitioning) {
+    // Same status: do not overwrite fields both snapshots define; only adopt
+    // what we do not have yet (an older or equal-age row cannot be more
+    // complete), except `input` for running parts (see above).
+    for (const key of Object.keys(inc)) {
+      if ((merged as Record<string, unknown>)[key] === undefined) {
+        ;(merged as Record<string, unknown>)[key] = (inc as Record<string, unknown>)[key]
+      }
+    }
+    if (cur.status === "running") merged.input = inc.input
+  }
+
+  merged.time = mergeTime(cur.time, inc.time)
+  merged.metadata = mergeMetadata(cur.metadata, inc.metadata)
+
+  // Keep the merged state schema-shaped: no `undefined` keys.
+  for (const key of Object.keys(merged)) {
+    if ((merged as Record<string, unknown>)[key] === undefined) {
+      delete (merged as Record<string, unknown>)[key]
+    }
+  }
   return merged as ToolState
 }
 
@@ -128,9 +166,10 @@ function replaceInPlace(target: Part, source: Part) {
 //
 // The merge is explicit about the fields with streaming semantics instead of
 // copying the snapshot blindly:
-// - text/reasoning `text`: already resolved by `mergePartText` (never shorten);
-// - `time.end`: never regresses;
-// - tool `state`: status/output/error/title/metadata guards above;
+// - text/reasoning `text`: already resolved by `mergePartText` (prefix and
+//   terminal rules above, never a length comparison);
+// - `time`: start immutable, end monotonic (`mergeTime`);
+// - tool `state`: state machine above (status/output/error written once);
 // - every other field (including fields a newer schema may add) is adopted
 //   from the snapshot; fields absent from the snapshot are kept, never deleted,
 //   so an older durable row cannot drop newer data.

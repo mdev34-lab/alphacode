@@ -234,6 +234,29 @@ describe("streaming part identity", () => {
     }
   })
 
+  test("a same-length conflicting snapshot cannot replace streamed text", async () => {
+    const sessionID = "ses_conflict"
+    const messageID = "msg_conflict"
+    const partID = "prt_conflict"
+    const { app, events, sync } = await mountSingle(textPart(partID, messageID, sessionID))
+
+    try {
+      events.emit(deltaEvent(sessionID, messageID, partID, "Hello world!", 0))
+      // Replayed durable row: same length, different content, no `time.end`.
+      // Without a revision number there is no causal ordering, so the text
+      // already rendered must win — never swap it for an arbitrary string.
+      events.emit(updatedEvent(sessionID, messageID, textPart(partID, messageID, sessionID, "Hello there"), 1))
+
+      await waitUntil(() => textOf(sync, messageID, partID) === "Hello world!")
+      await app.renderOnce()
+
+      expect(mountCount).toBe(1)
+      expect(app.captureCharFrame().split("\n").join("")).toContain("Hello world!")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
   test("reasoning parts stream without remounting", async () => {
     const sessionID = "ses_reason"
     const messageID = "msg_reason"

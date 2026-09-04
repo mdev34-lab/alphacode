@@ -25,6 +25,18 @@ function text(overrides: Partial<TextPart> = {}): TextPart {
   }
 }
 
+function toolPart(partID: string, tool: string, state: ToolState): ToolPart {
+  return {
+    id: partID,
+    sessionID: "session-1",
+    messageID: "message-1",
+    type: "tool",
+    callID: `call-${partID}`,
+    tool,
+    state,
+  }
+}
+
 function partText(part: Part): string {
   return (part as TextPart | ReasoningPart).text
 }
@@ -37,6 +49,8 @@ type AnyToolState = ToolState & {
   title?: string
   metadata?: Record<string, unknown>
   time?: { start: number; end?: number }
+  attachments?: unknown[]
+  input?: Record<string, unknown>
 }
 
 test("preserves streamed reasoning text when an empty snapshot arrives", () => {
@@ -67,9 +81,9 @@ test("preserves streamed text-part text when an empty snapshot arrives", () => {
   expect(mergePartText(current, incoming)).toEqual({ ...incoming, text: "streamed answer" })
 })
 
-test("adopts the incoming text-part snapshot when it is non-empty", () => {
+test("adopts the incoming snapshot when it extends the streamed text", () => {
   const current = text({ text: "streamed" })
-  const incoming = text({ text: "finalized answer" })
+  const incoming = text({ text: "streamed answer" })
   expect(mergePartText(current, incoming)).toBe(incoming)
 })
 
@@ -321,4 +335,182 @@ test("new fields added by a newer schema are adopted", () => {
   parts = applyPartUpdated(parts, incoming)
   expect(parts[0]).toBe(original)
   expect((parts[0] as ReasoningPart & { futureField?: unknown }).futureField).toEqual({ nested: true })
+})
+
+test("a same-length conflicting snapshot never replaces streamed text", () => {
+  // Reviewer case: both snapshots non-empty, same length, different content.
+  // Without a revision number the protocol offers no causal ordering here —
+  // text already on screen must never be swapped out. Compare with the
+  // append-only delta model: a legitimate snapshot is a prefix or an
+  // extension of the streamed text, never an arbitrary string.
+  let parts = applyPartUpdated(undefined, text({ text: "Hello world!" }))
+  const original = parts[0]
+  parts = applyPartUpdated(parts, text({ text: "Hello there" }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("Hello world!")
+})
+
+test("a same-length conflicting terminal snapshot is not accepted either", () => {
+  // Both snapshots already finished (`time.end`): the part terminal state
+  // reached the TUI first, so a replayed row with the same length but other
+  // content cannot be causally newer.
+  let parts = applyPartUpdated(undefined, text({ text: "Hello world!", time: { start: 1, end: 2 } }))
+  const original = parts[0]
+  parts = applyPartUpdated(parts, text({ text: "Hello there", time: { start: 1, end: 2 } }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("Hello world!")
+})
+
+test("the terminal text-end snapshot is the only non-cumulative write allowed", () => {
+  // The `experimental.text.complete` plugin rewrites the final text; the
+  // processor publishes that rewrite together with `time.end` in the
+  // `text-end` snapshot. That snapshot is causally newer than the deltas.
+  let parts = applyPartUpdated(undefined, text({ text: "Hello world" }))
+  parts = applyPartDelta(parts, "part-1", "text", "!")!
+  expect(partText(parts[0])).toBe("Hello world!")
+  const original = parts[0]
+  parts = applyPartUpdated(parts, text({ text: "Hello there", time: { start: 1, end: 2 } }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("Hello there")
+})
+
+test("a finished part is not rewound by an unfinished conflicting snapshot", () => {
+  let parts = applyPartUpdated(undefined, text({ text: "Hello there", time: { start: 1, end: 2 } }))
+  const original = parts[0]
+  parts = applyPartUpdated(parts, text({ text: "Hello world!" }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("Hello there")
+})
+
+test("a prefix snapshot is always older than the streamed text", () => {
+  let parts = applyPartUpdated(undefined, text({ text: "Hello world" }))
+  const original = parts[0]
+  // Durable row persisted partway through the same stream.
+  parts = applyPartUpdated(parts, text({ text: "Hello worl" }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("Hello world")
+})
+
+test("time.start is immutable after the part is created", () => {
+  let parts = applyPartUpdated(undefined, reasoning({ text: "x", time: { start: 100, end: 200 } }))
+  // A stale row replayed with an earlier start (or any other start) must not
+  // move the clock backwards; the first value seen is the creation time.
+  parts = applyPartUpdated(parts, reasoning({ text: "x", time: { start: 50 } }))
+  expect((parts[0] as ReasoningPart).time).toEqual({ start: 100, end: 200 })
+  parts = applyPartUpdated(parts, reasoning({ text: "x", time: { start: 150, end: 200 } }))
+  expect((parts[0] as ReasoningPart).time).toEqual({ start: 100, end: 200 })
+})
+
+test("tool output is fixed by the single terminal transition", () => {
+  let parts = applyPartUpdated(
+    undefined,
+    toolPart("part-tool", "bash", { status: "running", input: {}, time: { start: 1 } }),
+  )
+  // First terminal snapshot carries the result.
+  parts = applyPartUpdated(
+    parts,
+    toolPart("part-tool", "bash", {
+      status: "completed",
+      input: {},
+      output: "abcdef",
+      title: "bash",
+      metadata: {},
+      time: { start: 1, end: 2 },
+    }),
+  )
+  // A replayed terminal row with the same length but different content cannot
+  // carry newer output: the result is written once when the tool finished.
+  parts = applyPartUpdated(
+    parts,
+    toolPart("part-tool", "bash", {
+      status: "completed",
+      input: {},
+      output: "123456",
+      title: "bash",
+      metadata: {},
+      time: { start: 1, end: 2 },
+    }),
+  )
+  const state = (parts[0] as ToolPart).state as AnyToolState
+  expect(state.output).toBe("abcdef")
+})
+
+test("tool error is fixed by the single terminal transition", () => {
+  let parts = applyPartUpdated(
+    undefined,
+    toolPart("part-tool", "bash", { status: "running", input: {}, time: { start: 1 } }),
+  )
+  parts = applyPartUpdated(
+    parts,
+    toolPart("part-tool", "bash", {
+      status: "error",
+      input: {},
+      error: "boom",
+      metadata: {},
+      time: { start: 1, end: 2 },
+    }),
+  )
+  const original = parts[0]
+  parts = applyPartUpdated(
+    parts,
+    toolPart("part-tool", "bash", {
+      status: "error",
+      input: {},
+      error: "different",
+      metadata: {},
+      time: { start: 1, end: 2 },
+    }),
+  )
+  expect(parts[0]).toBe(original)
+  expect(((parts[0] as ToolPart).state as AnyToolState).error).toBe("boom")
+})
+
+test("running input updates are adopted on a same-status replay", () => {
+  let parts = applyPartUpdated(
+    undefined,
+    toolPart("part-tool", "bash", { status: "running", input: { command: "a" }, time: { start: 1 } }),
+  )
+  const original = parts[0]
+  // `tool-call` is re-published while the tool runs to update `input`.
+  parts = applyPartUpdated(
+    parts,
+    toolPart("part-tool", "bash", { status: "running", input: { command: "b" }, time: { start: 1 } }),
+  )
+  expect(parts[0]).toBe(original)
+  const state = (parts[0] as ToolPart).state as AnyToolState
+  expect(state.input).toEqual({ command: "b" })
+  expect(state.time).toEqual({ start: 1 })
+})
+
+test("a same-status replay can add schema fields without overwriting existing ones", () => {
+  let parts = applyPartUpdated(
+    undefined,
+    toolPart("part-tool", "bash", {
+      status: "completed",
+      input: {},
+      output: "a",
+      title: "bash",
+      metadata: {},
+      time: { start: 1, end: 2 },
+    }),
+  )
+  const original = parts[0]
+  const incoming = {
+    ...parts[0],
+    state: {
+      status: "completed" as const,
+      input: {},
+      output: "different",
+      title: "different",
+      metadata: {},
+      time: { start: 1, end: 2 },
+      attachments: [{ id: "file-1" } as never],
+    },
+  } as ToolPart
+  parts = applyPartUpdated(parts, incoming)
+  expect(parts[0]).toBe(original)
+  const state = (parts[0] as ToolPart).state as AnyToolState
+  expect(state.output).toBe("a")
+  expect(state.title).toBe("bash")
+  expect(state.attachments).toEqual([{ id: "file-1" }])
 })
