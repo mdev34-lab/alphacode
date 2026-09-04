@@ -289,8 +289,12 @@ const subscriptions = { count: 0 }
 
 const pathologicalStream = () =>
   Stream.concat(
-    Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
-    Stream.fromIterable(Array.from({ length: 500 }, () => LLMEvent.textDelta({ id: "text-1", text: "x".repeat(1000) }))),
+    Stream.concat(
+      Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
+      Stream.fromIterable(
+        Array.from({ length: 500 }, () => LLMEvent.textDelta({ id: "text-1", text: "x".repeat(1000) })),
+      ),
+    ),
     Stream.fail(new GenerationLimit.GenerationLimitExceededError(320_000, 500_000)),
   )
 

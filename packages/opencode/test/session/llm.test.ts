@@ -10,6 +10,7 @@ import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import z from "zod"
 import { LLM } from "../../src/session/llm"
 import { LLMClient, RequestExecutor } from "@opencode-ai/llm/route"
+import { LLMEvent } from "@opencode-ai/llm"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
@@ -21,6 +22,7 @@ import { SessionID, MessageID } from "../../src/session/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { LLMAISDK } from "@/session/llm/ai-sdk"
+import { GenerationLimit } from "@/session/llm/generation-limit"
 import { Session as SessionNs } from "@/session/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -1497,6 +1499,77 @@ describe("session.llm.stream", () => {
         expect(capture.body.include).toEqual(["reasoning.encrypted_content"])
         expect(JSON.stringify(capture.body.input)).toContain("You are a helpful assistant.")
         expect(capture.body.input).toContainEqual({ role: "user", content: [{ type: "input_text", text: "Hello" }] })
+      }),
+    { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+  )
+
+  it.instance(
+    "aborts a runaway native stream at the generation cap",
+    () =>
+      Effect.gen(function* () {
+        const model = loadFixture("openai", "gpt-5.2").model
+        // 500 x 1k-char deltas: the issue #89 shape (model stuck generating).
+        // The stub bypasses HTTP so the test pins the guard on the native
+        // path, not the transport.
+        const runawayNativeClient = Layer.succeed(
+          LLMClient.Service,
+          LLMClient.Service.of({
+            prepare: () => Effect.die(new Error("native prepare should not be called in this test")),
+            stream: () =>
+              Stream.fromIterable([
+                LLMEvent.stepStart({ index: 0 }),
+                LLMEvent.textStart({ id: "text-1" }),
+                ...Array.from({ length: 500 }, () => LLMEvent.textDelta({ id: "text-1", text: "x".repeat(1000) })),
+              ]),
+            generate: () => Effect.die(new Error("native generate should not be called in this test")),
+          }),
+        )
+
+        const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
+        const sessionID = SessionID.make("session-test-native-generation-cap")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+
+        // Provide the layer in-test (not via drainWith): drainWith's
+        // Effect.promise boundary would convert the guard's Fail into a Die,
+        // hiding the GenerationLimitExceededError identity asserted below.
+        const error = yield* LLM.Service.use((svc) =>
+          svc
+            .stream({
+              user: {
+                id: MessageID.make("msg_user-native-generation-cap"),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: agent.name,
+                model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: "high" },
+              } satisfies SessionV1.User,
+              sessionID,
+              model: resolved,
+              agent,
+              system: ["You are a helpful assistant."],
+              messages: [{ role: "user", content: "Hello" }],
+              tools: {},
+            })
+            .pipe(Stream.runDrain, Effect.flip),
+        ).pipe(
+          Effect.provide(
+            AppNodeBuilder.build(LLM.node, [
+              [LayerNodePlatform.llmClient, runawayNativeClient],
+              [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: true, generationCharMax: 10_000 })],
+            ]),
+          ),
+        )
+
+        expect(error).toBeInstanceOf(GenerationLimit.GenerationLimitExceededError)
+        if (!(error instanceof GenerationLimit.GenerationLimitExceededError)) return
+        expect(error.maxChars).toBe(10_000)
+        expect(error.seenChars).toBeGreaterThan(10_000)
+        expect(error.message).toContain(GenerationLimit.GENERATION_LIMIT_MESSAGE)
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )
