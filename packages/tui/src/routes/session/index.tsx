@@ -75,7 +75,7 @@ import { sessionEpilogue } from "../../util/presentation"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
-import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
+import { nextThinkingMode, reasoningOpen, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { capOutputLines } from "../../util/cap-lines"
@@ -1755,6 +1755,11 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
+  // The block stays open while the reasoning stream is active so the streamed
+  // content is readable (regardless of the display mode). It only transitions
+  // to its completed/collapsed state when the reasoning stream actually ends
+  // (`isDone`), then falls back to the mode default.
+  const open = createMemo(() => reasoningOpen({ done: isDone(), mode: ctx.thinkingMode(), expanded: expanded() }))
 
   const toggle = () => {
     if (!inMinimal() || opaque()) return
@@ -1773,14 +1778,14 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         <box onMouseUp={toggle}>
           <ReasoningHeader
             toggleable={inMinimal() && !opaque()}
-            open={!inMinimal() || expanded()}
+            open={open()}
             done={isDone()}
             title={summary().title}
             duration={isDone() ? Locale.duration(duration()) : undefined}
             encrypted={opaque()}
           />
         </box>
-        <Show when={!opaque() && (!inMinimal() || expanded()) && summary().body}>
+        <Show when={!opaque() && open() && summary().body}>
           <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
             <code
               filetype="markdown"

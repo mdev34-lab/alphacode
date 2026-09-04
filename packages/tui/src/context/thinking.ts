@@ -26,6 +26,17 @@ export function nextThinkingMode(current: ThinkingMode): ThinkingMode {
   return MODES[(idx + 1) % MODES.length] ?? "show"
 }
 
+// A reasoning block stays open (its streamed content remains visible) while the
+// reasoning stream is still active — `done` is false — regardless of the
+// thinking display mode, so the chain-of-thought is readable as it arrives. It
+// only transitions to its collapsed/completed state once the reasoning stream
+// actually ends (`done` becomes true), at which point it falls back to the
+// mode default: "show" keeps it open, "hide" collapses it to a single-line
+// summary unless the user expanded it manually.
+export function reasoningOpen(input: { done: boolean; mode: ThinkingMode; expanded: boolean }): boolean {
+  return !input.done || input.mode === "show" || input.expanded
+}
+
 export function useThinkingMode() {
   const kv = useKV()
   // Capture pre-state before `kv.signal` seeds a default, so we can detect
