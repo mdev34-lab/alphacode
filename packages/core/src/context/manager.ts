@@ -238,6 +238,7 @@ const layer = Layer.effect(
         limit,
         overBudget: false,
         blocks: [],
+        compressed: false,
         revision,
       }
     }
@@ -296,6 +297,22 @@ const layer = Layer.effect(
             })
             yield* ContextState.widen(db, item.block)
             yield* ContextState.absorb(db, item.absorbed, item.block.id)
+          }),
+        )
+
+      // A block fully covered by a wider one is projected by the covering summary alone, so it
+      // must stop travelling with the session state: absorbing it into the cover is what makes the
+      // stored set converge on exactly the ranges the projection uses, instead of loading and
+      // re-discarding it on every turn.
+      if (placed.absorbed.length > 0 && !observe)
+        yield* Effect.forEach(placed.absorbed, (item) =>
+          Effect.gen(function* () {
+            yield* Effect.logDebug("context.prepare.covered-absorbed", {
+              sessionID: input.sessionID,
+              blockID: item.id,
+              absorbedBy: item.by,
+            })
+            yield* ContextState.absorb(db, [item.id], item.by)
           }),
         )
 
@@ -407,6 +424,7 @@ const layer = Layer.effect(
         limit,
         overBudget,
         blocks: placed.blocks,
+        compressed: false,
         revision,
       } satisfies ContextTypes.PreparedContext
     })
@@ -447,7 +465,12 @@ const layer = Layer.effect(
         input.endMessageID === undefined
           ? protection.recentFrom - 1
           : messages.findIndex((message) => message.id === input.endMessageID)
-      if (requestedStart < 0 || requestedEnd < 0) return { failure: "invalid-range" as const }
+      if (requestedStart < 0) return { failure: "invalid-range" as const }
+      // An omitted end boundary means "everything outside the protected recent window". When the
+      // window itself covers the whole history there is no compressible region at all, and that is
+      // a protected-range answer, not a mystery about which boundary failed to parse.
+      if (requestedEnd < 0 && input.endMessageID === undefined) return { failure: "protected-range" as const }
+      if (requestedEnd < 0) return { failure: "invalid-range" as const }
       if (requestedEnd >= protection.recentFrom) return { failure: "protected-range" as const }
 
       // Compression must never leave two blocks partially overlapping: the projection would have to
@@ -691,7 +714,7 @@ const layer = Layer.effect(
       const second = yield* prepareOnce(input)
       yield* reportOverBudget(second)
       yield* publishPrepared(second)
-      return second
+      return { ...second, compressed: true }
     })
 
     return Service.of({

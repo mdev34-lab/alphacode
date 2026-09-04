@@ -168,7 +168,7 @@ export const reduce = (input: ReduceInput): ReduceResult => {
     if (size <= input.limit) return { messages, steps, within: true, needsCompression: false }
   }
 
-  const dropped = dropOldestBeforeRecentWindow(messages, input)
+  const dropped = dropOldestBeforeRecentWindow(messages, input, size)
   if (dropped.messages !== messages) {
     messages = dropped.messages
     steps.push("drop-oldest")
@@ -255,32 +255,29 @@ const collapseTodos = (messages: readonly ContextMessage[], input: ReduceInput) 
  * `exhausted` reports that the eligible prefix ran out with the payload still too large, which
  * means the caller must compress or fail the turn rather than silently sending it.
  */
-const dropOldestBeforeRecentWindow = (messages: readonly ContextMessage[], input: ReduceInput) => {
+const dropOldestBeforeRecentWindow = (messages: readonly ContextMessage[], input: ReduceInput, size: number) => {
   // `JSON.stringify` of an array is its elements' serializations joined by commas inside brackets,
-  // so the size of a candidate list is derived arithmetically from per-message sizes measured once.
+  // so dropping a message removes exactly its serialized length plus one comma. Only the droppable
+  // items are ever measured: the protected recent window is by construction retained, and pricing
+  // it was a second full serialization of precisely the messages that cannot leave.
   // Re-serializing the whole history per drop candidate was quadratic in exactly the case this
   // function exists for: a very long conversation that is far over the ceiling.
-  const each = messages.map((message) => Buffer.byteLength(JSON.stringify(message) ?? "null", "utf8"))
-  const total = (count: number, sum: number) => sum + Math.max(count - 1, 0) + 2
   // Eligibility is decided against the original positions, because removing a message shifts every
   // later index left and would otherwise walk the boundary into the protected window.
   const droppable = messages
     .slice(0, input.protection.recentFrom)
     .flatMap((message, index) => (input.protection.messageIDs.has(message.id) ? [] : [index]))
   const dropped = new Set<number>()
-  let sum = each.reduce((carry, size) => carry + size, 0)
-  let count = messages.length
+  let remaining = size
   for (const index of droppable) {
-    if (total(count, sum) <= input.limit) break
+    if (remaining <= input.limit) break
     dropped.add(index)
-    sum -= each[index] ?? 0
-    count -= 1
+    remaining -= Buffer.byteLength(JSON.stringify(messages[index]) ?? "null", "utf8") + 1
   }
-  const size = total(count, sum)
-  if (dropped.size === 0) return { messages, exhausted: size > input.limit, bytes: size }
+  if (dropped.size === 0) return { messages, exhausted: remaining > input.limit, bytes: remaining }
   return {
     messages: messages.filter((_, index) => !dropped.has(index)),
-    exhausted: size > input.limit,
-    bytes: size,
+    exhausted: remaining > input.limit,
+    bytes: remaining,
   }
 }

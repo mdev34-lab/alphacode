@@ -229,12 +229,27 @@ export interface Merged {
   readonly absorbed: readonly string[]
 }
 
+export interface Covered {
+  /** A stored block that resolves but is fully covered by a wider or newer one. */
+  readonly id: string
+  /** The active block that covers it, which its content was folded into. */
+  readonly by: string
+}
+
 export interface Applied {
   readonly messages: readonly ContextMessage[]
   readonly blocks: readonly CompressionBlock[]
   readonly stale: readonly CompressionBlock[]
   /** Overlapping ranges normalized into one, for the caller to persist. */
   readonly merged: readonly Merged[]
+  /**
+   * Stored blocks dropped from the projection because a wider block already replaces them.
+   *
+   * Their content is inside the covering summary, so the projection need not — and must not —
+   * keep loading them every turn just to discard them again. The caller persists the absorption
+   * and the stored state converges on exactly the ranges the projection uses.
+   */
+  readonly absorbed: readonly Covered[]
   readonly compressedMessages: number
 }
 
@@ -245,12 +260,14 @@ export const apply = (
   blocks: readonly CompressionBlock[],
   protectedIDs: ReadonlySet<SessionMessage.ID> = new Set(),
 ): Applied => {
-  if (blocks.length === 0) return { messages, blocks: [], stale: [], merged: [], compressedMessages: 0 }
+  if (blocks.length === 0) return { messages, blocks: [], stale: [], merged: [], absorbed: [], compressedMessages: 0 }
   const ranges = resolve(messages, blocks, protectedIDs)
   const index = positions(messages)
   // A block is stale only when the canonical history can no longer place it: either boundary is
-  // gone, or they crossed. A block that merely lost to a wider compression is absorbed, not stale.
+  // gone, or they crossed. A block that merely lost to a wider compression is absorbed, not stale:
+  // it resolves, so it is reported for absorption instead of re-loaded and re-discarded forever.
   const stale = blocks.filter((block) => locate(index, block) === undefined)
+  const active = new Set(ranges.map((range) => range.block.id))
   const result: ContextMessage[] = []
   const applied: CompressionBlock[] = []
   let compressedMessages = 0
@@ -307,5 +324,22 @@ export const apply = (
       return []
     return [{ block, absorbed: block.nested.filter((id) => stored.has(id) && id !== block.id) }]
   })
-  return { messages: result, blocks: applied, stale, merged, compressedMessages }
+  // Blocks that resolve but are fully covered by an active range are projected by the covering
+  // summary alone, so they are reported for absorption into the cover — the merge losers above are
+  // already claimed by their widened survivor, and coverage is transitive, so an active cover
+  // always exists for everything left.
+  const folded = new Set(merged.flatMap((item) => item.absorbed))
+  const absorbed = blocks.flatMap((block) => {
+    if (active.has(block.id) || folded.has(block.id)) return []
+    const range = locate(index, block)
+    if (range === undefined) return []
+    const winner = ranges.find(
+      (other) =>
+        other.start <= range.start &&
+        other.end >= range.end &&
+        (other.end - other.start > range.end - range.start || other.block.createdAt > block.createdAt),
+    )
+    return winner === undefined ? [] : [{ id: block.id, by: winner.block.id }]
+  })
+  return { messages: result, blocks: applied, stale, merged, absorbed, compressedMessages }
 }

@@ -145,6 +145,12 @@ export interface PreparedContext {
   /** True when the deterministic byte ladder could not bring the request under `payload_bytes`. */
   readonly overBudget: boolean
   readonly blocks: readonly CompressionBlock[]
+  /**
+   * True when this preparation already ran a dynamic compression. Callers holding a
+   * still-oversized request use it to spend at most one summarization per preparation: the gate
+   * takes its compression attempt only when this is false.
+   */
+  readonly compressed: boolean
   /** Increments whenever the compiler recomputes its reduction plan for a session. */
   readonly revision: number
 }
