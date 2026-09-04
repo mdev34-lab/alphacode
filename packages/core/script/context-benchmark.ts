@@ -35,8 +35,8 @@ const sessionID = SessionSchema.ID.make("ses_benchmark")
 
 /**
  * Deliberately unwinnable for the cheap rungs: every `read` call takes a distinct file argument,
- * so forced deduplication finds nothing; there are no failed calls, so forced error purging finds
- * nothing; and no output exceeds the scaffold ceiling, so the collapse rungs change nothing.
+ * so deduplication finds nothing; there are no failed calls, so error purging finds nothing; and
+ * no output exceeds the scaffold ceiling, so the collapse rungs change nothing.
  */
 const history = (count: number): SessionMessage.Message[] =>
   Array.from({ length: count }, (_, index) =>
@@ -108,7 +108,25 @@ const milliseconds = (runs: number, run: () => unknown) => {
   return (Bun.nanoseconds() - start) / runs / 1e6
 }
 
-for (const count of [100, 500, 2000]) {
+/**
+ * The naive alternative to the drop loop's arithmetic sizing: re-serialize the candidate list
+ * after every removal. Measured once, directly, so the complexity argument in the spec is a
+ * comparison of two runs rather than an estimate.
+ */
+const quadraticDrop = (messages: readonly SessionMessage.Message[]) => {
+  const protection = ContextProtection.resolve(messages, { policy: settings.protection })
+  const droppable = messages
+    .slice(0, protection.recentFrom)
+    .flatMap((message, index) => (protection.messageIDs.has(message.id) ? [] : [index]))
+  let remaining = [...messages]
+  for (const index of droppable) {
+    if (Buffer.byteLength(JSON.stringify(remaining) ?? "", "utf8") <= 1024) break
+    remaining = remaining.filter((_, item) => item !== index)
+  }
+  return remaining.length
+}
+
+for (const count of [100, 500, 2000, 8000]) {
   const messages = history(count)
   const size = (JSON.stringify(messages).length / 1024).toFixed(0)
   const reduction = ladder(messages, 1024)
@@ -122,3 +140,12 @@ for (const count of [100, 500, 2000]) {
       `${milliseconds(20, () => ladder(messages, 1024)).toFixed(2)} ms`,
   )
 }
+
+// The comparative claim: the drop loop priced arithmetically versus the naive re-serialization it
+// replaced. Kept at 2,000 messages so the script stays quick; the curve above already proves how
+// the arithmetic version continues to scale.
+const largest = history(2000)
+console.log(
+  `drop loop @ 2000 messages: arithmetic sizing ${milliseconds(20, () => ladder(largest, 1024)).toFixed(2)} ms, ` +
+    `naive re-serialization ${milliseconds(2, () => quadraticDrop(largest)).toFixed(2)} ms`,
+)

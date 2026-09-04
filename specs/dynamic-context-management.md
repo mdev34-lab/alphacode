@@ -40,7 +40,12 @@ before the byte ladder runs. Without this a session with a large toolset believe
 the provider sees 95%.
 
 The last declared envelope is remembered per session so a stats request between turns still reports
-against the real request rather than the history alone.
+against the real request rather than the history alone. And before any turn exists, `stats` rebuilds
+that envelope read-only from the session's agent — its system prompt, the context guidance and the
+materialized tool definitions — so the very first `GET /context/stats` reports utilization against
+the real prompt too. Two request parts remain uncountable until they exist: the epoch context-file
+baseline (it joins on the first prepared turn) and the max-steps trailing message (it depends on
+the step counter).
 
 Every stage is pure and monotonic: once a call is superseded or an error input is stale, it stays
 that way. The request prefix therefore only changes when something genuinely new happens, which
@@ -57,17 +62,20 @@ ladder ends in the drop rung, times `ContextBudget.reduce` directly, and prints 
 
 | History        | Serialized | Preparation | Full ladder (`ContextBudget.reduce`) |
 | -------------- | ---------- | ----------- | ------------------------------------ |
-| 100 messages   | 62 KiB     | ~1.2 ms     | ~0.6 ms                              |
-| 500 messages   | 313 KiB    | ~3.2 ms     | ~2.6 ms                              |
-| 2,000 messages | 1.2 MiB    | ~14.1 ms    | ~12.2 ms                             |
+| 100 messages   | 62 KiB     | ~1.1 ms     | ~0.8 ms                              |
+| 500 messages   | 313 KiB    | ~3.9 ms     | ~3.3 ms                              |
+| 2,000 messages | 1.2 MiB    | ~14.8 ms    | ~13.8 ms                             |
+| 8,000 messages | 4.9 MiB    | ~63.7 ms    | ~61.1 ms                             |
 
-Both curves are linear in serialized history size, and serialization dominates them:
-`ContextBudget.measure` returns tokens and bytes from a single `JSON.stringify` so the pipeline
-serializes each list once, and the drop loop derives each candidate size arithmetically from
-per-message sizes measured once — `JSON.stringify` of an array is its elements joined by commas
-inside brackets, so a removal is a subtraction. Re-measuring the whole history per drop candidate
-would be quadratic on precisely the inputs the ladder exists for: at 2,000 messages that costs
-~5,200 ms instead of ~12 ms.
+The cost per KiB of serialized history stays flat across the measured range (roughly 0.01 ms/KiB at
+every size), so both curves scale approximately linearly with payload, and serialization dominates
+them: `ContextBudget.measure` returns tokens and bytes from a single `JSON.stringify` so the
+pipeline serializes each list once, and the drop loop derives each candidate size arithmetically
+from per-message sizes measured once — `JSON.stringify` of an array is its elements joined by
+commas inside brackets, so a removal is a subtraction. The alternative — re-serializing the whole
+history per drop candidate — is quadratic on precisely the inputs the ladder exists for, and the
+script measures that comparison too: at 2,000 messages the arithmetic sizing costs ~14 ms where the
+naive loop costs ~7,700 ms (~550x), growing to ~140,000 ms at 8,000 messages.
 Against a provider request measured in seconds this is noise, but it is measured rather than assumed,
 and the script is committed so a regression is one command away.
 
@@ -147,7 +155,10 @@ call the same `ContextManager.compress` engine, as does automatic compression.
 - Summaries are durable state, so they are capped deterministically at
   `ContextCompressor.MAX_SUMMARY_CHARS` (16 KB) before being stored; a truncated summary ends with a
   marker. `maxTokens` is a request to the provider, not a guarantee, and nested compression reads
-  stored summaries back as source material.
+  stored summaries back as source material. The cap applies to merged summaries too: concatenating
+  two 16 KB summaries and merging again later would make durable state grow without bound, so the
+  merge keeps the newest half in full and gives the older half whatever room remains, marked with
+  `[earlier summary trimmed to fit the summary budget]`.
 - Failures are values, never exceptions: `disabled`, `no-model`, `empty-range`, `invalid-range`,
   `protected-range`, `summary-unavailable`, `timeout`. The turn continues with the canonical context.
 
@@ -177,6 +188,13 @@ Never compressed, deduplicated, or purged:
 - State-changing tools are never deduplicated (`bash`, `write`, `edit`, `apply_patch`, ...).
 - `system`, `compaction`, `agent-switched`, and `model-switched` messages.
 - User messages, when `protection.user_messages` is enabled (default off).
+
+This list has no override, including on the byte-budget fallback: `ContextBudget.reduce` runs the
+same planners with a wider mandate, but every rung still yields to protection. Earlier drafts had a
+`force` flag that suspended recent-turn protection in exactly that path, which meant a conversation
+could lose a recent, protected result precisely when the payload was under the most pressure. It was
+removed; a fallback that cannot shed anything unprotected reports `needsCompression` and the
+pipeline escalates (automatic compression, then native compaction) instead of pruning anyway.
 
 ### Overlapping ranges
 
@@ -259,6 +277,12 @@ reduced slightly more than it had to be. Optimistic: the ladder and automatic co
 down when they should have run, `payload` catches the oversized request instead, and the turn takes
 exactly one native-compaction recovery before the real provider call — the path the
 optimistic-estimate test in `context-manager.test.ts` pins end to end.
+
+The estimate also corrects itself: every measured wire request reports back how many bytes it cost
+beyond the prepared canonical list, and planning budgets against the larger of the estimate and
+that observed overhead. An optimistic gap therefore survives at most until the session's first
+measured request, after which decisions track the wire. Only divergence that makes planning more
+conservative is kept; the hard gate above remains the final arbiter either way.
 
 An unmeasurable request is not a fitting request. If the provider body cannot be built at all,
 `payload` reports `measured: false` and `within: false` rather than falling back to an estimate: the
