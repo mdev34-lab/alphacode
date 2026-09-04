@@ -23,6 +23,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { LLMAISDK } from "@/session/llm/ai-sdk"
 import { GenerationLimit } from "@/session/llm/generation-limit"
+import { SessionRetry } from "@/session/retry"
 import { Session as SessionNs } from "@/session/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -1570,6 +1571,17 @@ describe("session.llm.stream", () => {
         expect(error.maxChars).toBe(10_000)
         expect(error.seenChars).toBeGreaterThan(10_000)
         expect(error.message).toContain(GenerationLimit.GENERATION_LIMIT_MESSAGE)
+
+        // Close the runaway → abort → no-retry chain for the native-produced
+        // error: it must surface clearly and never be retried. (The processor
+        // stop itself is covered in generation-limit.test.ts.)
+        const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make("openai") })
+        expect(parsed.name).toBe("UnknownError")
+        const surfaced = typeof parsed.data === "object" && parsed.data !== null && "message" in parsed.data
+          ? parsed.data.message
+          : undefined
+        expect(surfaced).toContain(GenerationLimit.GENERATION_LIMIT_MESSAGE)
+        expect(SessionRetry.retryable(parsed, "openai")).toBeUndefined()
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
   )

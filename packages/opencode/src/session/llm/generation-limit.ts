@@ -7,11 +7,13 @@ import * as Stream from "effect/Stream"
 // is never retried (retrying would replay the same runaway stream).
 export const GENERATION_LIMIT_MESSAGE = "Generation limit exceeded"
 
-// Generous byte budget per requested output token. A token averages ~4
-// characters, so 10x headroom never clips legitimate output at the
-// configured maxOutputTokens while still bounding a runaway stream to a few
-// hundred KB of text (tens of MB worst case through the TUI render path,
-// well under the ~1 GB RSS seen in the issue #89 segfaults).
+// Generous character budget per requested output token, measured in
+// JavaScript string length (UTF-16 code units, not bytes). ~4 chars/token is
+// only a rough heuristic, so 10x headroom is a circuit breaker: it never
+// clips legitimate output at the configured maxOutputTokens while still
+// bounding a runaway stream to a few hundred KB of text (tens of MB worst
+// case through the TUI render path, well under the ~1 GB RSS seen in the
+// issue #89 segfaults).
 export const CHARS_PER_OUTPUT_TOKEN = 10
 
 // Fallback when the caller cannot provide maxOutputTokens (should not

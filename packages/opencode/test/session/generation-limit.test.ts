@@ -266,7 +266,7 @@ const boot = Effect.fn("test.boot")(function* () {
   return { processors, session, provider }
 })
 
-function processorWithLLM(stream: () => Stream.Stream<LLMEvent>) {
+function processorWithLLM(stream: () => Stream.Stream<LLMEvent, unknown>) {
   return testEffect(
     LayerNode.compile(root, [
       ...replacements,
