@@ -553,7 +553,14 @@ export type SessionsCompressOutput = {
       }
     | {
         readonly status: "skipped"
-        readonly reason: string
+        readonly reason:
+          | "disabled"
+          | "no-model"
+          | "empty-range"
+          | "invalid-range"
+          | "protected-range"
+          | "summary-unavailable"
+          | "timeout"
         readonly stats: {
           readonly rawTokens: number
           readonly preparedTokens: number

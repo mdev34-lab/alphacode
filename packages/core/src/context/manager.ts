@@ -286,10 +286,14 @@ const layer = Layer.effect(
       if (cached?.plan !== plan && !observe) revision++
 
       const reduced = ContextPurgeErrors.apply(ContextDeduplicate.apply(placed.messages, duplicates), errors)
-      // The byte ceiling covers the whole request, so the envelope spends from it too. Both sides of
-      // this comparison are estimates; the authoritative check is `payload`, run by the runner on
-      // the lowered request. An optimistic estimate therefore costs a blocked turn, never an
-      // oversized one.
+      // The byte ceiling covers the whole request, so the envelope spends from it too — but watch
+      // the units. This comparison adds canonical-history JSON bytes to a JSON.stringify of
+      // [system, tools, extra], while the wire carries a provider-native body built by
+      // route.body.from. The two serializations are different shapes, so this decision can be off
+      // in either direction, and automatic compression (below) fires from this estimate too. The
+      // only authoritative measurement is `payload`, run by the runner on the lowered request:
+      // an optimistic estimate converts into exactly one overflow compaction and a retried turn —
+      // never into an oversized request on the wire.
 
       const payloadBudget =
         settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - overhead.bytes, 1)

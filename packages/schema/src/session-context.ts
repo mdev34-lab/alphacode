@@ -52,10 +52,27 @@ export const Compressed = Schema.Struct({
   stats: Stats,
 }).annotate({ identifier: "SessionContext.Compressed" })
 
+/**
+ * Why a compress request did not summarize anything.
+ *
+ * One literal per `ContextManager.CompressFailure` in core — the public contract stays as typed as
+ * the internal state machine, so clients can switch on the reason instead of parsing strings.
+ */
+export const SkipReason = Schema.Literals([
+  "disabled",
+  "no-model",
+  "empty-range",
+  "invalid-range",
+  "protected-range",
+  "summary-unavailable",
+  "timeout",
+])
+export type SkipReason = typeof SkipReason.Type
+
 export const Skipped = Schema.Struct({
   status: Schema.Literal("skipped"),
   /** Machine-readable cause, for example `protected-range` or `summary-unavailable`. */
-  reason: Schema.String,
+  reason: SkipReason,
   stats: Stats,
 }).annotate({ identifier: "SessionContext.Skipped" })
 

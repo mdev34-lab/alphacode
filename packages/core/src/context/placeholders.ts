@@ -113,7 +113,7 @@ const merge = (
   left: Range,
   right: Range,
   protectedIDs: ReadonlySet<SessionMessage.ID>,
-): Range => {
+): Range | undefined => {
   const start = Math.min(left.start, right.start)
   const end = Math.max(left.end, right.end)
   const newest = right.block.createdAt >= left.block.createdAt ? right.block : left.block
@@ -126,20 +126,23 @@ const merge = (
   // retained message's content from when that message was not yet protected — harmless duplication,
   // never a claim of replacement.
   const summarized = covered.flatMap((item, offset) => (protectedIDs.has(item.id) ? [] : [{ item, offset }]))
-  // Only a protection set that grew to cover the union entirely can make this empty; keep the
-  // union's first boundary then rather than produce a block with no source.
-  const replaced = summarized.length === 0 ? [{ item: covered[0]!, offset: 0 }] : summarized
+  // A protection set that grew to cover the whole union leaves nothing to summarize. There is no
+  // honest block to produce — inventing a source would attribute a message to a summary that never
+  // saw it — so the merge is declined and both ranges drop out of this projection: every message
+  // stays verbatim, the stored blocks are left alone, and normalization is retried on a later turn
+  // once the protection window has moved past them.
+  if (summarized.length === 0) return undefined
   return {
-    start: start + replaced[0]!.offset,
-    end: start + replaced[replaced.length - 1]!.offset,
+    start: start + summarized[0]!.offset,
+    end: start + summarized[summarized.length - 1]!.offset,
     block: {
       ...newest,
-      startMessageID: replaced[0]!.item.id,
-      endMessageID: replaced[replaced.length - 1]!.item.id,
+      startMessageID: summarized[0]!.item.id,
+      endMessageID: summarized[summarized.length - 1]!.item.id,
       summary,
       focus: newest.focus ?? older.focus,
-      sourceMessageCount: replaced.length,
-      sourceTokenCount: Token.estimate(JSON.stringify(replaced.map(({ item }) => item))),
+      sourceMessageCount: summarized.length,
+      sourceTokenCount: Token.estimate(JSON.stringify(summarized.map(({ item }) => item))),
       summaryTokenCount: Token.estimate(summary),
       nested: [...new Set([...older.nested, older.id, ...newest.nested])],
     },
@@ -186,7 +189,10 @@ export const resolve = (
   return sorted.reduce<Range[]>((result, range) => {
     const previous = result[result.length - 1]
     if (previous === undefined || range.start > previous.end) return [...result, range]
-    return [...result.slice(0, -1), merge(messages, previous, range, protectedIDs)]
+    const merged = merge(messages, previous, range, protectedIDs)
+    // A declined merge drops both ranges for this projection; see merge for why that is safe.
+    if (merged === undefined) return result.slice(0, -1)
+    return [...result.slice(0, -1), merged]
   }, [])
 }
 

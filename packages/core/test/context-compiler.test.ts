@@ -455,6 +455,24 @@ describe("compression placeholders", () => {
     expect(next.messages.map((message) => message.id)).toEqual(applied.messages.map((message) => message.id))
   })
 
+  test("declines to merge overlapping ranges whose union is entirely protected", () => {
+    // A protection set that grew over the whole union leaves nothing the summaries represent.
+    // Producing a merged block anyway would have to invent a source for it, so both ranges must
+    // drop out of the projection with every message left verbatim instead.
+    const first = block({ id: "cmp_1", start: "msg_1", end: "msg_3", summary: "first half", createdAt: 1 })
+    const second = block({ id: "cmp_2", start: "msg_2", end: "msg_5", summary: "second half", createdAt: 2 })
+    const protectedIDs = new Set(["msg_1", "msg_2", "msg_3", "msg_4", "msg_5"].map((id) => SessionMessage.ID.make(id)))
+    const applied = ContextPlaceholder.apply(sessionID, conversation, [first, second], protectedIDs)
+
+    expect(applied.messages).toEqual(conversation)
+    expect(applied.blocks).toEqual([])
+    expect(applied.compressedMessages).toBe(0)
+    // Nothing was normalized, so there is nothing to persist — and nothing is stale either: the
+    // blocks remain stored and the merge is retried once the protection window has moved on.
+    expect(applied.merged).toEqual([])
+    expect(applied.stale).toEqual([])
+  })
+
   test("reports blocks whose boundaries no longer exist as stale instead of failing", () => {
     const applied = ContextPlaceholder.apply(sessionID, conversation, [
       block({ id: "cmp_1", start: "msg_gone", end: "msg_also_gone", summary: "compacted away" }),
@@ -639,7 +657,36 @@ describe("context invariants", () => {
     ]
     expect(ContextInvariants.check(conversation, prepared)).toEqual([
       "synthetic system message msg_sys",
-      "prepared context appended a system message",
+      "prepared context changed the system messages",
+    ])
+  })
+
+  test("rejects system messages swapped out of their canonical order", () => {
+    const system = (id: string): SessionMessage.Message => ({
+      id: SessionMessage.ID.make(id),
+      type: "system",
+      text: `notice ${id}`,
+      time: { created },
+    })
+    const canonical = [system("msg_sys_1"), user("msg_1", "hello"), system("msg_sys_2"), ...conversation.slice(1)]
+    // Same count, same membership, wrong order — a bare count of system messages would pass this.
+    const prepared = [system("msg_sys_2"), user("msg_1", "hello"), system("msg_sys_1"), ...conversation.slice(1)]
+    expect(ContextInvariants.check(canonical, prepared)).toContain("prepared context changed the system messages")
+    // Removal stays legal: a compressed range may carry a system message away.
+    expect(ContextInvariants.check(canonical, conversation)).toEqual([])
+  })
+
+  test("rejects two text parts swapped inside one assistant message", () => {
+    const source = [user("msg_1", "hello"), assistant("msg_2", [text("t1", "first draft"), text("t2", "second draft")])]
+    // Both sides have the same shape string, so a lookup by kind pairs each part with the wrong
+    // source; the positional comparison must not.
+    const swapped = [
+      user("msg_1", "hello"),
+      assistant("msg_2", [text("t1", "second draft"), text("t2", "first draft")]),
+    ]
+    expect(ContextInvariants.check(source, swapped)).toEqual([
+      "assistant message msg_2 rewrote model text",
+      "assistant message msg_2 rewrote model text",
     ])
   })
 

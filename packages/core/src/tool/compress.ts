@@ -4,6 +4,7 @@ import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { ContextManager } from "../context/manager"
 import { makeLocationNode } from "../effect/app-node"
+import { NonNegativeInt } from "../schema"
 import { SessionMessage } from "../session/message"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
@@ -15,7 +16,7 @@ export const Input = Schema.Struct({
   focus: Schema.String.pipe(Schema.optional).annotate({
     description: "What the summary must preserve, for example 'the auth refactor decisions and the failing test'",
   }),
-  keep_recent_turns: Schema.Int.pipe(Schema.optional).annotate({
+  keep_recent_turns: NonNegativeInt.pipe(Schema.optional).annotate({
     description: "How many recent assistant turns to leave untouched. Defaults to the configured protection window.",
   }),
   start_message_id: Schema.String.pipe(Schema.optional).annotate({

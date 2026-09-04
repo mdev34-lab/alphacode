@@ -4082,7 +4082,14 @@ export type SessionContextCompressed = {
 
 export type SessionContextSkipped = {
   status: "skipped"
-  reason: string
+  reason:
+    | "disabled"
+    | "no-model"
+    | "empty-range"
+    | "invalid-range"
+    | "protected-range"
+    | "summary-unavailable"
+    | "timeout"
   stats: SessionContextStats
 }
 

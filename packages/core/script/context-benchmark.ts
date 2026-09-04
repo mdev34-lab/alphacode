@@ -7,10 +7,11 @@
  * case that matters is the boring one: a long session with no compression blocks, no duplicates and
  * no stale failures, where the whole pipeline is pure overhead.
  *
- * The second case is the worst one: a history far over the byte ceiling, where `ContextBudget.reduce`
- * runs every rung of the ladder and ends up dropping messages one at a time. That path is the only
- * part of preparation whose work grows with *how far over* the limit the payload is, so it is
- * measured separately with a ceiling small enough to force every stage. Run from `packages/core`:
+ * The second case is the worst one: a history far over the byte ceiling, constructed so that every
+ * rung of `ContextBudget.reduce` has to run — no duplicates to find, no stale failures to purge,
+ * nothing to collapse — and the drop loop walks the whole eligible prefix. That path is the only
+ * part of preparation whose work grows with *how far over* the limit the payload is. Run from
+ * `packages/core`:
  *
  *   bun script/context-benchmark.ts
  */
@@ -32,6 +33,11 @@ const created = DateTime.makeUnsafe(0)
 const settings = ContextSettings.settings([])
 const sessionID = SessionSchema.ID.make("ses_benchmark")
 
+/**
+ * Deliberately unwinnable for the cheap rungs: every `read` call takes a distinct file argument,
+ * so forced deduplication finds nothing; there are no failed calls, so forced error purging finds
+ * nothing; and no output exceeds the scaffold ceiling, so the collapse rungs change nothing.
+ */
 const history = (count: number): SessionMessage.Message[] =>
   Array.from({ length: count }, (_, index) =>
     index % 2 === 0
@@ -84,10 +90,15 @@ const prepare = (messages: readonly SessionMessage.Message[]) => {
   return raw.tokens + measured.bytes + ContextInvariants.check(messages, reduced).length
 }
 
-/** The ladder\'s worst case: every rung runs and the drop loop walks the whole eligible prefix. */
+/**
+ * The ladder itself, timed directly. A ceiling of one kilobyte is unreachable for any of these
+ * histories, which is the point: the ladder is sequential, so ending in the drop rung is the proof
+ * that every earlier rung ran and declined, and the drop loop has to consider every droppable
+ * message up to the protected window.
+ */
 const ladder = (messages: readonly SessionMessage.Message[], limit: number) => {
   const protection = ContextProtection.resolve(messages, { policy: settings.protection })
-  return ContextBudget.reduce({ messages, policy: settings.protection, protection, limit }).steps.length
+  return ContextBudget.reduce({ messages, policy: settings.protection, protection, limit })
 }
 
 const milliseconds = (runs: number, run: () => unknown) => {
@@ -100,12 +111,14 @@ const milliseconds = (runs: number, run: () => unknown) => {
 for (const count of [100, 500, 2000]) {
   const messages = history(count)
   const size = (JSON.stringify(messages).length / 1024).toFixed(0)
-  // A ceiling of one kilobyte is unreachable for any of these histories, which is the point: the
-  // ladder cannot stop early and has to consider every droppable message.
-  const reduction = milliseconds(20, () => ladder(messages, 1024))
+  const reduction = ladder(messages, 1024)
+  if (reduction.within) throw new Error("the benchmark ceiling must stay unreachable")
+  if (reduction.steps.at(-1) !== "drop-oldest")
+    throw new Error(`the worst case must end in the drop rung, got: ${reduction.steps.join(", ")}`)
   console.log(
     `${String(count).padStart(4)} messages (${size.padStart(4)} KiB): ` +
       `prepare ${milliseconds(20, () => prepare(messages)).toFixed(2)} ms, ` +
-      `full ladder ${reduction.toFixed(2)} ms`,
+      `full ladder (ContextBudget.reduce, steps: ${reduction.steps.join(", ")}) ` +
+      `${milliseconds(20, () => ladder(messages, 1024)).toFixed(2)} ms`,
   )
 }

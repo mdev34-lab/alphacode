@@ -117,8 +117,30 @@ const brokenModel = Model.make({
   provider: "fake",
   route: { ...route, body: { schema: route.body.schema, from: () => Effect.die("cannot lower this request") } },
 })
-let lowering: "works" | "fails" = "works"
-const models = SessionRunnerModel.layerWith(() => Effect.succeed(lowering === "works" ? model : brokenModel))
+let lowering: "works" | "fails" | "verbose" = "works"
+/**
+ * A provider whose wire format re-serializes marked content verbosely, so its body is far heavier
+ * than the canonical JSON the estimator measures. Against this route the byte estimate is
+ * optimistic: it passes conversations the real payload ceiling rejects, and the hard payload gate
+ * is the only line of defense left — exactly the scenario this must never leak onto the wire.
+ */
+const verboseModel = Model.make({
+  id: "verbose-model",
+  provider: "fake",
+  route: {
+    ...route,
+    body: {
+      schema: route.body.schema,
+      from: (request: LLMRequest) =>
+        route.body
+          .from(request)
+          .pipe(Effect.map((body) => JSON.parse(JSON.stringify(body).replaceAll("expandme", "x".repeat(2_000))))),
+    },
+  },
+})
+const models = SessionRunnerModel.layerWith(() =>
+  Effect.succeed(lowering === "works" ? model : lowering === "fails" ? brokenModel : verboseModel),
+)
 
 const permission = Layer.succeed(
   PermissionV2.Service,
@@ -1065,6 +1087,60 @@ describe("ContextManager", () => {
         expect(ids.has(block.startMessageID)).toBe(true)
         expect(ids.has(block.endMessageID)).toBe(true)
       }
+    }),
+  )
+
+  /**
+   * The estimate stays under this ceiling on every turn (its envelope-plus-canonical JSON is at
+   * most ~5.1 KB here) while the verbose wire body crosses it on the third ask (~8.9 KB): the
+   * ceiling must sit strictly between the two measurements, which is what makes the estimator
+   * optimistic on every request in this test.
+   */
+  const itOptimistic = harness(configWith({ payloadBytes: 7_500, keepTokens: 10 }))
+  itOptimistic.effect("escalates to native compaction when the byte estimate is optimistic", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const preparedEvents = yield* collect(SessionEvent.Context.Prepared)
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      lowering = "verbose"
+      turns = [say("Alpha"), say("Bravo"), say("Charlie"), say("Delta"), say("Echo"), say("Foxtrot")]
+      for (const probe of ["one expandme", "two expandme", "three expandme", "four"]) {
+        yield* ask(session, `probe ${probe}`)
+      }
+
+      // The estimate never saw the problem: no ladder, no automatic compression, no over-budget
+      // flag on any prepared event — on both sides of the recovery.
+      expect(compressions.length).toBe(0)
+      expect(preparedEvents.length).toBeGreaterThanOrEqual(4)
+      expect(preparedEvents.every((event) => event.payloadOverBudget === false)).toBe(true)
+
+      // The wire measurement caught it instead: exactly one native-compaction recovery, between
+      // two agent requests, and the turn that overflowed was retried successfully afterwards.
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      expect(kinds, kinds.join(",")).not.toContain("compress")
+      expect(kinds, kinds.join(",")).toEqual(["agent", "agent", "compact", "agent", "agent"])
+      expect(compactions.length).toBe(1)
+      expect(failures).toEqual([])
+
+      // Nothing over the ceiling ever reached the provider, on either side of the escalation.
+      for (const request of requests) {
+        if (request.tools.length === 0) continue
+        expect((yield* context.payload(request)).within).toBe(true)
+      }
+
+      // And the turn after the escalation is coherent: the compaction summary is in the request,
+      // the new question is in the request, and the session answered.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const last = requests.at(-1)!
+      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
+      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(userTexts(last)).toContain("probe four")
+      expect(history.at(-1)?.type).toBe("assistant")
     }),
   )
 })

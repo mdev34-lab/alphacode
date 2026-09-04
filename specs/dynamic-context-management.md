@@ -49,15 +49,17 @@ keeps provider prompt caching useful.
 ### Runtime cost
 
 `prepare` runs before every provider request, so the first case that matters is the one where nothing
-needs reducing. The second is the worst one: a history far over the byte ceiling, where the
-deterministic ladder runs every rung and ends up dropping messages one at a time.
+needs reducing. The second is the worst one: a history far over the byte ceiling, constructed so the
+deterministic ladder cannot stop early (every tool call takes distinct arguments, no failed calls,
+nothing collapsible) and the drop loop walks the whole eligible prefix. The script asserts that the
+ladder ends in the drop rung, times `ContextBudget.reduce` directly, and prints the executed steps.
 `packages/core/script/context-benchmark.ts` measures both and reports, on a development machine:
 
-| History        | Serialized | Preparation | Full ladder |
-| -------------- | ---------- | ----------- | ----------- |
-| 100 messages   | 62 KiB     | ~0.9 ms     | ~1.3 ms     |
-| 500 messages   | 313 KiB    | ~3.8 ms     | ~3.9 ms     |
-| 2,000 messages | 1.2 MiB    | ~15.5 ms    | ~17.4 ms    |
+| History        | Serialized | Preparation | Full ladder (`ContextBudget.reduce`) |
+| -------------- | ---------- | ----------- | ------------------------------------ |
+| 100 messages   | 62 KiB     | ~1.2 ms     | ~0.6 ms                              |
+| 500 messages   | 313 KiB    | ~3.2 ms     | ~2.6 ms                              |
+| 2,000 messages | 1.2 MiB    | ~14.1 ms    | ~12.2 ms                             |
 
 Both curves are linear in serialized history size, and serialization dominates them:
 `ContextBudget.measure` returns tokens and bytes from a single `JSON.stringify` so the pipeline
@@ -65,7 +67,7 @@ serializes each list once, and the drop loop derives each candidate size arithme
 per-message sizes measured once — `JSON.stringify` of an array is its elements joined by commas
 inside brackets, so a removal is a subtraction. Re-measuring the whole history per drop candidate
 would be quadratic on precisely the inputs the ladder exists for: at 2,000 messages that costs
-~5,200 ms instead of ~17 ms.
+~5,200 ms instead of ~12 ms.
 Against a provider request measured in seconds this is noise, but it is measured rather than assumed,
 and the script is committed so a regression is one command away.
 
@@ -205,7 +207,10 @@ explicitly:
 - a failure that cost a round trip (timeout, no usable summary, no model) makes the next three
   preparations skip automatic compression, so a summarizer that is down costs its latency once
   rather than on every turn for the rest of the session. A structurally impossible range costs
-  nothing and is retried immediately.
+  nothing and is retried immediately. Suppressed does not mean unguarded: during those three
+  preparations turns can still be over the byte ceiling, and the hard `payload` gate still applies,
+  so an oversized turn takes the native-compaction recovery path on each of them — three
+  compaction-recovered turns at worst, then compression is tried again.
 
 ## Budget bands
 
@@ -247,8 +252,13 @@ prepare (estimate over budget) → automatic compression → prepare again
   → payload(request) still over → the turn fails loudly with a provider error
 ```
 
-Both directions of estimator error are safe by construction. Pessimistic: the context is reduced
-slightly more than it had to be. Optimistic: `payload` catches it and the escalation above runs.
+Both directions of estimator error are safe by construction, and both directions exist: the
+estimate sums canonical-history JSON bytes with a `JSON.stringify` of `[system, tools, extra]`,
+neither of which is the provider-native body the wire actually carries. Pessimistic: the context is
+reduced slightly more than it had to be. Optimistic: the ladder and automatic compression stand
+down when they should have run, `payload` catches the oversized request instead, and the turn takes
+exactly one native-compaction recovery before the real provider call — the path the
+optimistic-estimate test in `context-manager.test.ts` pins end to end.
 
 An unmeasurable request is not a fitting request. If the provider body cannot be built at all,
 `payload` reports `measured: false` and `within: false` rather than falling back to an estimate: the

@@ -54,11 +54,23 @@ export const check = (canonical: readonly ContextMessage[], prepared: readonly C
     cursor = Math.max(cursor, position)
   }
 
-  const systemBefore = canonical.filter((message) => message.type === "system").length
-  const systemAfter = prepared.filter((message) => message.type === "system").length
-  if (systemAfter > systemBefore) violations.push("prepared context appended a system message")
+  // System messages keep their canonical relative order, and none may be invented or duplicated:
+  // the prepared system sequence must be a subsequence of the canonical one. Removal is allowed —
+  // a compressed range can carry a system message away — but reordering, repetition and addition
+  // all fail this check, which a bare "no more than before" count could not see.
+  if (!isSubsequence(systemIDs(prepared), systemIDs(canonical)))
+    violations.push("prepared context changed the system messages")
 
   return violations
+}
+
+const systemIDs = (messages: readonly ContextMessage[]) =>
+  messages.flatMap((message) => (message.type === "system" ? [message.id] : []))
+
+const isSubsequence = (prepared: readonly SessionMessage.ID[], canonical: readonly SessionMessage.ID[]) => {
+  let cursor = 0
+  for (const id of canonical) if (prepared[cursor] === id) cursor++
+  return cursor === prepared.length
 }
 
 /**
@@ -131,12 +143,16 @@ export const assertNoSyntheticAssistantContent = (
 
 const assistantViolations = (original: SessionMessage.Assistant, prepared: SessionMessage.Assistant) => {
   const violations: string[] = []
+  // An assistant message is an immutable sequence, so its parts are compared positionally:
+  // `original.content[i]` pairs with `prepared.content[i]`. A lookup by kind could pair a part
+  // with the wrong source — two text parts swapping places have the same shape string — while the
+  // positional walk has exactly one pairing to validate, which is the one that will be sent.
   const kind = (part: SessionMessage.AssistantContent) => (part.type === "tool" ? `tool:${part.id}` : part.type)
   const shape = (message: SessionMessage.Assistant) => message.content.map(kind).join(",")
-  if (shape(original) !== shape(prepared)) violations.push(`assistant message ${prepared.id} changed its content shape`)
-  for (const part of prepared.content) {
-    const source = original.content.find((item) => kind(item) === kind(part))
-    if (source === undefined) continue
+  if (shape(original) !== shape(prepared)) return [`assistant message ${prepared.id} changed its content shape`]
+  for (const [index, part] of prepared.content.entries()) {
+    const source = original.content[index]!
+    // The shapes align, so source and part are the same kind of content in the same position.
     if (part.type === "text" && source.type === "text" && part.text !== source.text)
       violations.push(`assistant message ${prepared.id} rewrote model text`)
     if (part.type === "reasoning" && source.type === "reasoning" && part.text !== source.text)
