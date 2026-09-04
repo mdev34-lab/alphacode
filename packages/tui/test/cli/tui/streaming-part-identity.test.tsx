@@ -257,6 +257,39 @@ describe("streaming part identity", () => {
     }
   })
 
+  test("a finished part is never reopened by a longer non-terminal snapshot", async () => {
+    const sessionID = "ses_terminal"
+    const messageID = "msg_terminal"
+    const partID = "prt_terminal"
+    const { app, events, sync } = await mountSingle({
+      ...textPart(partID, messageID, sessionID, "final answer"),
+      time: { start: 1, end: 100 },
+    })
+
+    try {
+      // Replayed durable row: longer text but no `time.end` — older than the
+      // terminal snapshot already rendered, so it must not reopen the part.
+      // `marker` is a non-semantic field: it lets the test prove the event was
+      // actually processed even though the text must stay unchanged.
+      const stale = {
+        ...textPart(partID, messageID, sessionID, "final answer plus stale stuff"),
+        marker: true,
+      } as TextPart & { marker: boolean }
+      events.emit(updatedEvent(sessionID, messageID, stale, 0))
+
+      await waitUntil(
+        () => (sync.data.part[messageID]?.[0] as (TextPart & { marker?: boolean }) | undefined)?.marker === true,
+      )
+      await app.renderOnce()
+
+      expect(mountCount).toBe(1)
+      expect(textOf(sync, messageID, partID)).toBe("final answer")
+      expect(app.captureCharFrame().split("\n").join("")).toContain("final answer")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
   test("reasoning parts stream without remounting", async () => {
     const sessionID = "ses_reason"
     const messageID = "msg_reason"

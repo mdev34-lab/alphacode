@@ -514,3 +514,33 @@ test("a same-status replay can add schema fields without overwriting existing on
   expect(state.title).toBe("bash")
   expect(state.attachments).toEqual([{ id: "file-1" }])
 })
+
+test("a finished part is not reopened by a longer non-terminal snapshot", () => {
+  // Reviewer case: current is terminal ("final answer", time.end set); a
+  // replayed non-terminal snapshot can still "extend" the final text, but it
+  // is an older row. The terminal guard must run before the prefix/extension
+  // rules, or the extension would be adopted and reopen the finished part.
+  let parts = applyPartUpdated(undefined, text({ text: "final answer", time: { start: 1, end: 100 } }))
+  const original = parts[0]
+  parts = applyPartUpdated(parts, text({ text: "final answer plus stale stuff" }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("final answer")
+  expect((parts[0] as TextPart).time?.end).toBe(100)
+})
+
+test("a finished part is not reopened by a shorter non-terminal snapshot", () => {
+  let parts = applyPartUpdated(undefined, text({ text: "final answer", time: { start: 1, end: 100 } }))
+  parts = applyPartUpdated(parts, text({ text: "final ans" }))
+  expect(partText(parts[0])).toBe("final answer")
+  expect((parts[0] as TextPart).time?.end).toBe(100)
+})
+
+test("a second terminal snapshot with different text cannot replace the first", () => {
+  // The processor publishes the terminal (`text-end`) snapshot exactly once,
+  // so a second terminal row with different text has no causal ordering.
+  let parts = applyPartUpdated(undefined, text({ text: "final answer", time: { start: 1, end: 100 } }))
+  const original = parts[0]
+  parts = applyPartUpdated(parts, text({ text: "final answer plus stale stuff", time: { start: 1, end: 200 } }))
+  expect(parts[0]).toBe(original)
+  expect(partText(parts[0])).toBe("final answer")
+})

@@ -1,5 +1,14 @@
 import type { Part, TextPart, ReasoningPart, ToolState } from "@opencode-ai/sdk/v2"
 
+// This reconciler is coupled to the event-ordering guarantees produced by
+// `packages/opencode/src/session/processor.ts` (append-only deltas, a single
+// non-cumulative text write at `text-end`, one terminal tool transition,
+// immutable `time.start`). There is no revision/sequence number on the wire,
+// so those guarantees are the only source of causality. If the processor
+// changes them (e.g. adds per-part revisions, re-publishes terminal rows, or
+// introduces a new non-cumulative write), this reconciler must be updated and
+// its invariants re-tested.
+
 type PartTime = { start: number; end?: number }
 
 function searchPart(parts: Part[], id: string) {
@@ -34,6 +43,10 @@ function isTextLike(part: Part): part is TextPart | ReasoningPart {
 // - the only legitimate non-cumulative text write is the `text-end` snapshot
 //   (the `experimental.text.complete` plugin rewrites the final text) and it
 //   is published together with `time.end`; that snapshot is adopted;
+// - a part reaches its terminal snapshot exactly once, so once `time.end` is
+//   set the part is a sink: a replayed row without `time.end` — even one that
+//   "extends" the final text — is older and must not reopen the part, and a
+//   second terminal row with different text cannot be causally newer either;
 // - any other conflict (same length, different content; reordered rows) has no
 //   causal ordering, so never replace text already on screen.
 export function mergePartText(current: Part | undefined, incoming: Part): Part {
@@ -41,11 +54,20 @@ export function mergePartText(current: Part | undefined, incoming: Part): Part {
   const currentText = current.text
   const incomingText = incoming.text
   if (incomingText === currentText) return incoming
-  if (currentText.startsWith(incomingText)) return { ...incoming, text: currentText }
-  if (incomingText.startsWith(currentText)) return incoming
+
   const currentTerminal = current.time?.end !== undefined
   const incomingTerminal = incoming.time?.end !== undefined
-  if (incomingTerminal && !currentTerminal) return incoming
+
+  // A finished part is a sink; check terminality before the prefix/extension
+  // rules, otherwise a longer non-terminal "extension" of the final text would
+  // be adopted and appear to reopen a part that already ended.
+  if (currentTerminal) {
+    return { ...incoming, text: currentText }
+  }
+
+  if (currentText.startsWith(incomingText)) return { ...incoming, text: currentText }
+  if (incomingText.startsWith(currentText)) return incoming
+  if (incomingTerminal) return incoming
   return { ...incoming, text: currentText }
 }
 
@@ -89,6 +111,11 @@ function mergeMetadata(
 //   processor re-publishes while a tool is running to update `input`;
 // - `time` and `metadata` are monotonic (start immutable, end max,
 //   `interrupted` never cleared).
+//
+// This "same-status terminal snapshots carry nothing newer" invariant comes
+// from the processor contract — if it ever starts re-publishing terminal rows
+// (e.g. progress updates on a completed tool), the guards below must be
+// revisited together with the coupling note at the top of this file.
 const TOOL_TERMINAL: ReadonlySet<ToolState["status"]> = new Set(["completed", "error"])
 const TOOL_STATUS_RANK: Record<ToolState["status"], number> = {
   pending: 0,
