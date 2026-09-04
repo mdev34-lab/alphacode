@@ -1052,6 +1052,71 @@ describe("ContextManager", () => {
     }),
   )
 
+  // A block contained entirely inside a wider one can never re-enter the projection: the cover's
+  // summary already speaks for its range. Loading it every turn just to discard it is what the
+  // storage level must stop doing — the next real turn absorbs it into the cover instead.
+  it.effect("absorbs a fully covered compression block into its cover on the next turn", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const { db } = yield* Database.Service
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+      yield* ask(session, "Step four")
+      yield* ask(session, "Step five")
+
+      // Nested, not overlapping: the outer range contains the inner one entirely, so there is no
+      // merged survivor to create — the inner block simply never wins the projection again.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const nested = (id: string, start: number, end: number, summary: string, createdAt: number) => ({
+        id: `${ContextState.PREFIX}${id}`,
+        startMessageID: history[start]!.id,
+        endMessageID: history[end]!.id,
+        summary,
+        createdAt,
+        sourceMessageCount: end - start + 1,
+        sourceTokenCount: 400,
+        summaryTokenCount: 20,
+        nested: [],
+      })
+      yield* ContextState.insert(db, sessionID, nested("inner", 1, 2, "summary of the middle stretch", 1))
+      yield* ContextState.insert(db, sessionID, nested("outer", 0, 4, "summary of the whole stretch", 2))
+
+      // Observation is not a cleanup: stats reads the state without deciding anything.
+      yield* context.stats(sessionID)
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id).sort()).toEqual([
+        `${ContextState.PREFIX}inner`,
+        `${ContextState.PREFIX}outer`,
+      ])
+
+      turns = [say("After absorption")]
+      yield* ask(session, "Keep going")
+
+      // The stored set converged on what the projection uses: the covered block stays on disk,
+      // marked as absorbed by its cover, and stops travelling with every load.
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).toEqual([
+        `${ContextState.PREFIX}outer`,
+      ])
+      const stored = yield* db
+        .select()
+        .from(SessionContextBlockTable)
+        .where(eq(SessionContextBlockTable.id, `${ContextState.PREFIX}inner`))
+        .all()
+        .pipe(Effect.orDie)
+      expect(stored).toHaveLength(1)
+      expect(stored[0]!.absorbed_by).toBe(`${ContextState.PREFIX}outer`)
+
+      // And the request really carried only the covering placeholder.
+      const last = agentTurns().at(-1)!
+      const placeholders = userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholders).toHaveLength(1)
+      expect(placeholders[0]).toContain("summary of the whole stretch")
+      expect(placeholders[0]).not.toContain("summary of the middle stretch")
+    }),
+  )
+
   itBounded.effect("stops paying for automatic compression once the summarizer keeps failing", () =>
     Effect.gen(function* () {
       const session = yield* setup
@@ -1209,8 +1274,10 @@ describe("ContextManager", () => {
   // The oversized request arrives on the third ask, after two accepted measurements already
   // calibrated the envelope — but this provider's extra wire weight lives *inside* the conversation
   // (the expanded probe text), so calibration correctly learns nothing from it and planning stays
-  // blind. The gate carries the recovery, exactly as it did on the first-request variant.
-  itOptimistic.effect("escalates to native compaction when the byte estimate is optimistic", () =>
+  // blind. The gate spends its one dynamic-compression attempt first — and here the condensed
+  // older turns are what was overflowing, so the cheaper recovery finishes the job alone and
+  // native compaction is never reached.
+  itOptimistic.effect("recovers an optimistic estimate with one gate compression before compaction", () =>
     Effect.gen(function* () {
       const session = yield* setup
       const context = yield* ContextManager.Service
@@ -1226,32 +1293,31 @@ describe("ContextManager", () => {
 
       // The estimate never saw the problem: no ladder, no automatic compression, no over-budget
       // flag on any prepared event — on both sides of the recovery.
-      expect(compressions.length).toBe(0)
       expect(preparedEvents.length).toBeGreaterThanOrEqual(4)
       expect(preparedEvents.every((event) => event.payloadOverBudget === false)).toBe(true)
 
-      // The wire measurement caught it instead: exactly one native-compaction recovery, between
-      // two agent requests, and the turn that overflowed was retried successfully afterwards.
+      // The wire measurement caught it instead, and the gate compressed before escalating:
+      // exactly one compression request between two agent requests, retried successfully, and the
+      // session continues normally afterwards. Native compaction never ran.
       const kinds = requests.map((request) =>
         request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
       )
-      expect(kinds, kinds.join(",")).not.toContain("compress")
-      expect(kinds, kinds.join(",")).toEqual(["agent", "agent", "compact", "agent", "agent"])
-      expect(compactions.length).toBe(1)
+      expect(kinds, kinds.join(",")).toEqual(["agent", "agent", "compress", "agent", "agent"])
+      expect(compressions.length).toBe(1)
+      expect(compactions.length).toBe(0)
       expect(failures).toEqual([])
 
-      // Nothing over the ceiling ever reached the provider, on either side of the escalation.
+      // Nothing over the ceiling ever reached the provider, on either side of the recovery.
       for (const request of requests) {
         if (request.tools.length === 0) continue
         expect((yield* context.payload(request)).within).toBe(true)
       }
 
-      // And the turn after the escalation is coherent: the compaction summary is in the request,
-      // the new question is in the request, and the session answered.
+      // And the turn after the recovery is coherent: the history was never rewritten by a
+      // compaction, the new question is in the request, and the session answered.
       const history = yield* session.messages({ sessionID, order: "asc" })
       const last = requests.at(-1)!
-      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
-      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(history.filter((message) => message.type === "compaction").length).toBe(0)
       expect(userTexts(last)).toContain("probe four")
       expect(history.at(-1)?.type).toBe("assistant")
     }),

@@ -212,14 +212,22 @@ rejected: the second placeholder would then advertise a range the first had alre
 its stored `sourceMessageCount` would describe messages it did not replace. Metadata that disagrees
 with the projection is worse than a merge.
 
+A block contained _entirely_ inside a wider one is the quieter version of the same state: it still
+resolves, so it is not stale, and there is no union to widen into, so it is not merged either — the
+projection simply skips it in favour of the cover. Such a block can never re-enter the projection,
+so preparing reports it and the next real turn absorbs it into the cover (`absorbed_by`), the same
+convergence the merge path gets. Like every other cleanup, observation (`stats`) reports but does
+not persist: only turns mutate storage.
+
 ### Escalation latency
 
 Automatic compression happens inside the turn the user is waiting on, so its cost is bounded
 explicitly:
 
-- at most **one** summarization request per preparation, and the compaction retry prepares with
-  automatic compression disabled, so the worst case a turn can pay is one summarization plus one
-  native compaction ahead of the real request — never a ladder;
+- at most **one** summarization request per turn: whichever runs first — preparation's automatic
+  compression or the payload gate's recovery attempt — marks the turn as spent, so the worst case
+  a turn can pay is one summarization plus one native compaction ahead of the real request — never
+  a ladder and never two summarizations;
 - the summarization request is bounded by `dynamic_compression.timeout_ms`, after which the turn
   proceeds uncompressed rather than stalling;
 - a failure that cost a round trip (timeout, no usable summary, no model) makes the next three
@@ -266,6 +274,8 @@ optimistic the cost is one extra escalation step, never an oversized request:
 
 ```
 prepare (estimate over budget) → automatic compression → prepare again
+  → payload(request) still over → one dynamic-compression attempt, when the turn has not
+    spent one yet → retry the turn
   → payload(request) still over → native compaction → retry the turn
   → payload(request) still over → the turn fails loudly with a provider error
 ```
@@ -274,9 +284,14 @@ Both directions of estimator error are safe by construction, and both directions
 estimate sums canonical-history JSON bytes with a `JSON.stringify` of `[system, tools, extra]`,
 neither of which is the provider-native body the wire actually carries. Pessimistic: the context is
 reduced slightly more than it had to be. Optimistic: the ladder and automatic compression stand
-down when they should have run, `payload` catches the oversized request instead, and the turn takes
-exactly one native-compaction recovery before the real provider call — the path the
-optimistic-estimate test in `context-manager.test.ts` pins end to end.
+down when they should have run, `payload` catches the oversized request instead, and the gate
+decides explicitly, in cost order: dynamic compression is the cheaper lever so it gets exactly one
+attempt before native compaction is even considered — skipped only when the preparation already
+compressed this turn, when this attempt is itself the post-compression retry, or when the body
+could not be measured at all, which is a structural failure a smaller context does not repair. If
+the compressed retry still overflows, native compaction follows — the path the optimistic-estimate
+tests in `context-manager.test.ts` pin end to end, both where the compression attempt suffices and
+where it does not.
 
 The estimate also corrects itself: every measured wire request reports back how many bytes it cost
 beyond the prepared canonical list, and planning budgets against the larger of the estimate and

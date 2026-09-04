@@ -200,6 +200,8 @@ const layer = Layer.effect(
       | { readonly _tag: "ContinueAfterCompaction"; readonly step: number }
       // Overflow compaction completed; rebuild once through the path without overflow recovery.
       | { readonly _tag: "ContinueAfterOverflowCompaction"; readonly step: number }
+      // Gate compression completed; rebuild once through the path that escalates, not compresses.
+      | { readonly _tag: "ContinueAfterCompression"; readonly step: number }
 
     class TurnTransitionError extends Error {
       constructor(readonly transition: TurnTransition) {
@@ -210,6 +212,8 @@ const layer = Layer.effect(
     const continueAfterCompaction = (step: number) => new TurnTransitionError({ _tag: "ContinueAfterCompaction", step })
     const continueAfterOverflowCompaction = (step: number) =>
       new TurnTransitionError({ _tag: "ContinueAfterOverflowCompaction", step })
+    const continueAfterCompression = (step: number) =>
+      new TurnTransitionError({ _tag: "ContinueAfterCompression", step })
 
     const loadSystemContext = (agent: AgentV2.Selection) =>
       Effect.all([systemContext.load(), skillGuidance.load(agent), referenceGuidance.load()], {
@@ -221,6 +225,8 @@ const layer = Layer.effect(
       promotion: SessionInput.Delivery | undefined,
       step: number,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
+      // The post-compression retry sets this false: the gate compresses at most once per turn.
+      compressOnOverflow = true,
     ) {
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
@@ -346,6 +352,20 @@ const layer = Layer.effect(
       }
       const size = yield* contextManager.payload(request, session.id)
       if (!size.within) {
+        // The wire refuted the estimate. Dynamic compression is the cheaper lever, so it gets
+        // exactly one attempt before native compaction is even considered: skipped when the
+        // preparation above already compressed this turn (its summarization budget is spent),
+        // when this attempt is itself the recovery, or when the body could not be measured at
+        // all — a structural lowering failure is not something a smaller context repairs.
+        if (recoverOverflow && compressOnOverflow && !prepared.compressed && size.measured) {
+          const attempted = yield* contextManager.compress({
+            sessionID: session.id,
+            reason: "auto",
+            model,
+            http: request.http,
+          })
+          if (!("failure" in attempted)) return yield* Effect.die(continueAfterCompression(currentStep))
+        }
         if (recoverOverflow && (yield* recoverOverflow({ sessionID: session.id, entries, model, request }))) {
           yield* contextManager.invalidate(session.id)
           return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
@@ -500,6 +520,24 @@ const layer = Layer.effect(
       )
     })
 
+    // The retry after a gate compression: native compaction stays armed in case the summary was
+    // not enough, but the gate itself must not compress again — one summarization per turn.
+    const runAfterCompression: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
+      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow, false).pipe(
+        Effect.catchDefect(
+          Effect.fnUntraced(function* (defect) {
+            if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
+            yield* Effect.yieldNow
+            if (defect.transition._tag === "ContinueAfterOverflowCompaction")
+              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            if (defect.transition._tag === "ContinueAfterCompression")
+              return yield* Effect.die("A turn cannot take two gate compressions")
+            return yield* runAfterCompression(sessionID, undefined, defect.transition.step)
+          }),
+        ),
+      )
+    })
+
     const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
       return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow).pipe(
         Effect.catchDefect(
@@ -508,6 +546,8 @@ const layer = Layer.effect(
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
+            if (defect.transition._tag === "ContinueAfterCompression")
+              return yield* runAfterCompression(sessionID, undefined, defect.transition.step)
             return yield* runTurn(sessionID, undefined, defect.transition.step)
           }),
         ),
