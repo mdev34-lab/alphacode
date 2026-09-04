@@ -14,10 +14,13 @@ export const MIN_BYTES = 256
 export interface Options {
   readonly policy: ProtectionPolicy
   readonly toolPolicies?: Readonly<Record<string, ToolContextPolicy>>
-  /** Assistant turns a failed input is retained for. */
+  /**
+   * Assistant turns a failed input is retained for. The byte-budget fallback passes zero, but even
+   * that never reaches into the protected recent window: the boundary below is the tighter of this
+   * retention window and `policy.recentTurns`. Protection is not suspended under payload pressure;
+   * a fallback that cannot purge within those rules escalates instead.
+   */
   readonly turns: number
-  /** Ignore the retention window. Reserved for the byte-budget fallback. */
-  readonly force?: boolean
 }
 
 /**
@@ -27,7 +30,10 @@ export interface Options {
  * short diagnostic, not the 500 KB script that produced it.
  */
 export const plan = (messages: readonly ContextMessage[], options: Options) => {
-  const boundary = options.force ? messages.length : ContextProtection.recentWindow(messages, options.turns)
+  const boundary = Math.min(
+    ContextProtection.recentWindow(messages, options.turns),
+    ContextProtection.recentWindow(messages, options.policy.recentTurns),
+  )
   const selected = new Set<string>()
   messages.forEach((message, index) => {
     if (message.type !== "assistant" || index >= boundary) return

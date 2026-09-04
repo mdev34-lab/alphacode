@@ -105,7 +105,11 @@ export interface ReduceResult {
  * Deterministic last-resort reduction for a payload that is expected to exceed a provider limit.
  *
  * Steps run in a fixed order from cheapest to most destructive and stop as soon as the payload
- * fits. Dropping messages is genuinely last and never touches protected content.
+ * fits. No step ever reduces protected content — the recent-turn window, explicitly protected
+ * tools and files, and protected messages all hold on every rung, this fallback included. When
+ * only protected content is left above the limit, the ladder reports `needsCompression` and the
+ * caller escalates (automatic compression, then native compaction) instead of pruning anyway.
+ * Dropping messages is genuinely last.
  *
  * This is an approximate pre-pass, not the enforcement point. It measures canonical messages with
  * `bytes` while the provider receives a protocol-specific body built from them, so `within: true`
@@ -128,7 +132,6 @@ export const reduce = (input: ReduceInput): ReduceResult => {
     policy: input.policy,
     protection: input.protection,
     toolPolicies: input.toolPolicies,
-    force: true,
   })
   if (duplicates.size > 0) {
     messages = ContextDeduplicate.apply(messages, duplicates)
@@ -141,7 +144,6 @@ export const reduce = (input: ReduceInput): ReduceResult => {
     policy: input.policy,
     toolPolicies: input.toolPolicies,
     turns: 0,
-    force: true,
   })
   if (errors.size > 0) {
     messages = ContextPurgeErrors.apply(messages, errors)

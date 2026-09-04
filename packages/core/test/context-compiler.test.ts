@@ -168,8 +168,11 @@ describe("context error purging", () => {
   ]
 
   test("removes the stale input while keeping the failure", () => {
+    // The protection window is narrowed to match the retention window; stale purging never crosses
+    // the protected recent window, so with the default four protected turns this conversation
+    // would be entirely off limits.
     const purged = ContextPurgeErrors.plan(conversation, {
-      policy: ContextProtection.defaultPolicy,
+      policy: { ...ContextProtection.defaultPolicy, recentTurns: 1 },
       turns: 1,
     })
     expect(purged).toEqual(new Set(["call_1"]))
@@ -195,6 +198,29 @@ describe("context error purging", () => {
       assistant("msg_1", [tool({ id: "call_1", name: "bash", args: { command: "ls" }, error: "boom" })]),
       assistant("msg_2", [text("t1", "ok")]),
     ]
+    expect(ContextPurgeErrors.plan(messages, { policy: ContextProtection.defaultPolicy, turns: 0 })).toEqual(new Set())
+  })
+
+  test("never purges inside the protected recent window, even when retention is zero", () => {
+    // The byte-budget fallback plans with turns: 0, but protection is not suspended under payload
+    // pressure: the failure that still sits inside the recent window keeps its input verbatim,
+    // and only the genuinely stale one outside it is purged.
+    const huge = "x".repeat(5_000)
+    const messages = [
+      user("msg_1", "first"),
+      assistant("msg_2", [tool({ id: "call_1", name: "bash", args: { command: huge }, error: "boom" })]),
+      user("msg_3", "second"),
+      assistant("msg_4", [text("t1", "tried")]),
+      user("msg_5", "third"),
+      assistant("msg_6", [tool({ id: "call_2", name: "bash", args: { command: huge }, error: "again" })]),
+    ]
+    expect(
+      ContextPurgeErrors.plan(messages, {
+        policy: { ...ContextProtection.defaultPolicy, recentTurns: 1 },
+        turns: 0,
+      }),
+    ).toEqual(new Set(["call_1"]))
+    // With the default window the whole conversation is protected, so nothing is eligible at all.
     expect(ContextPurgeErrors.plan(messages, { policy: ContextProtection.defaultPolicy, turns: 0 })).toEqual(new Set())
   })
 })
@@ -471,6 +497,49 @@ describe("compression placeholders", () => {
     // blocks remain stored and the merge is retried once the protection window has moved on.
     expect(applied.merged).toEqual([])
     expect(applied.stale).toEqual([])
+  })
+
+  test("caps a merged summary at the same budget every summary is stored under", () => {
+    // Two stored summaries can each weigh the full 16 KB; their union must not double durable
+    // state. The newest half is the freshest condensation, so it always survives in full.
+    const newest = "n".repeat(ContextCompressor.MAX_SUMMARY_CHARS - 1_000)
+    const older = "o".repeat(ContextCompressor.MAX_SUMMARY_CHARS - 1_000)
+    const applied = ContextPlaceholder.apply(sessionID, conversation, [
+      block({ id: "cmp_1", start: "msg_1", end: "msg_3", summary: older, createdAt: 1 }),
+      block({ id: "cmp_2", start: "msg_2", end: "msg_5", summary: newest, createdAt: 2 }),
+    ])
+
+    const merged = applied.blocks[0]!
+    expect(merged.summary.length).toBeLessThanOrEqual(ContextCompressor.MAX_SUMMARY_CHARS)
+    expect(merged.summary).toContain("[earlier summary trimmed to fit the summary budget]")
+    expect(merged.summary.endsWith(newest)).toBe(true)
+    // The trim keeps the tail of the older half, the part closest to the newer summary.
+    expect(merged.summary).toContain("o".repeat(100))
+    expect(merged.summaryTokenCount).toBe(Token.estimate(merged.summary))
+  })
+
+  test("repeated merging never grows a summary past the budget", () => {
+    const big = "m".repeat(ContextCompressor.MAX_SUMMARY_CHARS - 100)
+    // Each new block overlaps the current union by exactly one boundary, so every round is a
+    // merge rather than a supersede.
+    const windows: [string, string][] = [
+      ["msg_2", "msg_3"],
+      ["msg_3", "msg_4"],
+      ["msg_4", "msg_5"],
+      ["msg_5", "msg_6"],
+    ]
+    let current = block({ id: "cmp_0", start: "msg_1", end: "msg_2", summary: big, createdAt: 0 })
+    for (const [index, [start, end]] of windows.entries()) {
+      const applied = ContextPlaceholder.apply(sessionID, conversation, [
+        current,
+        block({ id: `cmp_${index + 1}`, start, end, summary: big, createdAt: index + 1 }),
+      ])
+      const next = applied.blocks[0]
+      expect(next).toBeDefined()
+      expect(next!.summary.length).toBeLessThanOrEqual(ContextCompressor.MAX_SUMMARY_CHARS)
+      current = next!
+    }
+    expect(current.nested.length).toBe(windows.length)
   })
 
   test("reports blocks whose boundaries no longer exist as stale instead of failing", () => {
@@ -891,6 +960,60 @@ describe("context budget", () => {
     expect(result.within).toBe(true)
     expect(result.messages.some((message) => message.id === "msg_4")).toBe(true)
     expect(result.messages.some((message) => message.id === "msg_5")).toBe(true)
+    expect(ContextInvariants.check(messages, result.messages)).toEqual([])
+  })
+
+  test("never prunes a protected duplicate, even when the byte fallback cannot fit anything else", () => {
+    // read src/foo.ts at turn N-1 and again at turn N, both inside the protected recent window,
+    // and the payload over the byte ceiling. The fallback must not trade the recent result away
+    // even though an identical call repeats it exactly: protection has no override, so the
+    // ladder declines and reports that only compression can still fit the payload.
+    const large = "q".repeat(2_000)
+    const messages = [
+      user("msg_1", "turn one"),
+      assistant("msg_2", [tool({ id: "call_1", name: "read", args: { filePath: "src/foo.ts" }, output: large })]),
+      user("msg_3", "turn two"),
+      assistant("msg_4", [tool({ id: "call_2", name: "read", args: { filePath: "src/foo.ts" }, output: large })]),
+      user("msg_5", "the question that must survive"),
+      assistant("msg_6", [text("t1", "answering")]),
+    ]
+    const { policy, protection } = resolve(messages, { recentTurns: 3 })
+
+    const result = ContextBudget.reduce({ messages, policy, protection, limit: 1_000 })
+    expect(result.steps).not.toContain("deduplicate")
+    expect(result.within).toBe(false)
+    expect(result.needsCompression).toBe(true)
+    const serialized = JSON.stringify(result.messages)
+    expect(serialized).not.toContain(ContextDeduplicate.MARKER)
+    expect(serialized).toContain(large)
+    expect(ContextInvariants.check(messages, result.messages)).toEqual([])
+  })
+
+  test("still prunes the superseded duplicate outside the window while the protected copy stays verbatim", () => {
+    const large = "y".repeat(2_000)
+    const messages = [
+      user("msg_1", "turn one"),
+      assistant("msg_2", [tool({ id: "call_1", name: "read", args: { filePath: "src/foo.ts" }, output: large })]),
+      user("msg_3", "turn two"),
+      assistant("msg_4", [tool({ id: "call_2", name: "read", args: { filePath: "src/foo.ts" }, output: large })]),
+      user("msg_5", "the question that must survive"),
+      assistant("msg_6", [text("t1", "answering")]),
+    ]
+    const { policy, protection } = resolve(messages, { recentTurns: 2 })
+
+    // The limit is sized to exactly what the single allowed prune saves, so the ladder must stop
+    // at the deduplicate rung: one byte tighter and it would have to walk on to drop-oldest.
+    const pruned = ContextDeduplicate.apply(messages, ContextDeduplicate.plan(messages, { policy, protection }))
+    const occurrences = (serialized: string, needle: string) => serialized.split(needle).length - 1
+    const result = ContextBudget.reduce({ messages, policy, protection, limit: ContextBudget.bytes(pruned) })
+    expect(result.steps).toEqual(["deduplicate"])
+    expect(result.within).toBe(true)
+    expect(result.messages).toEqual(pruned)
+    // The stale copy outside the window became the marker; the newest one inside it kept its
+    // output, so the file content is still here exactly once.
+    const serialized = JSON.stringify(result.messages)
+    expect(occurrences(serialized, ContextDeduplicate.MARKER)).toBe(1)
+    expect(occurrences(serialized, large)).toBe(1)
     expect(ContextInvariants.check(messages, result.messages)).toEqual([])
   })
 })

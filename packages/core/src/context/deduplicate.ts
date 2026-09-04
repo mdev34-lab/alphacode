@@ -10,11 +10,6 @@ export interface Options {
   readonly policy: ProtectionPolicy
   readonly protection: ContextProtection.Resolved
   readonly toolPolicies?: Readonly<Record<string, ToolContextPolicy>>
-  /**
-   * Ignore recent-turn protection. Reserved for the byte-budget fallback, which still honors
-   * explicitly protected tools.
-   */
-  readonly force?: boolean
 }
 
 /**
@@ -32,18 +27,19 @@ export const plan = (messages: readonly ContextMessage[], options: Options) => {
     for (const part of message.content) {
       if (part.type !== "tool" || part.state.status !== "completed") continue
       if (!ContextProtection.isDeduplicable(part.name, options.policy, options.toolPolicies)) continue
-      if (options.force && ContextProtection.isProtectedTool(part.name, options.policy, options.toolPolicies)) continue
       const key = signature(part)
       seen.set(key, [...(seen.get(key) ?? []), part.id])
       sizes.set(part.id, JSON.stringify(part.state.content).length)
     }
   }
   // The newest occurrence of a signature always survives, including when it sits inside the
-  // protected recent window; protection only means a call never loses its own output.
+  // protected recent window; protection only means a call never loses its own output. That rule
+  // has no override: the byte-budget fallback prunes less aggressively, never more protected
+  // content — when nothing protected-free remains, the caller escalates instead.
   return new Set(
     Array.from(seen.values())
       .flatMap((ids) => ids.slice(0, -1))
-      .filter((id) => options.force || !options.protection.callIDs.has(id))
+      .filter((id) => !options.protection.callIDs.has(id))
       // Replacing a tiny output with the marker would grow the request instead of shrinking it.
       .filter((id) => (sizes.get(id) ?? 0) > MARKER.length),
   )

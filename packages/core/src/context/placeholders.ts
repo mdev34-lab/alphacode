@@ -4,6 +4,7 @@ import { DateTime } from "effect"
 import { SessionMessage } from "../session/message"
 import { Token } from "../util/token"
 import type { SessionSchema } from "../session/schema"
+import { MAX_SUMMARY_CHARS } from "./compressor"
 import type { CompressionBlock, ContextMessage } from "./types"
 
 /**
@@ -108,6 +109,31 @@ export const positions = (messages: readonly ContextMessage[]) =>
  * either one alone would lose what the other condensed. The newest block keeps its identity, so
  * persisting the normalization is an update of that row plus an absorption of the other.
  */
+const SUMMARY_SEPARATOR = "\n\n---\n\n"
+const MERGED_TRIM_MARKER = "[earlier summary trimmed to fit the summary budget]"
+
+/**
+ * Keep a merged summary inside the same cap every block is stored under.
+ *
+ * Two stored summaries can each weigh 16 KB, so a naive concatenation doubles the durable-state
+ * budget on every merge, and repeated merges would keep growing it. The cap is applied the same
+ * way the ladder sheds content everywhere else: the newest half is the freshest condensation and
+ * already fits by construction, so it survives in full; the older half gives up its oldest
+ * content first, keeping the tail that runs into the newer one.
+ */
+const capSummary = (older: string, newest: string) => {
+  const joined = [older, newest].join(SUMMARY_SEPARATOR)
+  if (joined.length <= MAX_SUMMARY_CHARS) return joined
+  // [MARKER, olderTail, newest].join(SEP) weighs MARKER + 2xSEP + olderTail + newest.
+  const room = MAX_SUMMARY_CHARS - MERGED_TRIM_MARKER.length - 2 * SUMMARY_SEPARATOR.length - newest.length
+  if (room > 0) return [MERGED_TRIM_MARKER, older.slice(-room), newest].join(SUMMARY_SEPARATOR)
+  // A legacy or foreign block can arrive already oversized, so clamp the newest half the same way.
+  return [
+    MERGED_TRIM_MARKER,
+    newest.slice(-(MAX_SUMMARY_CHARS - MERGED_TRIM_MARKER.length - SUMMARY_SEPARATOR.length)),
+  ].join(SUMMARY_SEPARATOR)
+}
+
 const merge = (
   messages: readonly ContextMessage[],
   left: Range,
@@ -118,7 +144,7 @@ const merge = (
   const end = Math.max(left.end, right.end)
   const newest = right.block.createdAt >= left.block.createdAt ? right.block : left.block
   const older = newest === right.block ? left.block : right.block
-  const summary = [older.summary, newest.summary].join("\n\n---\n\n")
+  const summary = capSummary(older.summary, newest.summary)
   const covered = messages.slice(start, end + 1)
   // A block describes exactly what its summary represents, and neither summary represents the
   // protected messages the projection keeps verbatim: boundaries, count and tokens come from the

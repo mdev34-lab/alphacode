@@ -98,7 +98,10 @@ const prepared = () => {
   const protection = ContextProtection.resolve(canonical, { policy: { ...settings.protection, recentTurns: 1 } })
   const placed = ContextPlaceholder.apply(sessionID, canonical, [block], protection.messageIDs)
   const duplicates = ContextDeduplicate.plan(placed.messages, { policy: settings.protection, protection })
-  const errors = ContextPurgeErrors.plan(placed.messages, { policy: settings.protection, turns: 0 })
+  const errors = ContextPurgeErrors.plan(placed.messages, {
+    policy: { ...settings.protection, recentTurns: 1 },
+    turns: 0,
+  })
   return ContextPurgeErrors.apply(ContextDeduplicate.apply(placed.messages, duplicates), errors)
 }
 
