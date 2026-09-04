@@ -2,6 +2,7 @@ import type { NamedError } from "@opencode-ai/core/util/error"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Cause, Clock, Data, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
+import { GenerationLimit } from "./llm/generation-limit"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
 
@@ -85,6 +86,11 @@ function exponential(attempt: number, random: number) {
 export function retryable(error: Err, provider: string) {
   // context overflow errors should not be retried
   if (SessionV1.ContextOverflowError.isInstance(error)) return undefined
+  // A tripped generation cap must never be retried: retrying would replay
+  // the same runaway stream. The message carries the character counts, which
+  // can contain digit sequences matching the retryable patterns below, so
+  // this exclusion must stay above the pattern checks (see issue #89).
+  if (isGenerationLimit(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
@@ -156,6 +162,11 @@ export function retryable(error: Err, provider: string) {
 
 function matchesRetryableMessage(value: unknown) {
   return typeof value === "string" && RETRYABLE_MESSAGE_PATTERNS.some((pattern) => pattern.test(value))
+}
+
+function isGenerationLimit(error: Err) {
+  const message = isRecord(error.data) ? error.data.message : undefined
+  return typeof message === "string" && message.includes(GenerationLimit.GENERATION_LIMIT_MESSAGE)
 }
 
 function str(value: unknown) {

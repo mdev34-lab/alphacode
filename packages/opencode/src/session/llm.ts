@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { GenerationLimit } from "./llm/generation-limit"
 import { ReasoningWatchdog } from "./llm/reasoning-watchdog"
 import { SystemPrompt } from "./system"
 import { ToolCatalog } from "@/tool/catalog"
@@ -123,6 +124,15 @@ const live: Layer.Layer<
         }),
       })
       const summarizedReasoning = ReasoningWatchdog.hasSummary(prepared.params.options, input.model)
+      // Hard application-level cap for a single generation stream. The
+      // provider request already carries maxOutputTokens, but a pathological
+      // model can ignore it and stream unbounded deltas until the host goes
+      // down (issue #89). This client-side bound turns that into a clean
+      // abort; the env override takes precedence over the derived default.
+      const maxGenerationChars = GenerationLimit.resolveMaxChars({
+        maxOutputTokens: prepared.params.maxOutputTokens,
+        override: flags.generationCharMax,
+      })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -262,6 +272,7 @@ const live: Layer.Layer<
             type: "native" as const,
             stream: native.stream,
             summarizedReasoning,
+            maxGenerationChars,
           }
         }
         yield* Effect.logInfo("llm runtime selected", {
@@ -291,6 +302,7 @@ const live: Layer.Layer<
       return {
         type: "ai-sdk" as const,
         summarizedReasoning,
+        maxGenerationChars,
         result: streamText({
           onError(error) {
             bridge.fork(
@@ -399,19 +411,27 @@ const live: Layer.Layer<
             const result = yield* run({ ...input, abort: ctrl.signal })
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
-            // already returns one; AI SDK streams are converted here.
-            if (result.type === "native") {
-              return ReasoningWatchdog.guard(result.stream, { summarized: result.summarizedReasoning })
-            }
-
+            // already returns one; AI SDK streams are converted here. Both are
+            // wrapped in the inactivity watchdog and the generation-length
+            // cap so a pathological unbounded stream aborts cleanly instead
+            // of taking the host process down (issue #89).
+            // Single choke point for the generation-length cap: both runtimes
+            // funnel through the one guarded stream below, so no runtime can
+            // bypass it (issue #89).
             const state = LLMAISDK.adapterState()
-            const events = Stream.fromAsyncIterable(result.result.fullStream, (e) =>
-              e instanceof Error ? e : new Error(String(e)),
-            ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
-              Stream.flatMap((events) => Stream.fromIterable(events)),
+            const inner =
+              result.type === "native"
+                ? result.stream
+                : Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+                    e instanceof Error ? e : new Error(String(e)),
+                  ).pipe(
+                    Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+                    Stream.flatMap((events) => Stream.fromIterable(events)),
+                  )
+            return GenerationLimit.guard(
+              ReasoningWatchdog.guard(inner, { summarized: result.summarizedReasoning }),
+              { maxChars: result.maxGenerationChars },
             )
-            return ReasoningWatchdog.guard(events, { summarized: result.summarizedReasoning })
           }),
         ),
       )
