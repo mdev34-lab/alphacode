@@ -1,7 +1,8 @@
 export * as ContextManager from "./manager"
 
-import { LLMClient, type LLMRequest, type Model } from "@opencode-ai/llm"
+import { LLMClient, SystemPart, type LLMRequest, type Model } from "@opencode-ai/llm"
 import { Context, DateTime, Duration, Effect, Layer, Option, Schema } from "effect"
+import { AgentV2 } from "../agent"
 import { Config } from "../config"
 import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
@@ -13,6 +14,7 @@ import type { SessionMessage } from "../session/message"
 import { SessionRunnerModel } from "../session/runner/model"
 import type { SessionSchema } from "../session/schema"
 import { SessionStore } from "../session/store"
+import { ToolRegistry } from "../tool/registry"
 import { ContextBudget } from "./budget"
 import { ContextCompressor } from "./compressor"
 import { ContextDeduplicate } from "./deduplicate"
@@ -88,7 +90,29 @@ export interface Interface {
    * built is reported as unmeasured and not within budget, because "we could not check" is not
    * permission to send.
    */
-  readonly payload: (request: LLMRequest) => Effect.Effect<PayloadSize>
+  readonly payload: (request: LLMRequest, sessionID?: SessionSchema.ID) => Effect.Effect<PayloadSize>
+}
+
+/** Keys under which the major provider bodies carry their conversation turns. */
+const BODY_MESSAGE_KEYS = ["messages", "contents", "input"] as const
+
+/**
+ * The non-conversation cost of a provider-native body: its serialized size minus the portion that
+ * holds the conversation turns.
+ *
+ * Calibration must learn the envelope — system prompt, tool definitions, provider keys — and
+ * nothing else. Deriving it as "wire minus canonical messages" would also absorb whatever the
+ * lowering adds *inside* the conversation (which scales with content, not with the envelope), so
+ * the first oversized request would teach planning to flinch at everything that survives. A body
+ * whose conversation part cannot be found is not calibrated from.
+ */
+const wireEnvelopeBytes = (body: unknown, bytes: number) => {
+  if (typeof body !== "object" || body === null) return undefined
+  for (const key of BODY_MESSAGE_KEYS) {
+    const value = (body as Record<string, unknown>)[key]
+    if (Array.isArray(value)) return bytes - Buffer.byteLength(JSON.stringify(value) ?? "", "utf8")
+  }
+  return undefined
 }
 
 export interface PayloadSize {
@@ -152,11 +176,25 @@ const layer = Layer.effect(
     const llm = yield* LLMClient.Service
     const store = yield* SessionStore.Service
     const models = yield* SessionRunnerModel.Service
+    const agents = yield* AgentV2.Service
+    const tools = yield* ToolRegistry.Service
     const settings = resolveSettings(yield* (yield* Config.Service).entries())
     const cache = new Map<SessionSchema.ID, Cached>()
     // Last envelope a runner declared for a session, so a stats request that arrives between turns
     // still reports utilization against the whole prompt rather than the message list alone.
     const envelopes = new Map<SessionSchema.ID, ContextBudget.EnvelopeCost>()
+    /**
+     * The non-conversation cost of the session's last accepted wire body, as measured by
+     * `payload` (body size minus its conversation portion).
+     *
+     * The planning estimate serializes `[system, tools, extra]` as JSON, which is a different
+     * representation than the provider-native body — it can be off in either direction. Every
+     * accepted measurement converges planning toward wire reality: preparation budgets against
+     * the larger of the estimate and this observed envelope, so an optimistic gap about request
+     * overhead survives at most until the session's first accepted request, never for its
+     * lifetime. The hard gate stays the final arbiter regardless.
+     */
+    const measuredOverhead = new Map<SessionSchema.ID, number>()
     // Tool-declared context policies, remembered per session for callers that do not materialize
     // tools themselves, such as the compress tool and the manual /compress command.
     const policies = new Map<SessionSchema.ID, Readonly<Record<string, ContextTypes.ToolContextPolicy>>>()
@@ -287,16 +325,18 @@ const layer = Layer.effect(
 
       const reduced = ContextPurgeErrors.apply(ContextDeduplicate.apply(placed.messages, duplicates), errors)
       // The byte ceiling covers the whole request, so the envelope spends from it too — but watch
-      // the units. This comparison adds canonical-history JSON bytes to a JSON.stringify of
-      // [system, tools, extra], while the wire carries a provider-native body built by
-      // route.body.from. The two serializations are different shapes, so this decision can be off
-      // in either direction, and automatic compression (below) fires from this estimate too. The
-      // only authoritative measurement is `payload`, run by the runner on the lowered request:
-      // an optimistic estimate converts into exactly one overflow compaction and a retried turn —
-      // never into an oversized request on the wire.
+      // the units. This comparison adds canonical-history JSON bytes to a serialization overhead,
+      // while the wire carries a provider-native body built by route.body.from. The two
+      // representations differ, so this decision can be off in either direction, and automatic
+      // compression (below) fires from this estimate too. Two safeguards keep the gap bounded:
+      // planning uses the larger of the estimate and the overhead actually observed on the wire
+      // for this session, and the only authoritative measurement is `payload`, run by the runner
+      // on the lowered request — an estimate that is still optimistic converts into exactly one
+      // overflow compaction and a retried turn, never into an oversized request on the wire.
 
+      const plannedOverheadBytes = Math.max(overhead.bytes, measuredOverhead.get(input.sessionID) ?? 0)
       const payloadBudget =
-        settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - overhead.bytes, 1)
+        settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - plannedOverheadBytes, 1)
       const measured = ContextBudget.measure(reduced)
       const reduction =
         payloadBudget === undefined || measured.bytes <= payloadBudget
@@ -312,13 +352,15 @@ const layer = Layer.effect(
       // The ladder is a ceiling, not a suggestion. When even protected content alone exceeds it,
       // the only remaining lever is compression, so say so instead of sending an oversized request.
       const overBudget = reduction !== undefined && !reduction.within
+      // One serialization serves the cache, the prepped-token accounting and the debug line.
+      const gatedMeasure = reduction === undefined ? measured : ContextBudget.measure(gated)
       if (reduction !== undefined)
         yield* Effect.logDebug("context.prepare.payload", {
           sessionID: input.sessionID,
           steps: reduction.steps,
           within: reduction.within,
           limit: payloadBudget,
-          bytes: ContextBudget.bytes(gated) + overhead.bytes,
+          bytes: gatedMeasure.bytes + plannedOverheadBytes,
         })
 
       const violations = ContextInvariants.check(input.messages, gated)
@@ -329,8 +371,7 @@ const layer = Layer.effect(
       }
 
       // Only a ladder pass changes the list, so the measurement above is reused when it did not run.
-      const preparedTokens =
-        (reduction === undefined ? measured : ContextBudget.measure(gated)).tokens + overhead.tokens
+      const preparedTokens = gatedMeasure.tokens + overhead.tokens
       const stats: ContextTypes.ContextStats = {
         rawTokens,
         preparedTokens,
@@ -514,16 +555,19 @@ const layer = Layer.effect(
       })
     })
 
-    const payload = Effect.fnUntraced(function* (request: LLMRequest) {
+    const payload = Effect.fnUntraced(function* (request: LLMRequest, sessionID?: SessionSchema.ID) {
       const limit = settings.payloadBytes
       // Nothing to enforce: no ceiling is configured, so the body is never built and nothing is
       // measured. `measured` says exactly that rather than claiming a size that was never taken.
       if (limit === undefined) return { bytes: 0, limit, within: true, measured: false } satisfies PayloadSize
       const route = request.model.route
-      const serialized = yield* route.body.from(request).pipe(
-        Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(route.body.schema))),
-        Effect.catchCause(() => Effect.succeed(undefined)),
-      )
+      const body = yield* route.body.from(request).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+      const serialized =
+        body === undefined
+          ? undefined
+          : yield* Schema.encodeEffect(Schema.fromJsonString(route.body.schema))(body).pipe(
+              Effect.catchCause(() => Effect.succeed(undefined)),
+            )
       if (serialized === undefined) {
         // The body could not be built, so the wire size is unknown. This is the hard enforcement
         // point, and an unknown size cannot be declared within budget: the request is treated
@@ -539,13 +583,46 @@ const layer = Layer.effect(
         return { bytes: estimate, limit, within: false, measured: false } satisfies PayloadSize
       }
       const bytes = Buffer.byteLength(serialized, "utf8")
-      return { bytes, limit, within: bytes <= limit, measured: true } satisfies PayloadSize
+      const within = bytes <= limit
+      if (sessionID !== undefined && within) {
+        // Feed the measurement back into planning. Only an accepted request calibrates: a rejected
+        // one's envelope would teach planning to flinch at content that is gone by the retried
+        // turn. Planning still takes the larger of estimate and observation, so this only ever
+        // moves conservative.
+        const observed = wireEnvelopeBytes(body, bytes)
+        if (observed !== undefined) measuredOverhead.set(sessionID, observed)
+      }
+      return { bytes, limit, within, measured: true } satisfies PayloadSize
     })
 
     const resolveModel = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return undefined
       return yield* models.resolve(session).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+    })
+
+    /**
+     * Rebuild everything the runner's request carries besides the projected history — the agent
+     * system prompt, the context guidance and the tool definitions — without preparing a turn.
+     *
+     * The very first stats request of a session arrives before any turn exists and therefore
+     * before any envelope can have been observed; judging utilization from the message list alone
+     * would report an empty context the first real turn immediately disproves, which is exactly
+     * when a client reads stats to initialize its UI. Two request parts are still not knowable
+     * here: the epoch baseline, which only counts once it exists (it joins on the first prepared
+     * turn), and the max-steps trailing message, which depends on the step counter.
+     */
+    const baselineEnvelope = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+      const session = yield* store.get(sessionID)
+      if (!session) return undefined
+      const agent = yield* agents.select(session.agent).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+      const materialized = yield* tools
+        .materialize(agent?.info?.permissions)
+        .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+      const system = [agent?.info?.system, settings.compression.enabled ? GUIDANCE : undefined]
+        .filter((part): part is string => part !== undefined && part.length > 0)
+        .map(SystemPart.make)
+      return { system, tools: materialized?.definitions ?? [] } satisfies ContextBudget.Envelope
     })
 
     /**
@@ -631,7 +708,8 @@ const layer = Layer.effect(
             payloadOverBudget: cached.payloadOverBudget,
           }
         // Nothing prepared yet this run: compile the current history once so a client asking for
-        // context usage before the first turn still gets real numbers. Observing only — a stats
+        // context usage before the first turn still gets real numbers — against the envelope the
+        // first turn will actually send, not against history alone. Observing only — a stats
         // request must not decide anything for the next turn.
         const prepared = yield* prepareOnce(
           {
@@ -639,6 +717,7 @@ const layer = Layer.effect(
             messages: yield* SessionHistory.load(db, sessionID).pipe(Effect.orDie),
             purpose: "agent-turn",
             model: yield* resolveModel(sessionID),
+            envelope: yield* baselineEnvelope(sessionID),
           },
           true,
         )
@@ -664,5 +743,14 @@ const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [Database.node, EventV2.node, llmClient, SessionStore.node, SessionRunnerModel.node, Config.node],
+  deps: [
+    Database.node,
+    EventV2.node,
+    llmClient,
+    AgentV2.node,
+    ToolRegistry.node,
+    SessionStore.node,
+    SessionRunnerModel.node,
+    Config.node,
+  ],
 })

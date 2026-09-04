@@ -117,7 +117,7 @@ const brokenModel = Model.make({
   provider: "fake",
   route: { ...route, body: { schema: route.body.schema, from: () => Effect.die("cannot lower this request") } },
 })
-let lowering: "works" | "fails" | "verbose" = "works"
+let lowering: "works" | "fails" | "verbose" | "padded" = "works"
 /**
  * A provider whose wire format re-serializes marked content verbosely, so its body is far heavier
  * than the canonical JSON the estimator measures. Against this route the byte estimate is
@@ -138,8 +138,40 @@ const verboseModel = Model.make({
     },
   },
 })
+/**
+ * A provider whose wire body carries ~4 KB of request-level envelope cost that the declared
+ * envelope cannot know about, in a top-level body key (outside the conversation portion). The
+ * schema encodes the body verbatim: this provider really sends — and is measured for — the key.
+ */
+const paddedModel = Model.make({
+  id: "padded-model",
+  provider: "fake",
+  route: {
+    ...route,
+    body: {
+      schema: Schema.Unknown,
+      from: (request: LLMRequest) =>
+        Effect.map(
+          route.body.from(request),
+          (body) =>
+            ({
+              ...(body as Record<string, unknown>),
+              provider_envelope_padding: "x".repeat(4_000),
+            }) as unknown as typeof body,
+        ),
+    },
+  },
+})
 const models = SessionRunnerModel.layerWith(() =>
-  Effect.succeed(lowering === "works" ? model : lowering === "fails" ? brokenModel : verboseModel),
+  Effect.succeed(
+    lowering === "works"
+      ? model
+      : lowering === "fails"
+        ? brokenModel
+        : lowering === "padded"
+          ? paddedModel
+          : verboseModel,
+  ),
 )
 
 const permission = Layer.succeed(
@@ -905,6 +937,34 @@ describe("ContextManager", () => {
     }),
   )
 
+  it.effect("charges the real prompt cost on the very first stats call, before any turn", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+
+      const before = requests.length
+      const first = yield* context.stats(sessionID)
+      // No turn has ever prepared this session, yet the system prompt, the context guidance and
+      // the tool definitions are real request cost: a stats call that ignored them would report
+      // an empty context the first turn immediately disproves — exactly when a client reads
+      // stats to initialize its UI. The envelope is rebuilt read-only, so this is observation:
+      // no provider traffic, and two observations agree exactly.
+      expect(first.overheadTokens).toBeGreaterThan(0)
+      // The history is still empty, so overhead is essentially all the request costs.
+      expect(first.rawTokens).toBeGreaterThanOrEqual(first.overheadTokens)
+      expect(first.rawTokens - first.overheadTokens).toBeLessThanOrEqual(1)
+      expect(requests.length).toBe(before)
+      expect(yield* context.stats(sessionID)).toEqual(first)
+
+      // Once a turn declares the real envelope it takes over, and the observed value may only
+      // stay or grow — the epoch baseline joins the accounting on that first prepared turn.
+      turns = [say("One")]
+      yield* ask(session, "Step one")
+      const after = yield* context.stats(sessionID)
+      expect(after.overheadTokens).toBeGreaterThanOrEqual(first.overheadTokens)
+    }),
+  )
+
   itBounded.effect("refuses to send a request whose size it cannot measure", () =>
     Effect.gen(function* () {
       const session = yield* setup
@@ -1091,12 +1151,65 @@ describe("ContextManager", () => {
   )
 
   /**
-   * The estimate stays under this ceiling on every turn (its envelope-plus-canonical JSON is at
-   * most ~5.1 KB here) while the verbose wire body crosses it on the third ask (~8.9 KB): the
-   * ceiling must sit strictly between the two measurements, which is what makes the estimator
-   * optimistic on every request in this test.
+   * The verbose lowering multiplies the probe text on the wire (~2 KB per `expandme` marker, none
+   * of it in the canonical estimate), while the ceiling sits between the two serializations. The
+   * estimate is therefore optimistic in exactly one direction here: the wire body is much larger
+   * than envelope-plus-canonical planning can ever see in this test.
    */
   const itOptimistic = harness(configWith({ payloadBytes: 7_500, keepTokens: 10 }))
+
+  // The very first request of the session already overflows: nothing has been measured yet, so
+  // planning must be blind and the wire gate carries the whole recovery alone.
+  itOptimistic.effect("escalates to native compaction when an unseen payload overflows the first request", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const preparedEvents = yield* collect(SessionEvent.Context.Prepared)
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      lowering = "verbose"
+      turns = [say("Alpha"), say("Bravo")]
+      yield* ask(session, "probe one expandme expandme expandme")
+      yield* ask(session, "probe two")
+
+      // The estimate never saw the problem: no ladder, no automatic compression, no over-budget
+      // flag on any preparation — on either side of the recovery.
+      expect(compressions.length).toBe(0)
+      expect(preparedEvents.length).toBeGreaterThanOrEqual(2)
+      expect(preparedEvents.every((event) => event.payloadOverBudget === false)).toBe(true)
+
+      // The wire measurement caught it instead: exactly one native-compaction recovery before the
+      // retried first request, and the session continues normally afterwards. The rejected giant
+      // request itself never reaches the provider, so it never appears in the request log.
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      expect(kinds, kinds.join(",")).toEqual(["compact", "agent", "agent"])
+      expect(compactions.length).toBe(1)
+      expect(failures).toEqual([])
+
+      // Nothing over the ceiling ever reached the provider, on either side of the escalation.
+      for (const request of requests) {
+        if (request.tools.length === 0) continue
+        expect((yield* context.payload(request)).within).toBe(true)
+      }
+
+      // And the turn after the escalation is coherent: the compaction summary is in the request,
+      // the new question is in the request, and the session answered.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const last = requests.at(-1)!
+      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
+      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(userTexts(last)).toContain("probe two")
+      expect(history.at(-1)?.type).toBe("assistant")
+    }),
+  )
+
+  // The oversized request arrives on the third ask, after two accepted measurements already
+  // calibrated the envelope — but this provider's extra wire weight lives *inside* the conversation
+  // (the expanded probe text), so calibration correctly learns nothing from it and planning stays
+  // blind. The gate carries the recovery, exactly as it did on the first-request variant.
   itOptimistic.effect("escalates to native compaction when the byte estimate is optimistic", () =>
     Effect.gen(function* () {
       const session = yield* setup
@@ -1140,6 +1253,57 @@ describe("ContextManager", () => {
       const summarized = history.filter((message) => message.type === "compaction").at(-1)!
       expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
       expect(userTexts(last)).toContain("probe four")
+      expect(history.at(-1)?.type).toBe("assistant")
+    }),
+  )
+
+  // This provider inflates the *envelope*: the wire body carries ~4 KB of request-level overhead
+  // the declared envelope knows nothing about. The first accepted request measures it, and from
+  // then on planning budgets against the wire reality instead of the optimistic estimate.
+  const itPadded = harness(configWith({ payloadBytes: 7_500, keepTokens: 10 }))
+  itPadded.effect("calibrates the payload estimate against the envelope measured on the wire", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const preparedEvents = yield* collect(SessionEvent.Context.Prepared)
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      lowering = "padded"
+      turns = [say("Alpha"), say("Bravo"), say("Charlie")]
+      yield* ask(session, "probe one")
+      yield* ask(session, `probe two ${"detail ".repeat(450)}`)
+      yield* ask(session, "probe three")
+
+      // The second ask is where the learned envelope bites: planning flags exactly one
+      // over-budget preparation before the gate is even consulted. The ladder cannot shed the
+      // protected recent turns and automatic compression has no legal range in a four-turn
+      // window, so the turn still falls through to exactly one native compaction. Meanwhile the
+      // first turn — measured and accepted — and the post-compaction turns all plan within
+      // budget: the calibration learned the padding, not a permanent flinch.
+      expect(preparedEvents.filter((event) => event.payloadOverBudget === true)).toHaveLength(1)
+      expect(compressions.length).toBe(0)
+
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      expect(kinds, kinds.join(",")).toEqual(["agent", "compact", "agent", "agent"])
+      expect(compactions.length).toBe(1)
+      expect(failures).toEqual([])
+
+      // Nothing over the ceiling ever reached the provider, on either side of the escalation.
+      for (const request of requests) {
+        if (request.tools.length === 0) continue
+        expect((yield* context.payload(request)).within).toBe(true)
+      }
+
+      // The turn after the escalation is coherent: the compaction summary is in the request, the
+      // new question is in the request, and the session answered.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const last = requests.at(-1)!
+      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
+      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(userTexts(last)).toContain("probe three")
       expect(history.at(-1)?.type).toBe("assistant")
     }),
   )

@@ -344,7 +344,7 @@ const layer = Layer.effect(
         yield* withPublication(publisher.flush())
         return { needsContinuation: false, step: currentStep }
       }
-      const size = yield* contextManager.payload(request)
+      const size = yield* contextManager.payload(request, session.id)
       if (!size.within) {
         if (recoverOverflow && (yield* recoverOverflow({ sessionID: session.id, entries, model, request }))) {
           yield* contextManager.invalidate(session.id)
