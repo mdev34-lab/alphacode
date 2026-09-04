@@ -78,6 +78,7 @@ import { useClipboard } from "../../context/clipboard"
 import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
+import { capOutputLines } from "../../util/cap-lines"
 import {
   activityHeader,
   computeActivityGroups,
@@ -2399,9 +2400,14 @@ function Shell(props: ToolProps) {
   const maxLines = COLLAPSED_TOOL_PREVIEW_LINES
   const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
   const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
+  // Cap pathological individual lines (minified JSON, base64 blobs, one-line
+  // stack traces): the collapsed-preview char budget only bounds the collapsed
+  // view, and the <text> render wraps long lines instead of clipping them like
+  // the write renderer does — so expanded output with an uncapped long line
+  // floods/jitters the viewport. Capping applies in both states.
   const limited = createMemo(() => {
-    if (expanded() || !collapsed().overflow) return output()
-    return collapsed().output
+    if (expanded() || !collapsed().overflow) return capOutputLines(output())
+    return capOutputLines(collapsed().output)
   })
 
   const workdirDisplay = createMemo(() => {
