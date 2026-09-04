@@ -416,25 +416,22 @@ const live: Layer.Layer<
             // cap so a pathological unbounded stream aborts cleanly instead
             // of taking the host process down (issue #89).
             // Single choke point for the generation-length cap: both runtimes
-            // funnel through the one GenerationLimit.guard below, so no
-            // runtime can bypass it (issue #89).
-            const capped = <E, R>(inner: Stream.Stream<LLMEvent, E, R>) =>
-              GenerationLimit.guard(ReasoningWatchdog.guard(inner, { summarized: result.summarizedReasoning }), {
-                maxChars: result.maxGenerationChars,
-              })
-
-            if (result.type === "native") {
-              return capped(result.stream)
-            }
-
+            // funnel through the one guarded stream below, so no runtime can
+            // bypass it (issue #89).
             const state = LLMAISDK.adapterState()
-            const events = Stream.fromAsyncIterable(result.result.fullStream, (e) =>
-              e instanceof Error ? e : new Error(String(e)),
-            ).pipe(
-              Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
-              Stream.flatMap((events) => Stream.fromIterable(events)),
+            const inner =
+              result.type === "native"
+                ? result.stream
+                : Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+                    e instanceof Error ? e : new Error(String(e)),
+                  ).pipe(
+                    Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
+                    Stream.flatMap((events) => Stream.fromIterable(events)),
+                  )
+            return GenerationLimit.guard(
+              ReasoningWatchdog.guard(inner, { summarized: result.summarizedReasoning }),
+              { maxChars: result.maxGenerationChars },
             )
-            return capped(events)
           }),
         ),
       )
