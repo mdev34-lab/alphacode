@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { For, onMount } from "solid-js"
 import { testRender } from "@opentui/solid"
-import type { GlobalEvent, TextPart } from "@opencode-ai/sdk/v2"
+import type { GlobalEvent, Part, ReasoningPart, TextPart } from "@opencode-ai/sdk/v2"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { tmpdir } from "../../fixture/fixture"
@@ -19,21 +19,21 @@ import { SyncProvider, useSync } from "../../../src/context/sync"
 import { RouteProvider } from "../../../src/context/route"
 import { TuiConfigProvider } from "../../../src/config"
 
-const SESSION = "ses_stream"
-const MESSAGE = "msg_stream"
-const PART = "prt_stream"
-
 let mountCount = 0
 
-function textPart(): TextPart {
-  return { id: PART, sessionID: SESSION, messageID: MESSAGE, type: "text", text: "" }
+function textPart(partID: string, messageID: string, sessionID: string, text = ""): TextPart {
+  return { id: partID, sessionID, messageID, type: "text", text }
 }
 
-function assistantMessage() {
+function reasoningPart(partID: string, messageID: string, sessionID: string, text = ""): ReasoningPart {
+  return { id: partID, sessionID, messageID, type: "reasoning", text, time: { start: 1 } }
+}
+
+function assistantMessage(messageID: string, sessionID: string) {
   const now = 1_700_000_000_000
   return {
-    id: MESSAGE,
-    sessionID: SESSION,
+    id: messageID,
+    sessionID,
     role: "assistant" as const,
     time: { created: now },
     parentID: "msg_user",
@@ -47,41 +47,24 @@ function assistantMessage() {
   }
 }
 
-function deltaEvent(delta: string, id: number): GlobalEvent {
-  return {
-    directory: "/tmp",
-    project: "proj_test",
-    payload: {
-      id: `evt_delta_${id}`,
-      type: "message.part.delta",
-      properties: {
-        sessionID: SESSION,
-        messageID: MESSAGE,
-        partID: PART,
-        field: "text",
-        delta,
-      },
-    },
-  }
+function globalEvent(payload: GlobalEvent["payload"]): GlobalEvent {
+  return { directory: "/tmp", project: "proj_test", payload }
 }
 
-// A durable snapshot can arrive mid-stream while its persisted text is still
-// empty (the row is written before the deltas are streamed). The reducer must
-// keep the already-streamed text without replacing the part object.
-function staleSnapshotEvent(id: number): GlobalEvent {
-  return {
-    directory: "/tmp",
-    project: "proj_test",
-    payload: {
-      id: `evt_updated_${id}`,
-      type: "message.part.updated",
-      properties: {
-        sessionID: SESSION,
-        time: 0,
-        part: { id: PART, sessionID: SESSION, messageID: MESSAGE, type: "text", text: "" },
-      },
-    },
-  }
+function deltaEvent(sessionID: string, messageID: string, partID: string, delta: string, id: number): GlobalEvent {
+  return globalEvent({
+    id: `evt_delta_${id}`,
+    type: "message.part.delta",
+    properties: { sessionID, messageID, partID, field: "text", delta },
+  })
+}
+
+function updatedEvent(sessionID: string, messageID: string, part: Part, id: number): GlobalEvent {
+  return globalEvent({
+    id: `evt_updated_${id}`,
+    type: "message.part.updated",
+    properties: { sessionID, time: id, part },
+  })
 }
 
 async function waitUntil(fn: () => boolean, timeout = 5000) {
@@ -94,16 +77,16 @@ async function waitUntil(fn: () => boolean, timeout = 5000) {
 
 type Sync = ReturnType<typeof useSync>
 
-function PartRow(props: { part: TextPart }) {
+function PartRow(props: { part: Part }) {
   onMount(() => {
     mountCount++
   })
-  return <text>{props.part.text}</text>
+  return <text>{(props.part as TextPart | ReasoningPart).text}</text>
 }
 
-function StreamProbe() {
+function StreamProbe(props: { messageID: string }) {
   const sync = useSync()
-  return <For each={sync.data.part[MESSAGE] ?? []}>{(part) => <PartRow part={part as TextPart} />}</For>
+  return <For each={sync.data.part[props.messageID] ?? []}>{(part) => <PartRow part={part} />}</For>
 }
 
 let setup: { app: Awaited<ReturnType<typeof testRender>>; dispose: () => Promise<void> } | undefined
@@ -114,7 +97,7 @@ afterEach(async () => {
   mountCount = 0
 })
 
-async function mount() {
+async function mount(sessionID: string, messageID: string) {
   const tmp = await tmpdir()
   const state = path.join(tmp.path, "state")
   await mkdir(state, { recursive: true })
@@ -126,7 +109,7 @@ async function mount() {
   function Harness() {
     const store = useSync()
     sync = store
-    return <StreamProbe />
+    return <StreamProbe messageID={messageID} />
   }
 
   const app = await testRender(
@@ -135,7 +118,7 @@ async function mount() {
         <ExitProvider exit={() => {}}>
           <ArgsProvider>
             <KVProvider>
-              <RouteProvider initialRoute={{ type: "session", sessionID: SESSION }}>
+              <RouteProvider initialRoute={{ type: "session", sessionID }}>
                 <TuiConfigProvider config={createTuiResolvedConfig()}>
                   <SDKProvider url="http://test" directory="/tmp" fetch={calls.fetch} events={events.source}>
                     <PermissionProvider>
@@ -167,30 +150,134 @@ async function mount() {
   return { app, events, sync }
 }
 
-describe("streaming part identity", () => {
-  test("deltas update the text without remounting the keyed part row", async () => {
-    const { app, events, sync } = await mount()
-    try {
-      sync.set("message", SESSION, [assistantMessage()])
-      sync.set("part", MESSAGE, [textPart()])
-      await app.renderOnce()
-      expect(mountCount).toBe(1)
+async function mountSingle(part: Part) {
+  const sessionID = part.sessionID
+  const messageID = part.messageID
+  const { app, events, sync } = await mount(sessionID, messageID)
+  sync.set("message", sessionID, [assistantMessage(messageID, sessionID)])
+  sync.set("part", messageID, [part])
+  await app.renderOnce()
+  expect(mountCount).toBe(1)
+  return { app, events, sync, sessionID, messageID }
+}
 
+function textOf(sync: Sync, messageID: string, partID: string): string {
+  const part = (sync.data.part[messageID] ?? []).find((item) => item.id === partID)
+  return part ? (part as TextPart | ReasoningPart).text : ""
+}
+
+describe("streaming part identity", () => {
+  test("deltas and a stale empty snapshot update text without remounting the keyed row", async () => {
+    const sessionID = "ses_stream"
+    const messageID = "msg_stream"
+    const partID = "prt_stream"
+    const { app, events, sync } = await mountSingle(textPart(partID, messageID, sessionID))
+
+    try {
       const deltas = ["Hello ", "streaming ", "world", "!"]
       deltas.forEach((delta, index) => {
-        events.emit(deltaEvent(delta, index))
-        if (index === 1) events.emit(staleSnapshotEvent(index))
+        events.emit(deltaEvent(sessionID, messageID, partID, delta, index))
+        // A durable "started" row (empty text) can be replayed mid-stream.
+        if (index === 1) events.emit(updatedEvent(sessionID, messageID, textPart(partID, messageID, sessionID), index))
       })
 
-      await waitUntil(() => (sync.data.part[MESSAGE]?.[0] as TextPart).text === "Hello streaming world!")
+      await waitUntil(() => textOf(sync, messageID, partID) === "Hello streaming world!")
       await app.renderOnce()
 
-      // The part row is keyed by object identity in the transcript (Solid's
-      // <For>). A reducer that substitutes a new part object for each delta
-      // unmounts and remounts the streaming row on every token — that is what
-      // shows up as aggressive redraw/flicker. Identity must be stable.
       expect(mountCount).toBe(1)
       expect(app.captureCharFrame().split("\n").join("")).toContain("Hello streaming world!")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("an authoritative snapshot equal to the streamed text is adopted without remounting", async () => {
+    const sessionID = "ses_snap"
+    const messageID = "msg_snap"
+    const partID = "prt_snap"
+    const { app, events, sync } = await mountSingle(textPart(partID, messageID, sessionID))
+
+    try {
+      events.emit(deltaEvent(sessionID, messageID, partID, "Hello ", 0))
+      events.emit(deltaEvent(sessionID, messageID, partID, "world", 1))
+      // The durable row persisted the full text after the deltas streamed.
+      events.emit(updatedEvent(sessionID, messageID, textPart(partID, messageID, sessionID, "Hello world"), 2))
+
+      await waitUntil(() => textOf(sync, messageID, partID) === "Hello world")
+      await app.renderOnce()
+
+      expect(mountCount).toBe(1)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("a partially persisted snapshot never truncates the streamed text", async () => {
+    const sessionID = "ses_partial"
+    const messageID = "msg_partial"
+    const partID = "prt_partial"
+    const { app, events, sync } = await mountSingle(textPart(partID, messageID, sessionID))
+
+    try {
+      events.emit(deltaEvent(sessionID, messageID, partID, "Hello ", 0))
+      events.emit(deltaEvent(sessionID, messageID, partID, "world", 1))
+      // The durable row persisted only the prefix ("Hello ") mid-stream.
+      events.emit(updatedEvent(sessionID, messageID, textPart(partID, messageID, sessionID, "Hello "), 2))
+
+      await waitUntil(() => textOf(sync, messageID, partID) === "Hello world")
+      await app.renderOnce()
+
+      expect(mountCount).toBe(1)
+      expect(app.captureCharFrame().split("\n").join("")).toContain("Hello world")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("reasoning parts stream without remounting", async () => {
+    const sessionID = "ses_reason"
+    const messageID = "msg_reason"
+    const partID = "prt_reason"
+    const { app, events, sync } = await mountSingle(reasoningPart(partID, messageID, sessionID))
+
+    try {
+      events.emit(deltaEvent(sessionID, messageID, partID, "think", 0))
+      events.emit(deltaEvent(sessionID, messageID, partID, "ing", 1))
+      // Stale empty durable row mid-stream.
+      events.emit(updatedEvent(sessionID, messageID, reasoningPart(partID, messageID, sessionID), 2))
+
+      await waitUntil(() => textOf(sync, messageID, partID) === "thinking")
+      await app.renderOnce()
+
+      expect(mountCount).toBe(1)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("a new part arriving during streaming keeps earlier parts mounted", async () => {
+    const sessionID = "ses_multi"
+    const messageID = "msg_multi"
+    const partA = "prt_a"
+    const partB = "prt_b"
+    const { app, events, sync } = await mount(sessionID, messageID)
+    sync.set("message", sessionID, [assistantMessage(messageID, sessionID)])
+    sync.set("part", messageID, [textPart(partA, messageID, sessionID)])
+    await app.renderOnce()
+    expect(mountCount).toBe(1)
+
+    try {
+      events.emit(deltaEvent(sessionID, messageID, partA, "alpha ", 0))
+      // A second part is created by the runner while the first is streaming.
+      events.emit(updatedEvent(sessionID, messageID, textPart(partB, messageID, sessionID), 1))
+      events.emit(deltaEvent(sessionID, messageID, partB, "beta", 2))
+      events.emit(deltaEvent(sessionID, messageID, partA, "one", 3))
+
+      await waitUntil(() => textOf(sync, messageID, partA) === "alpha one" && textOf(sync, messageID, partB) === "beta")
+      await app.renderOnce()
+
+      // Exactly one row per part, and the first never remounted.
+      expect(mountCount).toBe(2)
     } finally {
       app.renderer.destroy()
     }
