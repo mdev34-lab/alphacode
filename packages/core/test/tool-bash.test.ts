@@ -443,8 +443,9 @@ describe("BashTool — narration-only guidance", () => {
               })
               // Guidance is appended to the final content part (not injected into stdout)
               const lastPart = settled.output?.content[settled.output.content.length - 1]
-              expect(lastPart?.text).toContain("[AlphaCode]")
-              expect(lastPart?.text).toContain("described an intended action")
+              const lastText = lastPart?.type === "text" ? lastPart.text : undefined
+              expect(lastText).toContain("[AlphaCode]")
+              expect(lastText).toContain("described an intended action")
               // Exit code handling is not affected
               expect(settled.output?.structured).toMatchObject({ exit: 0, truncated: false })
             }),
@@ -467,7 +468,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               const lastPart = settled.output?.content[settled.output.content.length - 1]
-              expect(lastPart?.text).toContain("[AlphaCode]")
+              expect(lastPart?.type === "text" ? lastPart.text : undefined).toContain("[AlphaCode]")
             }),
           ),
         )
@@ -487,7 +488,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               const lastPart = settled.output?.content[settled.output.content.length - 1]
-              expect(lastPart?.text).toContain("[AlphaCode]")
+              expect(lastPart?.type === "text" ? lastPart.text : undefined).toContain("[AlphaCode]")
             }),
           ),
         )
@@ -507,7 +508,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               const lastPart = settled.output?.content[settled.output.content.length - 1]
-              expect(lastPart?.text).toContain("[AlphaCode]")
+              expect(lastPart?.type === "text" ? lastPart.text : undefined).toContain("[AlphaCode]")
             }),
           ),
         )
@@ -528,7 +529,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -549,7 +550,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -570,7 +571,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -595,10 +596,11 @@ describe("BashTool — narration-only guidance", () => {
               // Exit code is reported normally
               expect(settled.output?.structured).toMatchObject({ exit: 1 })
               const lastPart = settled.output?.content[settled.output.content.length - 1]
+              const lastText = lastPart?.type === "text" ? lastPart.text : undefined
               // Guidance still appended
-              expect(lastPart?.text).toContain("[AlphaCode]")
+              expect(lastText).toContain("[AlphaCode]")
               // Exit-code text still present
-              expect(lastPart?.text).toContain("Command exited with code 1")
+              expect(lastText).toContain("Command exited with code 1")
             }),
           ),
         )
@@ -623,7 +625,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -644,7 +646,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -665,7 +667,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -690,7 +692,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -711,7 +713,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
@@ -732,7 +734,7 @@ describe("BashTool — narration-only guidance", () => {
           Effect.andThen((settled) =>
             Effect.sync(() => {
               for (const part of settled.output?.content ?? []) {
-                expect(part.text).not.toContain("[AlphaCode]")
+                if (part.type === "text") expect(part.text).not.toContain("[AlphaCode]")
               }
             }),
           ),
