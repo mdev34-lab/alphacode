@@ -766,10 +766,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Second" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map(systemBaselines)).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-      ])
+      expect(requests.map(systemBaselines)).toEqual([["Initial context"], ["Initial context"]])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[1]?.messages.at(-1)?.content).toEqual([{ type: "text", text: "Changed context" }])
       expect(yield* session.messages({ sessionID })).toHaveLength(3)
@@ -919,9 +916,7 @@ describe("SessionRunnerLLM", () => {
       response = []
       yield* session.resume(sessionID)
 
-      expect(requests.map(systemBaselines)).toEqual([
-        ["Initial context\n\nBuild skills"],
-      ])
+      expect(requests.map(systemBaselines)).toEqual([["Initial context\n\nBuild skills"]])
     }),
   )
 
@@ -997,11 +992,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map(systemBaselines)).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
-      ])
+      expect(requests.map(systemBaselines)).toEqual([["Initial context"], ["Initial context"], ["Initial context"]])
       expect(requests[1]?.messages.map((message) => message.role)).toEqual(["user", "user", "system"])
       expect(requests[2]?.messages.filter((message) => message.role === "system")).toHaveLength(2)
       expect((yield* session.context(sessionID)).map((message) => message.type)).toEqual([
@@ -1043,11 +1034,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map(systemBaselines)).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-        ["Initial context"],
-      ])
+      expect(requests.map(systemBaselines)).toEqual([["Initial context"], ["Initial context"], ["Initial context"]])
     }),
   )
 
@@ -1080,10 +1067,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Second" }), resume: false })
       yield* session.resume(sessionID)
 
-      expect(requests.map(systemBaselines)).toEqual([
-        ["Initial context"],
-        ["Replacement context"],
-      ])
+      expect(requests.map(systemBaselines)).toEqual([["Initial context"], ["Replacement context"]])
       yield* replaySessionProjection(sessionID)
       yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Third" }), resume: false })
       yield* session.resume(sessionID)
@@ -1579,10 +1563,7 @@ describe("SessionRunnerLLM", () => {
       yield* Fiber.join(run)
 
       expect(requests.map((request) => request.model)).toEqual([model, replacementModel])
-      expect(requests.map(systemBaselines)).toEqual([
-        ["Initial context"],
-        ["Initial context"],
-      ])
+      expect(requests.map(systemBaselines)).toEqual([["Initial context"], ["Initial context"]])
       expect(systemTexts(requests[1]!)).toContain("Replacement context")
     }),
   )
