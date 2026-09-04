@@ -21,6 +21,7 @@ import { Model } from "@opencode-ai/schema/model"
 import { Location } from "@opencode-ai/schema/location"
 import { Revert } from "@opencode-ai/schema/revert"
 import { SessionEvent } from "@opencode-ai/schema/session-event"
+import { SessionContext } from "@opencode-ai/schema/session-context"
 
 const SessionsQueryFields = {
   workspace: Workspace.ID.pipe(Schema.optional),
@@ -32,6 +33,13 @@ const SessionsQueryFields = {
   }),
   search: Schema.optional(Schema.String),
 }
+
+export const CompressPayload = Schema.Struct({
+  startMessageID: SessionMessage.ID.pipe(Schema.optional),
+  endMessageID: SessionMessage.ID.pipe(Schema.optional),
+  focus: Schema.String.pipe(Schema.optional),
+  keepRecentTurns: NonNegativeInt.pipe(Schema.optional),
+}).annotate({ identifier: "SessionCompressPayload" })
 
 const SessionsDirectoryQuery = Schema.Struct({
   ...SessionsQueryFields,
@@ -234,6 +242,38 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
             identifier: "v2.session.compact",
             summary: "Compact session",
             description: "Compact a session conversation.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.compress", "/api/session/:sessionID/compress", {
+        params: { sessionID: Session.ID },
+        payload: CompressPayload,
+        success: Schema.Struct({ data: SessionContext.Outcome }),
+        error: [SessionNotFoundError, ServiceUnavailableError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.compress",
+            summary: "Compress session context",
+            description:
+              "Replace a completed range of the conversation with a generated summary in the provider context. Session history is preserved.",
+          }),
+        ),
+    )
+    .add(
+      HttpApiEndpoint.get("session.contextStats", "/api/session/:sessionID/context/stats", {
+        params: { sessionID: Session.ID },
+        success: Schema.Struct({ data: SessionContext.Stats }),
+        error: [SessionNotFoundError, ServiceUnavailableError],
+      })
+        .middleware(sessionLocationMiddleware)
+        .annotateMerge(
+          OpenApi.annotations({
+            identifier: "v2.session.contextStats",
+            summary: "Get session context statistics",
+            description: "Read context utilization and compression statistics for the session's next provider turn.",
           }),
         ),
     )

@@ -19,6 +19,10 @@ import type {
   SessionsPromptOutput,
   SessionsCompactInput,
   SessionsCompactOutput,
+  SessionsCompressInput,
+  SessionsCompressOutput,
+  SessionsContextStatsInput,
+  SessionsContextStatsOutput,
   SessionsWaitInput,
   SessionsWaitOutput,
   SessionsStageInput,
@@ -390,6 +394,34 @@ export function make(options: ClientOptions) {
           },
           requestOptions,
         ),
+      compress: (input: SessionsCompressInput, requestOptions?: RequestOptions) =>
+        request<{ readonly data: SessionsCompressOutput }>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/compress`,
+            body: {
+              startMessageID: input["startMessageID"],
+              endMessageID: input["endMessageID"],
+              focus: input["focus"],
+              keepRecentTurns: input["keepRecentTurns"],
+            },
+            successStatus: 200,
+            declaredStatuses: [404, 503, 400, 401],
+            empty: false,
+          },
+          requestOptions,
+        ).then((value) => value.data),
+      contextStats: (input: SessionsContextStatsInput, requestOptions?: RequestOptions) =>
+        request<{ readonly data: SessionsContextStatsOutput }>(
+          {
+            method: "GET",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/context/stats`,
+            successStatus: 200,
+            declaredStatuses: [404, 503, 400, 401],
+            empty: false,
+          },
+          requestOptions,
+        ).then((value) => value.data),
       wait: (input: SessionsWaitInput, requestOptions?: RequestOptions) =>
         request<SessionsWaitOutput>(
           {

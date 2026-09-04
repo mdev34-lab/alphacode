@@ -181,6 +181,7 @@ import type {
   SessionChildrenResponses,
   SessionCommandErrors,
   SessionCommandResponses,
+  SessionCompressPayload,
   SessionCreateErrors,
   SessionCreateResponses,
   SessionDeleteErrors,
@@ -337,8 +338,12 @@ import type {
   V2SessionActiveResponses,
   V2SessionCompactErrors,
   V2SessionCompactResponses,
+  V2SessionCompressErrors,
+  V2SessionCompressResponses,
   V2SessionContextErrors,
   V2SessionContextResponses,
+  V2SessionContextStatsErrors,
+  V2SessionContextStatsResponses,
   V2SessionCreateErrors,
   V2SessionCreateResponses,
   V2SessionEventsErrors,
@@ -5675,6 +5680,64 @@ export class Session3 extends HeyApiClient {
     const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
     return (options?.client ?? this.client).post<V2SessionCompactResponses, V2SessionCompactErrors, ThrowOnError>({
       url: "/api/session/{sessionID}/compact",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Compress session context
+   *
+   * Replace a completed range of the conversation with a generated summary in the provider context. Session history is preserved.
+   */
+  public compress<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      sessionCompressPayload: SessionCompressPayload
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { key: "sessionCompressPayload", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<V2SessionCompressResponses, V2SessionCompressErrors, ThrowOnError>({
+      url: "/api/session/{sessionID}/compress",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Get session context statistics
+   *
+   * Read context utilization and compression statistics for the session's next provider turn.
+   */
+  public contextStats<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams([parameters], [{ args: [{ in: "path", key: "sessionID" }] }])
+    return (options?.client ?? this.client).get<
+      V2SessionContextStatsResponses,
+      V2SessionContextStatsErrors,
+      ThrowOnError
+    >({
+      url: "/api/session/{sessionID}/context/stats",
       ...options,
       ...params,
     })

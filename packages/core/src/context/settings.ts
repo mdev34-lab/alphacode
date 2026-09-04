@@ -1,0 +1,73 @@
+export * as ContextSettings from "./settings"
+
+import type { Config } from "../config"
+import { ContextProtection } from "./protection"
+import type { Settings } from "./types"
+
+export const defaults: Settings = {
+  compression: {
+    enabled: true,
+    mode: "range",
+    automatic: true,
+    minContext: 0.6,
+    maxContext: 0.85,
+    // One summarization runs inside the turn the user is waiting on, so the default bounds that
+    // turn's added latency, not the provider's worst case. A raised ceiling stays configurable.
+    timeoutMillis: 30_000,
+  },
+  deduplication: { enabled: true },
+  purgeErrors: { enabled: true, turns: 4 },
+  protection: ContextProtection.defaultPolicy,
+  payloadBytes: undefined,
+}
+
+/**
+ * Fold every configuration document into one resolved context policy.
+ *
+ * Two merge rules, both deliberate:
+ *
+ * - Scalars (`enabled`, `automatic`, `recent_turns`, `payload_bytes`, ...) are last-wins, so the
+ *   most specific document — the workspace file — decides.
+ * - The protection arrays (`tools`, `files`) accumulate instead, deduplicated. Protection is a
+ *   safety rule, and a project file that adds one tool to the list must not silently drop what a
+ *   broader file protected. The consequence is that a document can only *add* protection: an
+ *   inherited entry cannot be removed by a narrower document. Widening the reduction is possible
+ *   through the scalars (`recent_turns: 0`, `user_messages: false`) or by turning a stage off
+ *   entirely, which keeps "less protected" an explicit choice rather than an accident of layering.
+ */
+export const settings = (documents: readonly Config.Entry[]): Settings =>
+  documents
+    .filter((entry): entry is Config.Document => entry.type === "document")
+    .flatMap((entry) => (entry.info.context ? [entry.info.context] : []))
+    .reduce<Settings>(
+      (result, current) => ({
+        compression: {
+          enabled: current.dynamic_compression?.enabled ?? result.compression.enabled,
+          mode: current.dynamic_compression?.mode ?? result.compression.mode,
+          automatic: current.dynamic_compression?.automatic ?? result.compression.automatic,
+          minContext: current.dynamic_compression?.min_context ?? result.compression.minContext,
+          maxContext: current.dynamic_compression?.max_context ?? result.compression.maxContext,
+          timeoutMillis: current.dynamic_compression?.timeout_ms ?? result.compression.timeoutMillis,
+        },
+        deduplication: { enabled: current.deduplication?.enabled ?? result.deduplication.enabled },
+        purgeErrors: {
+          enabled: current.purge_errors?.enabled ?? result.purgeErrors.enabled,
+          turns: current.purge_errors?.turns ?? result.purgeErrors.turns,
+        },
+        protection: {
+          // Accumulate across documents: a workspace file that protects one tool must not discard
+          // what the user file protected, and the built-in list is already in `result`.
+          tools: current.protection?.tools
+            ? [...new Set([...result.protection.tools, ...current.protection.tools])]
+            : result.protection.tools,
+          filePatterns: current.protection?.files
+            ? [...new Set([...result.protection.filePatterns, ...current.protection.files])]
+            : result.protection.filePatterns,
+          messageTypes: result.protection.messageTypes,
+          recentTurns: current.protection?.recent_turns ?? result.protection.recentTurns,
+          userMessages: current.protection?.user_messages ?? result.protection.userMessages,
+        },
+        payloadBytes: current.payload_bytes ?? result.payloadBytes,
+      }),
+      defaults,
+    )

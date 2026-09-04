@@ -1,0 +1,1376 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { describe, expect } from "bun:test"
+import { LLM, LLMClient, LLMEvent, Message, Model, type LLMClientShape, type LLMRequest } from "@opencode-ai/llm"
+import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
+import { AgentV2 } from "@opencode-ai/core/agent"
+import { ConfigAgent } from "@opencode-ai/core/config/agent"
+import { Config } from "@opencode-ai/core/config"
+import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
+import { ConfigContext } from "@opencode-ai/core/config/context"
+import { ContextBudget } from "@opencode-ai/core/context/budget"
+import { ContextDeduplicate } from "@opencode-ai/core/context/deduplicate"
+import { ContextManager } from "@opencode-ai/core/context/manager"
+import { ContextPurgeErrors } from "@opencode-ai/core/context/purge-errors"
+import { ContextState } from "@opencode-ai/core/context/state"
+import type { ContextTypes } from "@opencode-ai/core/context/types"
+import { SessionContextBlockTable } from "@opencode-ai/core/context/sql"
+import { Database } from "@opencode-ai/core/database/database"
+import { makeLocationNode } from "@opencode-ai/core/effect/app-node"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { EventV2 } from "@opencode-ai/core/event"
+import { Location } from "@opencode-ai/core/location"
+import { PermissionV2 } from "@opencode-ai/core/permission"
+import { Project } from "@opencode-ai/core/project"
+import { ProjectTable } from "@opencode-ai/core/project/sql"
+import { QuestionV2 } from "@opencode-ai/core/question"
+import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionEvent } from "@opencode-ai/core/session/event"
+import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionMessage } from "@opencode-ai/core/session/message"
+import { Prompt } from "@opencode-ai/core/session/prompt"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
+import { SessionRunner } from "@opencode-ai/core/session/runner"
+import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
+import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
+import { SessionRunnerModel } from "@opencode-ai/core/session/runner/model"
+import { SessionStore } from "@opencode-ai/core/session/store"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
+import { Snapshot } from "@opencode-ai/core/snapshot"
+import { SystemContext } from "@opencode-ai/core/system-context"
+import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
+import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
+import { CompressTool } from "@opencode-ai/core/tool/compress"
+import { ToolRegistry } from "@opencode-ai/core/tool/registry"
+import { Tool } from "@opencode-ai/core/tool/tool"
+import { eq } from "drizzle-orm"
+import { Effect, Layer, Schema, Stream } from "effect"
+import { testEffect } from "./lib/effect"
+
+const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-context-test-"))
+
+const requests: LLMRequest[] = []
+let turns: LLMEvent[][] = []
+let summary = "## State\n- implemented the authentication flow"
+let summaryAvailable = true
+
+/** A compression request is the isolated internal call: one user message and no tools. */
+const isCompression = (request: LLMRequest) =>
+  request.tools.length === 0 &&
+  request.messages.length === 1 &&
+  request.messages[0]?.role === "user" &&
+  JSON.stringify(request.messages[0]?.content).includes("technical state summary")
+
+const client = Layer.succeed(
+  LLMClient.Service,
+  LLMClient.Service.of({
+    prepare: () => Effect.die("unused"),
+    stream: ((request: LLMRequest) => {
+      requests.push(request)
+      if (isCompression(request))
+        return Stream.fromIterable<LLMEvent>(
+          summaryAvailable
+            ? [
+                LLMEvent.stepStart({ index: 0 }),
+                LLMEvent.textStart({ id: "summary" }),
+                LLMEvent.textDelta({ id: "summary", text: summary }),
+                LLMEvent.textEnd({ id: "summary" }),
+                LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+                LLMEvent.finish({ reason: "stop" }),
+              ]
+            : [LLMEvent.providerError({ message: "summary unavailable" })],
+        )
+      return Stream.fromIterable(turns.shift() ?? say("Done"))
+    }) as unknown as LLMClientShape["stream"],
+    generate: () => Effect.die("unused"),
+  }),
+)
+
+const say = (text: string) => [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.textStart({ id: `text-${text}` }),
+  LLMEvent.textDelta({ id: `text-${text}`, text }),
+  LLMEvent.textEnd({ id: `text-${text}` }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+
+const call = (id: string, name: string, input: Record<string, unknown>) => [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.toolCall({ id, name, input }),
+  LLMEvent.stepFinish({ index: 0, reason: "tool-calls" }),
+  LLMEvent.finish({ reason: "tool-calls" }),
+]
+
+const route = OpenAIChat.route.with({ limits: { context: 200_000, output: 1_000 } })
+const model = Model.make({ id: "fake-model", provider: "fake", route })
+/** A model whose request body cannot be built, so its wire size is unknowable. */
+const brokenModel = Model.make({
+  id: "broken-model",
+  provider: "fake",
+  route: { ...route, body: { schema: route.body.schema, from: () => Effect.die("cannot lower this request") } },
+})
+let lowering: "works" | "fails" | "verbose" | "padded" = "works"
+/**
+ * A provider whose wire format re-serializes marked content verbosely, so its body is far heavier
+ * than the canonical JSON the estimator measures. Against this route the byte estimate is
+ * optimistic: it passes conversations the real payload ceiling rejects, and the hard payload gate
+ * is the only line of defense left — exactly the scenario this must never leak onto the wire.
+ */
+const verboseModel = Model.make({
+  id: "verbose-model",
+  provider: "fake",
+  route: {
+    ...route,
+    body: {
+      schema: route.body.schema,
+      from: (request: LLMRequest) =>
+        route.body
+          .from(request)
+          .pipe(Effect.map((body) => JSON.parse(JSON.stringify(body).replaceAll("expandme", "x".repeat(2_000))))),
+    },
+  },
+})
+/**
+ * A provider whose wire body carries ~4 KB of request-level envelope cost that the declared
+ * envelope cannot know about, in a top-level body key (outside the conversation portion). The
+ * schema encodes the body verbatim: this provider really sends — and is measured for — the key.
+ */
+const paddedModel = Model.make({
+  id: "padded-model",
+  provider: "fake",
+  route: {
+    ...route,
+    body: {
+      schema: Schema.Unknown,
+      from: (request: LLMRequest) =>
+        Effect.map(
+          route.body.from(request),
+          (body) =>
+            ({
+              ...(body as Record<string, unknown>),
+              provider_envelope_padding: "x".repeat(4_000),
+            }) as unknown as typeof body,
+        ),
+    },
+  },
+})
+const models = SessionRunnerModel.layerWith(() =>
+  Effect.succeed(
+    lowering === "works"
+      ? model
+      : lowering === "fails"
+        ? brokenModel
+        : lowering === "padded"
+          ? paddedModel
+          : verboseModel,
+  ),
+)
+
+const permission = Layer.succeed(
+  PermissionV2.Service,
+  PermissionV2.Service.of({
+    assert: () => Effect.void,
+    ask: () => Effect.die("unused"),
+    reply: () => Effect.die("unused"),
+    get: () => Effect.die("unused"),
+    forSession: () => Effect.die("unused"),
+    list: () => Effect.die("unused"),
+  }),
+)
+
+/** Large enough that replacing it with a prune marker is an actual saving. */
+const fileBody = (file: string) => `contents of ${file}\n${"export const value = 1\n".repeat(40)}`
+
+const tools = Layer.effectDiscard(
+  ToolRegistry.Service.use((registry) =>
+    registry.register({
+      inspect: Tool.make({
+        description: "Read a file",
+        // `repeat` exists so a single call can produce an output that dwarfs the byte ceiling.
+        input: Schema.Struct({ file: Schema.String, repeat: Schema.optional(Schema.Number) }),
+        output: Schema.Struct({ text: Schema.String }),
+        toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
+        execute: ({ file, repeat }) => Effect.succeed({ text: fileBody(file).repeat(repeat ?? 1) }),
+      }),
+      generate: Tool.make({
+        description: "Run a generated script",
+        input: Schema.Struct({ script: Schema.String }),
+        output: Schema.Struct({ text: Schema.String }),
+        execute: () => Effect.fail(new Tool.Failure({ message: "exit code 1: syntax error" })),
+      }),
+      snapshot: Tool.make({
+        description: "Record the current plan",
+        // Declared protected, exactly like todowrite or task in the real registry.
+        contextPolicy: { protect: true, deduplicate: false },
+        input: Schema.Struct({ plan: Schema.String }),
+        output: Schema.Struct({ text: Schema.String }),
+        toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
+        execute: ({ plan }) => Effect.succeed({ text: `snapshot of the plan: ${plan}` }),
+      }),
+    }),
+  ),
+)
+const toolsNode = makeLocationNode({ name: "test/context-tools", layer: tools, deps: [ToolRegistry.node] })
+
+const systemContextKey = SystemContext.Key.make("test/context")
+const systemContext = Layer.effectDiscard(
+  SystemContextRegistry.Service.pipe(
+    Effect.flatMap((registry) =>
+      registry.register({
+        key: systemContextKey,
+        load: Effect.succeed(
+          SystemContext.make({
+            key: systemContextKey,
+            codec: Schema.toCodecJson(Schema.String),
+            load: Effect.succeed("Initial context"),
+            baseline: String,
+            update: (_previous, current) => current,
+          }),
+        ),
+      }),
+    ),
+  ),
+).pipe(Layer.provideMerge(AppNodeBuilder.build(SystemContextRegistry.node)))
+
+const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+
+const configWith = (input?: {
+  readonly payloadBytes?: number
+  readonly steps?: number
+  readonly keepTokens?: number
+}) =>
+  Layer.succeed(
+    Config.Service,
+    Config.Service.of({
+      entries: () =>
+        Effect.succeed([
+          new Config.Document({
+            type: "document",
+            info: new Config.Info({
+              compaction:
+                input?.keepTokens === undefined
+                  ? undefined
+                  : new ConfigCompaction.Info({
+                      auto: false,
+                      keep: new ConfigCompaction.Keep({ tokens: input.keepTokens }),
+                    }),
+              agents: input?.steps === undefined ? undefined : { build: new ConfigAgent.Info({ steps: input.steps }) },
+              context: new ConfigContext.Info({
+                purge_errors: new ConfigContext.PurgeErrors({ turns: 1 }),
+                protection: new ConfigContext.Protection({ recent_turns: 1 }),
+                payload_bytes: input?.payloadBytes,
+              }),
+            }),
+          }),
+        ]),
+    }),
+  )
+
+const config = configWith()
+
+const runnerLayerWith = (config: Layer.Layer<Config.Service>) =>
+  AppNodeBuilder.build(SessionRunnerLLM.node, [
+    [Snapshot.node, Snapshot.noopLayer],
+    [LayerNodePlatform.llmClient, client],
+    [SessionRunnerModel.node, models],
+    [SystemContextRegistry.node, systemContext],
+    [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
+    [SkillGuidance.node, skillGuidance],
+    [ReferenceGuidance.node, referenceGuidance],
+    [PermissionV2.node, permission],
+    [Config.node, config],
+  ])
+
+const executionWith = (config: Layer.Layer<Config.Service>) =>
+  Layer.effect(
+    SessionExecution.Service,
+    Effect.gen(function* () {
+      const sessionRunner = yield* SessionRunner.Service
+      const coordinator = yield* SessionRunCoordinator.make<SessionV2.ID, SessionRunner.RunError>({
+        drain: (sessionID, force) => sessionRunner.run({ sessionID, force }),
+      })
+      return SessionExecution.Service.of({
+        active: coordinator.active,
+        resume: coordinator.run,
+        wake: coordinator.wake,
+        interrupt: coordinator.interrupt,
+      })
+    }),
+  ).pipe(Layer.provide(runnerLayerWith(config)))
+
+const harness = (config: Layer.Layer<Config.Service>) =>
+  testEffect(
+    AppNodeBuilder.build(
+      LayerNode.group([
+        Database.node,
+        EventV2.node,
+        QuestionV2.node,
+        SessionProjector.node,
+        SessionStore.node,
+        ApplicationTools.node,
+        AgentV2.node,
+        ToolRegistry.node,
+        ToolRegistry.toolsNode,
+        toolsNode,
+        ContextManager.node,
+        CompressTool.node,
+        SessionRunnerModel.node,
+        SystemContextRegistry.node,
+        SkillGuidance.node,
+        ReferenceGuidance.node,
+        Config.node,
+        Snapshot.node,
+        SessionRunnerLLM.node,
+        SessionExecution.node,
+        SessionV2.node,
+      ]),
+      [
+        [LayerNodePlatform.llmClient, client],
+        [PermissionV2.node, permission],
+        [SessionRunnerModel.node, models],
+        [SystemContextRegistry.node, systemContext],
+        [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
+        [SkillGuidance.node, skillGuidance],
+        [ReferenceGuidance.node, referenceGuidance],
+        [Snapshot.node, Snapshot.noopLayer],
+        [SessionExecution.node, executionWith(config)],
+        [Config.node, config],
+      ],
+    ),
+  )
+
+const it = harness(config)
+/** A ceiling small enough that a couple of file reads already blow past it. */
+const itBounded = harness(configWith({ payloadBytes: 3_000 }))
+/** One step per turn, so the very first provider request is already the max-steps request. */
+const itLastStep = harness(configWith({ steps: 1 }))
+/** A ceiling nothing can fit under, not even an empty conversation with its tools. */
+const itUnfittable = harness(configWith({ payloadBytes: 200 }))
+/**
+ * A ceiling that compression alone cannot satisfy once the protected recent turns are large,
+ * plus a keep window small enough that native compaction has something to summarise.
+ */
+const itTight = harness(configWith({ payloadBytes: 5_000, keepTokens: 100 }))
+
+const sessionID = SessionV2.ID.make("ses_context_manager_test")
+
+const setup = Effect.gen(function* () {
+  const { db } = yield* Database.Service
+  requests.length = 0
+  turns = []
+  lowering = "works"
+  summary = "## State\n- implemented the authentication flow"
+  summaryAvailable = true
+  yield* db
+    .insert(ProjectTable)
+    .values({ id: Project.ID.global, worktree: AbsolutePath.make(projectDir), sandboxes: [] })
+    .onConflictDoNothing()
+    .run()
+    .pipe(Effect.orDie)
+  yield* db
+    .insert(SessionTable)
+    .values({
+      id: sessionID,
+      project_id: Project.ID.global,
+      slug: sessionID,
+      directory: projectDir,
+      title: "test",
+      version: "test",
+    })
+    .onConflictDoNothing()
+    .run()
+    .pipe(Effect.orDie)
+  return yield* SessionV2.Service
+})
+
+const ask = (session: SessionV2.Interface, text: string) =>
+  session
+    .prompt({ sessionID, prompt: Prompt.make({ text }), resume: false })
+    .pipe(Effect.andThen(session.resume(sessionID)))
+
+const agentTurns = () => requests.filter((request) => !isCompression(request))
+
+/** Record every payload of one event definition for the remainder of the test. */
+const collect = <D extends EventV2.Definition>(definition: D) =>
+  Effect.gen(function* () {
+    const events = yield* EventV2.Service
+    const received: EventV2.Data<D>[] = []
+    yield* (events.subscribe(definition) as Stream.Stream<EventV2.Payload<D>>).pipe(
+      Stream.runForEach((event) =>
+        Effect.sync(() => {
+          received.push(event.data)
+        }),
+      ),
+      Effect.forkScoped,
+    )
+    yield* Effect.yieldNow
+    return received
+  })
+
+const toolResults = (request: LLMRequest) =>
+  request.messages.flatMap((message) =>
+    message.role === "tool"
+      ? message.content.flatMap((part) => (part.type === "tool-result" ? [JSON.stringify(part.result)] : []))
+      : [],
+  )
+
+const userTexts = (request: LLMRequest) =>
+  request.messages.flatMap((message) =>
+    message.role === "user"
+      ? message.content.flatMap((content) => (content.type === "text" ? [content.text] : []))
+      : [],
+  )
+
+describe("ContextManager", () => {
+  it.effect("assembles exactly one system prompt containing stable context guidance", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      turns = [say("First"), say("Second")]
+
+      yield* ask(session, "Hello")
+      yield* ask(session, "Again")
+
+      for (const request of agentTurns()) {
+        expect(request.system.map((part) => part.text)).toEqual([ContextManager.GUIDANCE, "Initial context"])
+        // Context management never appends a chronological system message of its own.
+        expect(request.messages.filter((message) => message.role === "system")).toHaveLength(0)
+        expect(request.messages.every((message) => message.role !== "assistant" || message.content.length > 0)).toBe(
+          true,
+        )
+      }
+    }),
+  )
+
+  it.effect("prunes superseded duplicate tool output while keeping the canonical history intact", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      turns = [
+        call("call-1", "inspect", { file: "src/index.ts" }),
+        call("call-2", "inspect", { file: "src/index.ts" }),
+        call("call-3", "inspect", { file: "src/index.ts" }),
+        say("Done"),
+      ]
+
+      yield* ask(session, "Inspect the entry point")
+
+      const last = agentTurns().at(-1)!
+      const results = toolResults(last)
+      expect(results).toHaveLength(3)
+      expect(results[0]).toContain(ContextDeduplicate.MARKER)
+      expect(results[1]).toContain(ContextDeduplicate.MARKER)
+      expect(results[2]).toContain("contents of src/index.ts")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const outputs = history.flatMap((message) =>
+        message.type === "assistant"
+          ? message.content.flatMap((part) =>
+              part.type === "tool" && part.state.status === "completed"
+                ? part.state.content.map((item) => (item.type === "text" ? item.text : ""))
+                : [],
+            )
+          : [],
+      )
+      expect(outputs).toEqual([fileBody("src/index.ts"), fileBody("src/index.ts"), fileBody("src/index.ts")])
+    }),
+  )
+
+  it.effect("purges a stale failed tool input while keeping its diagnostic", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const script = "console.log('x')\n".repeat(500)
+      turns = [call("call-fail", "generate", { script }), say("Recovering"), say("Done")]
+
+      yield* ask(session, "Run the script")
+      yield* ask(session, "Continue")
+
+      const last = agentTurns().at(-1)!
+      const inputs = last.messages.flatMap((message) =>
+        message.role === "assistant"
+          ? message.content.flatMap((part) => (part.type === "tool-call" ? [JSON.stringify(part.input)] : []))
+          : [],
+      )
+      expect(inputs).toEqual([JSON.stringify({ purged: ContextPurgeErrors.MARKER })])
+      expect(JSON.stringify(last.messages)).not.toContain(script)
+      expect(JSON.stringify(last.messages)).toContain("exit code 1: syntax error")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const recorded = history.flatMap((message) =>
+        message.type === "assistant"
+          ? message.content.flatMap((part) => (part.type === "tool" ? [part.state.input] : []))
+          : [],
+      )
+      expect(recorded).toEqual([{ script }])
+    }),
+  )
+
+  it.effect("compresses a completed range into a placeholder without rewriting history", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      turns = [
+        say("Explored"),
+        say("Implemented"),
+        call("call-compress", "compress", { focus: "the auth flow" }),
+        say("Compressed"),
+      ]
+
+      yield* ask(session, "Explore the repository")
+      yield* ask(session, "Implement authentication")
+      yield* ask(session, "Compress what is finished")
+
+      const compression = requests.find(isCompression)
+      expect(compression).toBeDefined()
+      // Internal calls are isolated: no tools, no context guidance, no session transform.
+      expect(compression!.tools).toEqual([])
+      expect(compression!.system).toEqual([])
+      expect(JSON.stringify(compression!.messages)).toContain("Focus the summary on: the auth flow")
+
+      const last = agentTurns().at(-1)!
+      const placeholder = userTexts(last).find((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholder).toBeDefined()
+      expect(placeholder).toContain("implemented the authentication flow")
+      expect(userTexts(last)).not.toContain("Explore the repository")
+      expect(userTexts(last)).toContain("Compress what is finished")
+      expect(last.system.map((part) => part.text)).toEqual([ContextManager.GUIDANCE, "Initial context"])
+      expect(last.messages.filter((message) => message.role === "system")).toHaveLength(0)
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      expect(history.flatMap((message) => (message.type === "user" ? [message.text] : []))).toContain(
+        "Explore the repository",
+      )
+
+      const { db } = yield* Database.Service
+      const blocks = yield* db
+        .select()
+        .from(SessionContextBlockTable)
+        .where(eq(SessionContextBlockTable.session_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0]!.summary).toContain("implemented the authentication flow")
+      expect(blocks[0]!.id.startsWith(ContextState.PREFIX)).toBe(true)
+
+      const stats = yield* (yield* ContextManager.Service).stats(sessionID)
+      expect(stats.compressionCount).toBe(1)
+      expect(stats.tokensSaved).toBeGreaterThan(0)
+    }),
+  )
+
+  it.effect("folds an earlier summary into an overlapping compression", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five")]
+
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+      yield* ask(session, "Step four")
+      yield* ask(session, "Step five")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const inner = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[3]!.id,
+      })
+      if ("failure" in inner) throw new Error(`inner compression failed: ${inner.failure}`)
+
+      summary = "## State\n- combined summary covering both ranges"
+      const outer = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[5]!.id,
+      })
+      if ("failure" in outer) throw new Error(`outer compression failed: ${outer.failure}`)
+
+      const prompt = requests.filter(isCompression).at(-1)!
+      expect(JSON.stringify(prompt.messages)).toContain("implemented the authentication flow")
+      expect(outer.block.nested).toContain(inner.block.id)
+
+      const { db } = yield* Database.Service
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).toEqual([outer.block.id])
+
+      turns = [say("After compression")]
+      yield* ask(session, "Keep going")
+      const last = agentTurns().at(-1)!
+      const placeholder = userTexts(last).find((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholder).toContain("combined summary covering both ranges")
+      expect(userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))).toHaveLength(1)
+    }),
+  )
+
+  it.effect("absorbs a partially overlapping summary instead of stranding it", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five")]
+
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+      yield* ask(session, "Step four")
+      yield* ask(session, "Step five")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const first = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[2]!.id,
+        endMessageID: history[5]!.id,
+      })
+      if ("failure" in first) throw new Error(`first compression failed: ${first.failure}`)
+
+      summary = "## State\n- combined summary of the overlapping ranges"
+      // Overlaps the first block on one side only: neither range contains the other.
+      const second = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[3]!.id,
+      })
+      if ("failure" in second) throw new Error(`second compression failed: ${second.failure}`)
+
+      // The range grew to swallow the block it overlapped, so no summary is left unreachable.
+      expect(second.block.startMessageID).toBe(history[0]!.id)
+      expect(second.block.endMessageID).toBe(history[5]!.id)
+      expect(second.block.nested).toContain(first.block.id)
+
+      const { db } = yield* Database.Service
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).toEqual([second.block.id])
+
+      turns = [say("After compression")]
+      yield* ask(session, "Keep going")
+      const last = agentTurns().at(-1)!
+      const placeholders = userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholders).toHaveLength(1)
+      expect(placeholders[0]).toContain("combined summary of the overlapping ranges")
+      expect(userTexts(last)).not.toContain("Step one")
+    }),
+  )
+
+  itBounded.effect("compresses on the payload byte ceiling even when the token window is nearly empty", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const failures = yield* collect(SessionEvent.Context.CompressionFailed)
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      turns = [call("call-1", "inspect", { file: "src/index.ts" }), say("First"), say("Second"), say("Third")]
+
+      yield* ask(session, "Inspect the entry point")
+      yield* ask(session, "Keep going")
+      yield* ask(session, "And again")
+
+      const context = yield* ContextManager.Service
+      const stats = yield* context.stats(sessionID)
+      // The 200k token window is barely touched: only the byte ceiling can have forced this.
+      expect(stats.utilization).toBeLessThan(0.6)
+      expect(stats.compressionCount).toBeGreaterThan(0)
+      expect(requests.some(isCompression)).toBe(true)
+      expect(stats.tokensSaved).toBeGreaterThan(0)
+      // Byte pressure is reported on its own field, never by inflating the window recommendation
+      // and never as a failed compression: nothing failed to summarize here.
+      expect(prepared.some((event) => event.payloadOverBudget)).toBe(true)
+      expect(prepared.every((event) => event.recommendation === "none")).toBe(true)
+      expect(failures).toHaveLength(0)
+    }),
+  )
+
+  itUnfittable.effect("never sends a request that cannot be reduced under the payload ceiling", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      turns = [say("This turn must never reach the provider")]
+
+      yield* ask(session, "Hello")
+
+      // Nothing that carries tools is an agent turn, so an empty list here means the oversized
+      // request was never handed to the client. The queued provider turn is still unconsumed.
+      expect(requests.filter((request) => request.tools.length > 0)).toEqual([])
+      expect(turns).toHaveLength(1)
+      // The turn fails loudly instead of silently sending or silently stopping.
+      expect(JSON.stringify(failures)).toContain("context payload budget")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      expect(history.flatMap((message) => (message.type === "user" ? [message.text] : []))).toEqual(["Hello"])
+    }),
+  )
+
+  it.effect("degrades gracefully when the summary model returns nothing", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const failures = yield* collect(SessionEvent.Context.CompressionFailed)
+      turns = [say("One"), say("Two"), say("Three")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+
+      summaryAvailable = false
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const result = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[1]!.id,
+      })
+
+      expect(result).toEqual({ failure: "summary-unavailable" })
+      expect(failures).toHaveLength(1)
+
+      turns = [say("Still usable")]
+      yield* ask(session, "Continue anyway")
+      expect(userTexts(agentTurns().at(-1)!)).toContain("Step one")
+    }),
+  )
+
+  it.effect("refuses to compress the protected recent window", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [say("One"), say("Two")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      expect(
+        yield* context.compress({
+          sessionID,
+          reason: "manual",
+          startMessageID: history[0]!.id,
+          endMessageID: history.at(-1)!.id,
+        }),
+      ).toEqual({ failure: "protected-range" })
+    }),
+  )
+
+  it.effect("reports prepared context statistics for the TUI", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      turns = [call("call-1", "inspect", { file: "a.ts" }), call("call-2", "inspect", { file: "a.ts" }), say("Done")]
+
+      yield* ask(session, "Inspect twice")
+
+      expect(prepared.length).toBeGreaterThan(0)
+      const last = prepared.at(-1)!
+      expect(last.rawTokens).toBeGreaterThan(0)
+      expect(last.preparedTokens).toBeLessThanOrEqual(last.rawTokens)
+      expect(last.deduplicatedMessages).toBe(1)
+      expect(last.limit).toBe(199_000)
+      expect(last.recommendation).toBe("none")
+    }),
+  )
+
+  it.effect("budgets the system prompt and tool definitions, not just the history", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      turns = [say("Done")]
+
+      yield* ask(session, "Say something")
+
+      const request = agentTurns().at(-1)!
+      // Measured from the request objects themselves, not from a parallel description of them: the
+      // runner hands the compiler the very arrays it then sends.
+      const envelope = ContextBudget.envelope({ system: request.system, tools: request.tools, extra: [] })
+      const last = prepared.at(-1)!
+      // The measured overhead is the request's own system prompt and tool definitions, so a large
+      // toolset can no longer hide from the utilization bands.
+      expect(last.overheadTokens).toBe(envelope.tokens)
+      expect(last.overheadTokens).toBeGreaterThan(0)
+      expect(last.preparedTokens).toBeGreaterThan(last.overheadTokens)
+      expect(last.utilization).toBeCloseTo(last.preparedTokens / 199_000, 10)
+    }),
+  )
+
+  it.effect("budgets the max-steps message exactly as the request carries it", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      // One step per turn, so the very first provider request is already the max-steps request.
+      yield* (yield* AgentV2.Service).transform((editor) =>
+        editor.update(AgentV2.defaultID, (info) => {
+          info.steps = 1
+        }),
+      )
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      turns = [say("Done")]
+
+      yield* ask(session, "Say something")
+
+      const request = agentTurns().at(-1)!
+      const trailing = request.messages.at(-1)!
+      // The runner appends the max-steps prompt as an assistant message rather than as request
+      // metadata, so the compiler has to be told about it in that exact shape.
+      expect(trailing).toEqual(Message.assistant(MAX_STEPS_PROMPT))
+      expect(request.tools).toEqual([])
+      const envelope = ContextBudget.envelope({
+        system: request.system,
+        tools: request.tools,
+        extra: [trailing],
+      })
+      expect(prepared.at(-1)!.overheadTokens).toBe(envelope.tokens)
+    }),
+  )
+
+  it.effect("keeps a protected tool call verbatim inside an explicitly compressed range", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [call("call-snap", "snapshot", { plan: "ship the parser" }), say("Recorded"), say("Two"), say("Three")]
+
+      yield* ask(session, "Record the plan")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const snapshotMessage = history.find(
+        (message) =>
+          message.type === "assistant" &&
+          message.content.some((part) => part.type === "tool" && part.name === "snapshot"),
+      )!
+      const end = history.findIndex((message) => message.id === snapshotMessage.id) + 2
+      const result = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[end]!.id,
+      })
+      if ("failure" in result) throw new Error(`compression failed: ${result.failure}`)
+
+      // The protected message inside the requested range is reported, not silently swallowed.
+      expect(result.excludedMessages).toBe(1)
+      expect(result.block.sourceMessageCount).toBe(end)
+
+      turns = [say("Four")]
+      yield* ask(session, "Step four")
+
+      const last = agentTurns().at(-1)!
+      expect(userTexts(last).some((text) => text.includes("<compressed-conversation-section>"))).toBe(true)
+      expect(JSON.stringify(last.messages)).toContain("snapshot of the plan: ship the parser")
+    }),
+  )
+
+  it.effect("keeps compression boundaries out of a natively compacted history", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [say("One"), say("Two"), say("Three")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const compressed = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[1]!.id,
+      })
+      if ("failure" in compressed) throw new Error(`compression failed: ${compressed.failure}`)
+
+      yield* context.invalidate(sessionID)
+      const { db } = yield* Database.Service
+      expect(yield* ContextState.list(db, sessionID)).toEqual([])
+
+      turns = [say("After compaction")]
+      yield* ask(session, "Continue")
+      expect(userTexts(agentTurns().at(-1)!)).toContain("Step one")
+    }),
+  )
+
+  it.effect("reports statistics without mutating context state", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const { db } = yield* Database.Service
+      turns = [say("One"), say("Two"), say("Three")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const compressed = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[0]!.id,
+        endMessageID: history[1]!.id,
+      })
+      if ("failure" in compressed) throw new Error(`compression failed: ${compressed.failure}`)
+      // A boundary the compiler considers stale: neither endpoint exists in the history.
+      const stale: ContextTypes.CompressionBlock = {
+        ...compressed.block,
+        id: `${ContextState.PREFIX}stale`,
+        startMessageID: SessionMessage.ID.make("msg_does_not_exist_start"),
+        endMessageID: SessionMessage.ID.make("msg_does_not_exist_end"),
+      }
+      yield* ContextState.insert(db, sessionID, stale)
+
+      const preparing = yield* collect(SessionEvent.Context.Preparing)
+      const prepared = yield* collect(SessionEvent.Context.Prepared)
+      const before = requests.length
+
+      const first = yield* context.stats(sessionID)
+      const second = yield* context.stats(sessionID)
+
+      // Observation only: no provider traffic, no lifecycle events, no rows removed.
+      expect(second).toEqual(first)
+      expect(requests.length).toBe(before)
+      expect(preparing).toEqual([])
+      expect(prepared).toEqual([])
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).toContain(stale.id)
+
+      // The real pipeline still performs the cleanup that stats deliberately skipped.
+      turns = [say("Four")]
+      yield* ask(session, "Step four")
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).not.toContain(stale.id)
+      expect(preparing.length).toBeGreaterThan(0)
+    }),
+  )
+
+  it.effect("charges the real prompt cost on the very first stats call, before any turn", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+
+      const before = requests.length
+      const first = yield* context.stats(sessionID)
+      // No turn has ever prepared this session, yet the system prompt, the context guidance and
+      // the tool definitions are real request cost: a stats call that ignored them would report
+      // an empty context the first turn immediately disproves — exactly when a client reads
+      // stats to initialize its UI. The envelope is rebuilt read-only, so this is observation:
+      // no provider traffic, and two observations agree exactly.
+      expect(first.overheadTokens).toBeGreaterThan(0)
+      // The history is still empty, so overhead is essentially all the request costs.
+      expect(first.rawTokens).toBeGreaterThanOrEqual(first.overheadTokens)
+      expect(first.rawTokens - first.overheadTokens).toBeLessThanOrEqual(1)
+      expect(requests.length).toBe(before)
+      expect(yield* context.stats(sessionID)).toEqual(first)
+
+      // Once a turn declares the real envelope it takes over, and the observed value may only
+      // stay or grow — the epoch baseline joins the accounting on that first prepared turn.
+      turns = [say("One")]
+      yield* ask(session, "Step one")
+      const after = yield* context.stats(sessionID)
+      expect(after.overheadTokens).toBeGreaterThanOrEqual(first.overheadTokens)
+    }),
+  )
+
+  itBounded.effect("refuses to send a request whose size it cannot measure", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      turns = [say("This turn must never reach the provider")]
+      lowering = "fails"
+
+      // Enforcement reports the failure instead of assuming the request fits.
+      const size = yield* context.payload(
+        LLM.request({ model: brokenModel, messages: [Message.user("hello")], tools: [] }),
+      )
+      expect(size.measured).toBe(false)
+      expect(size.within).toBe(false)
+      expect(size.bytes).toBeGreaterThan(0)
+
+      yield* ask(session, "Hello")
+
+      expect(requests.filter((request) => request.tools.length > 0)).toEqual([])
+      expect(turns).toHaveLength(1)
+      expect(JSON.stringify(failures)).toContain("Refusing to send an unmeasurable request")
+    }),
+  )
+
+  it.effect("skips measurement entirely when no ceiling is configured", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const context = yield* ContextManager.Service
+      // Without `context.payload_bytes` there is nothing to enforce, so the body is never built and
+      // a route that cannot lower a request is not turned into a failure.
+      const size = yield* context.payload(
+        LLM.request({ model: brokenModel, messages: [Message.user("hello")], tools: [] }),
+      )
+      expect(size).toEqual({ bytes: 0, limit: undefined, within: true, measured: false })
+    }),
+  )
+
+  it.effect("normalizes overlapping compression boundaries in storage on the next turn", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const { db } = yield* Database.Service
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+      yield* ask(session, "Step four")
+      yield* ask(session, "Step five")
+
+      // Two blocks that overlap on one side only. Compression cannot produce this any more, so it
+      // stands in for state written by an older version, or left behind by a history rewrite.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const overlapping = (id: string, start: number, end: number, summary: string, createdAt: number) => ({
+        id: `${ContextState.PREFIX}${id}`,
+        startMessageID: history[start]!.id,
+        endMessageID: history[end]!.id,
+        summary,
+        createdAt,
+        sourceMessageCount: end - start + 1,
+        sourceTokenCount: 400,
+        summaryTokenCount: 20,
+        nested: [],
+      })
+      yield* ContextState.insert(db, sessionID, overlapping("older", 0, 3, "summary of the first stretch", 1))
+      yield* ContextState.insert(db, sessionID, overlapping("newer", 2, 5, "summary of the second stretch", 2))
+
+      turns = [say("After normalization")]
+      yield* ask(session, "Keep going")
+
+      // One authoritative range remains, covering exactly what the projection replaced.
+      const blocks = yield* ContextState.list(db, sessionID)
+      expect(blocks).toHaveLength(1)
+      expect(blocks[0]!.id).toBe(`${ContextState.PREFIX}newer`)
+      expect(blocks[0]!.startMessageID).toBe(history[0]!.id)
+      expect(blocks[0]!.endMessageID).toBe(history[5]!.id)
+      expect(blocks[0]!.sourceMessageCount).toBe(6)
+      expect(blocks[0]!.nested).toContain(`${ContextState.PREFIX}older`)
+
+      // Neither summary was stranded, and the request carries a single placeholder for the range.
+      const last = agentTurns().at(-1)!
+      const placeholders = userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholders).toHaveLength(1)
+      expect(placeholders[0]).toContain("summary of the first stretch")
+      expect(placeholders[0]).toContain("summary of the second stretch")
+      expect(placeholders[0]).toContain(`messages: ${history[0]!.id}-${history[5]!.id} (6)`)
+    }),
+  )
+
+  // A block contained entirely inside a wider one can never re-enter the projection: the cover's
+  // summary already speaks for its range. Loading it every turn just to discard it is what the
+  // storage level must stop doing — the next real turn absorbs it into the cover instead.
+  it.effect("absorbs a fully covered compression block into its cover on the next turn", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const { db } = yield* Database.Service
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five")]
+      yield* ask(session, "Step one")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+      yield* ask(session, "Step four")
+      yield* ask(session, "Step five")
+
+      // Nested, not overlapping: the outer range contains the inner one entirely, so there is no
+      // merged survivor to create — the inner block simply never wins the projection again.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const nested = (id: string, start: number, end: number, summary: string, createdAt: number) => ({
+        id: `${ContextState.PREFIX}${id}`,
+        startMessageID: history[start]!.id,
+        endMessageID: history[end]!.id,
+        summary,
+        createdAt,
+        sourceMessageCount: end - start + 1,
+        sourceTokenCount: 400,
+        summaryTokenCount: 20,
+        nested: [],
+      })
+      yield* ContextState.insert(db, sessionID, nested("inner", 1, 2, "summary of the middle stretch", 1))
+      yield* ContextState.insert(db, sessionID, nested("outer", 0, 4, "summary of the whole stretch", 2))
+
+      // Observation is not a cleanup: stats reads the state without deciding anything.
+      yield* context.stats(sessionID)
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id).sort()).toEqual([
+        `${ContextState.PREFIX}inner`,
+        `${ContextState.PREFIX}outer`,
+      ])
+
+      turns = [say("After absorption")]
+      yield* ask(session, "Keep going")
+
+      // The stored set converged on what the projection uses: the covered block stays on disk,
+      // marked as absorbed by its cover, and stops travelling with every load.
+      expect((yield* ContextState.list(db, sessionID)).map((block) => block.id)).toEqual([
+        `${ContextState.PREFIX}outer`,
+      ])
+      const stored = yield* db
+        .select()
+        .from(SessionContextBlockTable)
+        .where(eq(SessionContextBlockTable.id, `${ContextState.PREFIX}inner`))
+        .all()
+        .pipe(Effect.orDie)
+      expect(stored).toHaveLength(1)
+      expect(stored[0]!.absorbed_by).toBe(`${ContextState.PREFIX}outer`)
+
+      // And the request really carried only the covering placeholder.
+      const last = agentTurns().at(-1)!
+      const placeholders = userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))
+      expect(placeholders).toHaveLength(1)
+      expect(placeholders[0]).toContain("summary of the whole stretch")
+      expect(placeholders[0]).not.toContain("summary of the middle stretch")
+    }),
+  )
+
+  itBounded.effect("stops paying for automatic compression once the summarizer keeps failing", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      turns = [call("call-1", "inspect", { file: "src/index.ts" }), say("First"), say("Second"), say("Third")]
+      yield* ask(session, "Inspect the entry point")
+      // From here the byte ceiling keeps asking for compression and the summarizer keeps refusing.
+      summaryAvailable = false
+      const before = requests.filter(isCompression).length
+
+      yield* ask(session, "Keep going")
+      yield* ask(session, "And again")
+      yield* ask(session, "And once more")
+
+      // One failed attempt, then silence: a broken summarizer costs its latency once, not on every
+      // turn for the rest of the session.
+      const attempts = requests.filter(isCompression).length - before
+      expect(attempts).toBe(1)
+    }),
+  )
+
+  itTight.effect("escalates from compression to native compaction and keeps the next turn coherent", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const { db } = yield* Database.Service
+      turns = [
+        call("call-1", "inspect", { file: "src/one.ts" }),
+        say("One"),
+        call("call-2", "inspect", { file: "src/two.ts" }),
+        say("Two"),
+        call("call-3", "inspect", { file: "src/three.ts" }),
+        say("Three"),
+        call("call-4", "inspect", { file: "src/four.ts" }),
+        say("Four"),
+        call("call-5", "inspect", { file: "src/five.ts" }),
+        say("Five"),
+        call("call-6", "inspect", { file: "src/six.ts", repeat: 8 }),
+        say("Six"),
+      ]
+      yield* ask(session, "Read the first file")
+      yield* ask(session, "Read the second file")
+      yield* ask(session, "Read the third file")
+      yield* ask(session, "Read the fourth file")
+      yield* ask(session, "Read the fifth file")
+      yield* ask(session, "Read the sixth file")
+      // The turn that follows the escalation must behave like any other turn.
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      yield* ask(session, "What is left to do")
+
+      // Both levers ran: dynamic compression first, native compaction once compression was not enough.
+      expect(compressions.length).toBeGreaterThan(0)
+      expect(compactions.length).toBeGreaterThan(0)
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      // The chain within a single turn: compression ran, the payload was still too large, native
+      // compaction took over, and the turn was retried successfully afterwards.
+      const chained = kinds.findIndex((kind, index) => kind === "compress" && kinds[index + 1] === "compact")
+      expect(chained, kinds.join(",")).toBeGreaterThanOrEqual(0)
+      expect(kinds.indexOf("agent", chained)).toBeGreaterThan(chained + 1)
+
+      // Bounded latency: a turn inserts at most one summarization and one compaction ahead of the
+      // model call, so no turn can pay for an unbounded ladder of internal requests.
+      const perTurn = kinds.reduce<string[][]>(
+        (groups, kind) =>
+          kind === "agent" ? [...groups, []] : [...groups.slice(0, -1), [...(groups.at(-1) ?? []), kind]],
+        [[]],
+      )
+      for (const group of perTurn) {
+        expect(group.filter((kind) => kind === "compress").length).toBeLessThanOrEqual(1)
+        expect(group.filter((kind) => kind === "compact").length).toBeLessThanOrEqual(1)
+      }
+
+      // No oversized request ever reached the provider, on either side of the escalation.
+      const provider = requests.filter((request) => request.tools.length > 0)
+      for (const request of provider) expect((yield* context.payload(request)).within).toBe(true)
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      // The turn after the escalation carries the compaction summary plus the new question, and
+      // nothing from the compression boundaries that compaction invalidated.
+      const last = provider.at(-1)!
+      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
+      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(userTexts(last)).toContain("What is left to do")
+      expect(failures).toEqual([])
+      expect(history.at(-1)?.type).toBe("assistant")
+
+      // Compaction rewrote the history, so no surviving boundary may point at a message it dropped.
+      const ids = new Set(history.map((message) => message.id))
+      for (const block of yield* ContextState.list(db, sessionID)) {
+        expect(ids.has(block.startMessageID)).toBe(true)
+        expect(ids.has(block.endMessageID)).toBe(true)
+      }
+    }),
+  )
+
+  /**
+   * The verbose lowering multiplies the probe text on the wire (~2 KB per `expandme` marker, none
+   * of it in the canonical estimate), while the ceiling sits between the two serializations. The
+   * estimate is therefore optimistic in exactly one direction here: the wire body is much larger
+   * than envelope-plus-canonical planning can ever see in this test.
+   */
+  const itOptimistic = harness(configWith({ payloadBytes: 7_500, keepTokens: 10 }))
+
+  // The very first request of the session already overflows: nothing has been measured yet, so
+  // planning must be blind and the wire gate carries the whole recovery alone.
+  itOptimistic.effect("escalates to native compaction when an unseen payload overflows the first request", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const preparedEvents = yield* collect(SessionEvent.Context.Prepared)
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      lowering = "verbose"
+      turns = [say("Alpha"), say("Bravo")]
+      yield* ask(session, "probe one expandme expandme expandme")
+      yield* ask(session, "probe two")
+
+      // The estimate never saw the problem: no ladder, no automatic compression, no over-budget
+      // flag on any preparation — on either side of the recovery.
+      expect(compressions.length).toBe(0)
+      expect(preparedEvents.length).toBeGreaterThanOrEqual(2)
+      expect(preparedEvents.every((event) => event.payloadOverBudget === false)).toBe(true)
+
+      // The wire measurement caught it instead: exactly one native-compaction recovery before the
+      // retried first request, and the session continues normally afterwards. The rejected giant
+      // request itself never reaches the provider, so it never appears in the request log.
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      expect(kinds, kinds.join(",")).toEqual(["compact", "agent", "agent"])
+      expect(compactions.length).toBe(1)
+      expect(failures).toEqual([])
+
+      // Nothing over the ceiling ever reached the provider, on either side of the escalation.
+      for (const request of requests) {
+        if (request.tools.length === 0) continue
+        expect((yield* context.payload(request)).within).toBe(true)
+      }
+
+      // And the turn after the escalation is coherent: the compaction summary is in the request,
+      // the new question is in the request, and the session answered.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const last = requests.at(-1)!
+      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
+      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(userTexts(last)).toContain("probe two")
+      expect(history.at(-1)?.type).toBe("assistant")
+    }),
+  )
+
+  // The oversized request arrives on the third ask, after two accepted measurements already
+  // calibrated the envelope — but this provider's extra wire weight lives *inside* the conversation
+  // (the expanded probe text), so calibration correctly learns nothing from it and planning stays
+  // blind. The gate spends its one dynamic-compression attempt first — and here the condensed
+  // older turns are what was overflowing, so the cheaper recovery finishes the job alone and
+  // native compaction is never reached.
+  itOptimistic.effect("recovers an optimistic estimate with one gate compression before compaction", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const preparedEvents = yield* collect(SessionEvent.Context.Prepared)
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      lowering = "verbose"
+      turns = [say("Alpha"), say("Bravo"), say("Charlie"), say("Delta"), say("Echo"), say("Foxtrot")]
+      for (const probe of ["one expandme", "two expandme", "three expandme", "four"]) {
+        yield* ask(session, `probe ${probe}`)
+      }
+
+      // The estimate never saw the problem: no ladder, no automatic compression, no over-budget
+      // flag on any prepared event — on both sides of the recovery.
+      expect(preparedEvents.length).toBeGreaterThanOrEqual(4)
+      expect(preparedEvents.every((event) => event.payloadOverBudget === false)).toBe(true)
+
+      // The wire measurement caught it instead, and the gate compressed before escalating:
+      // exactly one compression request between two agent requests, retried successfully, and the
+      // session continues normally afterwards. Native compaction never ran.
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      expect(kinds, kinds.join(",")).toEqual(["agent", "agent", "compress", "agent", "agent"])
+      expect(compressions.length).toBe(1)
+      expect(compactions.length).toBe(0)
+      expect(failures).toEqual([])
+
+      // Nothing over the ceiling ever reached the provider, on either side of the recovery.
+      for (const request of requests) {
+        if (request.tools.length === 0) continue
+        expect((yield* context.payload(request)).within).toBe(true)
+      }
+
+      // And the turn after the recovery is coherent: the history was never rewritten by a
+      // compaction, the new question is in the request, and the session answered.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const last = requests.at(-1)!
+      expect(history.filter((message) => message.type === "compaction").length).toBe(0)
+      expect(userTexts(last)).toContain("probe four")
+      expect(history.at(-1)?.type).toBe("assistant")
+    }),
+  )
+
+  // This provider inflates the *envelope*: the wire body carries ~4 KB of request-level overhead
+  // the declared envelope knows nothing about. The first accepted request measures it, and from
+  // then on planning budgets against the wire reality instead of the optimistic estimate.
+  const itPadded = harness(configWith({ payloadBytes: 7_500, keepTokens: 10 }))
+  itPadded.effect("calibrates the payload estimate against the envelope measured on the wire", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const preparedEvents = yield* collect(SessionEvent.Context.Prepared)
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      lowering = "padded"
+      turns = [say("Alpha"), say("Bravo"), say("Charlie")]
+      yield* ask(session, "probe one")
+      yield* ask(session, `probe two ${"detail ".repeat(450)}`)
+      yield* ask(session, "probe three")
+
+      // The second ask is where the learned envelope bites: planning flags exactly one
+      // over-budget preparation before the gate is even consulted. The ladder cannot shed the
+      // protected recent turns and automatic compression has no legal range in a four-turn
+      // window, so the turn still falls through to exactly one native compaction. Meanwhile the
+      // first turn — measured and accepted — and the post-compaction turns all plan within
+      // budget: the calibration learned the padding, not a permanent flinch.
+      expect(preparedEvents.filter((event) => event.payloadOverBudget === true)).toHaveLength(1)
+      expect(compressions.length).toBe(0)
+
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      expect(kinds, kinds.join(",")).toEqual(["agent", "compact", "agent", "agent"])
+      expect(compactions.length).toBe(1)
+      expect(failures).toEqual([])
+
+      // Nothing over the ceiling ever reached the provider, on either side of the escalation.
+      for (const request of requests) {
+        if (request.tools.length === 0) continue
+        expect((yield* context.payload(request)).within).toBe(true)
+      }
+
+      // The turn after the escalation is coherent: the compaction summary is in the request, the
+      // new question is in the request, and the session answered.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const last = requests.at(-1)!
+      const summarized = history.filter((message) => message.type === "compaction").at(-1)!
+      expect(summarized.type === "compaction" && JSON.stringify(last.messages).includes(summarized.summary)).toBe(true)
+      expect(userTexts(last)).toContain("probe three")
+      expect(history.at(-1)?.type).toBe("assistant")
+    }),
+  )
+})

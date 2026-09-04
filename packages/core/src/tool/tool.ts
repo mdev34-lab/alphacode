@@ -37,12 +37,21 @@ export type Content =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "file"; readonly data: string; readonly mime: string; readonly name?: string }
 
+/** How dynamic context management may treat this tool's recorded calls. */
+export type ContextPolicy = {
+  /** Allow superseded identical calls to lose their output in the prepared context. */
+  readonly deduplicate?: boolean
+  /** Keep this tool's calls verbatim in the prepared context. */
+  readonly protect?: boolean
+}
+
 type Config<
   Input extends SchemaType<any>,
   Output extends SchemaType<any>,
   Structured extends SchemaType<any> = Output,
 > = {
   readonly description: string
+  readonly contextPolicy?: ContextPolicy
   readonly input: Input
   readonly output: Output
   readonly structured?: Structured
@@ -62,6 +71,7 @@ type Config<
 
 type Runtime = {
   readonly permission?: string
+  readonly contextPolicy?: ContextPolicy
   readonly definition: (name: string) => ToolDefinition
   readonly settle: (call: ToolCall, context: Context) => Effect.Effect<ToolOutput, ToolFailure>
 }
@@ -76,6 +86,7 @@ export function make<
   const tool = Object.freeze({}) as Definition<Input, Structured>
   const definitions = new Map<string, ToolDefinition>()
   runtimes.set(tool, {
+    contextPolicy: config.contextPolicy,
     definition: (name) => {
       const cached = definitions.get(name)
       if (cached) return cached
@@ -146,6 +157,7 @@ export const withPermission = <Input extends SchemaType<any>, Output extends Sch
 }
 
 export const permission = (tool: AnyTool, name: string) => runtimeOf(tool).permission ?? name
+export const contextPolicy = (tool: AnyTool) => runtimeOf(tool).contextPolicy
 export const definition = (name: string, tool: AnyTool) => runtimeOf(tool).definition(name)
 export const settle = (tool: AnyTool, call: ToolCall, context: Context) => runtimeOf(tool).settle(call, context)
 

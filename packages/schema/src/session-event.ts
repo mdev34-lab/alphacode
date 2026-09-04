@@ -431,6 +431,83 @@ export namespace Compaction {
   export type Ended = typeof Ended.Type
 }
 
+/**
+ * Dynamic context management telemetry.
+ *
+ * These events are advisory: they report what the context compiler did for the next provider
+ * request. They are deliberately not durable, because the canonical session history and the
+ * separately persisted compression blocks already describe the recoverable state.
+ */
+export namespace Context {
+  export const Preparing = Event.define({
+    type: "session.next.context.preparing",
+    schema: {
+      ...Base,
+      messageCount: NonNegativeInt,
+      rawTokens: NonNegativeInt,
+      limit: NonNegativeInt.pipe(optional),
+    },
+  })
+  export type Preparing = typeof Preparing.Type
+
+  export const Compressing = Event.define({
+    type: "session.next.context.compressing",
+    schema: {
+      ...Base,
+      reason: Schema.Literals(["model", "manual", "auto"]),
+      startMessageID: SessionMessage.ID,
+      endMessageID: SessionMessage.ID,
+      messageCount: NonNegativeInt,
+    },
+  })
+  export type Compressing = typeof Compressing.Type
+
+  export const Compressed = Event.define({
+    type: "session.next.context.compressed",
+    schema: {
+      ...Base,
+      blockID: Schema.String,
+      startMessageID: SessionMessage.ID,
+      endMessageID: SessionMessage.ID,
+      reason: Schema.Literals(["model", "manual", "auto"]),
+      sourceMessageCount: NonNegativeInt,
+      sourceTokenCount: NonNegativeInt,
+      summaryTokenCount: NonNegativeInt,
+    },
+  })
+  export type Compressed = typeof Compressed.Type
+
+  export const CompressionFailed = Event.define({
+    type: "session.next.context.compression.failed",
+    schema: {
+      ...Base,
+      reason: Schema.String,
+    },
+  })
+  export type CompressionFailed = typeof CompressionFailed.Type
+
+  export const Prepared = Event.define({
+    type: "session.next.context.prepared",
+    schema: {
+      ...Base,
+      rawTokens: NonNegativeInt,
+      preparedTokens: NonNegativeInt,
+      overheadTokens: NonNegativeInt,
+      tokensSaved: NonNegativeInt,
+      compressionCount: NonNegativeInt,
+      compressedMessages: NonNegativeInt,
+      deduplicatedMessages: NonNegativeInt,
+      purgedErrors: NonNegativeInt,
+      utilization: Schema.Finite,
+      limit: NonNegativeInt.pipe(optional),
+      recommendation: Schema.Literals(["none", "normal", "nudge", "prefer", "mandatory"]),
+      /** The serialized request is expected to exceed the configured payload byte ceiling. */
+      payloadOverBudget: Schema.Boolean,
+    },
+  })
+  export type Prepared = typeof Prepared.Type
+}
+
 export namespace RevertEvent {
   export const Staged = Event.define({
     type: "session.next.revert.staged",
@@ -506,6 +583,11 @@ export const Definitions = Event.inventory(
   Compaction.Started,
   Compaction.Delta,
   Compaction.Ended,
+  Context.Preparing,
+  Context.Compressing,
+  Context.Compressed,
+  Context.CompressionFailed,
+  Context.Prepared,
   RevertEvent.Staged,
   RevertEvent.Cleared,
   RevertEvent.Committed,

@@ -1,7 +1,7 @@
 import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
-import { createMemo } from "solid-js"
+import { createMemo, Show } from "solid-js"
 
 const id = "internal:sidebar-context"
 
@@ -16,7 +16,17 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
   const session = createMemo(() => props.api.state.session.get(props.session_id))
   const cost = createMemo(() => session()?.cost ?? 0)
 
+  const prepared = createMemo(() => props.api.state.session.context(props.session_id))
+
   const state = createMemo(() => {
+    // Once the context compiler has prepared a turn it knows exactly what is being sent.
+    const compiled = prepared()
+    if (compiled)
+      return {
+        tokens: compiled.preparedTokens,
+        percent: compiled.limit ? Math.round(compiled.utilization * 100) : null,
+      }
+
     const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
     if (!last) {
       return {
@@ -41,6 +51,19 @@ function View(props: { api: TuiPluginApi; session_id: string }) {
       </text>
       <text fg={theme().textMuted}>{state().tokens.toLocaleString()} tokens</text>
       <text fg={theme().textMuted}>{state().percent ?? 0}% used</text>
+      <Show when={prepared()?.overheadTokens}>
+        {(overhead) => <text fg={theme().textMuted}>{overhead().toLocaleString()} tokens of prompt overhead</text>}
+      </Show>
+      <Show when={prepared()?.tokensSaved}>
+        {(saved) => <text fg={theme().textMuted}>{saved().toLocaleString()} tokens reclaimed</text>}
+      </Show>
+      <Show when={prepared()?.compressionCount}>
+        {(count) => (
+          <text fg={theme().textMuted}>
+            {count()} compressed section{count() > 1 ? "s" : ""}
+          </text>
+        )}
+      </Show>
       <text fg={theme().textMuted}>{money.format(cost())} spent</text>
     </box>
   )
