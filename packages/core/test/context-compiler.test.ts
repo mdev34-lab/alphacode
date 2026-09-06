@@ -1,5 +1,5 @@
 import { expect, describe, test } from "bun:test"
-import { DateTime, Effect, Stream } from "effect"
+import { DateTime, Effect, Schema, Stream } from "effect"
 import { Message, Model, SystemPart, ToolCallPart, ToolResultPart } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
 import { ContextBudget } from "@opencode-ai/core/context/budget"
@@ -1016,6 +1016,64 @@ describe("context budget", () => {
     expect(occurrences(serialized, large)).toBe(1)
     expect(ContextInvariants.check(messages, result.messages)).toEqual([])
   })
+
+  test("never collapses a protected todo snapshot, even when nothing else can fit", () => {
+    // todowrite is protected by the default tool policy, and protection has no override anywhere
+    // in the ladder — including the byte-budget fallback. So the collapse-todos rung must decline
+    // here even though consolidating the superseded snapshot is exactly the saving it exists for:
+    // the protection decision was already made, and the fallback is not entitled to revisit it.
+    const large = "q".repeat(2_000)
+    const messages = [
+      user("msg_1", "turn one"),
+      assistant("msg_2", [tool({ id: "call_1", name: "todowrite", args: { todos: ["one"] }, output: large })]),
+      user("msg_3", "turn two"),
+      assistant("msg_4", [tool({ id: "call_2", name: "todowrite", args: { todos: ["one", "two"] }, output: large })]),
+      user("msg_5", "the question that must survive"),
+      assistant("msg_6", [text("t1", "answering")]),
+    ]
+    const { policy, protection } = resolve(messages, { recentTurns: 1 })
+
+    const result = ContextBudget.reduce({ messages, policy, protection, limit: 1_000 })
+    expect(result.steps).not.toContain("collapse-todos")
+    expect(result.within).toBe(false)
+    expect(result.needsCompression).toBe(true)
+    const serialized = JSON.stringify(result.messages)
+    expect(serialized).not.toContain(ContextBudget.TODO_MARKER)
+    // Both snapshots kept their output: dropping the small user texts is all the ladder was
+    // allowed to do, and that cannot fit the protected state.
+    expect(serialized.split(large).length - 1).toBe(2)
+    expect(ContextInvariants.check(messages, result.messages)).toEqual([])
+  })
+
+  test("collapses superseded todo snapshots that carry no protection", () => {
+    // The rung still does its job when the configuration opted out of protecting todowrite: the
+    // older snapshot is superseded by the newer one and collapses, the newest snapshot survives.
+    // Outputs are sized below the scaffold threshold, and the limit needs exactly the bytes the
+    // collapse frees, so the ladder stops on this rung: one byte tighter and the drop loop would
+    // have to start removing whole messages.
+    const large = "q".repeat(500)
+    const messages = [
+      user("msg_1", "turn one"),
+      assistant("msg_2", [tool({ id: "call_1", name: "todowrite", args: { todos: ["one"] }, output: large })]),
+      user("msg_3", "turn two"),
+      assistant("msg_4", [tool({ id: "call_2", name: "todowrite", args: { todos: ["one", "two"] }, output: large })]),
+      user("msg_5", "the question that must survive"),
+      assistant("msg_6", [text("t1", "answering")]),
+    ]
+    const { policy, protection } = resolve(messages, {
+      recentTurns: 1,
+      tools: ContextProtection.defaultPolicy.tools.filter((name) => name !== "todowrite"),
+    })
+
+    const result = ContextBudget.reduce({ messages, policy, protection, limit: 2_200 })
+    expect(result.steps).toEqual(["collapse-todos"])
+    expect(result.within).toBe(true)
+    expect(ContextBudget.bytes(result.messages)).toBe(1_798)
+    const serialized = JSON.stringify(result.messages)
+    expect(serialized.split(ContextBudget.TODO_MARKER).length - 1).toBe(1)
+    expect(serialized.split(large).length - 1).toBe(1)
+    expect(ContextInvariants.check(messages, result.messages)).toEqual([])
+  })
 })
 
 describe("context settings", () => {
@@ -1034,6 +1092,17 @@ describe("context settings", () => {
       protection: ContextProtection.defaultPolicy,
       payloadBytes: undefined,
     })
+  })
+
+  test("rejects an inverted compression band instead of resolving it", () => {
+    const decode = Schema.decodeUnknownExit(ConfigContext.Info)
+    expect(decode({ dynamic_compression: { min_context: 0.5, max_context: 0.9 } })._tag).toBe("Success")
+    expect(decode({ dynamic_compression: { min_context: 0.9 } })._tag).toBe("Success")
+    const inverted = decode({ dynamic_compression: { min_context: 0.9, max_context: 0.5 } })
+    // Below the minimum nothing is reduced and above the maximum reduction is mandatory, so an
+    // inverted pair has no coherent reading: the document is invalid, not "creatively resolvable".
+    expect(inverted._tag).toBe("Failure")
+    if (inverted._tag === "Failure") expect(String(inverted.cause)).toContain("min_context must not exceed max_context")
   })
 
   test("applies configuration overrides and extends the protected tool list", () => {

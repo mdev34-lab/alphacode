@@ -60,12 +60,20 @@ nothing collapsible) and the drop loop walks the whole eligible prefix. The scri
 ladder ends in the drop rung, times `ContextBudget.reduce` directly, and prints the executed steps.
 `packages/core/script/context-benchmark.ts` measures both and reports, on a development machine:
 
-| History        | Serialized | Preparation | Full ladder (`ContextBudget.reduce`) |
-| -------------- | ---------- | ----------- | ------------------------------------ |
-| 100 messages   | 62 KiB     | ~1.1 ms     | ~0.8 ms                              |
-| 500 messages   | 313 KiB    | ~3.9 ms     | ~3.3 ms                              |
-| 2,000 messages | 1.2 MiB    | ~14.8 ms    | ~13.8 ms                             |
-| 8,000 messages | 4.9 MiB    | ~63.7 ms    | ~61.1 ms                             |
+| History        | Serialized | Pure stage pass | Full ladder (`ContextBudget.reduce`) |
+| -------------- | ---------- | --------------- | ------------------------------------ |
+| 100 messages   | 62 KiB     | ~1.1 ms         | ~0.8 ms                              |
+| 500 messages   | 313 KiB    | ~3.9 ms         | ~3.3 ms                              |
+| 2,000 messages | 1.2 MiB    | ~14.8 ms        | ~13.8 ms                             |
+| 8,000 messages | 4.9 MiB    | ~63.7 ms        | ~61.1 ms                             |
+
+The middle column is deliberately named: it times the pure stage functions of `prepareOnce`
+(protection resolution, placeholder application, measurement, deduplication and error-purge
+planning and application, invariant checking) executed in order over an in-memory history. It is
+not the full `ContextManager.prepare` service call, which additionally loads persisted blocks from
+SQLite, resolves the configured envelope, publishes lifecycle events and manages revision caching —
+per-turn I/O that is payload-independent in the limit. These numbers therefore characterize the
+payload-scaling arithmetic core of preparation, not end-to-end service latency.
 
 The cost per KiB of serialized history stays flat across the measured range (roughly 0.01 ms/KiB at
 every size), so both curves scale approximately linearly with payload, and serialization dominates

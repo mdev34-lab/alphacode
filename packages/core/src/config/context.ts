@@ -27,6 +27,20 @@ export class DynamicCompression extends Schema.Class<DynamicCompression>("Config
   }),
 }) {}
 
+// Reduction is never wanted below min_context and mandatory above max_context, so an inverted
+// pair has no coherent reading. A document that declares both must be coherent on its own;
+// validation attaches here rather than on the class because a class filter turns the class into
+// a plain schema and breaks construction.
+const coherentCompression = DynamicCompression.pipe(
+  Schema.check(
+    Schema.makeFilter((self) =>
+      self.min_context === undefined || self.max_context === undefined || self.min_context <= self.max_context
+        ? undefined
+        : { path: ["min_context"], issue: "min_context must not exceed max_context" },
+    ),
+  ),
+)
+
 export class Deduplication extends Schema.Class<Deduplication>("ConfigV2.Context.Deduplication")({
   enabled: Schema.Boolean.pipe(Schema.optional).annotate({
     description: "Prune superseded duplicate tool outputs from the prepared context",
@@ -58,7 +72,7 @@ export class Protection extends Schema.Class<Protection>("ConfigV2.Context.Prote
 }) {}
 
 export class Info extends Schema.Class<Info>("ConfigV2.Context")({
-  dynamic_compression: DynamicCompression.pipe(Schema.optional).annotate({
+  dynamic_compression: coherentCompression.pipe(Schema.optional).annotate({
     description: "Selective conversation compression behavior",
   }),
   deduplication: Deduplication.pipe(Schema.optional).annotate({

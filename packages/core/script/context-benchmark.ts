@@ -1,11 +1,19 @@
 #!/usr/bin/env bun
 
 /**
- * Cost of one context preparation, with and without the deterministic reduction ladder.
+ * Cost of the computational core of a context preparation, with and without the deterministic
+ * reduction ladder.
  *
  * `ContextManager.prepare` runs on every agent turn, before every provider request, so the first
  * case that matters is the boring one: a long session with no compression blocks, no duplicates and
  * no stale failures, where the whole pipeline is pure overhead.
+ *
+ * This script times what scales with the payload: the pipeline's pure stage functions, executed in
+ * `prepareOnce`'s order over an in-memory history. The service call this stands in for also loads
+ * persisted blocks from SQLite, resolves the configured envelope, publishes lifecycle events and
+ * manages revision caching — all per-turn I/O that is payload-independent in the limit, and none
+ * of which is measured here. The numbers below therefore characterize the arithmetic core, not the
+ * full service latency.
  *
  * The second case is the worst one: a history far over the byte ceiling, constructed so that every
  * rung of `ContextBudget.reduce` has to run — no duplicates to find, no stale failures to purge,

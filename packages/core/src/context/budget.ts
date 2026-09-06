@@ -214,10 +214,20 @@ const collapseScaffolding = (messages: readonly ContextMessage[], input: ReduceI
 
 /** Keep only the newest todo snapshot; earlier ones are entirely superseded. */
 const collapseTodos = (messages: readonly ContextMessage[], input: ReduceInput) => {
+  // Protected calls have no override anywhere in the ladder, including this fallback: a snapshot
+  // the policy calls untouchable stays verbatim, and only superseded snapshots that were never
+  // protected in the first place may collapse. Under the default policy todowrite is protected,
+  // so this rung is live only for configurations that opted out explicitly.
   const snapshots = messages.flatMap((message, index) =>
     message.type === "assistant" && index < input.protection.recentFrom
       ? message.content.flatMap((part) =>
-          part.type === "tool" && part.name === "todowrite" && part.state.status === "completed" ? [part.id] : [],
+          part.type === "tool" &&
+          part.name === "todowrite" &&
+          part.state.status === "completed" &&
+          !input.protection.callIDs.has(part.id) &&
+          !ContextProtection.isProtectedTool(part.name, input.policy, input.toolPolicies)
+            ? [part.id]
+            : [],
         )
       : [],
   )
