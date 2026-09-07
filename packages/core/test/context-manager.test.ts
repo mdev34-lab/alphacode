@@ -1373,4 +1373,58 @@ describe("ContextManager", () => {
       expect(history.at(-1)?.type).toBe("assistant")
     }),
   )
+
+  // The one-summarization-per-turn bound covers failures too: when automatic compression ran in
+  // this preparation and lost, the wire gate must not pay a second summarization on top of the
+  // failure it just suffered — it escalates to native compaction instead. Before the gate honored
+  // `summarizationSpent`, this exact sequence cost two summarization requests in one turn.
+  itPadded.effect("never pays a second summarization when the failed first one arms the gate", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      const compressions = yield* collect(SessionEvent.Context.Compressed)
+      const compressionFailures = yield* collect(SessionEvent.Context.CompressionFailed)
+      const compactions = yield* collect(SessionEvent.Compaction.Ended)
+      const failures = yield* collect(SessionEvent.Step.Failed)
+      turns = [say("One"), say("Two"), say("Three"), say("Four"), say("Five"), say("Six"), say("Seven"), say("Eight")]
+      for (const probe of ["one", "two", "three", "four", "five", "six"]) {
+        yield* ask(session, `probe ${probe}`)
+      }
+
+      // The summarizer breaks exactly when the oversized turn needs it: the estimate sees the big
+      // padded ask before the limit, automatic compression fires on the older turns — and fails.
+      summaryAvailable = false
+      yield* ask(session, "probe seven " + "detail ".repeat(1_200))
+
+      // Exactly one summarization request in the whole session: the failed automatic attempt. The
+      // wire gate then took the native-compaction recovery, not a second compression.
+      const kinds = requests.map((request) =>
+        request.tools.length > 0 ? "agent" : isCompression(request) ? "compress" : "compact",
+      )
+      expect(kinds, kinds.join(",")).toEqual([
+        "agent",
+        "agent",
+        "agent",
+        "agent",
+        "agent",
+        "agent",
+        "compress",
+        "compact",
+        "agent",
+      ])
+      expect(compressions).toEqual([])
+      expect(compressionFailures.length).toBe(1)
+      expect(compactions.length).toBe(1)
+      expect(failures).toEqual([])
+
+      // The recovered turn stays well under the ceiling afterwards, and nothing over it ever
+      // reached the provider, on either side of the recovery.
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      expect(history.at(-1)?.type).toBe("assistant")
+      for (const request of requests) {
+        if (request.tools.length === 0) continue
+        expect((yield* context.payload(request)).within).toBe(true)
+      }
+    }),
+  )
 })

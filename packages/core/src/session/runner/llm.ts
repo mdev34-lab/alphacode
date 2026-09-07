@@ -353,11 +353,14 @@ const layer = Layer.effect(
       const size = yield* contextManager.payload(request, session.id)
       if (!size.within) {
         // The wire refuted the estimate. Dynamic compression is the cheaper lever, so it gets
-        // exactly one attempt before native compaction is even considered: skipped when the
-        // preparation above already compressed this turn (its summarization budget is spent),
-        // when this attempt is itself the recovery, or when the body could not be measured at
-        // all — a structural lowering failure is not something a smaller context repairs.
-        if (recoverOverflow && compressOnOverflow && !prepared.compressed && size.measured) {
+        // exactly one attempt before native compaction is even considered — but only when the
+        // turn's summarization slot is still whole. It is not when the preparation above already
+        // ran automatic compression (a second would double the summarization latency the turn
+        // already paid, success or failure), when an attempt was suppressed by the failure
+        // backoff (paying one now would defeat the backoff), when this attempt is itself the
+        // recovery, or when the body could not be measured at all — a structural lowering
+        // failure is not something a smaller context repairs.
+        if (recoverOverflow && compressOnOverflow && !prepared.summarizationSpent && size.measured) {
           const attempted = yield* contextManager.compress({
             sessionID: session.id,
             reason: "auto",

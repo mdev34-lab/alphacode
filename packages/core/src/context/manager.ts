@@ -238,7 +238,7 @@ const layer = Layer.effect(
         limit,
         overBudget: false,
         blocks: [],
-        compressed: false,
+        summarizationSpent: false,
         revision,
       }
     }
@@ -424,7 +424,7 @@ const layer = Layer.effect(
         limit,
         overBudget,
         blocks: placed.blocks,
-        compressed: false,
+        summarizationSpent: false,
         revision,
       } satisfies ContextTypes.PreparedContext
     })
@@ -690,8 +690,15 @@ const layer = Layer.effect(
           sessionID: input.sessionID,
           remaining: skips - 1,
         })
+        // The attempt was merited but suppressed by a known-failing summarizer: this turn's slot
+        // is spent either way, so the payload gate must escalate to native compaction rather than
+        // paying another summarization right now — the spec promises that recovery path during
+        // backoff, and a suppressed attempt must stay suppressed for the whole turn.
+        yield* reportOverBudget(first)
+        yield* publishPrepared(first)
+        return { ...first, summarizationSpent: true }
       }
-      if (!attempt || skips > 0) {
+      if (!attempt) {
         yield* reportOverBudget(first)
         yield* publishPrepared(first)
         return first
@@ -706,15 +713,18 @@ const layer = Layer.effect(
       if ("failure" in compressed) {
         if (compressed.failure !== undefined && COSTLY_FAILURES.has(compressed.failure))
           backoff.set(input.sessionID, BACKOFF_PREPARATIONS)
+        // A failed attempt spent the slot too: the turn already paid the summarization's latency,
+        // and a second try on the same oversized request would double that latency under exactly
+        // the conditions that made the first one fail. The gate escalates to native compaction.
         yield* reportOverBudget(first)
         yield* publishPrepared(first)
-        return first
+        return { ...first, summarizationSpent: true }
       }
       backoff.delete(input.sessionID)
       const second = yield* prepareOnce(input)
       yield* reportOverBudget(second)
       yield* publishPrepared(second)
-      return { ...second, compressed: true }
+      return { ...second, summarizationSpent: true }
     })
 
     return Service.of({

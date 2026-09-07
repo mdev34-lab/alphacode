@@ -146,11 +146,13 @@ export interface PreparedContext {
   readonly overBudget: boolean
   readonly blocks: readonly CompressionBlock[]
   /**
-   * True when this preparation already ran a dynamic compression. Callers holding a
-   * still-oversized request use it to spend at most one summarization per preparation: the gate
-   * takes its compression attempt only when this is false.
+   * True when the preparation spent the turn's one summarization slot: either automatic
+   * compression actually ran this preparation — succeeded or failed — or an attempt was merited
+   * but suppressed by the failure backoff. Callers holding a still-oversized request use this to
+   * escalate to native compaction instead of paying a second summarization on top of the first,
+   * or on top of a known-failing summarizer.
    */
-  readonly compressed: boolean
+  readonly summarizationSpent: boolean
   /** Increments whenever the compiler recomputes its reduction plan for a session. */
   readonly revision: number
 }

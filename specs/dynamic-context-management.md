@@ -235,7 +235,9 @@ explicitly:
 - at most **one** summarization request per turn: whichever runs first — preparation's automatic
   compression or the payload gate's recovery attempt — marks the turn as spent, so the worst case
   a turn can pay is one summarization plus one native compaction ahead of the real request — never
-  a ladder and never two summarizations;
+  a ladder and never two summarizations. Failure does not refund the slot: a turn that already paid
+  a summarization's latency, or that suppressed an attempt under the failure backoff, escalates to
+  native compaction instead of paying the same latency twice;
 - the summarization request is bounded by `dynamic_compression.timeout_ms`, after which the turn
   proceeds uncompressed rather than stalling;
 - a failure that cost a round trip (timeout, no usable summary, no model) makes the next three
