@@ -267,9 +267,11 @@ const collapseTodos = (messages: readonly ContextMessage[], input: ReduceInput) 
  */
 const dropOldestBeforeRecentWindow = (messages: readonly ContextMessage[], input: ReduceInput, size: number) => {
   // `JSON.stringify` of an array is its elements' serializations joined by commas inside brackets,
-  // so dropping a message removes exactly its serialized length plus one comma. Only the droppable
-  // items are ever measured: the protected recent window is by construction retained, and pricing
-  // it was a second full serialization of precisely the messages that cannot leave.
+  // so dropping a message removes its serialized length plus one comma — except when it removes
+  // the very last remaining element, where the brackets alone survive and no comma goes with them.
+  // Only the droppable items are ever measured: the protected recent window is by construction
+  // retained, and pricing it was a second full serialization of precisely the messages that
+  // cannot leave.
   // Re-serializing the whole history per drop candidate was quadratic in exactly the case this
   // function exists for: a very long conversation that is far over the ceiling.
   // Eligibility is decided against the original positions, because removing a message shifts every
@@ -279,10 +281,12 @@ const dropOldestBeforeRecentWindow = (messages: readonly ContextMessage[], input
     .flatMap((message, index) => (input.protection.messageIDs.has(message.id) ? [] : [index]))
   const dropped = new Set<number>()
   let remaining = size
+  let count = messages.length
   for (const index of droppable) {
     if (remaining <= input.limit) break
     dropped.add(index)
-    remaining -= Buffer.byteLength(JSON.stringify(messages[index]) ?? "null", "utf8") + 1
+    remaining -= Buffer.byteLength(JSON.stringify(messages[index]) ?? "null", "utf8") + (count > 1 ? 1 : 0)
+    count--
   }
   if (dropped.size === 0) return { messages, exhausted: remaining > input.limit, bytes: remaining }
   return {

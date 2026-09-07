@@ -77,6 +77,14 @@ const resolve = (messages: readonly SessionMessage.Message[], policy: Partial<Co
   return { policy: merged, protection: ContextProtection.resolve(messages, { policy: merged }) }
 }
 
+/** Deterministic PRNG, so property-style tests run the same cases on every machine. */
+const mulberry32 = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0
+  let mixed = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+  mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed
+  return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296
+}
+
 describe("context deduplication", () => {
   const conversation = [
     user("msg_1", "read the entry point"),
@@ -1043,6 +1051,38 @@ describe("context budget", () => {
     // allowed to do, and that cannot fit the protected state.
     expect(serialized.split(large).length - 1).toBe(2)
     expect(ContextInvariants.check(messages, result.messages)).toEqual([])
+  })
+
+  test("keeps the drop-loop arithmetic exactly equal to the real serialized size on random histories", () => {
+    // `within` is decided by arithmetic that subtracts per-message sizes instead of re-serializing,
+    // so any drift between that arithmetic and `JSON.stringify` turns into a wrong verdict at the
+    // ceiling. Compare the verdict against the size of the messages that actually remain, across
+    // seeded random histories, limits and window sizes.
+    const random = mulberry32(0xc0ffee)
+    for (let trial = 0; trial < 200; trial++) {
+      const length = 2 + Math.floor(random() * 40)
+      const messages = Array.from({ length }, (_, index) =>
+        index % 2 === 0
+          ? user(`msg_${index}`, "u".repeat(Math.floor(random() * 600)))
+          : assistant(`msg_${index}`, [
+              random() < 0.5
+                ? text(`t_${index}`, "a".repeat(Math.floor(random() * 900)))
+                : tool({
+                    id: `call_${index}`,
+                    name: random() < 0.5 ? "read" : "inspect",
+                    args: { filePath: `src/${index}.ts` },
+                    output: "o".repeat(Math.floor(random() * 900)),
+                  }),
+            ]),
+      )
+      const { policy, protection } = resolve(messages, { recentTurns: Math.floor(random() * 5) })
+      const total = ContextBudget.bytes(messages)
+      // Limits sampled around the real size are where the arithmetic boundary actually matters.
+      const limit = Math.floor(total * random())
+      const result = ContextBudget.reduce({ messages, policy, protection, limit })
+      expect(result.within, `trial ${trial}`).toBe(ContextBudget.bytes(result.messages) <= limit)
+      expect(ContextInvariants.check(messages, result.messages)).toEqual([])
+    }
   })
 
   test("collapses superseded todo snapshots that carry no protection", () => {
