@@ -31,6 +31,12 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import {
+  createQwenWebModel,
+  providerInfo as qwenWebProviderInfo,
+  QWEN_WEB_PROVIDER_ID,
+  shouldAutoloadQwenWeb,
+} from "./qwen-web"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -131,6 +137,7 @@ const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>
   "@ai-sdk/github-copilot": () =>
     import("@opencode-ai/core/github-copilot/copilot-provider").then((m) => m.createOpenaiCompatible),
   "venice-ai-sdk-provider": () => import("venice-ai-sdk-provider").then((m) => m.createVenice),
+  "qwen-web": () => import("./qwen-web").then((m) => m.createQwenWeb),
 }
 
 type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>, model?: Model) => Promise<any>
@@ -973,6 +980,20 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         options,
       }
     }),
+    "qwen-web": Effect.fnUntraced(function* (input: Info) {
+      const stored = yield* dep.auth(input.id)
+      const hasConfig = Boolean((yield* dep.config()).provider?.[QWEN_WEB_PROVIDER_ID])
+      return {
+        autoload: shouldAutoloadQwenWeb({
+          auth: stored ? { type: stored.type, key: stored.type === "api" ? stored.key : undefined } : undefined,
+          hasConfig,
+        }),
+        async getModel(_sdk: any, modelID: string, options?: Record<string, any>) {
+          return createQwenWebModel(modelID, options)
+        },
+        options: {},
+      }
+    }),
   }
 }
 
@@ -1375,6 +1396,11 @@ const layer = Layer.effect(
         const cfg = yield* config.get()
         const modelsDev = yield* modelsDevSvc.get()
         const catalog = mapValues(modelsDev, fromModelsDevProvider)
+        // Built-in Qwen Web (browser) provider. Registered in the catalog so
+        // auth, discovery and the model picker can find it; it is only
+        // *loaded* when its custom loader's autoload gate passes (stored
+        // login, authenticated browser profile, or explicit user config).
+        catalog[ProviderV2.ID.make(QWEN_WEB_PROVIDER_ID)] = qwenWebProviderInfo()
         const database = mapValues(catalog, toPublicInfo)
 
         const providers: Record<ProviderV2.ID, Info> = {} as Record<ProviderV2.ID, Info>

@@ -2,6 +2,7 @@ import { ProviderAuth } from "@/provider/auth"
 import { Config } from "@/config/config"
 import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Provider } from "@/provider/provider"
+import { providerInfo as qwenWebProviderInfo, QWEN_WEB_PROVIDER_ID } from "@/provider/qwen-web"
 import { Auth } from "@/auth"
 
 import { mapValues } from "remeda"
@@ -50,7 +51,12 @@ export const providerHandlers = HttpApiBuilder.group(InstanceHttpApi, "provider"
       }
       const connected = yield* provider.list()
       const credentials = yield* authStore.all().pipe(Effect.orDie)
+      // The Qwen Web (browser) provider is built in, not part of the remote
+      // catalog: list it for discovery/login while the enabled/disabled
+      // filters allow it. A connected entry (live models) always wins.
+      const qwenWebAllowed = (enabled ? enabled.has(QWEN_WEB_PROVIDER_ID) : true) && !disabled.has(QWEN_WEB_PROVIDER_ID)
       const providers = Object.assign(
+        qwenWebAllowed ? { [QWEN_WEB_PROVIDER_ID]: qwenWebProviderInfo() } : {},
         mapValues(filtered, (item) => Provider.fromModelsDevProvider(item)),
         connected,
       )
