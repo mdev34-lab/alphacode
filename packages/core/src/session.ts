@@ -1,7 +1,7 @@
 export * as SessionV2 from "./session"
 export * from "./session/schema"
 
-import { DateTime, Effect, Layer, Schema, Context, Stream , Option } from "effect"
+import { DateTime, Effect, Layer, Schema, Context, Stream, Option } from "effect"
 import { ListAnchor } from "@opencode-ai/schema/session"
 import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
@@ -32,6 +32,8 @@ import { SessionExecution } from "./session/execution"
 import { makeGlobalNode } from "./effect/app-node"
 import { LocationServiceMap } from "./location-service-map"
 import { MessageDecodeError } from "./session/error"
+import { ContextManager } from "./context/manager"
+import { SessionContext } from "@opencode-ai/schema/session-context"
 import { SessionEvent } from "./session/event"
 import { SessionInput } from "./session/input"
 import { Snapshot } from "./snapshot"
@@ -88,6 +90,14 @@ type CreateInput = {
 type CompactInput = {
   sessionID: SessionSchema.ID
   prompt?: Prompt
+}
+
+export interface CompressInput {
+  sessionID: SessionSchema.ID
+  startMessageID?: SessionMessage.ID
+  endMessageID?: SessionMessage.ID
+  focus?: string
+  keepRecentTurns?: number
 }
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Session.NotFoundError", {
@@ -166,6 +176,10 @@ export interface Interface {
     resume?: boolean
   }) => Effect.Effect<void, OperationUnavailableError>
   readonly compact: (input: CompactInput) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
+  /** Summarize a completed range of the conversation for future provider turns. */
+  readonly compress: (input: CompressInput) => Effect.Effect<SessionContext.Outcome, NotFoundError>
+  /** Context utilization and compression statistics for the next provider turn. */
+  readonly contextStats: (sessionID: SessionSchema.ID) => Effect.Effect<SessionContext.Stats, NotFoundError>
   readonly wait: (id: SessionSchema.ID) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
@@ -439,6 +453,44 @@ const layer = Layer.effect(
         yield* result.get(input.sessionID)
         return yield* new OperationUnavailableError({ operation: "compact" })
       }),
+      compress: Effect.fn("V2Session.compress")(function* (input) {
+        const session = yield* result.get(input.sessionID)
+        return yield* Effect.gen(function* () {
+          const context = yield* ContextManager.Service
+          const outcome = yield* context.compress({
+            sessionID: input.sessionID,
+            reason: "manual",
+            startMessageID: input.startMessageID,
+            endMessageID: input.endMessageID,
+            focus: input.focus,
+            keepRecentTurns: input.keepRecentTurns,
+          })
+          const stats = yield* context.stats(input.sessionID)
+          if ("failure" in outcome) return { status: "skipped" as const, reason: outcome.failure, stats }
+          return {
+            status: "compressed" as const,
+            block: {
+              id: outcome.block.id,
+              startMessageID: outcome.block.startMessageID,
+              endMessageID: outcome.block.endMessageID,
+              focus: outcome.block.focus,
+              sourceMessageCount: outcome.block.sourceMessageCount,
+              sourceTokenCount: outcome.block.sourceTokenCount,
+              summaryTokenCount: outcome.block.summaryTokenCount,
+              nested: outcome.block.nested,
+            },
+            excludedMessages: outcome.excludedMessages,
+            stats,
+          }
+        }).pipe(Effect.provide(locations.get(session.location)))
+      }),
+      contextStats: Effect.fn("V2Session.contextStats")(function* (sessionID) {
+        const session = yield* result.get(sessionID)
+        return yield* ContextManager.Service.pipe(
+          Effect.flatMap((context) => context.stats(sessionID)),
+          Effect.provide(locations.get(session.location)),
+        )
+      }),
       wait: Effect.fn("V2Session.wait")(function* (sessionID) {
         yield* result.get(sessionID)
         return yield* new OperationUnavailableError({ operation: "wait" })
@@ -494,14 +546,14 @@ const resolvePrompt = (input: PromptInput.Prompt) =>
 
 export const node = makeGlobalNode({
   service: Service,
-    layer: layer.pipe(Layer.orDie),
-    deps: [
-      Database.node,
-      EventV2.node,
-      ProjectV2.node,
-      SessionExecution.node,
-      SessionStore.node,
-      LocationServiceMap.node,
-      SessionProjector.node,
-    ],
+  layer: layer.pipe(Layer.orDie),
+  deps: [
+    Database.node,
+    EventV2.node,
+    ProjectV2.node,
+    SessionExecution.node,
+    SessionStore.node,
+    LocationServiceMap.node,
+    SessionProjector.node,
+  ],
 })

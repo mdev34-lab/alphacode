@@ -14,6 +14,7 @@ import type {
   SessionMessageAssistantReasoning,
   SessionMessageAssistantText,
   SessionMessageAssistantTool,
+  SessionNextContextPrepared,
   SessionV2Info,
   SkillV2Info,
   V2Event,
@@ -40,6 +41,8 @@ type Data = {
     message: Record<string, SessionMessage[]>
     permission: Record<string, PermissionV2Request[]>
     question: Record<string, QuestionV2Request[]>
+    /** Latest dynamic context measurement, published once per prepared provider turn. */
+    context: Record<string, SessionNextContextPrepared["data"]>
   }
   project: {
     permission: Record<string, PermissionSavedInfo[]>
@@ -64,6 +67,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
         message: {},
         permission: {},
         question: {},
+        context: {},
       },
       project: {
         permission: {},
@@ -163,6 +167,12 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           break
         }
         case "session.next.prompt.admitted":
+          break
+        case "session.next.context.prepared":
+          setStore("session", "context", event.data.sessionID, event.data)
+          break
+        case "session.next.context.compressed":
+        case "session.next.context.compression.failed":
           break
         case "session.next.context.updated":
           message.update(event.data.sessionID, (draft) => {
@@ -438,6 +448,15 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           async refresh(sessionID: string) {
             const result = await sdk.client.v2.session.permission.list({ sessionID }, { throwOnError: true })
             setStore("session", "permission", sessionID, result.data.data)
+          },
+        },
+        context: {
+          get(sessionID: string) {
+            return store.session.context[sessionID]
+          },
+          async refresh(sessionID: string) {
+            const result = await sdk.client.v2.session.contextStats({ sessionID }, { throwOnError: true })
+            setStore("session", "context", sessionID, { ...result.data.data, timestamp: Date.now(), sessionID })
           },
         },
         question: {

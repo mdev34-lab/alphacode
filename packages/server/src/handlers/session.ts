@@ -194,6 +194,48 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         }),
       )
       .handle(
+        "session.compress",
+        Effect.fn(function* (ctx) {
+          return {
+            data: yield* session
+              .compress({
+                sessionID: ctx.params.sessionID,
+                startMessageID: ctx.payload.startMessageID,
+                endMessageID: ctx.payload.endMessageID,
+                focus: ctx.payload.focus,
+                keepRecentTurns: ctx.payload.keepRecentTurns,
+              })
+              .pipe(
+                Effect.catchTag("Session.NotFoundError", (error) =>
+                  Effect.fail(
+                    new SessionNotFoundError({
+                      sessionID: error.sessionID,
+                      message: `Session not found: ${error.sessionID}`,
+                    }),
+                  ),
+                ),
+              ),
+          }
+        }),
+      )
+      .handle(
+        "session.contextStats",
+        Effect.fn(function* (ctx) {
+          return {
+            data: yield* session.contextStats(ctx.params.sessionID).pipe(
+              Effect.catchTag("Session.NotFoundError", (error) =>
+                Effect.fail(
+                  new SessionNotFoundError({
+                    sessionID: error.sessionID,
+                    message: `Session not found: ${error.sessionID}`,
+                  }),
+                ),
+              ),
+            ),
+          }
+        }),
+      )
+      .handle(
         "session.wait",
         Effect.fn(function* (ctx) {
           yield* session.wait(ctx.params.sessionID).pipe(

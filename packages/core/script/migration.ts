@@ -49,7 +49,7 @@ async function generate() {
           renderMigration(name, await Bun.file(path.join(incremental, name, "migration.sql")).text()),
         ),
       )
-      await fs.copyFile(path.join(incremental, name, "snapshot.json"), snapshot)
+      await Bun.write(snapshot, await formatJson(await Bun.file(path.join(incremental, name, "snapshot.json")).text()))
     }
 
     await fs.mkdir(full)
@@ -170,6 +170,16 @@ function renderRun(statement: string) {
 
 function escapeTemplate(line: string) {
   return line.replaceAll("\\", "\\\\").replaceAll("`", "\\`").replaceAll("${", "\\${")
+}
+
+/**
+ * The snapshot is committed, so it is written with the repository's own formatting. Drizzle's raw
+ * output uses a different style and would otherwise reformat every existing array on every
+ * regeneration, burying the actual schema change in noise.
+ */
+async function formatJson(input: string) {
+  const prettier = await import("prettier")
+  return prettier.format(input, { ...(await prettier.resolveConfig(snapshot)), parser: "json" })
 }
 
 async function formatTypescript(input: string) {

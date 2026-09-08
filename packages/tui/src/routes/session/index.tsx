@@ -131,6 +131,7 @@ const sessionBindingCommands = [
   "session.timeline",
   "session.fork",
   "session.compact",
+  "session.compress",
   "session.unshare",
   "session.undo",
   "session.redo",
@@ -625,6 +626,36 @@ export function Session() {
           providerID: selectedModel.providerID,
         })
         dialog.clear()
+      },
+    },
+    {
+      title: "Compress context",
+      value: "session.compress",
+      category: "Session",
+      slash: {
+        name: "compress",
+      },
+      run: async () => {
+        dialog.clear()
+        const response = await sdk.client.v2.session
+          .compress({ sessionID: route.sessionID, sessionCompressPayload: {} }, { throwOnError: true })
+          .catch(() => undefined)
+        const outcome = response?.data.data
+        if (!outcome) {
+          toast.show({ variant: "error", message: "Failed to compress the session context", duration: 4000 })
+          return
+        }
+        if (outcome.status === "skipped") {
+          toast.show({ variant: "warning", message: `Nothing compressed: ${outcome.reason}`, duration: 4000 })
+          return
+        }
+        toast.show({
+          variant: "success",
+          message: `Compressed ${outcome.block.sourceMessageCount} messages, saving ~${
+            outcome.block.sourceTokenCount - outcome.block.summaryTokenCount
+          } tokens`,
+          duration: 4000,
+        })
       },
     },
     {
@@ -1544,9 +1575,7 @@ export function AssistantMessageRow(props: { message: AssistantMessage; parts: P
   // must not render its own standalone model footer — the preceding
   // substantive turn already owns the footer.
   const isFinishOnly = createMemo(() => {
-    return (
-      props.parts.length > 0 && !props.parts.some(p => p.type === "text" || p.type === "reasoning")
-    )
+    return props.parts.length > 0 && !props.parts.some((p) => p.type === "text" || p.type === "reasoning")
   })
 
   const duration = createMemo(() => {
@@ -1651,7 +1680,9 @@ export function AssistantMessageRow(props: { message: AssistantMessage; parts: P
         <AssistantMessageError error={props.message.error} />
       </Show>
       <Switch>
-        <Match when={((props.last || final()) && !isFinishOnly()) || props.message.error?.name === "MessageAbortedError"}>
+        <Match
+          when={((props.last || final()) && !isFinishOnly()) || props.message.error?.name === "MessageAbortedError"}
+        >
           <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3}>
             <text marginTop={1}>
               <span
@@ -1720,7 +1751,6 @@ export function AssistantMessageError(props: { error: unknown }) {
     </box>
   )
 }
-
 
 const PART_MAPPING = {
   text: TextPart,
@@ -1895,9 +1925,7 @@ export function ActivityGroup(props: { groupID: string }) {
       ref={(el: BoxRenderable) => {
         alwaysSeparate.add(el)
         setPreLayoutSiblingMargin(el, (previous) => {
-          return previous instanceof BoxRenderable && (previous.height > 1 || alwaysSeparate.has(previous))
-            ? 1
-            : 0
+          return previous instanceof BoxRenderable && (previous.height > 1 || alwaysSeparate.has(previous)) ? 1 : 0
         })
       }}
       paddingLeft={3}

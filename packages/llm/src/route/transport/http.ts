@@ -85,6 +85,17 @@ const bodyWithOverlay = <Body>(body: Body, request: LLMRequest, encodeBody: (bod
     return yield* ProviderShared.invalidRequest("http.body can only overlay JSON object request bodies")
   })
 
+/**
+ * The exact body text the HTTP transport will send for `body` under `request`: the
+ * protocol-encoded string when there is no overlay, or the plain serialization of the merged
+ * record when `request.http.body` overlays extra keys. Anything that measures or budgets the
+ * request must derive its count from this one construction — measuring the route-produced body
+ * alone prices a request the provider will never receive, at exactly the point the overlay adds
+ * real bytes.
+ */
+export const jsonBodyText = <Body>(body: Body, request: LLMRequest, encodeBody: (body: Body) => string) =>
+  bodyWithOverlay(body, request, encodeBody).pipe(Effect.map((prepared) => prepared.bodyText))
+
 export const jsonRequestParts = <Body>(input: JsonRequestInput<Body>) =>
   Effect.gen(function* () {
     const url = applyQuery(
