@@ -21,7 +21,7 @@
  * part of preparation whose work grows with *how far over* the limit the payload is. Run from
  * `packages/core`:
  *
- *   bun script/context-benchmark.ts
+ *   bun script/context-compiler-benchmark.ts
  */
 
 import { DateTime } from "effect"

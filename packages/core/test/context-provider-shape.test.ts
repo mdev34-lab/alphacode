@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { LLM, Model, SystemPart, type LLMRequest } from "@opencode-ai/llm"
+import { HttpTransport } from "@opencode-ai/llm/route"
 import * as AnthropicMessages from "@opencode-ai/llm/protocols/anthropic-messages"
 import * as Gemini from "@opencode-ai/llm/protocols/gemini"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
@@ -18,7 +19,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { toLLMMessages } from "@opencode-ai/core/session/runner/to-llm-message"
 import type { SessionSchema } from "@opencode-ai/core/session/schema"
-import { DateTime, Effect } from "effect"
+import { DateTime, Effect, Schema } from "effect"
 
 const sessionID = "ses_provider_shape" as SessionSchema.ID
 const created = DateTime.makeUnsafe(0)
@@ -328,5 +329,65 @@ describe("compressed range containing a protected tool interaction", () => {
         ),
       ).toEqual(calls)
     })
+  })
+})
+
+describe("what the payload gate measures", () => {
+  type BodyBuilder = (request: LLMRequest) => Effect.Effect<unknown, unknown>
+  const protocols = [
+    {
+      label: "openai chat",
+      route: OpenAIChat.route.with({ limits }),
+      from: OpenAIChat.protocol.body.from as unknown as BodyBuilder,
+      schema: OpenAIChat.protocol.body.schema,
+    },
+    {
+      label: "anthropic messages",
+      route: AnthropicMessages.route.with({ limits }),
+      from: AnthropicMessages.protocol.body.from as unknown as BodyBuilder,
+      schema: AnthropicMessages.protocol.body.schema,
+    },
+    {
+      label: "gemini",
+      route: Gemini.route.with({ limits }),
+      from: Gemini.protocol.body.from as unknown as BodyBuilder,
+      schema: Gemini.protocol.body.schema,
+    },
+  ]
+
+  const wire = (input: LLMRequest, from: BodyBuilder, schema: Schema.Top) => {
+    const encode = Schema.encodeSync(Schema.fromJsonString(schema) as never) as unknown as (value: unknown) => string
+    return from(input).pipe(
+      Effect.flatMap((built) => HttpTransport.jsonBodyText(built, input, encode)),
+      Effect.orDie,
+    )
+  }
+
+  test("counts exactly the bytes of the serialized transport body for every provider", async () => {
+    for (const { label, route, from, schema } of protocols) {
+      const plain = await Effect.runPromise(request(route).pipe(Effect.orDie))
+
+      const gate = await Effect.runPromise(ContextManager.wireBytes(plain).pipe(Effect.orDie))
+      const text = await Effect.runPromise(wire(plain, from, schema))
+
+      expect(gate, label).toBe(Buffer.byteLength(text, "utf8"))
+      expect(gate, label).toBeGreaterThan(0)
+    }
+  })
+
+  test("an http.body overlay is counted, byte for byte, for every provider", async () => {
+    for (const { label, route, from, schema } of protocols) {
+      const plain = await Effect.runPromise(request(route).pipe(Effect.orDie))
+      // The overlay a plugin or gateway adds: real bytes the provider charge includes, that a
+      // measurement of the route's intermediate object would silently miss.
+      const overlaid = { ...plain, http: { body: { gateway_diagnostics: "q".repeat(1_000) } } } as LLMRequest
+
+      const gate = await Effect.runPromise(ContextManager.wireBytes(overlaid).pipe(Effect.orDie))
+      const text = await Effect.runPromise(wire(overlaid, from, schema))
+      const bare = await Effect.runPromise(ContextManager.wireBytes(plain).pipe(Effect.orDie))
+
+      expect(gate, label).toBe(Buffer.byteLength(text, "utf8"))
+      expect(gate!, label).toBeGreaterThan(bare! + 1_000)
+    }
   })
 })

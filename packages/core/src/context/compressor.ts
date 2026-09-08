@@ -130,9 +130,21 @@ export const summarize = Effect.fn("ContextCompressor.summarize")(function* (
   return cap(summary)
 })
 
-/** Assemble the durable metadata for a completed compression. */
+/**
+ * Assemble the durable metadata for a completed compression.
+ *
+ * `range` is the message span the block claims (first and last id of the grown range), while
+ * `messages` is what actually went into the summary — the range minus the protected messages,
+ * which stay verbatim inside the span. Persisting both keeps every block reconstructible: its
+ * span is the exact union of the original range and the spans of the blocks it absorbed, and the
+ * protected messages that survived are exactly the span occupants absent from the source counts.
+ * Recording the summarized selection as the span instead would make ownership of the protected
+ * messages at the boundary ambiguous — they would sit inside the request that compressed them
+ * yet outside the block that claims their neighbours.
+ */
 export const block = (input: {
   readonly id: string
+  readonly range: { readonly first: ContextMessage; readonly last: ContextMessage }
   readonly messages: readonly ContextMessage[]
   readonly summary: string
   readonly focus?: string
@@ -140,8 +152,8 @@ export const block = (input: {
   readonly createdAt: number
 }): CompressionBlock => ({
   id: input.id,
-  startMessageID: input.messages[0]!.id,
-  endMessageID: input.messages[input.messages.length - 1]!.id,
+  startMessageID: input.range.first.id,
+  endMessageID: input.range.last.id,
   summary: input.summary,
   focus: input.focus,
   createdAt: input.createdAt,

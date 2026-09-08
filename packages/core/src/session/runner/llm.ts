@@ -258,10 +258,10 @@ const layer = Layer.effect(
       // handed to both the compiler and the request. Budgeting a different representation than the
       // one that is sent — a bare string where the provider gets an assistant message, say — makes
       // the reported utilization quietly wrong.
-      const systemPrompt = [agent.info?.system, contextManager.guidance(), system.baseline]
+      const toolDefinitions = toolMaterialization?.definitions ?? []
+      const systemPrompt = [agent.info?.system, contextManager.guidance(toolDefinitions), system.baseline]
         .filter((part): part is string => part !== undefined && part.length > 0)
         .map(SystemPart.make)
-      const toolDefinitions = toolMaterialization?.definitions ?? []
       const trailingMessages = isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []
       // One canonical context pipeline: canonical history in, prepared provider context out. The
       // request below never sees the reduction decisions, only their result.

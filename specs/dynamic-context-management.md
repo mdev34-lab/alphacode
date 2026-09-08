@@ -58,14 +58,14 @@ needs reducing. The second is the worst one: a history far over the byte ceiling
 deterministic ladder cannot stop early (every tool call takes distinct arguments, no failed calls,
 nothing collapsible) and the drop loop walks the whole eligible prefix. The script asserts that the
 ladder ends in the drop rung, times `ContextBudget.reduce` directly, and prints the executed steps.
-`packages/core/script/context-benchmark.ts` measures both and reports, on a development machine:
+`packages/core/script/context-compiler-benchmark.ts` measures both and reports, on a development machine:
 
-| History        | Serialized | Pure stage pass | Full ladder (`ContextBudget.reduce`) |
-| -------------- | ---------- | --------------- | ------------------------------------ |
-| 100 messages   | 62 KiB     | ~1.1 ms         | ~0.8 ms                              |
-| 500 messages   | 313 KiB    | ~3.9 ms         | ~3.3 ms                              |
-| 2,000 messages | 1.2 MiB    | ~14.8 ms        | ~13.8 ms                             |
-| 8,000 messages | 4.9 MiB    | ~63.7 ms        | ~61.1 ms                             |
+| History        | Serialized | Pure compiler arithmetic | Full ladder (`ContextBudget.reduce`) |
+| -------------- | ---------- | ------------------------ | ------------------------------------ |
+| 100 messages   | 62 KiB     | ~1.1 ms                  | ~0.8 ms                              |
+| 500 messages   | 313 KiB    | ~3.9 ms                  | ~3.3 ms                              |
+| 2,000 messages | 1.2 MiB    | ~14.8 ms                 | ~13.8 ms                             |
+| 8,000 messages | 4.9 MiB    | ~63.7 ms                 | ~61.1 ms                             |
 
 The middle column is deliberately named: it times the pure stage functions of `prepareOnce`
 (protection resolution, placeholder application, measurement, deduplication and error-purge
@@ -101,7 +101,10 @@ management can never make a session unusable.
 1. **No synthetic assistant content.** The compiler never fabricates assistant messages, assistant
    text, or tool calls, and never rewrites model text.
 2. **No appended system messages.** At most one logical system prompt exists, assembled once at
-   request construction: `[agent prompt, context guidance, baseline system context]`.
+   request construction: `[agent prompt, context guidance, baseline system context]` — where the
+   context guidance ships only when the compress tool it describes is actually materialized for
+   that agent and step (the guidance is a fixed prompt-cache component on every request, so it must
+   pay for itself; a guidance for a tool the model cannot call is pure overhead).
 3. **Canonical history is immutable.** Only the provider projection changes; `session.messages`
    always returns the original content.
 4. **Tool calls stay paired.** `ContextInvariants.pairing` runs on the _lowered_ message list
@@ -153,10 +156,14 @@ call the same `ContextManager.compress` engine, as does automatic compression.
 - Protected messages inside an explicitly requested range are **not** summarized: they stay verbatim
   around the placeholder, and the caller is told how many were kept (`excludedMessages` on the
   endpoint, `protected_messages_kept` plus the real `start_message_id`/`end_message_id` on the tool
-  output). The block therefore covers the range that was actually compressed, not the one requested.
-- A block is defined as the exact set of messages its summary represents. Its boundaries are the
-  first and last **summarized** message, and `sourceMessageCount`/`sourceTokenCount` measure that
-  subset only, never the wider requested range or a merged union. The first placeholder segment
+  output).
+- A block is defined as the exact message **span it claims**: its boundaries are the first and last
+  canonical message of the grown range — summarized ones and the protected ones that stayed
+  verbatim included — and absorption is the exact union of the original range with every absorbed
+  block's span, so replaying the block against canonical history never has to guess which boundary
+  occupant belongs to which summary. `sourceMessageCount`/`sourceTokenCount` measure the summarized
+  subset only, so the retained occupants are always accountable as span size minus source counts.
+  The first placeholder segment
   declares the same accounting — `summarized: N messages (~T tokens) spanning <start>-<end>`, plus
   how many messages were kept verbatim between the sections — so the metadata can never read as if
   a retained message were part of the summary.
@@ -278,7 +285,14 @@ It is therefore an approximate pre-pass whose job is to make the request plausib
 prove it fits.
 
 The authoritative measurement is `ContextManager.payload(request)`, which serializes the request the
-provider will actually receive and compares it against `context.payload_bytes`. The runner calls it
+provider will actually receive and compares it against `context.payload_bytes`. The serialization
+is the transport's own construction, `HttpTransport.jsonBodyText` — protocol-encoded body plus the
+request `http.body` overlay merged exactly the way the wire carries it (overlay keys are envelope
+by definition: they cannot touch the conversation keys, which the overlay denylist enforces, so
+they are counted byte-for-byte) — so the byte under the gate and the byte on the wire are the same
+byte, for each provider's own body shape. This is pinned per provider family (OpenAI chat,
+Anthropic messages, Gemini) by asserting that `ContextManager.wireBytes` equals an independently
+built `HttpTransport.jsonBodyText` of the same request. The runner calls it
 immediately before `llm.stream` and never sends a request it rejects. When the estimate is
 optimistic the cost is one extra escalation step, never an oversized request:
 
@@ -305,7 +319,11 @@ where it does not.
 
 The estimate also corrects itself: every measured wire request reports back how many bytes it cost
 beyond the prepared canonical list, and planning budgets against the larger of the estimate and
-that observed overhead. An optimistic gap therefore survives at most until the session's first
+that observed overhead. The observation is kept together with the envelope estimate it was
+recorded against — that value is the identity of the envelope — so an agent switch, a permission
+change that alters the tool list, or a model move invalidates the calibration the next turn
+measures it against, instead of letting statistics about a previous request shape masquerade as
+the current one. An optimistic gap therefore survives at most until the session's first
 measured request, after which decisions track the wire. Only divergence that makes planning more
 conservative is kept; the hard gate above remains the final arbiter either way.
 

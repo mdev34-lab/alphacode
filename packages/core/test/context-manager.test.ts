@@ -430,6 +430,23 @@ const userTexts = (request: LLMRequest) =>
       : [],
   )
 
+describe("context guidance", () => {
+  // Guidance spends output-window budget on every request and is pinned by prompt caches: it may
+  // only describe a tool the request actually carries. An empty materialized set (the forced
+  // final step) or an agent without compress must not read about a tool it cannot call.
+  it.effect("travels only with the compress tool it describes", () =>
+    Effect.gen(function* () {
+      const manager = yield* ContextManager.Service
+      const readOnly = [{ name: "read" }, { name: "bash" }]
+      expect(manager.guidance([{ name: "compress" }, ...readOnly])).toBe(ContextManager.GUIDANCE)
+      expect(manager.guidance(readOnly)).toBeUndefined()
+      expect(manager.guidance([])).toBeUndefined()
+      // Unknown tool sets (stats paths without a prepared turn) keep the enabled-only estimate.
+      expect(manager.guidance()).toBe(ContextManager.GUIDANCE)
+    }),
+  )
+})
+
 describe("ContextManager", () => {
   it.effect("assembles exactly one system prompt containing stable context guidance", () =>
     Effect.gen(function* () {
@@ -607,6 +624,48 @@ describe("ContextManager", () => {
       const placeholder = userTexts(last).find((text) => text.includes("<compressed-conversation-section>"))
       expect(placeholder).toContain("combined summary covering both ranges")
       expect(userTexts(last).filter((text) => text.includes("<compressed-conversation-section>"))).toHaveLength(1)
+    }),
+  )
+
+  it.effect("block span claims the protected messages at its boundary", () =>
+    Effect.gen(function* () {
+      const session = yield* setup
+      const context = yield* ContextManager.Service
+      turns = [call("call-snap", "snapshot", { plan: "ship the parser" }), say("Recorded"), say("Two"), say("Three")]
+
+      yield* ask(session, "Record the plan")
+      yield* ask(session, "Step two")
+      yield* ask(session, "Step three")
+
+      const history = yield* session.messages({ sessionID, order: "asc" })
+      const snapshotMessage = history.find(
+        (message) =>
+          message.type === "assistant" &&
+          message.content.some((part) => part.type === "tool" && part.name === "snapshot"),
+      )!
+      const start = history.findIndex((message) => message.id === snapshotMessage.id)
+      const end = history.length - 3
+      const result = yield* context.compress({
+        sessionID,
+        reason: "manual",
+        startMessageID: history[start]!.id,
+        endMessageID: history[end]!.id,
+      })
+      if ("failure" in result) throw new Error(`compression failed: ${result.failure}`)
+
+      // The block claims the whole requested span — including the protected boundary occupants,
+      // which stayed verbatim — so replaying the block against history never has to guess which
+      // message at the edge belongs to which summary. The summary input remains the unprotected
+      // selection: its counts exclude the protected ones, and the caller is told how many.
+      expect(result.block.startMessageID).toBe(history[start]!.id)
+      expect(result.block.endMessageID).toBe(history[end]!.id)
+      expect(result.excludedMessages).toBeGreaterThan(0)
+      expect(result.block.sourceMessageCount).toBe(end - start + 1 - result.excludedMessages)
+
+      turns = [say("Four")]
+      yield* ask(session, "Step four")
+      const last = agentTurns().at(-1)!
+      expect(userTexts(last).some((text) => text.includes("<compressed-conversation-section>"))).toBe(true)
     }),
   )
 

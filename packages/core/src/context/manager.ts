@@ -1,6 +1,7 @@
 export * as ContextManager from "./manager"
 
 import { LLMClient, SystemPart, type LLMRequest, type Model } from "@opencode-ai/llm"
+import { HttpTransport } from "@opencode-ai/llm/route"
 import { Context, DateTime, Duration, Effect, Layer, Option, Schema } from "effect"
 import { AgentV2 } from "../agent"
 import { Config } from "../config"
@@ -79,8 +80,13 @@ export interface Interface {
   readonly stats: (sessionID: SessionSchema.ID) => Effect.Effect<ContextTypes.ContextSnapshot>
   /** Drop cached reduction plans and boundaries, for example after native compaction. */
   readonly invalidate: (sessionID: SessionSchema.ID) => Effect.Effect<void>
-  /** Stable system-prompt guidance describing the context tools, or undefined when disabled. */
-  readonly guidance: () => string | undefined
+  /**
+   * Stable system-prompt guidance describing the context tools, or undefined when guidance should
+   * not travel with the request: compression is disabled, or — when the materialized tool
+   * definitions are known — the compress tool is not among them. A fixed prompt component must pay
+   * for itself; guidance for a tool the model cannot call is pure overhead.
+   */
+  readonly guidance: (definitions?: readonly { readonly name: string }[]) => string | undefined
   /**
    * Exact size of the request that would go on the wire, against the configured byte ceiling.
    *
@@ -114,6 +120,36 @@ const wireEnvelopeBytes = (body: unknown, bytes: number) => {
   }
   return undefined
 }
+
+/** The measured body plus the route-produced object the calibration subtracts its conversation from. */
+const measureBody = (
+  request: LLMRequest,
+): Effect.Effect<{ readonly body: unknown; readonly bytes: number } | undefined, never> =>
+  Effect.gen(function* () {
+    const route = request.model.route
+    const body = yield* route.body.from(request).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+    if (body === undefined) return undefined
+    const text = yield* HttpTransport.jsonBodyText(
+      body,
+      request,
+      Schema.encodeSync(Schema.fromJsonString(route.body.schema)),
+    ).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+    if (text === undefined) return undefined
+    return { body, bytes: Buffer.byteLength(text, "utf8") }
+  })
+
+/**
+ * The serialized byte size of the request body the provider will receive, or undefined when the
+ * body cannot be built at all.
+ *
+ * The measurement runs through the one construction the HTTP transport itself uses
+ * (`HttpTransport.jsonBodyText`): protocol-encoded normally, overlay-merged and plain-encoded
+ * when the request carries an `http.body` overlay. Anything the runner or a test counts must come
+ * from this function — a byte source that bypasses it prices a request the provider never
+ * receives.
+ */
+export const wireBytes = (request: LLMRequest): Effect.Effect<number | undefined, never> =>
+  measureBody(request).pipe(Effect.map((measured) => measured?.bytes))
 
 export interface PayloadSize {
   /** Serialized size of the provider-native body, or a lower bound when `measured` is false. */
@@ -155,7 +191,7 @@ reduces what is resent to the model. Prefer compressing finished work over losin
  * indicator, a client polling between turns) are free, and so the revision only moves when the plan
  * genuinely changes, which keeps provider prompt caching effective.
  *
- * Recompiling from scratch each turn is affordable by design; `script/context-benchmark.ts` reports
+ * Recompiling from scratch each turn is affordable by design; `script/context-compiler-benchmark.ts` reports
  * the cost of a preparation with nothing to reduce.
  */
 interface Cached {
@@ -194,7 +230,16 @@ const layer = Layer.effect(
      * overhead survives at most until the session's first accepted request, never for its
      * lifetime. The hard gate stays the final arbiter regardless.
      */
-    const measuredOverhead = new Map<SessionSchema.ID, number>()
+    /**
+     * Observed wire-envelope calibration, held per session together with the envelope estimate it
+     * was recorded against. An agent switch, a permission change that expands the tool list, or a
+     * model move all change the next turn's envelope estimate, and an entry whose estimate no
+     * longer matches is stale by construction: planning must fall back to the estimate until a
+     * turn under the new envelope has been observed on the wire, at which point it replaces the
+     * entry. The estimate value is the identity of the envelope, not a tolerance bucket.
+     */
+    const measuredOverhead = new Map<SessionSchema.ID, { readonly estimate: number; readonly observed: number }>()
+    const lastPlannedEstimate = new Map<SessionSchema.ID, number>()
     // Tool-declared context policies, remembered per session for callers that do not materialize
     // tools themselves, such as the compress tool and the manual /compress command.
     const policies = new Map<SessionSchema.ID, Readonly<Record<string, ContextTypes.ToolContextPolicy>>>()
@@ -351,7 +396,12 @@ const layer = Layer.effect(
       // on the lowered request — an estimate that is still optimistic converts into exactly one
       // overflow compaction and a retried turn, never into an oversized request on the wire.
 
-      const plannedOverheadBytes = Math.max(overhead.bytes, measuredOverhead.get(input.sessionID) ?? 0)
+      const calibration = measuredOverhead.get(input.sessionID)
+      const plannedOverheadBytes = Math.max(
+        overhead.bytes,
+        calibration !== undefined && calibration.estimate === overhead.bytes ? calibration.observed : 0,
+      )
+      lastPlannedEstimate.set(input.sessionID, overhead.bytes)
       const payloadBudget =
         settings.payloadBytes === undefined ? undefined : Math.max(settings.payloadBytes - plannedOverheadBytes, 1)
       const measured = ContextBudget.measure(reduced)
@@ -537,8 +587,12 @@ const layer = Layer.effect(
         yield* fail(input.sessionID, "the summary model returned no usable summary")
         return { failure: "summary-unavailable" as const }
       }
+      // The block claims the grown range as a span: every canonical message between its first and
+      // last id is under it — summarized, or verbatim because protected. Absorption and rebasing
+      // are then always exact unions of previously persisted spans, never of summarized subsets.
       const block = ContextCompressor.block({
         id: ContextState.createID(),
+        range: { first: requested[0]!, last: requested[requested.length - 1]! },
         messages: selected,
         summary,
         focus: input.focus,
@@ -578,20 +632,22 @@ const layer = Layer.effect(
       })
     })
 
+    // The tool the guidance describes (`compress`, registered unconditionally by the builtins) is
+    // materialized per agent and disabled on the final forced step, so shipping the guidance only
+    // tracks actual materialization: unknown tool sets keep the enabled-only estimate.
+    const guidanceFor = (definitions?: readonly { readonly name: string }[]) =>
+      settings.compression.enabled &&
+      (definitions === undefined || definitions.some((definition) => definition.name === "compress"))
+        ? GUIDANCE
+        : undefined
+
     const payload = Effect.fnUntraced(function* (request: LLMRequest, sessionID?: SessionSchema.ID) {
       const limit = settings.payloadBytes
       // Nothing to enforce: no ceiling is configured, so the body is never built and nothing is
       // measured. `measured` says exactly that rather than claiming a size that was never taken.
       if (limit === undefined) return { bytes: 0, limit, within: true, measured: false } satisfies PayloadSize
-      const route = request.model.route
-      const body = yield* route.body.from(request).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
-      const serialized =
-        body === undefined
-          ? undefined
-          : yield* Schema.encodeEffect(Schema.fromJsonString(route.body.schema))(body).pipe(
-              Effect.catchCause(() => Effect.succeed(undefined)),
-            )
-      if (serialized === undefined) {
+      const measured = yield* measureBody(request)
+      if (measured === undefined) {
         // The body could not be built, so the wire size is unknown. This is the hard enforcement
         // point, and an unknown size cannot be declared within budget: the request is treated
         // exactly like an oversized one, which gives the runner its recovery attempt and otherwise
@@ -605,15 +661,18 @@ const layer = Layer.effect(
         })
         return { bytes: estimate, limit, within: false, measured: false } satisfies PayloadSize
       }
-      const bytes = Buffer.byteLength(serialized, "utf8")
+      const bytes = measured.bytes
       const within = bytes <= limit
       if (sessionID !== undefined && within) {
         // Feed the measurement back into planning. Only an accepted request calibrates: a rejected
         // one's envelope would teach planning to flinch at content that is gone by the retried
         // turn. Planning still takes the larger of estimate and observation, so this only ever
-        // moves conservative.
-        const observed = wireEnvelopeBytes(body, bytes)
-        if (observed !== undefined) measuredOverhead.set(sessionID, observed)
+        // moves conservative. Overlay keys land here too: they travel with the wire body and
+        // cannot touch the conversation keys, so from the calibration's point of view they are
+        // envelope by definition.
+        const observed = wireEnvelopeBytes(measured.body, bytes)
+        const estimate = lastPlannedEstimate.get(sessionID)
+        if (observed !== undefined && estimate !== undefined) measuredOverhead.set(sessionID, { estimate, observed })
       }
       return { bytes, limit, within, measured: true } satisfies PayloadSize
     })
@@ -642,10 +701,11 @@ const layer = Layer.effect(
       const materialized = yield* tools
         .materialize(agent?.info?.permissions)
         .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
-      const system = [agent?.info?.system, settings.compression.enabled ? GUIDANCE : undefined]
+      const definitions = materialized?.definitions ?? []
+      const system = [agent?.info?.system, guidanceFor(definitions)]
         .filter((part): part is string => part !== undefined && part.length > 0)
         .map(SystemPart.make)
-      return { system, tools: materialized?.definitions ?? [] } satisfies ContextBudget.Envelope
+      return { system, tools: definitions } satisfies ContextBudget.Envelope
     })
 
     /**
@@ -767,7 +827,7 @@ const layer = Layer.effect(
         backoff.delete(sessionID)
         yield* ContextState.reset(db, sessionID)
       }),
-      guidance: () => (settings.compression.enabled ? GUIDANCE : undefined),
+      guidance: guidanceFor,
       payload,
     })
   }),
