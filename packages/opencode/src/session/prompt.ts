@@ -13,6 +13,7 @@ import { Provider } from "@/provider/provider"
 import { type Tool as AITool, tool, jsonSchema } from "ai"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
+import { Concision } from "./concision"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
 import { Plugin } from "../plugin"
@@ -1432,12 +1433,22 @@ const layer = Layer.effect(
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            // Concision policy: resolved once per step so the system prompt
+            // and the client-side backstop enforce the same cap.
+            const concision = SystemPrompt.chat({ hidden: agent.hidden, format: lastUser.format?.type })
+              ? Concision.resolve({
+                  config: (yield* config.get()).concision,
+                  session: session.metadata?.concision,
+                  override: Concision.turnOverrideFromHistory(msgs),
+                })
+              : undefined
             const result = yield* handle.process({
               user: effectiveUser,
               agent,
               permission: session.permission,
               sessionID,
               parentSessionID: session.parentID,
+              concision,
               system,
               messages: [
                 ...modelMsgs,

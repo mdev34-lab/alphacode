@@ -17,6 +17,8 @@ import PROMPT_META from "./prompt/meta.txt"
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
 import PROMPT_STE_LITE from "./prompt/ste-lite.txt"
+import PROMPT_CONCISION from "./prompt/concision.txt"
+import type { Concision } from "./concision"
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
@@ -29,6 +31,7 @@ import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 
 export const STE_LITE = PROMPT_STE_LITE
+export const CONCISION = PROMPT_CONCISION
 
 export function chat(input: { config?: boolean; hidden?: boolean; small?: boolean; format?: string }) {
   if (input.config === false) return false
@@ -41,6 +44,16 @@ export function chat(input: { config?: boolean; hidden?: boolean; small?: boolea
 export function style(enabled: boolean) {
   if (!enabled) return []
   return [PROMPT_STE_LITE]
+}
+
+export function concision(resolved?: Concision.Resolved) {
+  if (!resolved || resolved.lifted || !resolved.caps) return []
+  const label = resolved.override === "brief" ? `${resolved.mode} + brief override` : resolved.mode
+  return [
+    PROMPT_CONCISION.replaceAll("{{MODE}}", label)
+      .replaceAll("{{MAX_WORDS}}", String(resolved.caps.maxWords))
+      .replaceAll("{{MAX_PARAGRAPHS}}", String(resolved.caps.maxParagraphs)),
+  ]
 }
 
 export function provider(model: Provider.Model) {

@@ -135,6 +135,10 @@ export const Info = Schema.Struct({
     description:
       "Inject STE-lite reply style into agent system prompts. Applies to chat only, not deliverables. Enabled by default; set to false to disable.",
   }),
+  concision: Schema.optional(Schema.Literals(["strict", "normal", "off"])).annotate({
+    description:
+      "Assistant output concision policy. 'strict' (default) caps each assistant text reply at 80 words / 2 paragraphs with a hard client-side backstop, 'normal' relaxes the cap to 200 words / 5 paragraphs, 'off' disables it. Overridable per session via session metadata and per turn with [long] / [brief].",
+  }),
   layout: Schema.optional(ConfigLayoutV1.Layout).annotate({ description: "@deprecated Always uses stretch layout." }),
   permission: Schema.optional(ConfigPermissionV1.Info),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
