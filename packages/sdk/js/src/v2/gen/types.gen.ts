@@ -2076,6 +2076,7 @@ export type Config = {
       }
   instructions?: Array<string>
   ste_lite?: boolean
+  concision?: "strict" | "normal" | "off"
   layout?: LayoutConfig
   permission?: PermissionConfig
   tools?: {
