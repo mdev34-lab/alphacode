@@ -17,6 +17,19 @@ export function Footer() {
     if (route.data.type !== "session") return []
     return sync.data.permission[route.data.sessionID] ?? []
   })
+  // Active concision policy: per-session metadata flag wins over the
+  // global config, which defaults to strict when unset.
+  const concision = createMemo(() => {
+    const configured = (sync.data.config as unknown as { concision?: unknown }).concision
+    let mode = configured === "normal" || configured === "off" ? configured : "strict"
+    if (route.data.type === "session") {
+      const sessionID = route.data.sessionID
+      const current = sync.data.session.find((s) => s.id === sessionID)
+      const override = (current?.metadata as { concision?: unknown } | undefined)?.concision
+      if (override === "strict" || override === "normal" || override === "off") mode = override
+    }
+    return mode === "off" ? "concision off" : mode === "normal" ? "concision ≤200w" : "concision ≤80w"
+  })
   const directory = useDirectory()
   const connected = useConnected()
 
@@ -82,6 +95,7 @@ export function Footer() {
                 {mcp()} MCP
               </text>
             </Show>
+            <text fg={theme.textMuted}>{concision()}</text>
             <text fg={theme.textMuted}>/status</text>
           </Match>
         </Switch>

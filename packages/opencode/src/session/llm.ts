@@ -32,6 +32,7 @@ import { LLMRequestPrep } from "./llm/request"
 import { GenerationLimit } from "./llm/generation-limit"
 import { ReasoningWatchdog } from "./llm/reasoning-watchdog"
 import { SystemPrompt } from "./system"
+import type { Concision } from "./concision"
 import { ToolCatalog } from "@/tool/catalog"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -49,6 +50,7 @@ export type StreamInput = {
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
+  concision?: Concision.Resolved
 }
 
 export type StreamRequest = StreamInput & {

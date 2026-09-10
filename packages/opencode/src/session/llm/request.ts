@@ -13,6 +13,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import type { Plugin } from "@/plugin"
+import type { Concision } from "../concision"
 import { mergeDeep } from "remeda"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
@@ -34,6 +35,7 @@ type PrepareInput = {
   readonly flags: RuntimeFlags.Info
   readonly isWorkflow: boolean
   readonly steLite?: boolean
+  readonly concision?: Concision.Resolved
 }
 
 export type Prepared = {
@@ -60,6 +62,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     [
       ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
       ...SystemPrompt.style(input.steLite === true),
+      ...SystemPrompt.concision(input.concision),
       ...input.system,
       ...(input.user.system ? [input.user.system] : []),
     ]

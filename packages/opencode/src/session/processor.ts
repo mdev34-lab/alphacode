@@ -25,6 +25,7 @@ import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { Concision } from "./concision"
 import { createGenerationClock } from "./generation-metrics"
 
 const DOOM_LOOP_THRESHOLD = 3
@@ -73,6 +74,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  concision: Concision.Resolved | undefined
 }
 
 type StreamEvent = LLMEvent
@@ -112,6 +114,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        concision: undefined,
       }
       let aborted = false
       const clock = createGenerationClock()
@@ -121,6 +124,26 @@ const layer = Layer.effect(
           providerID: input.model.providerID,
           aborted,
         })
+
+      // Client-side backstop for the concision policy: the hard floor
+      // under the system-prompt rule. Internal generations (summaries,
+      // compaction) bypass it; their cap is undefined or the message is
+      // flagged as a summary.
+      const applyConcision = Effect.fn("SessionProcessor.concision")(function* (part: SessionV1.TextPart) {
+        const resolved = ctx.concision
+        if (!resolved || resolved.lifted || ctx.assistantMessage.summary) return part.text
+        const result = Concision.enforce(part.text, resolved)
+        if (!result.truncated) return result.text
+        yield* Effect.logInfo("concision truncated", {
+          "session.id": ctx.sessionID,
+          messageID: part.messageID,
+          partID: part.id,
+          policy: resolved.label,
+          omittedWords: result.omittedWords,
+          omittedParagraphs: result.omittedParagraphs,
+        })
+        return result.text
+      })
 
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
@@ -524,6 +547,7 @@ const layer = Layer.effect(
               },
               { text: ctx.currentText.text },
             )).text
+            ctx.currentText.text = yield* applyConcision(ctx.currentText)
             {
               const end = Date.now()
               ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
@@ -560,6 +584,7 @@ const layer = Layer.effect(
 
         if (ctx.currentText) {
           const end = Date.now()
+          ctx.currentText.text = yield* applyConcision(ctx.currentText)
           ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
           yield* session.updatePart(ctx.currentText)
           ctx.currentText = undefined
@@ -636,6 +661,7 @@ const layer = Layer.effect(
           messageID: input.assistantMessage.id,
         })
         ctx.needsCompaction = false
+        ctx.concision = streamInput.concision
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
         // Tracks whether the retry loop was terminated because the user
         // switched to a different model/provider mid-backoff. When true,
