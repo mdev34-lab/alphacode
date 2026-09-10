@@ -50,6 +50,7 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { FinishTool } from "@/tool/finish"
 import PROMPT_REVIEW_LOOP from "./prompt/review-loop.txt"
 import FINISH_NUDGE from "./prompt/finish-nudge.txt"
+import { ReviewLoop } from "./review-loop"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -1170,10 +1171,82 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        // Review-loop nudges injected during this driver run. The derived
+        // loop state already counts review passes from the message history;
+        // this counter keeps the cap honest when the model never dispatches
+        // a review at all and only accumulates nudges.
+        let reviewNudges = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
+        const injectReviewNudge = Effect.fnUntraced(function* (
+          lastUser: SessionV1.User,
+          selection: SessionV1.User["model"],
+          gate: ReviewLoop.Decision,
+        ) {
+          reviewNudges += 1
+          yield* Effect.logInfo("review loop: task exit blocked until review approval", {
+            "session.id": sessionID,
+            iteration: gate.iteration,
+            cap: gate.cap,
+            phase: gate.phase,
+            nudges: reviewNudges,
+          })
+          const nudge: SessionV1.User = {
+            id: MessageID.ascending(),
+            sessionID,
+            role: "user",
+            agent: lastUser.agent,
+            model: selection,
+            time: { created: Date.now() },
+          }
+          yield* sessions.updateMessage(nudge)
+          yield* sessions.updatePart({
+            id: PartID.ascending(),
+            messageID: nudge.id,
+            sessionID,
+            type: "text",
+            text: ReviewLoop.nudgeText(gate),
+            synthetic: true,
+          } satisfies SessionV1.TextPart)
+          ReviewLoop.setDisplay(sessionID, { iteration: gate.iteration, cap: gate.cap, phase: "work" })
+          yield* status.set(sessionID, {
+            type: "review",
+            iteration: gate.iteration,
+            cap: gate.cap,
+            phase: "work",
+          })
+        })
+
+        const appendReviewExitNote = Effect.fnUntraced(function* (
+          target: SessionV1.WithParts,
+          gate: ReviewLoop.Decision,
+        ) {
+          const note = ReviewLoop.exitNoteText(gate)
+          if (note === undefined) return
+          yield* sessions.updatePart({
+            id: PartID.ascending(),
+            messageID: target.info.id,
+            sessionID,
+            type: "text",
+            text: note,
+            synthetic: true,
+          } satisfies SessionV1.TextPart)
+        })
+
+        // A previous run of this session may have been interrupted while the
+        // review loop was active; start every task from a clean indicator.
+        ReviewLoop.clearDisplay(sessionID)
+
         while (true) {
-          yield* status.set(sessionID, { type: "busy" })
+          yield* status.set(
+            sessionID,
+            ((): SessionStatus.Info => {
+              const loop = ReviewLoop.displayFor(sessionID)
+              return loop
+                ? { type: "review", iteration: loop.iteration, cap: loop.cap, phase: loop.phase }
+                : { type: "busy" }
+            })(),
+          )
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
@@ -1227,8 +1300,59 @@ const layer = Layer.effect(
                 !part.metadata?.providerExecuted &&
                 (part.state.status === "pending" || part.state.status === "running"),
             ) ?? false
+          // Review-loop gate (issue #90): the Work → Review loop is only done
+          // when the review subagent has approved this task's latest changes.
+          // The state is derived from the task's message history, so nudges
+          // never reset it. Once the configured review-pass cap is reached the
+          // loop releases the task and records the exit reason as "cap". The
+          // gate runs for the default primary agent only — the same scope as
+          // the review-loop policy text it enforces.
+          let reviewGate: ReviewLoop.Decision | undefined
+          if (activeAgent !== undefined && activeAgent.mode !== "subagent") {
+            const defaultAgent = yield* agents.defaultInfo().pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+            if (defaultAgent?.name === activeAgent.name) {
+              const reviewCfg = (yield* config.get()).review_loop
+              if (reviewCfg?.enabled !== false)
+                reviewGate = ReviewLoop.decide(msgs, {
+                  cap: reviewCfg?.max_iterations ?? ReviewLoop.DEFAULT_MAX_ITERATIONS,
+                  stallLimit: reviewCfg?.stall_limit ?? ReviewLoop.DEFAULT_STALL_LIMIT,
+                  nudges: reviewNudges,
+                })
+            }
+          }
+          if (reviewGate?.inLoop) {
+            ReviewLoop.setDisplay(sessionID, {
+              iteration: reviewGate.iteration,
+              cap: reviewGate.cap,
+              phase: reviewGate.phase,
+            })
+            yield* status.set(sessionID, {
+              type: "review",
+              iteration: reviewGate.iteration,
+              cap: reviewGate.cap,
+              phase: reviewGate.phase,
+            })
+          } else {
+            ReviewLoop.clearDisplay(sessionID)
+          }
           if (finishRequired && finishCalled && !hasUnresolvedTools) {
-            yield* Effect.logInfo("finish tool completed, exiting loop", { "session.id": sessionID })
+            if (reviewGate?.blocked && lastAssistant?.error === undefined) {
+              yield* injectReviewNudge(lastUser, selection, reviewGate)
+              continue
+            }
+            if (reviewGate?.exitReason && reviewGate.exitReason !== "approved" && lastAssistantMsg) {
+              yield* appendReviewExitNote(lastAssistantMsg, reviewGate)
+              yield* Effect.logInfo(`review loop released task on ${reviewGate.exitReason}`, {
+                "session.id": sessionID,
+                iteration: reviewGate.iteration,
+                cap: reviewGate.cap,
+                reason: reviewGate.exitReason,
+              })
+            }
+            yield* Effect.logInfo("finish tool completed, exiting loop", {
+              "session.id": sessionID,
+              ...(reviewGate ? { review_loop: reviewGate.exitReason ?? "not-applicable" } : {}),
+            })
             break
           }
 
@@ -1279,7 +1403,32 @@ const layer = Layer.effect(
               } satisfies SessionV1.TextPart)
               continue
             }
-            yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
+            // An agent that opts out of the finish tool (or has already been
+            // error-free nudged) still cannot deliver file-changing work that
+            // review has not approved: the loop keeps cycling work ↔ review
+            // until the reviewer's approval or the iteration cap.
+            if (
+              reviewGate?.blocked &&
+              orphan === undefined &&
+              lastAssistant.error === undefined &&
+              step < (activeAgent?.steps ?? Infinity)
+            ) {
+              yield* injectReviewNudge(lastUser, selection, reviewGate)
+              continue
+            }
+            if (reviewGate?.exitReason && reviewGate.exitReason !== "approved" && lastAssistantMsg) {
+              yield* appendReviewExitNote(lastAssistantMsg, reviewGate)
+              yield* Effect.logInfo(`review loop released task on ${reviewGate.exitReason}`, {
+                "session.id": sessionID,
+                iteration: reviewGate.iteration,
+                cap: reviewGate.cap,
+                reason: reviewGate.exitReason,
+              })
+            }
+            yield* Effect.logInfo("exiting loop", {
+              "session.id": sessionID,
+              ...(reviewGate ? { review_loop: reviewGate.exitReason ?? "not-applicable" } : {}),
+            })
             break
           }
 
@@ -1502,6 +1651,7 @@ const layer = Layer.effect(
           continue
         }
 
+        ReviewLoop.clearDisplay(sessionID)
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
       },

@@ -1664,6 +1664,23 @@ export function Prompt(props: PromptProps) {
                         </Show>
                       )
                     })()}
+                    {(() => {
+                      const review = createMemo(() => {
+                        const s = status()
+                        if (s.type !== "review") return
+                        return s
+                      })
+                      return (
+                        <Show when={review()}>
+                          {(r) => (
+                            <text fg={theme.accent}>
+                              review loop {r().iteration}/{r().cap} ·{" "}
+                              {r().phase === "review" ? "reviewer running" : "awaiting approval"}
+                            </text>
+                          )}
+                        </Show>
+                      )
+                    })()}
                   </box>
                 </box>
                 <text fg={store.interrupt > 0 ? theme.primary : theme.text}>

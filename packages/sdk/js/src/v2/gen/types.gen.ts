@@ -698,6 +698,12 @@ export type SessionStatus =
   | {
       type: "busy"
     }
+  | {
+      type: "review"
+      iteration: number
+      cap: number
+      phase: "work" | "review"
+    }
 
 export type QuestionOption = {
   /**
@@ -2101,6 +2107,14 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+  }
+  /**
+   * Enforcement of the mandatory Work → Review loop. While the loop is active the session status reports iteration, cap, and phase; the TUI statusline surfaces them.
+   */
+  review_loop?: {
+    enabled?: boolean
+    max_iterations?: number
+    stall_limit?: number
   }
   experimental?: {
     disable_paste_summary?: boolean

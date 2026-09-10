@@ -29,6 +29,16 @@ export const Info = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("busy"),
   }),
+  // The Work → Review loop is enforcing another iteration for this session
+  // (issue #90): files changed and review has not approved yet. `iteration`
+  // counts review passes, `cap` is the configured ceiling, and `phase` names
+  // what the loop is waiting on.
+  Schema.Struct({
+    type: Schema.Literal("review"),
+    iteration: NonNegativeInt,
+    cap: NonNegativeInt,
+    phase: Schema.Literals(["work", "review"]),
+  }),
 ]).annotate({ identifier: "SessionStatus" })
 export type Info = Schema.Schema.Type<typeof Info>
 

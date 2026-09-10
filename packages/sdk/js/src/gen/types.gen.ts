@@ -463,6 +463,12 @@ export type SessionStatus =
   | {
       type: "busy"
     }
+  | {
+      type: "review"
+      iteration: number
+      cap: number
+      phase: "work" | "review"
+    }
 
 export type EventSessionStatus = {
   type: "session.status"

@@ -58,7 +58,11 @@ const tui: TuiPlugin = async (api) => {
 
   api.event.on("session.status", (event) => {
     const sessionID = event.properties.sessionID
-    if (event.properties.status.type === "busy" || event.properties.status.type === "retry") {
+    if (
+      event.properties.status.type === "busy" ||
+      event.properties.status.type === "retry" ||
+      event.properties.status.type === "review"
+    ) {
       active.add(sessionID)
       errored.delete(sessionID)
       return

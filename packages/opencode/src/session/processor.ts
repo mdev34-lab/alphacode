@@ -17,6 +17,7 @@ import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
 import { SessionStatus } from "./status"
+import { ReviewLoop } from "./review-loop"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
 import { Question } from "@/question"
@@ -647,7 +648,17 @@ const layer = Layer.effect(
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
-            yield* status.set(ctx.sessionID, { type: "busy" })
+            // While the Work → Review loop is enforcing an iteration, the
+            // statusline shows the loop instead of a bare busy indicator.
+            yield* status.set(
+              ctx.sessionID,
+              ((): SessionStatus.Info => {
+                const loop = ReviewLoop.displayFor(ctx.sessionID)
+                return loop
+                  ? { type: "review", iteration: loop.iteration, cap: loop.cap, phase: loop.phase }
+                  : { type: "busy" }
+              })(),
+            )
             const stream = llm.stream(streamInput)
             clock.startRequest(Date.now())
 
@@ -695,10 +706,7 @@ const layer = Layer.effect(
                     if (Option.isNone(current)) return false
                     const currentModel = current.value.model
                     if (!currentModel) return false
-                    return (
-                      currentModel.providerID !== input.model.providerID ||
-                      currentModel.id !== input.model.id
-                    )
+                    return currentModel.providerID !== input.model.providerID || currentModel.id !== input.model.id
                   }),
               }),
             ),
