@@ -1674,7 +1674,8 @@ export function Prompt(props: PromptProps) {
                         <Show when={review()}>
                           {(r) => (
                             <text fg={theme.accent}>
-                              review loop {r().iteration}/{r().cap} ·{" "}
+                              review loop {r().iteration}
+                              {r().cap > 0 ? `/${r().cap}` : ""} ·{" "}
                               {r().phase === "review" ? "reviewer running" : "awaiting approval"}
                             </text>
                           )}

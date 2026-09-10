@@ -1,11 +1,11 @@
 {marker} You cannot finish this task yet: the Work → Review loop has not converged.
 
-This task changed files, but no review has approved the latest changes ({iteration} of {cap} review passes used). {pending}
+This task changed files, but no review has approved the latest changes ({progress}). {pending}
 
 Before finish:
 1. Dispatch the review subagent now: task tool with `subagent_type: "review"` and `background: false`, carrying the requirements checklist, a summary of what changed, the unit boundary (base/head SHAs or "uncommitted working tree" with the expected files), and the full diff for this unit.
 2. If the reviewer returns Critical or Important findings, fix them and dispatch a scoped re-review of the fix diff. Never skip the re-review of your own fixes.
-3. Keep cycling fix → re-review while the reviewer's findings keep changing — that is progress, and many rounds are fine. Call finish only after the reviewer returns an Approved verdict, or after the driver releases the loop on its runaway cap ({cap} review passes) or because consecutive reviews repeated identical unresolved findings. On any release without approval, say so explicitly in your result and adjudicate every unresolved finding with reasoning — if the reviewer keeps reporting the same items, stop re-dispatching and resolve or park them instead.
+3. Keep cycling fix → re-review while the reviewer's findings keep changing — that is progress, and complex work may legitimately need many rounds. Call finish only after the reviewer returns an Approved verdict, or after the driver releases the loop ({release}). On any release without approval, say so explicitly in your result and adjudicate every unresolved finding with reasoning — if the reviewer keeps reporting the same items, stop re-dispatching and resolve or park them instead.
 
 Never claim completion, commit, or advance to the next unit while findings are unresolved without adjudicating them first.
 

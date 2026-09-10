@@ -15,14 +15,17 @@ import NUDGE_TEMPLATE from "./prompt/review-loop-nudge.txt"
  * history of the current task and let the driver refuse that exit until review
  * approves.
  *
- * Termination design: review convergence is measured by progress, not by a
- * small cycle count. The loop keeps cycling work ↔ review for as long as each
- * pass changes what the reviewer blocks on — complex tasks are expected to
- * need many rounds — and releases early only when the reviewer repeats the
- * same blocking findings across consecutive passes (stalled: more cycles
- * would burn tokens without improving quality) or when the runaway cap is
- * reached. The cap is a safety bound for a genuinely stuck or pathological
- * session, not a quality bar.
+ * Termination design: the loop is bounded by convergence, never by a round
+ * count. It keeps cycling work ↔ review as long as each pass changes what the
+ * reviewer blocks on — complex tasks legitimately need dozens of productive
+ * review rounds, and the loop must not punish that. It releases early only on:
+ *
+ * - a stall: the reviewer repeats the identical blocking findings across
+ *   stall_limit consecutive passes (fix attempts are not moving the needle);
+ * - unresponsiveness: repeated reminders produce no new review dispatch and no
+ *   changed findings;
+ * - `review_loop.max_iterations`, only when explicitly configured — a purely
+ *   opt-in runaway bound, with no default.
  *
  * The state is a fold over the task's tool parts, so it survives nudges and is
  * replayable: no per-session mutable registry is needed.
@@ -31,30 +34,33 @@ import NUDGE_TEMPLATE from "./prompt/review-loop-nudge.txt"
 /** Marker prefix on the automated nudge so nudges never count as task starts. */
 export const NUDGE_MARKER = "[REVIEW LOOP]"
 
-/** Marker prefix on the transcript note written when the loop exits on the cap. */
+/** Marker prefix on the transcript note written when an explicit cap releases. */
 export const CAP_MARKER = "[REVIEW LOOP CAP]"
 
 /** Marker prefix on the transcript note written when the loop exits as stalled. */
 export const STALL_MARKER = "[REVIEW LOOP STALL]"
 
+/** Marker prefix on the transcript note written when reminders are ignored. */
+export const UNRESPONSIVE_MARKER = "[REVIEW LOOP UNRESPONSIVE]"
+
 /** Agent name of the reviewer whose verdict the loop waits for. */
 export const REVIEW_SUBAGENT = "review"
 
 /**
- * Runaway bound on review passes per task, for sessions that never converge
- * for reasons the stall guard cannot see (e.g. findings oscillate without
- * repeating). Deliberately generous — dozens of rounds of *productive* review
- * on a complex task is the intended behavior, not an error to release early.
- */
-export const DEFAULT_MAX_ITERATIONS = 25
-
-/**
- * Consecutive completed reviews reporting the identical blocking
- * (Critical/Important) findings before the loop releases as stalled. The
- * reviewer repeating itself across fix attempts means the work is not
- * converging; the model must then adjudicate the findings, not dispatch again.
+ * Consecutive completed reviews reporting identical blocking findings before
+ * the loop releases as stalled. Identical findings mean further dispatches
+ * would repeat the same report; new or changed findings always reset the
+ * streak, so long productive iteration is never punished.
  */
 export const DEFAULT_STALL_LIMIT = 3
+
+/**
+ * Backstop for the degenerate case where the model keeps ending turns with
+ * neither new review dispatches nor new findings. Bounded by what a
+ * *responsive* loop would show, not by a review-round budget: an actively
+ * converging loop grows reviewPasses with its nudges and never trips this.
+ */
+export const UNRESPONSIVE_NUDGE_LIMIT = 5
 
 // Tools that mutate files in the working tree. bash is deliberately absent:
 // the loop cannot reliably tell a `git commit` from unrelated output, and the
@@ -193,7 +199,7 @@ export function assess(messages: readonly SessionV1.WithParts[]): State {
         // Progress tracking for the stall guard: identical blocking findings
         // across consecutive passes mean the work is not converging. New or
         // different findings reset the streak, so productive iteration — even
-        // many rounds long — is never punished.
+        // dozens of rounds long — is never punished.
         const findings = severityFindings(part.state.output)
         if (findings !== undefined && findings === state.lastFindings) {
           state.stallStreak += 1
@@ -214,11 +220,12 @@ export interface Decision {
   blocked: boolean
   /** The reviewer is repeating the same blocking findings; further cycles are not progress. */
   stalled: boolean
-  /** Why the loop ended when exit was allowed: approval, the runaway cap, or a stall. */
-  exitReason: "approved" | "cap" | "stalled" | undefined
+  /** Why the loop ended when exit was allowed: approval, stall, unresponsiveness, or an explicitly configured cap. */
+  exitReason: "approved" | "cap" | "stalled" | "unresponsive" | undefined
   /** Review passes used so far, at least 1 while the loop is waiting. */
   iteration: number
-  cap: number
+  /** The explicitly configured runaway bound, if any. */
+  cap: number | undefined
   /** What the loop is waiting on right now. */
   phase: "work" | "review"
   state: State
@@ -227,31 +234,34 @@ export interface Decision {
 /**
  * Decides the loop's reaction for one driver iteration.
  *
- * `nudges` is the number of review nudges already injected in the current
- * driver run. It lets the cap release the loop even when the model keeps
- * ending turns without dispatching any review at all — reviewPasses alone
- * would never reach the cap in that degenerate case. `stallLimit` overrides
- * the progress-based release threshold (see DEFAULT_STALL_LIMIT).
+ * `nudges` is the number of review-loop reminders already injected in the
+ * current driver run; it powers the unresponsiveness backstop, releasing the
+ * loop when the model neither dispatches reviews nor changes what the reviewer
+ * blocks on. `cap` is an opt-in runaway bound — undefined (the default) means
+ * the loop is bounded by convergence alone.
  */
 export function decide(
   messages: readonly SessionV1.WithParts[],
-  input: { cap: number; nudges: number; stallLimit?: number },
+  input: { cap?: number; nudges: number; stallLimit?: number },
 ): Decision {
   const state = assess(messages)
   const inLoop = state.filesChanged && state.dirty
   const stalled = state.dirty && state.stallStreak >= (input.stallLimit ?? DEFAULT_STALL_LIMIT)
-  const atCap = state.reviewPasses >= input.cap || input.nudges >= input.cap
+  const atCap = input.cap !== undefined && (state.reviewPasses >= input.cap || input.nudges >= input.cap)
+  const unresponsive = state.dirty && input.nudges >= state.reviewPasses + UNRESPONSIVE_NUDGE_LIMIT
   return {
     inLoop,
     stalled,
-    blocked: inLoop && !stalled && !atCap,
+    blocked: inLoop && !stalled && !atCap && !unresponsive,
     exitReason: state.filesChanged
       ? state.dirty
         ? stalled
           ? "stalled"
           : atCap
             ? "cap"
-            : undefined
+            : unresponsive
+              ? "unresponsive"
+              : undefined
         : "approved"
       : undefined,
     iteration: Math.max(state.reviewPasses, input.nudges, inLoop ? 1 : 0),
@@ -269,6 +279,7 @@ export function decide(
  * publish the loop instead, so the indicator survives across steps. The
  * runLoop refreshes this map at every iteration top, so a value read during
  * a turn is always derived from the same message fold that gated the turn.
+ * cap 0 means unbounded — no runaway cap is configured.
  * ---------------------------------------------------------------------- */
 
 export interface Display {
@@ -299,16 +310,23 @@ export function nudgeText(decision: Decision): string {
       : decision.state.lastVerdict === "needs-fixes"
         ? "The latest review reported Critical or Important findings that have not been addressed and re-reviewed yet."
         : "The latest review did not return an explicit Approved verdict, so the current changes are not cleared."
+  const progress =
+    decision.cap === undefined
+      ? `${decision.iteration} review pass(es) so far; the loop has no round limit`
+      : `${decision.iteration} of ${decision.cap} review passes used`
+  const release = ["consecutive reviews repeat your unresolved findings (the loop is stalled)"]
+  if (decision.cap !== undefined) release.push(`the configured cap of ${decision.cap} passes is reached`)
+  release.push("you stop responding to these reminders")
   return NUDGE_TEMPLATE.replace(/\{marker\}/g, NUDGE_MARKER)
-    .replace(/\{iteration\}/g, String(decision.iteration))
-    .replace(/\{cap\}/g, String(decision.cap))
+    .replace(/\{progress\}/g, progress)
     .replace(/\{pending\}/g, pending)
+    .replace(/\{release\}/g, `after ${release.join(" or ")}`)
 }
 
-/** Transcript note recorded when the loop releases on the runaway cap. */
+/** Transcript note recorded when the loop releases on an explicitly configured cap. */
 export function capNoteText(decision: Decision): string {
   const passes = String(decision.state.reviewPasses)
-  return `${CAP_MARKER} Review loop ended on the iteration cap after ${passes} review pass(es) without an Approved verdict — this is NOT an approval. Unresolved findings must be adjudicated by the user.`
+  return `${CAP_MARKER} Review loop ended on the configured iteration cap after ${passes} review pass(es) without an Approved verdict — this is NOT an approval. Unresolved findings must be adjudicated by the user.`
 }
 
 /** Transcript note recorded when the loop releases because review is not converging. */
@@ -318,9 +336,16 @@ export function stallNoteText(decision: Decision): string {
   return `${STALL_MARKER} Review loop released after ${passes} review pass(es): the last ${streak} reviews reported the same unresolved findings, so further rounds were not making progress — this is NOT an approval. Each remaining finding must be adjudicated (fixed, or parked with written justification) for the user.`
 }
 
+/** Transcript note recorded when the model ignored the loop's reminders. */
+export function unresponsiveNoteText(decision: Decision): string {
+  const iterations = String(decision.iteration)
+  return `${UNRESPONSIVE_MARKER} Review loop released after ${iterations} unresponsive iterations: the reminders produced no review dispatch and no changed findings — this is NOT an approval. The work is delivered without review approval; findings, if any, must be adjudicated by the user.`
+}
+
 /** Release note matching the decision's exit reason, if any. */
 export function exitNoteText(decision: Decision): string | undefined {
   if (decision.exitReason === "cap") return capNoteText(decision)
   if (decision.exitReason === "stalled") return stallNoteText(decision)
+  if (decision.exitReason === "unresponsive") return unresponsiveNoteText(decision)
   return undefined
 }

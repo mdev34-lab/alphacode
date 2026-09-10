@@ -201,11 +201,11 @@ export const Info = Schema.Struct({
     Schema.Struct({
       enabled: Schema.optional(Schema.Boolean).annotate({
         description:
-          "Enforce the mandatory Work → Review loop at the session driver: a task that changed files may not finish until the review subagent returns an Approved verdict (default: true). The loop cycles until approval, a stall, or the runaway cap. Applies to the default primary agent.",
+          "Enforce the mandatory Work → Review loop at the session driver: a task that changed files may not finish until the review subagent returns an Approved verdict (default: true). The loop cycles until approval or a stall; a round cap applies only if max_iterations is set. Applies to the default primary agent.",
       }),
       max_iterations: Schema.optional(PositiveInt).annotate({
         description:
-          "Runaway bound on review passes per task, for sessions that never converge (default: 25, deliberately generous — many productive review rounds are expected on complex work, and progress-based stalling is handled by stall_limit, not this cap). The cap exit is logged and noted in the transcript.",
+          "Optional hard ceiling on review passes per task. Unset by default: the loop is bounded by convergence (approval, or the reviewer repeating identical findings), never by a round count — complex work may legitimately need dozens of productive cycles. Set only to impose a runaway bound; when configured and reached, the release is logged and noted in the transcript.",
       }),
       stall_limit: Schema.optional(PositiveInt).annotate({
         description:

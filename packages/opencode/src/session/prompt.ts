@@ -1208,11 +1208,11 @@ const layer = Layer.effect(
             text: ReviewLoop.nudgeText(gate),
             synthetic: true,
           } satisfies SessionV1.TextPart)
-          ReviewLoop.setDisplay(sessionID, { iteration: gate.iteration, cap: gate.cap, phase: "work" })
+          ReviewLoop.setDisplay(sessionID, { iteration: gate.iteration, cap: gate.cap ?? 0, phase: "work" })
           yield* status.set(sessionID, {
             type: "review",
             iteration: gate.iteration,
-            cap: gate.cap,
+            cap: gate.cap ?? 0,
             phase: "work",
           })
         })
@@ -1313,8 +1313,11 @@ const layer = Layer.effect(
             if (defaultAgent?.name === activeAgent.name) {
               const reviewCfg = (yield* config.get()).review_loop
               if (reviewCfg?.enabled !== false)
+                // No default round cap: iteration is bounded by convergence
+                // (stall / unresponsiveness), and max_iterations only applies
+                // when explicitly configured.
                 reviewGate = ReviewLoop.decide(msgs, {
-                  cap: reviewCfg?.max_iterations ?? ReviewLoop.DEFAULT_MAX_ITERATIONS,
+                  cap: reviewCfg?.max_iterations,
                   stallLimit: reviewCfg?.stall_limit ?? ReviewLoop.DEFAULT_STALL_LIMIT,
                   nudges: reviewNudges,
                 })
@@ -1323,13 +1326,13 @@ const layer = Layer.effect(
           if (reviewGate?.inLoop) {
             ReviewLoop.setDisplay(sessionID, {
               iteration: reviewGate.iteration,
-              cap: reviewGate.cap,
+              cap: reviewGate.cap ?? 0,
               phase: reviewGate.phase,
             })
             yield* status.set(sessionID, {
               type: "review",
               iteration: reviewGate.iteration,
-              cap: reviewGate.cap,
+              cap: reviewGate.cap ?? 0,
               phase: reviewGate.phase,
             })
           } else {

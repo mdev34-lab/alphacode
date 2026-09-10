@@ -175,6 +175,11 @@ expect(ReviewLoop.parseVerdict("The plan was approved by the owner, not a code r
   expect(ReviewLoop.assess(errored).dirty).toBe(true)
 }
 
+const mk = (...outputs: string[]) => [
+  msg("user", [realTextPart("work")]),
+  ...outputs.map((output) => msg("assistant", [writePart(), taskPart(output)])),
+]
+
 // The stall guard releases only on identical blocking findings across
 // consecutive reviews; new findings reset the streak, so long productive
 // loops are never punished.
@@ -182,25 +187,45 @@ expect(ReviewLoop.parseVerdict("The plan was approved by the owner, not a code r
   const findingsA = "#### Important (Should Fix)\n- src/a.ts:1: missing null check\n\n**Ready to proceed?** Needs fixes"
   const findingsB =
     "#### Important (Should Fix)\n- src/b.ts:9: wrong retry backoff\n\n**Ready to proceed?** Needs fixes"
-  const mk = (...outputs: string[]) => [
-    msg("user", [realTextPart("work")]),
-    ...outputs.map((output) => msg("assistant", [writePart(), taskPart(output)])),
-  ]
   expect(ReviewLoop.severityFindings("no sections here")).toBeUndefined()
-  const repeated = ReviewLoop.decide(mk(findingsA, findingsA, findingsA), {
-    cap: 25,
-    nudges: 0,
-  })
+  const repeated = ReviewLoop.decide(mk(findingsA, findingsA, findingsA), { nudges: 0 })
   expect(repeated.stalled).toBe(true)
   expect(repeated.blocked).toBe(false)
   expect(repeated.exitReason).toBe("stalled")
-  const progressing = ReviewLoop.decide(mk(findingsA, findingsB, findingsA), {
-    cap: 25,
-    nudges: 0,
-  })
+  const progressing = ReviewLoop.decide(mk(findingsA, findingsB, findingsA), { nudges: 0 })
   expect(progressing.stalled).toBe(false)
   expect(progressing.blocked).toBe(true)
   expect(progressing.exitReason).toBeUndefined()
+  // A long, still-changing loop is never released: 25 rounds of alternating
+  // findings stay blocked with no cap configured.
+  const marathon = mk(...Array.from({ length: 25 }, (_, i) => (i % 2 === 0 ? findingsA : findingsB)))
+  const long = ReviewLoop.decide(marathon, { nudges: 25 })
+  expect(long.blocked).toBe(true)
+  expect(long.exitReason).toBeUndefined()
+  expect(long.stalled).toBe(false)
+}
+
+// The unresponsive backstop releases a loop the model is ignoring, while a
+// loop that dispatches reviews keeps nudges in step and never trips it.
+{
+  const ignored: SessionV1.WithParts[] = [msg("user", [realTextPart("work")]), msg("assistant", [writePart()])]
+  expect(ReviewLoop.decide(ignored, { nudges: 4 }).blocked).toBe(true)
+  const released = ReviewLoop.decide(ignored, { nudges: 5 })
+  expect(released.blocked).toBe(false)
+  expect(released.exitReason).toBe("unresponsive")
+  expect(ReviewLoop.exitNoteText(released)).toContain(ReviewLoop.UNRESPONSIVE_MARKER)
+  const responsive = mk(
+    "#### Important (Should Fix)\n- a.ts:1 x\n\n**Ready to proceed?** Needs fixes",
+    "#### Important (Should Fix)\n- b.ts:2 y\n\n**Ready to proceed?** Needs fixes",
+    "#### Important (Should Fix)\n- c.ts:3 z\n\n**Ready to proceed?** Needs fixes",
+    "#### Important (Should Fix)\n- d.ts:4 w\n\n**Ready to proceed?** Needs fixes",
+    "#### Important (Should Fix)\n- e.ts:5 v\n\n**Ready to proceed?** Needs fixes",
+    "#### Important (Should Fix)\n- f.ts:6 u\n\n**Ready to proceed?** Needs fixes",
+    "#### Important (Should Fix)\n- g.ts:7 t\n\n**Ready to proceed?** Needs fixes",
+    "#### Important (Should Fix)\n- h.ts:8 s\n\n**Ready to proceed?** Needs fixes",
+  )
+  // 8 review passes, 7 nudges: nudges stay below passes + 5 → never unresponsive.
+  expect(ReviewLoop.decide(responsive, { nudges: 7 }).blocked).toBe(true)
 }
 
 // Turns with no file changes never enter the loop.
@@ -214,11 +239,17 @@ expect(ReviewLoop.parseVerdict("The plan was approved by the owner, not a code r
   const msgs: SessionV1.WithParts[] = [msg("user", [realTextPart("work")]), msg("assistant", [writePart()])]
   const text = ReviewLoop.nudgeText(ReviewLoop.decide(msgs, { cap: 5, nudges: 1 }))
   expect(text).toContain(ReviewLoop.NUDGE_MARKER)
-  expect(text).toContain("1 of 5")
+  expect(text).toContain("1 of 5 review passes used")
+  expect(text).toContain("the configured cap of 5 passes")
   expect(text).toContain('subagent_type: "review"')
   expect(text).toContain("No review has been dispatched")
   expect(text).not.toContain("{pending}")
-  expect(text).not.toContain("{iteration}")
+  expect(text).not.toContain("{progress}")
+  expect(text).not.toContain("{release}")
+  // Unconfigured cap (the default): no round-limit language at all.
+  const uncapped = ReviewLoop.nudgeText(ReviewLoop.decide(msgs, { nudges: 1 }))
+  expect(uncapped).toContain("no round limit")
+  expect(uncapped).not.toContain("configured cap")
 }
 
 // ---------------------------------------------------------------------------
@@ -550,7 +581,9 @@ it.instance(
       const texts = msgs.flatMap((m) => m.parts).filter((p) => p.type === "text")
       expect(
         texts.some(
-          (p) => p.type === "text" && p.text.includes("Review loop ended on the iteration cap after 1 review pass"),
+          (p) =>
+            p.type === "text" &&
+            p.text.includes("Review loop ended on the configured iteration cap after 1 review pass"),
         ),
       ).toBe(true)
     }),
@@ -597,6 +630,41 @@ it.instance(
         .flatMap((m) => m.parts)
         .filter((p) => p.type === "text" && p.text.startsWith(ReviewLoop.CAP_MARKER))
       expect(capNotes).toHaveLength(0)
+    }),
+  30_000,
+)
+
+it.instance(
+  "a model that ignores every reminder is released by the backstop, not a round cap",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig()
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Ignore",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+
+      yield* llm.pushMatch(policyMatch, reply().tool("write", { filePath: "src/cache.ts", content: "fix\n" }))
+      for (let i = 0; i < 6; i++) {
+        yield* llm.pushMatch(policyMatch, reply().tool("finish", { result: "attempt without review" }))
+      }
+
+      yield* user(chat.id, "fix the cache key")
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+
+      const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
+      // Five reminders were injected; the sixth finish iteration is released by
+      // the unresponsiveness backstop — no review was ever dispatched, so no
+      // round-count cap is what stopped this loop.
+      expect(reviewTaskParts(msgs)).toHaveLength(0)
+      expect(nudgeCount(msgs)).toBe(5)
+      const notes = msgs
+        .flatMap((m) => m.parts)
+        .filter((p) => p.type === "text" && p.text.startsWith(ReviewLoop.UNRESPONSIVE_MARKER))
+      expect(notes).toHaveLength(1)
     }),
   30_000,
 )
@@ -684,8 +752,8 @@ it.instance(
         "10 seconds",
       )
       expect(observed.phase).toBe("work")
-      expect(observed.cap).toBe(ReviewLoop.DEFAULT_MAX_ITERATIONS)
-      expect(observed.cap).toBeGreaterThanOrEqual(25)
+      // No round cap by default: the status reports 0 ("uncapped").
+      expect(observed.cap).toBe(0)
       expect(observed.iteration).toBe(1)
       yield* prompt.cancel(chat.id)
       yield* Fiber.await(fiber)
