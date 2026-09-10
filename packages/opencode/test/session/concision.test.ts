@@ -181,6 +181,25 @@ describe("concision enforcement", () => {
     expect(result.text).toBe(short)
   })
 
+  test("remainingCaps shares the word budget across parts of one message", () => {
+    const caps = { maxWords: Concision.STRICT_MAX_WORDS, maxParagraphs: Concision.STRICT_MAX_PARAGRAPHS }
+    expect(Concision.remainingCaps(caps, 0)).toEqual(caps)
+    expect(Concision.remainingCaps(caps, 60)).toEqual({ maxWords: 20, maxParagraphs: 2 })
+    expect(Concision.remainingCaps(caps, 500).maxWords).toBe(0)
+  })
+
+  test("later parts of one message only get the leftover budget", () => {
+    const first = Concision.enforce("word ".repeat(60).trim(), Concision.resolve({}))
+    expect(first.truncated).toBe(false)
+    const spent = Concision.countWords(first.text)
+    const secondCaps = Concision.remainingCaps(Concision.resolve({}).caps!, spent)
+    const second = Concision.enforce("word ".repeat(50).trim(), { ...Concision.resolve({}), caps: secondCaps })
+    expect(second.truncated).toBe(true)
+    // 60 words spent of 80 → 20 left, marker reserve included.
+    expect(Concision.countWords(second.text)).toBe(20)
+    expect(second.omittedWords).toBe(32)
+  })
+
   test("filler lead-ins are stripped even within budget", () => {
     expect(Concision.stripFiller("Sure! Fixed the bug.")).toBe("Fixed the bug.")
     expect(Concision.stripFiller("Of course! Here is the diff.")).toBe("Here is the diff.")

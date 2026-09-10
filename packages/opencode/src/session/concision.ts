@@ -83,6 +83,15 @@ export type Caps = {
   maxParagraphs: number
 }
 
+// The word cap is shared across every text part of one assistant message,
+// so a part can never sidestep the policy by arriving after a tool call.
+// Paragraphs stay per-part. When the remaining budget is under the 2-word
+// marker reserve, a further part collapses to just the marker (at most 2
+// words of overage, once).
+export function remainingCaps(caps: Caps, spentWords: number): Caps {
+  return { maxWords: Math.max(0, caps.maxWords - spentWords), maxParagraphs: caps.maxParagraphs }
+}
+
 export type Resolved = {
   // Effective base mode (before the turn override is applied).
   mode: Mode

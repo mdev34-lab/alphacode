@@ -75,6 +75,10 @@ interface ProcessorContext extends Input {
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
   concision: Concision.Resolved | undefined
+  // Words already enforced against the concision cap by earlier text parts
+  // of this assistant message. Handle-scoped, so it spans steps: text parts
+  // emitted between tool calls share one budget with the final reply.
+  concisionSpent: number
 }
 
 type StreamEvent = LLMEvent
@@ -115,6 +119,7 @@ const layer = Layer.effect(
         currentText: undefined,
         reasoningMap: {},
         concision: undefined,
+        concisionSpent: 0,
       }
       let aborted = false
       const clock = createGenerationClock()
@@ -128,11 +133,13 @@ const layer = Layer.effect(
       // Client-side backstop for the concision policy: the hard floor
       // under the system-prompt rule. Internal generations (summaries,
       // compaction) bypass it; their cap is undefined or the message is
-      // flagged as a summary.
+      // flagged as a summary. The cap applies per text part, but the word
+      // budget is shared across the whole assistant message.
       const applyConcision = Effect.fn("SessionProcessor.concision")(function* (part: SessionV1.TextPart) {
         const resolved = ctx.concision
-        if (!resolved || resolved.lifted || ctx.assistantMessage.summary) return part.text
-        const result = Concision.enforce(part.text, resolved)
+        if (!resolved || resolved.lifted || resolved.caps === undefined || ctx.assistantMessage.summary) return part.text
+        const result = Concision.enforce(part.text, { ...resolved, caps: Concision.remainingCaps(resolved.caps, ctx.concisionSpent) })
+        ctx.concisionSpent += Concision.countWords(result.text)
         if (!result.truncated) return result.text
         yield* Effect.logInfo("concision truncated", {
           "session.id": ctx.sessionID,

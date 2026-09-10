@@ -14,6 +14,7 @@ import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionProcessor } from "../../src/session/processor"
+import { Concision } from "../../src/session/concision"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionSummary } from "../../src/session/summary"
@@ -808,6 +809,72 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
         expect(call.state.metadata).toEqual({ source: "test" })
         expect(call.state.time.start).toBeDefined()
         expect(call.state.time.end).toBeDefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests share the concision budget across a message's text parts", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        // Step 1: 60 words of text, then a tool call. Step 2 (same assistant
+        // message): 50 more words — only 20 of budget left.
+        yield* llm.push(reply().text("word ".repeat(60)).tool("lookup", { query: "weather" }), reply().text("word ".repeat(50)).stop())
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "concise")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const input = {
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "concise" }],
+          tools: {
+            lookup: tool({
+              description: "Look up information",
+              inputSchema: z.object({ query: z.string() }),
+              execute: async (input) => ({
+                title: "Weather lookup",
+                output: `result:${input.query}`,
+                metadata: { source: "test" },
+              }),
+            }),
+          },
+          concision: Concision.resolve({}),
+        } satisfies LLM.StreamInput
+
+        yield* handle.process(input)
+        yield* handle.process(input)
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const texts = parts.filter((part): part is SessionV1.TextPart => part.type === "text")
+
+        expect(yield* llm.calls).toBe(2)
+        expect(texts).toHaveLength(2)
+        // First part: within the full cap, untouched.
+        expect(texts[0]?.text).toBe("word ".repeat(60))
+        // Second part: truncated to the 20 words of remaining budget,
+        // marker reserve included.
+        expect(texts[1]?.text).toBe(`${"word ".repeat(18).trim()} … [+32]`)
       }),
     { config: (url) => providerCfg(url) },
   ),
