@@ -40,13 +40,18 @@ export function normalizeMode(value: unknown): Mode {
 }
 
 // Last token in the text wins, so a user can correct themselves mid-message.
-// Case-insensitive; matches anywhere in the line, not only standalone.
+// Case-insensitive. Standalone tokens only — preceded by line start or
+// whitespace and followed by whitespace or end — so pasted markdown links
+// (`[long](…)`) or code (`arr[long]`) never trigger an override.
+const TOKEN_PATTERN = /(^|\s)\[(long|brief)\](?=\s|$)/gi
+
 export function parseTurnOverride(text: string): TurnOverride | undefined {
-  const lower = text.toLowerCase()
-  const longAt = lower.lastIndexOf(LONG_TOKEN)
-  const briefAt = lower.lastIndexOf(BRIEF_TOKEN)
-  if (longAt === -1 && briefAt === -1) return undefined
-  return longAt >= briefAt ? "long" : "brief"
+  let override: TurnOverride | undefined
+  for (const match of text.matchAll(TOKEN_PATTERN)) {
+    const token = match[2]?.toLowerCase()
+    if (token === "long" || token === "brief") override = token
+  }
+  return override
 }
 
 // Minimal structural shape of SessionV1.WithParts, so this module stays
@@ -159,40 +164,131 @@ export type Enforced = {
   omittedParagraphs: number
 }
 
+export type Segment = {
+  type: "prose" | "fence"
+  text: string
+}
+
+// Split into prose and fenced-code segments. A fence opens at a line whose
+// first non-blank characters are ``` or ~~~ and closes at the next line
+// starting with the same marker; an unclosed fence runs to the end and is
+// treated as code (never truncated). Inline backticks mid-line do not open
+// a fence.
+export function splitSegments(text: string): Segment[] {
+  const segments: Segment[] = []
+  let buffer: string[] = []
+  let kind: "prose" | "fence" = "prose"
+  let marker: string | undefined
+  const flush = () => {
+    if (buffer.length) segments.push({ type: kind, text: buffer.join("\n") })
+    buffer = []
+  }
+  for (const line of text.split("\n")) {
+    const trimmed = line.trimStart()
+    const fence = trimmed.startsWith("```") ? "```" : trimmed.startsWith("~~~") ? "~~~" : undefined
+    if (kind === "prose" && fence) {
+      flush()
+      kind = "fence"
+      marker = fence
+    } else if (kind === "fence" && fence && marker && fence.startsWith(marker)) {
+      buffer.push(line)
+      flush()
+      kind = "prose"
+      marker = undefined
+      continue
+    }
+    buffer.push(line)
+  }
+  flush()
+  return segments
+}
+
+const untouched = (text: string) => ({ text, truncated: false, omittedWords: 0, omittedParagraphs: 0 })
+
 // Hard floor: cut anything past the cap and mark it. The marker is part of
-// the word budget so the result always fits the cap. Replies containing
-// fenced code are deliverables, not chat prose — truncation would corrupt
-// them, so they pass through (filler is still stripped).
+// the word budget so the result always fits the cap.
+//
+// Fenced code is a deliverable, not chat prose: fence blocks always pass
+// through intact and do not count against the cap — the cap applies to the
+// prose around them. (Exempting the whole reply because it contains a fence
+// would let verbose prose ride along under a one-line snippet.)
 export function enforce(text: string, resolved: Resolved): Enforced {
   const caps = resolved.caps
-  if (!caps) return { text, truncated: false, omittedWords: 0, omittedParagraphs: 0 }
+  if (!caps) return untouched(text)
   const cleaned = stripFiller(text)
-  if (/```|~~~/.test(cleaned)) {
-    return { text: cleaned, truncated: false, omittedWords: 0, omittedParagraphs: 0 }
+  const segments = splitSegments(cleaned)
+  const fenced = segments.some((s) => s.type === "fence")
+
+  const prose = fenced
+    ? segments
+        .filter((s) => s.type === "prose")
+        .map((s) => s.text)
+        .join("\n\n")
+    : cleaned
+  const paragraphs = splitParagraphs(prose)
+  const totalWords = countWords(prose)
+  if (paragraphs.length <= caps.maxParagraphs && totalWords <= caps.maxWords) return untouched(cleaned)
+
+  if (!fenced) {
+    const keptParagraphs = paragraphs.slice(0, caps.maxParagraphs)
+    let body = keptParagraphs.join("\n\n")
+    let words = body.trim().split(/\s+/).filter(Boolean)
+    // Reserve 2 words for the inline marker so the total stays within budget.
+    if (words.length > caps.maxWords - 2) {
+      words = words.slice(0, Math.max(0, caps.maxWords - 2))
+      body = words.join(" ")
+    }
+    const keptWords = countWords(body)
+    const omittedWords = Math.max(0, totalWords - keptWords)
+    return {
+      text: body === "" ? `… [+${omittedWords}]` : `${body} … [+${omittedWords}]`,
+      truncated: true,
+      omittedWords,
+      omittedParagraphs: Math.max(0, paragraphs.length - keptParagraphs.length),
+    }
   }
 
-  const paragraphs = splitParagraphs(cleaned)
-  const totalWords = countWords(cleaned)
-  if (paragraphs.length <= caps.maxParagraphs && totalWords <= caps.maxWords) {
-    return { text: cleaned, truncated: false, omittedWords: 0, omittedParagraphs: 0 }
+  // Fenced reply: keep every fence block in place; drop prose paragraphs
+  // (whole paragraphs, in order) once the prose budget is spent. Dropped
+  // prose later in the reply may leave later code blocks without their
+  // intro — acceptable: deliverables stay complete, prose stays capped.
+  const out: string[] = []
+  // Reserve 2 words for the inline marker, as in the plain-prose path, so
+  // the reply minus its code blocks always fits the cap.
+  let wordsLeft = caps.maxWords - 2
+  let paragraphsLeft = caps.maxParagraphs
+  let keptWords = 0
+  let keptParagraphs = 0
+  let truncated = false
+  for (const seg of segments) {
+    if (seg.type === "fence") {
+      out.push(seg.text)
+      continue
+    }
+    for (const para of splitParagraphs(seg.text)) {
+      const words = countWords(para)
+      if (words === 0) continue
+      if (paragraphsLeft <= 0 || wordsLeft <= 0) {
+        truncated = true
+        continue
+      }
+      const take = Math.min(words, wordsLeft)
+      if (take < words) truncated = true
+      out.push(para.trim().split(/\s+/).slice(0, take).join(" "))
+      keptWords += take
+      keptParagraphs += 1
+      wordsLeft -= take
+      paragraphsLeft -= 1
+    }
   }
-
-  const keptParagraphs = paragraphs.slice(0, caps.maxParagraphs)
-  const omittedParagraphs = Math.max(0, paragraphs.length - keptParagraphs.length)
-  let body = keptParagraphs.join("\n\n")
-  let words = body.trim().split(/\s+/).filter(Boolean)
-  // Reserve 2 words for the inline marker so the total stays within budget.
-  if (words.length > caps.maxWords - 2) {
-    words = words.slice(0, Math.max(0, caps.maxWords - 2))
-    body = words.join(" ")
-  }
-  const keptWords = countWords(body)
   const omittedWords = Math.max(0, totalWords - keptWords)
+  if (!truncated) return untouched(cleaned)
+  const body = out.filter((part) => part !== "").join("\n\n")
   return {
-    text: body === "" ? `… [+${omittedWords}]` : `${body} … [+${omittedWords}]`,
+    text: body === "" ? `… [+${omittedWords}]` : `${body}\n\n… [+${omittedWords}]`,
     truncated: true,
     omittedWords,
-    omittedParagraphs,
+    omittedParagraphs: Math.max(0, paragraphs.length - keptParagraphs),
   }
 }
 

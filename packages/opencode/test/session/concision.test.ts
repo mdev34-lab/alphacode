@@ -126,6 +126,11 @@ describe("concision turn overrides", () => {
     expect(Concision.parseTurnOverride("[LONG] details please")).toBe("long")
     expect(Concision.parseTurnOverride("[brief] actually [long] never mind")).toBe("long")
     expect(Concision.parseTurnOverride("[long] actually [brief] keep it tight")).toBe("brief")
+    // Standalone tokens only: markdown links and code never trigger overrides.
+    expect(Concision.parseTurnOverride("[long](https://example.com) see the docs")).toBeUndefined()
+    expect(Concision.parseTurnOverride("values like arr[long] stay capped")).toBeUndefined()
+    expect(Concision.parseTurnOverride("see [the long story](…) for details")).toBeUndefined()
+    expect(Concision.parseTurnOverride("[long]\nnow explain")).toBe("long")
   })
 
   test("only the latest real user message carries the override", () => {
@@ -183,11 +188,34 @@ describe("concision enforcement", () => {
     expect(Concision.stripFiller("Fixed the bug.")).toBe("Fixed the bug.")
   })
 
-  test("fenced code is a deliverable and is never truncated", () => {
-    const code = ["Here is the patch:", "", "```ts", "const x = 1", "```"].join("\n") + `\n\n${"word ".repeat(200)}`
+  test("fenced code passes through intact; the prose around it is capped", () => {
+    const code = ["Here is the patch:", "", "```ts", "const x = 1", "```", "", "word ".repeat(200).trim()].join("\n")
     const result = Concision.enforce(code, Concision.resolve({}))
+    expect(result.truncated).toBe(true)
+    // The deliverable is untouched…
+    expect(result.text).toContain("```ts\nconst x = 1\n```")
+    expect(result.text).toContain("Here is the patch:")
+    // …the verbose prose around it is not.
+    expect(result.text).toContain("… [+")
+    const proseWords = Concision.splitSegments(result.text)
+      .filter((s) => s.type === "prose")
+      .map((s) => s.text)
+      .join("\n\n")
+    expect(Concision.countWords(proseWords)).toBeLessThanOrEqual(Concision.STRICT_MAX_WORDS)
+  })
+
+  test("inline backticks mid-line do not open a fence exemption", () => {
+    const text = `Run \`x\`, then \`y\` — \`\`\` appears mid-line — and ${"word ".repeat(200).trim()}`
+    const result = Concision.enforce(text, Concision.resolve({}))
+    expect(result.truncated).toBe(true)
+    expect(Concision.countWords(result.text)).toBeLessThanOrEqual(Concision.STRICT_MAX_WORDS)
+  })
+
+  test("an unclosed fence is treated as code and left intact", () => {
+    const text = ["Notes:", "", "```ts", "const x = 1", "word ".repeat(200).trim()].join("\n")
+    const result = Concision.enforce(text, Concision.resolve({}))
     expect(result.truncated).toBe(false)
-    expect(result.text).toContain("const x = 1")
+    expect(result.text).toBe(text)
   })
 
   test("[brief] tightens the cap to 40 words / 1 paragraph", () => {
