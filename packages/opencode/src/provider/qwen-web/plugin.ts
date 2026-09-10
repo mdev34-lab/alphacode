@@ -13,10 +13,10 @@
  */
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import type { Model as SdkModel } from "@opencode-ai/sdk/v2"
-import { QWEN_WEB_AUTH_MARKER, QWEN_WEB_DEFAULTS, QWEN_WEB_PROVIDER_ID } from "./constants"
-import { isNoDisplayError, QwenWebError } from "./errors"
-import { debug } from "./log"
-import { sharedBrowser } from "./browser"
+import { QWEN_WEB_AUTH_MARKER, QWEN_WEB_DEFAULTS, QWEN_WEB_PROVIDER_ID } from "@opencode-ai/webchat/adapters/qwen/constants"
+import { isNoDisplayError, QwenWebError } from "@opencode-ai/webchat/adapters/qwen/errors"
+import { debug } from "@opencode-ai/webchat/adapters/qwen/log"
+import { sharedBrowser } from "@opencode-ai/webchat/adapters/qwen/browser"
 import { currentModels, refreshModels } from "./catalog"
 
 export async function QwenWebAuthPlugin(_input: PluginInput): Promise<Hooks> {

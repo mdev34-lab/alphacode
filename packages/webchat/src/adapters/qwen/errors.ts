@@ -97,9 +97,46 @@ export function isAbortLike(input: unknown): boolean {
   if (input instanceof DOMException) return input.name === "AbortError"
   if (QwenWebError.isInstance(input)) return input.code === "aborted"
   if (!input || typeof input !== "object") return false
-  const maybe = input as { name?: unknown; message?: unknown; code?: unknown }
+  const maybe = input as { name?: unknown; code?: unknown; message?: unknown }
   if (maybe.name === "AbortError" || maybe.code === "ABORT_ERR") return true
-  return typeof maybe.message === "string" && /abort(ed)?/i.test(maybe.message)
+  // Only the DOMException's own "operation was aborted" text counts. A loose
+  // substring match would also swallow Playwright navigation aborts
+  // (`net::ERR_ABORTED`, "aborted by user"), which are browser/navigation
+  // failures and must classify as retryable, not as a request abort.
+  return typeof maybe.message === "string" && /operation was aborted/i.test(maybe.message)
+}
+
+/** Classify a mid-stream `data: {"error": ...}` payload. */
+export function classifyStreamError(code: string, message: string): QwenWebError {
+  const detail = `${code} ${message}`.slice(0, 300)
+  if (isQuotaMessage(detail)) {
+    return new QwenWebError({
+      code: "rate_limited",
+      retryable: true,
+      upstreamCode: code,
+      message: `Qwen usage limit reached mid-stream (${message.slice(0, 200)}). Wait a little and retry, or switch to a smaller task.`,
+    })
+  }
+  if (code === "waf_challenge" || isChallengeMessage(detail)) {
+    return new QwenWebError({
+      code: "challenge",
+      retryable: false,
+      upstreamCode: code,
+      message:
+        "Qwen interrupted the stream with a human-verification challenge. Complete it in the Qwen browser profile, then retry.",
+    })
+  }
+  return new QwenWebError({
+    code: "upstream_error",
+    retryable: true,
+    upstreamCode: code,
+    message: `Qwen stream error: ${message.slice(0, 280) || code || "unknown"}`,
+  })
+}
+
+/** A stream that went quiet without a terminating event (`QwenWebError` code `"timeout"`). */
+export function isStallTimeout(input: unknown): boolean {
+  return QwenWebError.isInstance(input) && input.code === "timeout"
 }
 
 const QUOTA_PATTERNS = [

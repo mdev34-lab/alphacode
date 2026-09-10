@@ -12,9 +12,10 @@ import {
   readCachedRecords,
   reasoningVariants,
   refreshModels,
+  resolveUpstreamModelId,
 } from "@/provider/qwen-web/catalog"
-import { normalizeModelRecord, type QwenWebModelRecord } from "@/provider/qwen-web/protocol"
-import type { QwenWebTransport } from "@/provider/qwen-web/transport"
+import { normalizeModelRecord, type QwenWebModelRecord } from "@opencode-ai/webchat/adapters/qwen/protocol"
+import type { QwenWebTransport } from "@opencode-ai/webchat/adapters/qwen/transport"
 
 function cacheFile(): string {
   return path.join(Global.Path.cache, "qwen-web", "models.json")
@@ -144,18 +145,63 @@ describe("reasoningVariants", () => {
 })
 
 describe("fallbackModels and providerInfo", () => {
-  test("fallback keeps the picker usable pre-login", () => {
+  test("fallback keeps the picker usable pre-login with live ids", () => {
     const models = fallbackModels()
     expect(Object.keys(models).length).toBeGreaterThanOrEqual(2)
     for (const model of Object.values(models)) {
       expect(String(model.providerID)).toBe("qwen-web")
       expect(model.api.npm).toBe("qwen-web")
     }
+    // Retired ids must never be advertised; the current upstream catalog is
+    // `qwen3.8-max` / `qwen3.7-plus` (verified against `GET /api/models`).
+    const neverIds = ["qwen-max", "qwen-plus", "qwen-turbo", "qwen3-max", "qwen3-plus", "qwen3-turbo"]
+    for (const id of Object.keys(models)) {
+      expect(neverIds).not.toContain(id)
+    }
     const info = providerInfo()
     expect(String(info.id)).toBe("qwen-web")
-    expect(info.name).toBe("Qwen Web")
+    expect(info.name).toBe("Qwen Chat (beta)")
     expect(info.source).toBe("custom")
     expect(info.env).toEqual([])
+  })
+})
+
+describe("resolveUpstreamModelId", () => {
+  const live = ["qwen3.8-max", "qwen3.7-plus"]
+
+  test("passes exact live ids through unchanged", () => {
+    expect(resolveUpstreamModelId("qwen3.8-max", live)).toBe("qwen3.8-max")
+    expect(resolveUpstreamModelId("qwen3.7-plus", live)).toBe("qwen3.7-plus")
+  })
+
+  test("maps retired ids onto the current equivalent tier", () => {
+    expect(resolveUpstreamModelId("qwen3-max", live)).toBe("qwen3.8-max")
+    expect(resolveUpstreamModelId("qwen3-plus", live)).toBe("qwen3.7-plus")
+    expect(resolveUpstreamModelId("qwen-plus", live)).toBe("qwen3.7-plus")
+    expect(resolveUpstreamModelId("qwen-turbo", live)).toBe("qwen3.7-plus")
+  })
+
+  test("does not remap newer-named or non-Qwen ids", () => {
+    expect(resolveUpstreamModelId("qwen3.9-max", live)).toBe("qwen3.9-max")
+    expect(resolveUpstreamModelId("gpt-4o", live)).toBe("gpt-4o")
+    expect(resolveUpstreamModelId("qwen3-235b-a22b", live)).toBe("qwen3-235b-a22b")
+  })
+
+  test("never swaps vision/code models for a text model", () => {
+    // No vl/coder line in the live catalog: pass through unchanged rather than
+    // silently resolve to a text-tier model.
+    expect(resolveUpstreamModelId("qwen-vl-max", live)).toBe("qwen-vl-max")
+    expect(resolveUpstreamModelId("qwen3-vl-plus", live)).toBe("qwen3-vl-plus")
+    expect(resolveUpstreamModelId("qwen2.5-coder-32b", live)).toBe("qwen2.5-coder-32b")
+    // With an actual vl record present, an older vl id resolves within the vl
+    // line only via exact match; it never reaches a text-tier remap.
+    expect(resolveUpstreamModelId("qwen-vl-max", ["qwen3.8-max", "qwen-vl-max"])).toBe("qwen-vl-max")
+    expect(resolveUpstreamModelId("qwen3-vl-plus", [...live, "qwen3.7-vl-plus"])).toBe("qwen3-vl-plus")
+  })
+
+  test("defaults to the current (cached or fallback) catalog", () => {
+    const resolved = resolveUpstreamModelId("qwen3-max")
+    expect(["qwen3.8-max", "qwen3.7-plus"]).toContain(resolved)
   })
 })
 

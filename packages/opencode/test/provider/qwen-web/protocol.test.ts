@@ -14,7 +14,7 @@ import {
   qwenWebUrl,
   QwenWebSSEParser,
   toUpstreamModelId,
-} from "@/provider/qwen-web/protocol"
+} from "@opencode-ai/webchat/adapters/qwen/protocol"
 
 afterEach(() => {
   delete process.env["QWEN_WEB_BASE_URL"]
@@ -39,9 +39,9 @@ describe("urls and model ids", () => {
 })
 
 describe("payload builders", () => {
-  test("chat creation uses local mode for temp chats", () => {
+  test("chat creation always uses the persisted normal mode", () => {
     const temp = buildChatNewBody("qwen3-max", "temp")
-    expect(temp["chat_mode"]).toBe("local")
+    expect(temp["chat_mode"]).toBe("normal")
     expect(temp["models"]).toEqual(["qwen3-max"])
     expect(temp["chat_type"]).toBe("t2t")
     expect(buildChatNewBody("qwen3-max", "thread")["chat_mode"]).toBe("normal")
@@ -70,7 +70,7 @@ describe("payload builders", () => {
     expect(payload["stream"]).toBe(true)
     expect(payload["incremental_output"]).toBe(true)
     expect(payload["chat_id"]).toBe("chat-1")
-    expect(payload["chat_mode"]).toBe("local")
+    expect(payload["chat_mode"]).toBe("normal")
     const message = (payload["messages"] as Record<string, unknown>[])[0]!
     expect(message["content"]).toBe("Hello")
     expect(message["role"]).toBe("user")
@@ -156,7 +156,7 @@ describe("parseQwenEvent", () => {
   })
 
   test("response.created carries chat id", () => {
-    expect(parseQwenEvent('{"response.created":{"response_id":"r1","chat_id":"c1"}}')).toEqual({
+    expect(parseQwenEvent('{"type":"response.created","response":{"id":"r1","chat_id":"c1"}}')).toEqual({
       kind: "response-created",
       responseId: "r1",
       chatId: "c1",
@@ -193,6 +193,31 @@ describe("parseQwenEvent", () => {
     expect(thinking.kind).toBe("thinking")
     expect(parseQwenEvent('{"choices":[{"delta":{"phase":"other"}}]}')).toEqual({ kind: "unknown" })
     expect(parseQwenEvent('{"choices":[]}')).toEqual({ kind: "unknown" })
+  })
+
+  test("text wins over a sidecar usage object", () => {
+    // The upstream sends a cumulative `usage` object on every delta chunk as a
+    // sidecar; choices must be checked first or every text chunk is dropped.
+    const event = parseQwenEvent(
+      '{"response_id":"r","choices":[{"delta":{"phase":"answer","content":"Hi"}}],"usage":{"output_tokens":1,"total_tokens":2}}',
+    )
+    expect(event).toEqual({ kind: "text", content: "Hi", responseId: "r" })
+  })
+
+  test("a WAF challenge served as SSE is classified as an error", () => {
+    // The upstream sometimes serves a human-verification challenge as
+    // `text/event-stream` instead of a normal JSON event; without this the
+    // stream would look like an endless run of `unknown` events and hang.
+    const challenge = parseQwenEvent(
+      '{"ret":["FAIL_SYS_USER_VALIDATE"],"x5step":2,"action":"captcha","pureCaptcha":"abc"}',
+    )
+    expect(challenge).toEqual({
+      kind: "error",
+      code: "waf_challenge",
+      message: expect.stringContaining("FAIL_SYS_USER_VALIDATE"),
+    })
+    const html = parseQwenEvent("<html><body>security verification</body></html>")
+    expect(html).toEqual({ kind: "error", code: "waf_challenge", message: expect.any(String) })
   })
 })
 

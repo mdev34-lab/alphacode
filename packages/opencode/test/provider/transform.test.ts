@@ -5679,3 +5679,25 @@ describe("ProviderTransform.options - kimi family adaptive thinking", () => {
     expect(result.thinking).toBeUndefined()
   })
 })
+
+describe("ProviderTransform.withQwenWebThreadScope", () => {
+test("scopes by agent name when no threadId is present", () => {
+    const result = ProviderTransform.withQwenWebThreadScope({}, "work", false)
+    expect(result["qwen-web"]).toEqual({ threadId: "work", small: false })
+  })
+
+  test("appends :title and carries the small flag for lite streams", () => {
+    const result = ProviderTransform.withQwenWebThreadScope({ "qwen-web": { thinking: true } }, "work", true)
+    expect(result["qwen-web"]).toEqual({ thinking: true, threadId: "work:title", small: true })
+  })
+
+  test("keeps an explicit threadId and non-qwen keys untouched", () => {
+    const input = { "qwen-web": { threadId: "custom" }, other: { x: 1 } }
+    expect(ProviderTransform.withQwenWebThreadScope(input, "work", false)).toEqual(input)
+  })
+
+  test("preserves existing provider option keys when scoping", () => {
+    const result = ProviderTransform.withQwenWebThreadScope({ "qwen-web": { thinking: false } }, "title", false)
+    expect(result["qwen-web"]).toEqual({ thinking: false, threadId: "title", small: false })
+  })
+})

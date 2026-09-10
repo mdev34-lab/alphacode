@@ -5,13 +5,14 @@ import path from "path"
 import {
   defaultProfileDir,
   hasDisplay,
+  patchrightLaunchOptions,
   profileExists,
   QwenWebBrowser,
   quickAuthState,
   readProfileMetadata,
   type QwenWebContext,
   type QwenWebPage,
-} from "@/provider/qwen-web/browser"
+} from "@opencode-ai/webchat/adapters/qwen/browser"
 
 let tmpdirs: string[] = []
 const savedEnv = { ...process.env }
@@ -40,7 +41,10 @@ function fakePage(overrides: Partial<QwenWebPage> = {}): QwenWebPage & { navigat
     evaluate: async () => undefined as unknown,
     exposeBinding: async () => {},
     title: async () => "",
-    context: () => ({}) as QwenWebContext,
+    context: () =>
+      ({
+        cookies: async () => [],
+      }) as unknown as QwenWebContext,
     on: () => {},
     close: async () => {},
     setDefaultTimeout: () => {},
@@ -121,11 +125,34 @@ describe("quickAuthState", () => {
 
   test("auth cookies mean authenticated", async () => {
     const page = fakePage()
-    page.context = () => ({ cookies: async () => [{ name: "token", value: "abc" }] }) as unknown as QwenWebContext
+    page.context = () => ({ cookies: async (urls?: string | string[]) => {
+      expect(urls).toBe("https://chat.qwen.ai")
+      return [{ name: "token", value: "abc" }]
+    } }) as unknown as QwenWebContext
     expect(await quickAuthState(page)).toBe("authenticated")
     const bare = fakePage()
     bare.context = () => ({ cookies: async () => [{ name: "nothing", value: "x" }] }) as unknown as QwenWebContext
     expect(await quickAuthState(bare)).toBe("unknown")
+  })
+
+  test("foreign-origin pages never read as authenticated", async () => {
+    const inert = fakePage({ url: () => "https://accounts.google.com/AccountChooser" })
+    inert.context = () =>
+      ({
+        cookies: async () => [{ name: "GoogleAccountsLocale_session", value: "x" }],
+      }) as unknown as QwenWebContext
+    expect(await quickAuthState(inert)).toBe("unknown")
+    const loginish = fakePage({ url: () => "https://accounts.google.com/signin/v1/identifier" })
+    loginish.context = () =>
+      ({
+        cookies: async () => [{ name: "GoogleAccountsLocale_session", value: "x" }],
+      }) as unknown as QwenWebContext
+    expect(await quickAuthState(loginish)).toBe("login")
+    // OAuth redirect targets sit outside the Qwen origin too.
+    const redirect = fakePage({ url: () => "https://accounts.google.com/o/oauth2/v2/auth/" })
+    redirect.context = () =>
+      ({ cookies: async () => [{ name: "session", value: "x" }] }) as unknown as QwenWebContext
+    expect(await quickAuthState(redirect)).toBe("login")
   })
 
   test("throwing pages read as unknown", async () => {
@@ -135,6 +162,13 @@ describe("quickAuthState", () => {
       },
     })
     expect(await quickAuthState(page)).toBe("unknown")
+  })
+
+  test("an authenticated session parked on a login-shaped url stays authenticated", async () => {
+    const page = fakePage({ url: () => "https://chat.qwen.ai/auth" })
+    page.context = () =>
+      ({ cookies: async () => [{ name: "token", value: "abc" }] }) as unknown as QwenWebContext
+    expect(await quickAuthState(page)).toBe("authenticated")
   })
 })
 
@@ -249,5 +283,52 @@ describe("login behavior", () => {
     // One navigation at most (launch home navigation); never to /auth.
     expect(page.navigations).not.toContain("https://chat.qwen.ai/auth")
     await browser.close()
+  })
+
+  test("waitForLogin does not succeed or navigate on a Google OAuth page", async () => {
+    const dir = tmpProfile()
+    const page = fakePage() as QwenWebPage & { navigations: string[] }
+    page.context = () =>
+      ({
+        cookies: async () => [{ name: "GoogleAccountsLocale_session", value: "x" }],
+      }) as unknown as QwenWebContext
+    const browser = new QwenWebBrowser({ profileDir: dir, headless: true, launcher: async () => fakeContext([page]) })
+    await browser.ensure()
+    page.navigations.length = 0
+    // Mid-OAuth the page sits on Google's origin with Google session cookies.
+    ;(page as { url: () => string }).url = () => "https://accounts.google.com/signin/v1/identifier"
+    await expect(browser.waitForLogin({ timeoutMs: 60, pollMs: 15 })).rejects.toThrow(/Timed out waiting for Qwen login/)
+    // The OAuth page was never steered back to the Qwen origin.
+    expect(page.navigations).toEqual([])
+    await browser.close()
+  })
+})
+
+describe("patchrightLaunchOptions", () => {
+  const options = patchrightLaunchOptions(false)
+
+  test("removes the automation flag and keeps normal-launch flags", () => {
+    expect(options.ignoreDefaultArgs).toContain("--enable-automation")
+    const args = options.args as string[]
+    expect(args).toContain("--disable-blink-features=AutomationControlled")
+    expect(args).toContain("--disable-infobars")
+    expect(args).toContain("--no-first-run")
+    expect(args).toContain("--no-default-browser-check")
+  })
+
+  test("does not carry bot-orchestrator flags", () => {
+    const args = options.args as string[]
+    for (const flag of ["--disable-background-networking", "--disable-sync", "--disable-default-apps"]) {
+      expect(args).not.toContain(flag)
+    }
+  })
+
+  test("keeps a consistent human-like profile surface", () => {
+    expect(options).toMatchObject({
+      headless: false,
+      viewport: { width: 1366, height: 900 },
+      locale: "en-US",
+    })
+    expect(typeof options.timezoneId).toBe("string")
   })
 })

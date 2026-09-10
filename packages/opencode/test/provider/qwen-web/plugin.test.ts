@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { PluginInput } from "@opencode-ai/plugin"
-import { sharedBrowser } from "@/provider/qwen-web/browser"
+import { sharedBrowser } from "@opencode-ai/webchat/adapters/qwen/browser"
 import { QwenWebAuthPlugin } from "@/provider/qwen-web/plugin"
 
 describe("QwenWebAuthPlugin", () => {

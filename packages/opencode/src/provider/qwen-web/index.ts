@@ -19,22 +19,22 @@
  * - `sdk` — `LanguageModelV3` implementation.
  * - `plugin` — AlphaCode auth/provider plugin hooks.
  */
-export * from "./constants"
-export * from "./errors"
-export * from "./log"
-export * from "./protocol"
+export * from "@opencode-ai/webchat/adapters/qwen/constants"
+export * from "@opencode-ai/webchat/adapters/qwen/errors"
+export * from "@opencode-ai/webchat/adapters/qwen/log"
+export * from "@opencode-ai/webchat/adapters/qwen/protocol"
 export * from "./prompt"
-export * from "./tool-parser"
-export * from "./browser"
-export * from "./transport"
-export * from "./session"
-export * from "./upload"
+export * from "@opencode-ai/webchat/adapters/qwen/tool-parser"
+export * from "@opencode-ai/webchat/adapters/qwen/browser"
+export * from "@opencode-ai/webchat/adapters/qwen/transport"
+export * from "@opencode-ai/webchat/adapters/qwen/session"
+export * from "@opencode-ai/webchat/adapters/qwen/upload"
 export * from "./catalog"
 export * from "./sdk"
 export * from "./plugin"
 
-import { QWEN_WEB_AUTH_MARKER, QWEN_WEB_PROVIDER_ID } from "./constants"
-import { readProfileMetadata, sharedBrowser } from "./browser"
+import { QWEN_WEB_AUTH_MARKER, QWEN_WEB_PROVIDER_ID } from "@opencode-ai/webchat/adapters/qwen/constants"
+import { readProfileMetadata, sharedBrowser } from "@opencode-ai/webchat/adapters/qwen/browser"
 
 export interface QwenWebStoredAuth {
   type: string

@@ -24,7 +24,9 @@ import {
   QWEN_WEB_ENV,
   type QwenWebChatMode,
   type QwenWebReasoningMode,
+  type QwenWebToolMode,
 } from "./constants"
+import { isChallengeMessage } from "./errors"
 
 // ---------------------------------------------------------------------------
 // URLs & headers
@@ -93,16 +95,17 @@ export function toUpstreamModelId(modelId: string): string {
 // Chat creation
 // ---------------------------------------------------------------------------
 
-export function buildChatNewBody(model: string, chatMode: QwenWebChatMode = "temp"): Record<string, unknown> {
+export function buildChatNewBody(model: string, _chatMode: QwenWebChatMode = "temp"): Record<string, unknown> {
   return {
     chatId: "",
     models: [model],
     project_id: "",
     timestamp: Date.now(),
     chat_type: QWEN_WEB_CHAT_TYPE_TEXT,
-    // "temp" chats are ephemeral (`local`) and never listed; "thread" chats
-    // persist (`normal`) like chats created in the web UI.
-    chat_mode: chatMode === "temp" ? "local" : "normal",
+    // The web client always creates persisted (`normal`) chats; the legacy
+    // `local` mode is no longer accepted for generations and yields chats the
+    // account session cannot see, so the mode no longer matters here.
+    chat_mode: "normal",
   }
 }
 
@@ -146,13 +149,35 @@ export interface CompletionPayloadInput {
   files?: QwenWebFileEntry[]
   reasoningMode?: QwenWebReasoningMode
   chatMode?: QwenWebChatMode
+  /** Native (local_mcp) tool declarations. Only used with `toolMode: "native"`. */
+  nativeTools?: QwenNativeTool[]
+  toolMode?: QwenWebToolMode
   /** Test seam: deterministic ids/timestamps. */
   ids?: { fid?: string; childId?: string; timestamp?: number }
 }
 
-function featureConfig(reasoningMode: QwenWebReasoningMode): Record<string, unknown> {
+/**
+ * Native tool descriptor for the upstream `local_mcp` feature, enabled via
+ * `QWEN_WEB_TOOL_MODE=native`. The block protocol is the working default;
+ * this seam exists so the exact wire shape can be validated with a live
+ * account before flipping the default.
+ */
+export interface QwenNativeTool {
+  name: string
+  description: string
+  parameters: unknown
+}
+
+function featureConfig(
+  reasoningMode: QwenWebReasoningMode,
+  input: Pick<CompletionPayloadInput, "toolMode" | "nativeTools">,
+): Record<string, unknown> {
   const thinkingMode = reasoningMode === "thinking" ? "Thinking" : reasoningMode === "fast" ? "Fast" : "Auto"
   const enabled = reasoningMode !== "fast"
+  const localMcp =
+    input.toolMode === "native" && input.nativeTools && input.nativeTools.length > 0
+      ? buildLocalMCPFeature(input.nativeTools)
+      : undefined
   return {
     thinking_enabled: enabled,
     output_schema: "phase",
@@ -161,7 +186,32 @@ function featureConfig(reasoningMode: QwenWebReasoningMode): Record<string, unkn
     thinking_mode: thinkingMode,
     ...(enabled ? { thinking_format: "summary" } : {}),
     auto_search: true,
+    ...(localMcp ? { local_mcp: localMcp } : {}),
   }
+}
+
+/**
+ * Build the provisional `local_mcp` feature payload hosting the turn's tools.
+ *
+ * The upstream schema is unverified; treated strictly as a seam behind
+ * `QWEN_WEB_TOOL_MODE=native`. A single local MCP server record advertises
+ * the declared functions, and completion emits streamed `tool_calls` deltas
+ * that `parseQwenEvent` surfaces as `QwenWebStreamEvent.kind === "tool-calls"`.
+ */
+export function buildLocalMCPFeature(tools: QwenNativeTool[]): Record<string, unknown>[] {
+  return [
+    {
+      server: {
+        type: "local_mcp",
+      },
+      tools: tools.map((tool) => ({
+        type: "function",
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters ?? { type: "object", properties: {} },
+      })),
+    },
+  ]
 }
 
 export function buildCompletionPayload(input: CompletionPayloadInput): Record<string, unknown> {
@@ -170,6 +220,7 @@ export function buildCompletionPayload(input: CompletionPayloadInput): Record<st
   const fid = input.ids?.fid ?? randomId()
   const childId = input.ids?.childId ?? randomId()
   const parentId = input.parentId ?? ""
+  const messageParentId = input.parentId ?? null
   return {
     stream: true,
     version: QWEN_WEB_COMPLETION_VERSION,
@@ -177,14 +228,16 @@ export function buildCompletionPayload(input: CompletionPayloadInput): Record<st
     chatId: input.chatId,
     parentId,
     chat_id: input.chatId,
-    chat_mode: (input.chatMode ?? "temp") === "temp" ? "local" : "normal",
+    // The web client always streams into persisted (`normal`) chats. The
+    // legacy `local` mode makes the API reject the request, so it is not used.
+    chat_mode: "normal",
     model: input.model,
-    parent_id: input.parentId,
+    parent_id: messageParentId,
     messages: [
       {
         id: null,
         fid,
-        parentId,
+        parentId: messageParentId,
         childrenIds: [childId],
         role: "user",
         content: input.prompt,
@@ -194,10 +247,10 @@ export function buildCompletionPayload(input: CompletionPayloadInput): Record<st
         models: [input.model],
         model: "",
         chat_type: QWEN_WEB_CHAT_TYPE_TEXT,
-        feature_config: featureConfig(reasoningMode),
+        feature_config: featureConfig(reasoningMode, input),
         extra: { meta: { subChatType: QWEN_WEB_CHAT_TYPE_TEXT } },
         sub_chat_type: QWEN_WEB_CHAT_TYPE_TEXT,
-        parent_id: input.parentId,
+        parent_id: messageParentId,
       },
     ],
     timestamp: timestamp + 1,
@@ -274,6 +327,7 @@ export type QwenWebStreamEvent =
   | { kind: "thinking"; delta: Record<string, unknown>; responseId?: string }
   | { kind: "answer-finished"; responseId?: string }
   | { kind: "response-created"; responseId: string; chatId?: string }
+  | { kind: "tool-calls"; responseId?: string; calls: QwenStreamToolCall[] }
   | { kind: "error"; code: string; message: string }
   | {
       kind: "usage"
@@ -285,6 +339,14 @@ export type QwenWebStreamEvent =
       textTokens?: number
     }
   | { kind: "unknown" }
+
+/** Native tool call emitted by a streamed delta (`tool_calls` in `choices`). */
+export interface QwenStreamToolCall {
+  id?: string
+  name?: string
+  /** Raw JSON-encoded arguments string. */
+  arguments?: string
+}
 
 /**
  * Incremental SSE parser.
@@ -332,6 +394,10 @@ function asFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
+function isChallengeText(data: string): boolean {
+  return isChallengeMessage(data)
+}
+
 export function parseQwenEvent(data: string): QwenWebStreamEvent {
   if (!data) return { kind: "unknown" }
   if (data === "[DONE]") return { kind: "done" }
@@ -339,9 +405,16 @@ export function parseQwenEvent(data: string): QwenWebStreamEvent {
   let chunk: Record<string, unknown>
   try {
     const parsed: unknown = JSON.parse(data)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { kind: "unknown" }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      // A non-JSON SSE payload is never a normal event. When it is a WAF
+      // challenge the upstream still serves it as `text/event-stream`, so the
+      // stream would otherwise look like an endless run of `unknown` events.
+      if (isChallengeText(data)) return { kind: "error", code: "waf_challenge", message: data.slice(0, 300) }
+      return { kind: "unknown" }
+    }
     chunk = parsed as Record<string, unknown>
   } catch {
+    if (isChallengeText(data)) return { kind: "error", code: "waf_challenge", message: data.slice(0, 300) }
     return { kind: "unknown" }
   }
 
@@ -359,14 +432,46 @@ export function parseQwenEvent(data: string): QwenWebStreamEvent {
     return { kind: "error", code, message }
   }
 
-  const created = asRecord(chunk["response.created"])
-  const createdResponseId = created["response_id"]
-  if (typeof createdResponseId === "string" && createdResponseId) {
+  const created = asRecord(chunk["response"])
+  const createdResponseId = created["id"]
+  const createdResponseKeyType = chunk["type"]
+  if (createdResponseKeyType === "response.created" && typeof createdResponseId === "string" && createdResponseId) {
     const chatId = created["chat_id"]
     return {
       kind: "response-created",
       responseId: createdResponseId,
       chatId: typeof chatId === "string" ? chatId : undefined,
+    }
+  }
+
+  const responseId = typeof chunk["response_id"] === "string" ? chunk["response_id"] : undefined
+  const choices = chunk["choices"]
+  if (Array.isArray(choices) && choices.length > 0) {
+    const delta = asRecord(asRecord(choices[0])["delta"])
+    if (Object.keys(delta).length > 0) {
+      const phase = delta["phase"]
+      if (phase === "answer" && delta["status"] === "finished") return { kind: "answer-finished", responseId }
+      if (phase === "thinking_summary") return { kind: "thinking", delta, responseId }
+      if (phase === "answer" || phase === undefined) {
+        const toolCallsValue = delta["tool_calls"]
+        if (Array.isArray(toolCallsValue) && toolCallsValue.length > 0) {
+          const calls = toolCallsValue
+            .map((entry): QwenStreamToolCall | undefined => {
+              const functionValue = asRecord(asRecord(entry)["function"])
+              const name = typeof functionValue["name"] === "string" ? functionValue["name"] : undefined
+              const args = typeof functionValue["arguments"] === "string" ? functionValue["arguments"] : undefined
+              if (!name && args === undefined) return undefined
+              const entryRecord = asRecord(entry)
+              const id = typeof entryRecord["id"] === "string" ? entryRecord["id"] : undefined
+              return { id, name, arguments: args }
+            })
+            .filter((call): call is QwenStreamToolCall => call !== undefined)
+          if (calls.length > 0) return { kind: "tool-calls", responseId, calls }
+        }
+        const content = delta["content"]
+        if (typeof content === "string") return { kind: "text", content, responseId }
+        if (content === undefined && phase === "answer") return { kind: "text", content: "", responseId }
+      }
     }
   }
 
@@ -386,20 +491,8 @@ export function parseQwenEvent(data: string): QwenWebStreamEvent {
     }
   }
 
-  const responseId = typeof chunk["response_id"] === "string" ? chunk["response_id"] : undefined
-  const choices = chunk["choices"]
-  if (!Array.isArray(choices) || choices.length === 0) return { kind: "unknown" }
-  const delta = asRecord(asRecord(choices[0])["delta"])
-  if (Object.keys(delta).length === 0) return { kind: "unknown" }
+  if (isChallengeText(data)) return { kind: "error", code: "waf_challenge", message: data.slice(0, 300) }
 
-  const phase = delta["phase"]
-  if (phase === "answer" && delta["status"] === "finished") return { kind: "answer-finished", responseId }
-  if (phase === "thinking_summary") return { kind: "thinking", delta, responseId }
-  if (phase === "answer" || phase === undefined) {
-    const content = delta["content"]
-    if (typeof content === "string") return { kind: "text", content, responseId }
-    if (content === undefined && phase === "answer") return { kind: "text", content: "", responseId }
-  }
   return { kind: "unknown" }
 }
 

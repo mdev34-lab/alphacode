@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { QwenWebError } from "@/provider/qwen-web/errors"
-import type { QwenWebTransport } from "@/provider/qwen-web/transport"
-import { buildFileEntry, detectFileType, QwenWebUpload, type StsCredentials } from "@/provider/qwen-web/upload"
+import { QwenWebError } from "@opencode-ai/webchat/adapters/qwen/errors"
+import type { QwenWebTransport } from "@opencode-ai/webchat/adapters/qwen/transport"
+import { buildFileEntry, detectFileType, QwenWebUpload, type StsCredentials } from "@opencode-ai/webchat/adapters/qwen/upload"
 
 const STS_BODY = JSON.stringify({
   success: true,

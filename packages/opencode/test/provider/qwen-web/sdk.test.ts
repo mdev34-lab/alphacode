@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import os from "os"
+import path from "path"
 import { APICallError, type LanguageModelV3CallOptions, type LanguageModelV3StreamPart } from "@ai-sdk/provider"
-import { QwenWebError } from "@/provider/qwen-web/errors"
+import { QwenWebError } from "@opencode-ai/webchat/adapters/qwen/errors"
+import { QwenWebSession } from "@opencode-ai/webchat/adapters/qwen/session"
+import { ThreadStore } from "@opencode-ai/webchat/store"
 import { createQwenWeb, createQwenWebModel, QwenWebLanguageModel, toApiError } from "@/provider/qwen-web/sdk"
-import type { StartGenerationInput } from "@/provider/qwen-web/session"
+import type { QwenWebTransport } from "@opencode-ai/webchat/adapters/qwen/transport"
 
 function byteStream(lines: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -14,45 +18,35 @@ function byteStream(lines: string[]): ReadableStream<Uint8Array> {
   })
 }
 
+/** A byte stream that emits the given SSE lines, then fails the same way a stalled transport does. */
+function stalledByteStream(lines: string[], error: unknown): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  let index = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index < lines.length) {
+        controller.enqueue(encoder.encode(lines[index++]!))
+        return
+      }
+      controller.error(error)
+    },
+  })
+}
+
 interface Captured {
-  input?: StartGenerationInput
   calls: number
+  payload?: Record<string, unknown>
   stops: Array<{ chatId: string; responseId: string | undefined }>
   aborted: boolean
 }
 
-function fakeSession(
-  lines: string[],
-  captured: Captured,
-  behavior?: { failFirstWith?: unknown; failAllWith?: unknown },
-) {
-  return {
-    createChat: async () => "chat-1",
-    startGeneration: async (input: StartGenerationInput) => {
-      captured.calls++
-      captured.input = input
-      if (behavior?.failAllWith) throw behavior.failAllWith
-      if (behavior?.failFirstWith && captured.calls === 1) throw behavior.failFirstWith
-      return {
-        chatId: "chat-1",
-        response: {
-          status: 200,
-          contentType: "text/event-stream",
-          stream: byteStream(lines),
-          abort: () => {
-            captured.aborted = true
-          },
-        },
-      }
-    },
-    stopGeneration: async (chatId: string, responseId: string | undefined, abortLocal: () => void) => {
-      captured.stops.push({ chatId, responseId })
-      abortLocal()
-    },
-  }
+interface SessionBehavior {
+  failFirstWith?: unknown
+  failAllWith?: unknown
+  stream?: ReadableStream<Uint8Array>
 }
 
-function fakeUpload(behavior?: { failWith?: unknown; entries?: Array<{ id: string }> }) {
+function fakeUpload(behavior?: { failWith?: unknown; entries?: unknown[] }) {
   return {
     uploadAll: async () => {
       if (behavior?.failWith) throw behavior.failWith
@@ -61,16 +55,57 @@ function fakeUpload(behavior?: { failWith?: unknown; entries?: Array<{ id: strin
   }
 }
 
+function freshStore(): ThreadStore {
+  return new ThreadStore({ file: path.join(os.tmpdir(), `qwen-webchat-sdk-${Math.random().toString(36).slice(2)}.json`) })
+}
+
 function model(
   lines: string[],
   captured: Captured,
   options?: {
-    sessionBehavior?: { failFirstWith?: unknown; failAllWith?: unknown }
-    uploadBehavior?: { failWith?: unknown; entries?: Array<{ id: string }> }
+    sessionBehavior?: SessionBehavior
+    uploadBehavior?: { failWith?: unknown; entries?: unknown[] }
   },
 ): QwenWebLanguageModel {
+  const transport: QwenWebTransport = {
+    requestJson: async (_method: string, requestPath: string, requestOptions?: { body?: string }) => {
+      if (requestPath.includes("/chat/completions/stop")) {
+        const body = JSON.parse(requestOptions?.body ?? "{}") as { response_id?: string }
+        captured.stops.push({ chatId: "chat-1", responseId: body.response_id })
+      }
+      return { status: 200, statusText: "OK", contentType: "application/json", body: "{}" }
+    },
+    requestStream: async () => {
+      throw new Error("unexpected requestStream")
+    },
+    rawRequestJson: async () => ({
+      status: 200,
+      statusText: "OK",
+      contentType: "application/json",
+      body: '{"chat_id":"chat-1"}',
+    }),
+    rawRequestStream: async (_method: string, _requestPath: string, streamOptions?: { body?: string }) => {
+      captured.calls++
+      if (streamOptions?.body) captured.payload = JSON.parse(streamOptions.body) as Record<string, unknown>
+      if (options?.sessionBehavior?.failAllWith) throw options.sessionBehavior.failAllWith
+      if (options?.sessionBehavior?.failFirstWith && captured.calls === 1) throw options.sessionBehavior.failFirstWith
+      return {
+        status: 200,
+        contentType: "text/event-stream",
+        stream: options?.sessionBehavior?.stream ?? byteStream(lines),
+        abort: () => {
+          captured.aborted = true
+        },
+      }
+    },
+    idleBudgetMs: () => 1000,
+  } as unknown as QwenWebTransport
+  const session = new QwenWebSession({
+    transport,
+    store: freshStore(),
+  })
   return new QwenWebLanguageModel("qwen3-max", {
-    session: fakeSession(lines, captured, options?.sessionBehavior) as never,
+    session,
     upload: fakeUpload(options?.uploadBehavior) as never,
   })
 }
@@ -86,9 +121,28 @@ async function collect(stream: ReadableStream<LanguageModelV3StreamPart>): Promi
   return parts
 }
 
-const CREATED = 'data: {"response.created":{"response_id":"r1","chat_id":"chat-1"}}\n'
+const CREATED = 'data: {"type":"response.created","response":{"id":"r1","chat_id":"chat-1"}}\n'
 const textEvent = (content: string) =>
   `data: {"response_id":"r1","choices":[{"delta":{"phase":"answer","content":${JSON.stringify(content)}}}]}\n`
+
+function payloadPrompt(payload: Record<string, unknown> | undefined): string {
+  const messages = payload?.["messages"] as Array<{ content?: string }> | undefined
+  return messages?.[0]?.content ?? ""
+}
+
+function payloadModel(payload: Record<string, unknown> | undefined): string | undefined {
+  return payload?.["model"] as string | undefined
+}
+
+function payloadReasoning(payload: Record<string, unknown> | undefined): string | undefined {
+  const messages = payload?.["messages"] as Array<{ feature_config?: Record<string, unknown> }> | undefined
+  const config = messages?.[0]?.feature_config
+  if (!config) return undefined
+  if (config["thinking_mode"] === "Fast") return "fast"
+  if (config["thinking_mode"] === "Thinking") return "thinking"
+  if (config["auto_thinking"] === true) return "auto"
+  return undefined
+}
 
 describe("QwenWebLanguageModel.doStream", () => {
   test("streams ordered text blocks with linked ids", async () => {
@@ -115,9 +169,9 @@ describe("QwenWebLanguageModel.doStream", () => {
     expect((parts[4] as { delta: string }).delta).toBe(" world")
     const finish = parts[6] as { finishReason: { unified: string } }
     expect(finish.finishReason.unified).toBe("stop")
-    expect(captured.input?.model).toBe("qwen3-max")
-    expect(captured.input?.prompt).toContain("User: hi")
-    expect(captured.input?.reasoningMode).toBe("auto")
+    expect(payloadModel(captured.payload)).toBe("qwen3.8-max")
+    expect(payloadPrompt(captured.payload)).toContain("User: hi")
+    expect(payloadReasoning(captured.payload)).toBe("auto")
   })
 
   test("emits tool calls without leaking tags into text", async () => {
@@ -143,7 +197,7 @@ describe("QwenWebLanguageModel.doStream", () => {
       .map((part) => (part as { delta: string }).delta)
       .join("")
     expect(text).toBe("I'll read.\n")
-    expect(captured.input?.prompt).toContain("# TOOLS AVAILABLE")
+    expect(payloadPrompt(captured.payload)).toContain("# TOOLS AVAILABLE")
   })
 
   test("streams reasoning before text", async () => {
@@ -194,6 +248,69 @@ describe("QwenWebLanguageModel.doStream", () => {
     expect((error as APICallError).isRetryable).toBe(true)
   })
 
+  test("recover a completed tool block on stall instead of erroring", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const stall = new QwenWebError({ code: "timeout", retryable: true, message: "Qwen stream stalled." })
+    const block = '<qw_call>\n{"name": "read", "arguments": {"p": 1}}\n</qw_call>'
+    const { stream } = await model([], captured, {
+      sessionBehavior: { stream: stalledByteStream([CREATED, textEvent(`I'll read.\n${block}`)], stall) },
+    }).doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "read it" }] }],
+      tools: [
+        { type: "function", name: "read", inputSchema: { type: "object", properties: { p: { type: "number" } } } },
+      ],
+    })
+    const parts = await collect(stream)
+    const toolCall = parts.find((part) => part.type === "tool-call") as unknown as { toolName: string; input: string }
+    expect(toolCall.toolName).toBe("read")
+    expect(JSON.parse(toolCall.input)).toEqual({ p: 1 })
+    const finish = parts[parts.length - 1] as { finishReason: { unified: string } }
+    expect(finish.finishReason.unified).toBe("tool-calls")
+    const text = parts
+      .filter((part) => part.type === "text-delta")
+      .map((part) => (part as { delta: string }).delta)
+      .join("")
+    expect(text).toBe("I'll read.\n")
+  })
+
+  test("recover a pending tool block on stall via parser flush", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const stall = new QwenWebError({ code: "timeout", retryable: true, message: "Qwen stream stalled." })
+    const { stream } = await model([], captured, {
+      sessionBehavior: {
+        stream: stalledByteStream([CREATED, textEvent('<qw_call>\n{"name": "read", "arguments": {"p": 2}}')], stall),
+      },
+    }).doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "read it" }] }],
+      tools: [
+        { type: "function", name: "read", inputSchema: { type: "object", properties: { p: { type: "number" } } } },
+      ],
+    })
+    const parts = await collect(stream)
+    const toolCall = parts.find((part) => part.type === "tool-call") as unknown as { toolName: string; input: string }
+    expect(toolCall.toolName).toBe("read")
+    expect(JSON.parse(toolCall.input)).toEqual({ p: 2 })
+    const finish = parts[parts.length - 1] as { finishReason: { unified: string } }
+    expect(finish.finishReason.unified).toBe("tool-calls")
+  })
+
+  test("reasoning-only stall finishes gracefully as stop", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const stall = new QwenWebError({ code: "timeout", retryable: true, message: "Qwen stream stalled." })
+    const { stream } = await model([], captured, {
+      sessionBehavior: {
+        stream: stalledByteStream(
+          [CREATED, 'data: {"response_id":"r1","choices":[{"delta":{"phase":"thinking_summary","extra":{"summary_title":{"content":["Plan"]},"summary_thought":{"content":["First."]}}}}]}\n'],
+          stall,
+        ),
+      },
+    }).doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }] })
+    const parts = await collect(stream)
+    const finish = parts[parts.length - 1] as { finishReason: { unified: string } }
+    expect(finish.finishReason.unified).toBe("stop")
+    expect(parts.some((part) => part.type === "tool-call")).toBe(false)
+  })
+
   test("reports unsupported settings as warnings", async () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
     const { stream } = await model([CREATED, "data: [DONE]\n"], captured).doStream({
@@ -212,44 +329,57 @@ describe("QwenWebLanguageModel.doStream", () => {
 
   test("composes prompt overrides and reasoning mode", async () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
-    await model([CREATED, "data: [DONE]\n"], captured).doStream({
-      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-      tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
-      toolChoice: { type: "required" },
-      responseFormat: { type: "json" },
-      stopSequences: ["STOP"],
-      providerOptions: { "qwen-web": { reasoningMode: "fast" } },
-    })
-    expect(captured.input?.prompt).toContain("MUST call at least one tool")
-    expect(captured.input?.prompt).toContain("JSON")
-    expect(captured.input?.prompt).toContain("STOP")
-    expect(captured.input?.reasoningMode).toBe("fast")
+    await collect(
+      (
+        await model([CREATED, "data: [DONE]\n"], captured).doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
+          toolChoice: { type: "required" },
+          responseFormat: { type: "json" },
+          stopSequences: ["STOP"],
+          providerOptions: { "qwen-web": { reasoningMode: "fast" } },
+        })
+      ).stream,
+    )
+    expect(payloadPrompt(captured.payload)).toContain("MUST call at least one tool")
+    expect(payloadPrompt(captured.payload)).toContain("JSON")
+    expect(payloadPrompt(captured.payload)).toContain("STOP")
+    expect(payloadReasoning(captured.payload)).toBe("fast")
   })
 
   test("thinking:false selects fast mode", async () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
-    await model([CREATED, "data: [DONE]\n"], captured).doStream({
-      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-      providerOptions: { "qwen-web": { thinking: false } },
-    })
-    expect(captured.input?.reasoningMode).toBe("fast")
+    await collect(
+      (
+        await model([CREATED, "data: [DONE]\n"], captured).doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+          providerOptions: { "qwen-web": { thinking: false } },
+        })
+      ).stream,
+    )
+    expect(payloadReasoning(captured.payload)).toBe("fast")
   })
 
   test("retries setup failures once, never auth failures", async () => {
     const retryable: Captured = { calls: 0, stops: [], aborted: false }
     const retryableError = new QwenWebError({ code: "browser_error", message: "crashed", retryable: true })
-    await model([CREATED, "data: [DONE]\n"], retryable, {
-      sessionBehavior: { failFirstWith: retryableError },
-    }).doStream({
-      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-    })
+    await collect(
+      (
+        await model([CREATED, "data: [DONE]\n"], retryable, {
+          sessionBehavior: { failFirstWith: retryableError },
+        }).doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+        })
+      ).stream,
+    )
     expect(retryable.calls).toBe(2)
 
     const fatal: Captured = { calls: 0, stops: [], aborted: false }
     const loginError = new QwenWebError({ code: "login_required", message: "login", retryable: false })
-    const error = await model([CREATED], fatal, { sessionBehavior: { failAllWith: loginError } })
-      .doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }] })
-      .catch((e) => e)
+    const fatalModel = await model([CREATED], fatal, { sessionBehavior: { failAllWith: loginError } }).doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })
+    const error = await collect(fatalModel.stream).catch((e) => e)
     expect(error).toBeInstanceOf(APICallError)
     expect((error as APICallError).isRetryable).toBe(false)
     expect(fatal.calls).toBe(1)
@@ -271,24 +401,10 @@ describe("QwenWebLanguageModel.doStream", () => {
     const endless = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(CREATED))
-        // Never closes: the test cancels instead.
+        // Never closes: the consumer cancels instead.
       },
     })
-    const session = {
-      createChat: async () => "chat-1",
-      startGeneration: async (input: StartGenerationInput) => {
-        captured.input = input
-        return {
-          chatId: "chat-1",
-          response: { status: 200, contentType: "text/event-stream", stream: endless, abort: () => {} },
-        }
-      },
-      stopGeneration: async (chatId: string, responseId: string | undefined, abortLocal: () => void) => {
-        captured.stops.push({ chatId, responseId })
-        abortLocal()
-      },
-    }
-    const languageModel = new QwenWebLanguageModel("m", { session: session as never, upload: fakeUpload() as never })
+    const languageModel = model([], captured, { sessionBehavior: { stream: endless } })
     const { stream } = await languageModel.doStream({
       prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
     })
@@ -296,6 +412,7 @@ describe("QwenWebLanguageModel.doStream", () => {
     expect((await reader.read()).value?.type).toBe("stream-start")
     expect((await reader.read()).value?.type).toBe("response-metadata")
     await reader.cancel()
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(captured.stops).toEqual([{ chatId: "chat-1", responseId: "r1" }])
   })
 
@@ -325,6 +442,109 @@ describe("QwenWebLanguageModel.doGenerate", () => {
     expect(result.content).toEqual([{ type: "text", text: "Hello world" }])
     expect(result.finishReason.unified).toBe("stop")
     expect(result.warnings).toEqual([])
+  })
+})
+
+describe("incremental follow-up turns", () => {
+  test("an anchored thread resends only the new user content", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const modelInstance = model([CREATED, textEvent("First answer"), "data: [DONE]\n"], captured)
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    expect(payloadPrompt(captured.payload)).toContain("LONG ORIGINAL CONTEXT")
+
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [
+            { role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] },
+            { role: "assistant", content: [{ type: "text", text: "First answer" }] },
+            { role: "user", content: [{ type: "text", text: "The follow-up question." }] },
+          ],
+        })
+      ).stream,
+    )
+    const follow = payloadPrompt(captured.payload)
+    expect(follow).toContain("The follow-up question.")
+    expect(follow).not.toContain("LONG ORIGINAL CONTEXT")
+  })
+
+  test("lite streams keep the full prompt on anchored threads", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const modelInstance = model([CREATED, textEvent("First answer"), "data: [DONE]\n"], captured)
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [
+            { role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] },
+            { role: "assistant", content: [{ type: "text", text: "First answer" }] },
+            { role: "user", content: [{ type: "text", text: "The follow-up question." }] },
+          ],
+          providerOptions: { "qwen-web": { small: true } },
+        })
+      ).stream,
+    )
+    const follow = payloadPrompt(captured.payload)
+    expect(follow).toContain("LONG ORIGINAL CONTEXT")
+    expect(follow).toContain("The follow-up question.")
+  })
+
+  test("the first turn on a fresh thread sends the full prompt", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const modelInstance = model([CREATED, textEvent("Answer"), "data: [DONE]\n"], captured)
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [
+            { role: "user", content: [{ type: "text", text: "Context" }] },
+            { role: "assistant", content: [{ type: "text", text: "Previous" }] },
+            { role: "user", content: [{ type: "text", text: "Now" }] },
+          ],
+        })
+      ).stream,
+    )
+    expect(payloadPrompt(captured.payload)).toContain("Context")
+  })
+
+  test("tool-loop continuations send only the tool result tail", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const modelInstance = model([CREATED, textEvent("Answer"), "data: [DONE]\n"], captured)
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [
+            { role: "user", content: [{ type: "text", text: "ORIGINAL CONTEXT" }] },
+            { role: "assistant", content: [{ type: "text", text: "I'll call a tool." }] },
+            {
+              role: "user",
+              content: [{ type: "text", text: "Tool Response (read): file contents here" }],
+            },
+          ],
+        })
+      ).stream,
+    )
+    const follow = payloadPrompt(captured.payload)
+    expect(follow).toContain("Tool Response (read): file contents here")
+    expect(follow).not.toContain("ORIGINAL CONTEXT")
   })
 })
 

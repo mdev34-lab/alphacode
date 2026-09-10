@@ -21,14 +21,10 @@ import type {
   LanguageModelV3ToolChoice,
   LanguageModelV3ToolResultOutput,
 } from "@ai-sdk/provider"
-import { QWEN_WEB_TOOL_CLOSE, QWEN_WEB_TOOL_OPEN } from "./constants"
+import type { QwenWebMedia } from "@opencode-ai/webchat/adapters/qwen/media"
+import { QWEN_WEB_TOOL_CLOSE, QWEN_WEB_TOOL_OPEN } from "@opencode-ai/webchat/adapters/qwen/constants"
 
-export interface QwenWebMedia {
-  /** data URL, remote URL, or raw base64 with a media type. */
-  source: string
-  mediaType?: string
-  filename?: string
-}
+export type { QwenWebMedia }
 
 export interface RenderedPrompt {
   text: string

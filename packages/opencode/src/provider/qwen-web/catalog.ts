@@ -15,10 +15,15 @@ import { Global } from "@opencode-ai/core/global"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import type { Model as ProviderModel, Info as ProviderInfo } from "../provider"
-import { QWEN_WEB_DEFAULTS, QWEN_WEB_PROVIDER_ID, QWEN_WEB_SDK_NPM } from "./constants"
-import { debug } from "./log"
-import { normalizeModelRecord, parseModelsResponse, qwenWebBaseUrl, type QwenWebModelRecord } from "./protocol"
-import { QwenWebTransport, sharedTransport } from "./transport"
+import { QWEN_WEB_DEFAULTS, QWEN_WEB_PROVIDER_ID, QWEN_WEB_SDK_NPM } from "@opencode-ai/webchat/adapters/qwen/constants"
+import { debug } from "@opencode-ai/webchat/adapters/qwen/log"
+import {
+  normalizeModelRecord,
+  parseModelsResponse,
+  qwenWebBaseUrl,
+  type QwenWebModelRecord,
+} from "@opencode-ai/webchat/adapters/qwen/protocol"
+import { QwenWebTransport, sharedTransport } from "@opencode-ai/webchat/adapters/qwen/transport"
 
 export interface MappedCapabilities {
   reasoning: boolean
@@ -226,9 +231,11 @@ export function mapRecordToModel(record: QwenWebModelRecord, raw?: Record<string
 // ---------------------------------------------------------------------------
 
 const FALLBACK_MODELS: Array<{ id: string; name: string; reasoning: boolean; vision: boolean }> = [
-  { id: "qwen3-max", name: "Qwen3 Max", reasoning: true, vision: false },
-  { id: "qwen-plus", name: "Qwen Plus", reasoning: true, vision: false },
-  { id: "qwen-turbo", name: "Qwen Turbo", reasoning: false, vision: false },
+  // Ids verified against `GET /api/models` on chat.qwen.ai (Sep 2026):
+  // older ids (qwen3-max, qwen-plus, qwen-turbo ...) are retired upstream and
+  // return `Not_Found: Model not found` on `/api/v2/chat/completions`.
+  { id: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, vision: false },
+  { id: "qwen3.7-plus", name: "Qwen3.7 Plus", reasoning: true, vision: false },
 ]
 
 function fallbackRecords(): QwenWebModelRecord[] {
@@ -340,11 +347,78 @@ export function currentModels(): Record<string, ProviderModel> {
   return fallbackModels()
 }
 
+/**
+ * Resolve a model id to an id the upstream catalog accepts.
+ *
+ * Exact matches pass through. A retired id — that is, a Qwen name from an
+ * older family than the live catalog (e.g. `qwen3-max` / `qwen-plus` while
+ * the catalog is at `qwen3.7-plus` / `qwen3.8-max`) — is mapped onto the
+ * current model of the same naming tier. chat.qwen.ai rotates model names
+ * each cycle, so this is deliberately a naming rule, not a hardcoded table:
+ * newer-named ids and non-Qwen ids are returned unchanged so upstream still
+ * gets the chance to reject them with its own message.
+ */
+export function resolveUpstreamModelId(modelId: string, knownIds?: string[]): string {
+  const known = knownIds ?? Object.keys(currentModels())
+  if (known.includes(modelId)) return modelId
+  if (known.length === 0) return modelId
+  const requested = modelFamilyVersion(modelId)
+  const newest = knownNewestFamilyVersion(known)
+  if (!requested || !newest || requested.major > newest.major || (requested.major === newest.major && requested.minor >= newest.minor)) {
+    return modelId
+  }
+  const tier = tierOf(modelId)
+  if (!tier) return modelId
+  const sameTier = known.find((id) => tierOf(id) === tier)
+  if (sameTier) return sameTier
+  if (tier === "turbo" || tier === "flash") {
+    // The fast tier no longer exists upstream; plus is its closest live
+    // equivalent.
+    const plus = known.find((id) => tierOf(id) === "plus")
+    if (plus) return plus
+  }
+  return modelId
+}
+
+const MODEL_TIERS = new Set(["max", "plus", "pro", "turbo", "flash", "lite", "vl", "coder", "math", "instruct"])
+
+function tierOf(modelId: string): string | undefined {
+  const dash = modelId.lastIndexOf("-")
+  if (dash === -1) return undefined
+  const tier = modelId.slice(dash + 1)
+  return MODEL_TIERS.has(tier) ? tier : undefined
+}
+
+function modelFamilyVersion(modelId: string): { major: number; minor: number } | undefined {
+  if (!modelId.startsWith("qwen")) return undefined
+  // Vision and code families must never be age-gated into a text tier: there is
+  // no safe textual equivalent for `qwen-vl-max` or `qwen2.5-coder-32b`, so
+  // they either resolve to a same-name live id or pass through unchanged.
+  if (/-(vl|coder)(?=-|$)/.test(modelId)) return undefined
+  const match = /^qwen(\d+)(?:\.(\d+))?/.exec(modelId)
+  if (match) return { major: Number.parseInt(match[1], 10), minor: match[2] ? Number.parseInt(match[2], 10) : 0 }
+  // Unversioned brand ids (`qwen-plus`, `qwen-turbo`) predate the
+  // versioned families, so they count as an older family.
+  return { major: 1, minor: 0 }
+}
+
+function knownNewestFamilyVersion(known: string[]): { major: number; minor: number } | undefined {
+  let newest: { major: number; minor: number } | undefined
+  for (const id of known) {
+    const version = modelFamilyVersion(id)
+    if (!version) continue
+    if (!newest || version.major > newest.major || (version.major === newest.major && version.minor > newest.minor)) {
+      newest = version
+    }
+  }
+  return newest
+}
+
 /** Provider info injected into AlphaCode's provider catalog. */
 export function providerInfo(): ProviderInfo {
   return {
     id: ProviderV2.ID.make(QWEN_WEB_PROVIDER_ID),
-    name: "Qwen Web",
+    name: "Qwen Chat (beta)",
     source: "custom",
     env: [],
     options: {},

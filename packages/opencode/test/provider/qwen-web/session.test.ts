@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { QwenWebError } from "@/provider/qwen-web/errors"
-import { consumeQwenStream, QwenWebSession } from "@/provider/qwen-web/session"
-import type { QwenWebTransport } from "@/provider/qwen-web/transport"
+import { QwenWebError } from "@opencode-ai/webchat/adapters/qwen/errors"
+import { consumeQwenStream, QwenWebSession } from "@opencode-ai/webchat/adapters/qwen/session"
+import type { QwenWebTransport } from "@opencode-ai/webchat/adapters/qwen/transport"
 
 function byteStream(lines: string[], chunkBytes = 7): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
@@ -24,6 +24,12 @@ function fakeTransport(overrides: Partial<QwenWebTransport> = {}): QwenWebTransp
     requestStream: async () => {
       throw new Error("unexpected requestStream")
     },
+    rawRequestJson: async () => {
+      throw new Error("unexpected rawRequestJson")
+    },
+    rawRequestStream: async () => {
+      throw new Error("unexpected rawRequestStream")
+    },
     idleBudgetMs: () => 1000,
     ...overrides,
   } as unknown as QwenWebTransport
@@ -42,13 +48,13 @@ describe("QwenWebSession.createChat", () => {
   test("returns the chat id", async () => {
     const calls: string[] = []
     const transport = fakeTransport({
-      requestJson: (async (method: string, path: string, options?: { body?: string }) => {
+      rawRequestJson: (async (method: string, path: string, options?: { body?: string }) => {
         calls.push(`${method} ${path}`)
         const body = JSON.parse(options?.body ?? "{}")
         expect(body.models).toEqual(["qwen3-max"])
-        expect(body.chat_mode).toBe("local")
+        expect(body.chat_mode).toBe("normal")
         return { status: 200, statusText: "OK", contentType: "application/json", body: '{"data":{"chat_id":"c1"}}' }
-      }) as QwenWebTransport["requestJson"],
+      }) as QwenWebTransport["rawRequestJson"],
     })
     const session = new QwenWebSession({ transport })
     expect(await session.createChat("qwen3-max")).toBe("c1")
@@ -57,12 +63,12 @@ describe("QwenWebSession.createChat", () => {
 
   test("401 becomes session_expired", async () => {
     const transport = fakeTransport({
-      requestJson: (async () => ({
+      rawRequestJson: (async () => ({
         status: 401,
         statusText: "Unauthorized",
         contentType: "text/plain",
         body: "",
-      })) as QwenWebTransport["requestJson"],
+      })) as QwenWebTransport["rawRequestJson"],
     })
     const session = new QwenWebSession({ transport })
     const error = await captureRejection(session.createChat("m"))
@@ -71,12 +77,12 @@ describe("QwenWebSession.createChat", () => {
 
   test("unexpected payloads become invalid_response", async () => {
     const transport = fakeTransport({
-      requestJson: (async () => ({
+      rawRequestJson: (async () => ({
         status: 200,
         statusText: "OK",
         contentType: "application/json",
         body: '{"data":{}}',
-      })) as QwenWebTransport["requestJson"],
+      })) as QwenWebTransport["rawRequestJson"],
     })
     const session = new QwenWebSession({ transport })
     const error = await captureRejection(session.createChat("m"))
@@ -88,11 +94,11 @@ describe("QwenWebSession.startGeneration", () => {
   test("creates a chat then opens a stream on it", async () => {
     const seen: Array<{ method: string; path: string; body?: string }> = []
     const transport = fakeTransport({
-      requestJson: (async (method: string, path: string, options?: { body?: string }) => {
+      rawRequestJson: (async (method: string, path: string, options?: { body?: string }) => {
         seen.push({ method, path, body: options?.body })
         return { status: 200, statusText: "OK", contentType: "application/json", body: '{"chat_id":"chat-9"}' }
-      }) as QwenWebTransport["requestJson"],
-      requestStream: (async (method: string, path: string, options?: { body?: string }) => {
+      }) as QwenWebTransport["rawRequestJson"],
+      rawRequestStream: (async (method: string, path: string, options?: { body?: string }) => {
         seen.push({ method, path, body: options?.body })
         return {
           status: 200,
@@ -100,7 +106,7 @@ describe("QwenWebSession.startGeneration", () => {
           stream: byteStream(["data: [DONE]\n"]),
           abort: () => {},
         }
-      }) as QwenWebTransport["requestStream"],
+      }) as QwenWebTransport["rawRequestStream"],
     })
     const session = new QwenWebSession({ transport })
     const generation = await session.startGeneration({ prompt: "Hi", model: "qwen3-max", reasoningMode: "fast" })
@@ -114,20 +120,20 @@ describe("QwenWebSession.startGeneration", () => {
   test("non-SSE JSON errors are classified", async () => {
     let aborted = false
     const transport = fakeTransport({
-      requestJson: (async () => ({
+      rawRequestJson: (async () => ({
         status: 200,
         statusText: "OK",
         contentType: "application/json",
         body: '{"chat_id":"c"}',
-      })) as QwenWebTransport["requestJson"],
-      requestStream: (async () => ({
+      })) as QwenWebTransport["rawRequestJson"],
+      rawRequestStream: (async () => ({
         status: 429,
         contentType: "application/json",
         stream: byteStream(['{"success":false,"code":"RateLimited","message":"slow"}']),
         abort: () => {
           aborted = true
         },
-      })) as QwenWebTransport["requestStream"],
+      })) as QwenWebTransport["rawRequestStream"],
     })
     const session = new QwenWebSession({ transport })
     const error = await captureRejection(session.startGeneration({ prompt: "Hi", model: "m" }))
@@ -137,18 +143,18 @@ describe("QwenWebSession.startGeneration", () => {
 
   test("HTML responses mean the session is gone", async () => {
     const transport = fakeTransport({
-      requestJson: (async () => ({
+      rawRequestJson: (async () => ({
         status: 200,
         statusText: "OK",
         contentType: "application/json",
         body: '{"chat_id":"c"}',
-      })) as QwenWebTransport["requestJson"],
-      requestStream: (async () => ({
+      })) as QwenWebTransport["rawRequestJson"],
+      rawRequestStream: (async () => ({
         status: 200,
         contentType: "text/html",
         stream: byteStream(["<html>login</html>"]),
         abort: () => {},
-      })) as QwenWebTransport["requestStream"],
+      })) as QwenWebTransport["rawRequestStream"],
     })
     const session = new QwenWebSession({ transport })
     const error = await captureRejection(session.startGeneration({ prompt: "Hi", model: "m" }))
@@ -181,7 +187,7 @@ describe("QwenWebSession.stopGeneration", () => {
 })
 
 describe("consumeQwenStream", () => {
-  const created = 'data: {"response.created":{"response_id":"r1","chat_id":"c1"}}\n'
+  const created = 'data: {"type":"response.created","response":{"id":"r1","chat_id":"c1"}}\n'
 
   test("diffs cumulative content into ordered deltas", async () => {
     const seen: string[] = []
@@ -219,7 +225,7 @@ describe("consumeQwenStream", () => {
     const seen: string[] = []
     await consumeQwenStream(
       byteStream([
-        'data: {"response.created":{"response_id":"r1"}}\n',
+        'data: {"type":"response.created","response":{"id":"r1"}}\n',
         'data: {"response_id":"r1","choices":[{"delta":{"phase":"answer","content":"mine"}}]}\n',
         'data: {"response_id":"r2","choices":[{"delta":{"phase":"answer","content":"mine + theirs"}}]}\n',
         "data: [DONE]\n",

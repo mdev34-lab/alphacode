@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseCompleteResponse, repairJsonPayload, StreamingToolParser } from "@/provider/qwen-web/tool-parser"
+import { parseCompleteResponse, repairJsonPayload, StreamingToolParser } from "@opencode-ai/webchat/adapters/qwen/tool-parser"
 
 describe("repairJsonPayload", () => {
   test("parses clean JSON", () => {

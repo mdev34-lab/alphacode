@@ -15,7 +15,7 @@ import {
   loginRequiredError,
   QwenWebError,
   sessionExpiredError,
-} from "@/provider/qwen-web/errors"
+} from "@opencode-ai/webchat/adapters/qwen/errors"
 
 describe("QwenWebError", () => {
   test("carries code, retryability and status", () => {

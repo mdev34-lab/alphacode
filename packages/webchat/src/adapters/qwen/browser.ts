@@ -32,6 +32,12 @@ export interface QwenWebCookie {
   path?: string
 }
 
+export interface QwenWebRequest {
+  url(): string
+  method(): string
+  headers(): Record<string, string>
+}
+
 export interface QwenWebPage {
   url(): string
   isClosed(): boolean
@@ -44,6 +50,7 @@ export interface QwenWebPage {
   title(): Promise<string>
   context(): QwenWebContext
   on(event: "crash" | "close", handler: () => void): void
+  on(event: "request", handler: (request: QwenWebRequest) => void): void
   close(options?: { runBeforeUnload?: boolean }): Promise<void>
   setDefaultTimeout(timeout: number): void
   setDefaultNavigationTimeout(timeout: number): void
@@ -253,26 +260,45 @@ async function defaultLauncher(profileDir: string, options: QwenWebLaunchOptions
     })
   }
   try {
-    return await chromium.launchPersistentContext(profileDir, {
-      headless: options.headless,
-      channel: undefined,
-      viewport: { width: 1366, height: 900 },
-      locale: "en-US",
-      timezoneId: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      ignoreDefaultArgs: ["--enable-automation"],
-      args: [
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-dev-shm-usage",
-        "--disable-infobars",
-        "--mute-audio",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--disable-default-apps",
-      ],
-    })
+    return await chromium.launchPersistentContext(profileDir, patchrightLaunchOptions(options.headless))
   } catch (error) {
     throw explainLaunchFailure(error)
+  }
+}
+
+/**
+ * Launch options for the Qwen browser profile.
+ *
+ * The browser must look like a normal human Chromium -- chat.qwen.ai sits
+ * behind Alibaba's baxia WAF, which issues interactive challenges to
+ * automation-like clients. So beyond Patchright's own `navigator.webdriver`
+ * masking, the launch args keep browser-automation tells out:
+ *
+ * - `--enable-automation` (Playwright/Patchright's default automation flag)
+ *   is removed via `ignoreDefaultArgs`, and the "Chrome is being controlled"
+ *   infobar is suppressed with `--disable-infobars`.
+ * - `--disable-blink-features=AutomationControlled` is belt-and-braces on
+ *   top of Patchright's CDP masking.
+ * - Flags that only bot orchestrators use (`--disable-background-networking`,
+ *   `--disable-sync`, `--disable-default-apps`) are deliberately omitted; a
+ *   real user's logged-in Chromium does not carry them.
+ */
+export function patchrightLaunchOptions(headless: boolean): Record<string, unknown> {
+  return {
+    headless,
+    channel: undefined,
+    viewport: { width: 1366, height: 900 },
+    locale: "en-US",
+    timezoneId: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ignoreDefaultArgs: ["--enable-automation"],
+    args: [
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-dev-shm-usage",
+      "--disable-infobars",
+      "--mute-audio",
+      "--disable-blink-features=AutomationControlled",
+    ],
   }
 }
 
@@ -341,13 +367,24 @@ function hasAuthCookie(cookies: QwenWebCookie[]): boolean {
 export async function quickAuthState(page: QwenWebPage): Promise<QwenWebAuthState> {
   try {
     const url = page.url()
+    // A WAF challenge is the strongest signal: it means traffic is being
+    // gated regardless of cookies, so it always wins.
     if (urlSuggestsChallenge(url)) return "challenge"
-    if (urlSuggestsLogin(url)) return "login"
+    // Only Qwen-origin pages can carry a Qwen session: a page on the OAuth
+    // provider (e.g. accounts.google.com) has that provider's cookies, whose
+    // names (GoogleAccountsLocale_session, SID, ...) match our heuristics
+    // and would otherwise be mistaken for an authenticated Qwen login. A
+    // signin-shaped foreign URL still reads as an in-progress login.
+    if (!url.startsWith(qwenWebOrigin())) return urlSuggestsLogin(url) ? "login" : "unknown"
     const cookies = await page
       .context()
-      .cookies()
+      .cookies(qwenWebOrigin())
       .catch(() => [] as QwenWebCookie[])
+    // Cookies first on the Qwen origin: an authenticated user parked on a
+    // login-shaped page (/auth, /login) is still authenticated, so it must
+    // not read as `login` forever while polling for the session.
     if (hasAuthCookie(cookies)) return "authenticated"
+    if (urlSuggestsLogin(url)) return "login"
     return "unknown"
   } catch {
     return "unknown"
@@ -371,6 +408,12 @@ export class QwenWebBrowser {
   private readonly headlessExplicit: boolean
   private readonly navigationTimeoutMs: number
   private readonly pageTimeoutMs: number
+  private readonly pageOpenHandlers = new Set<(page: QwenWebPage) => void>()
+
+  /** Register a callback that runs whenever this browser adopts a page, before any navigation on it. */
+  onPageOpen(handler: (page: QwenWebPage) => void): void {
+    this.pageOpenHandlers.add(handler)
+  }
 
   constructor(options?: QwenWebBrowserOptions) {
     this.launcher = options?.launcher ?? defaultLauncher
@@ -509,6 +552,7 @@ export class QwenWebBrowser {
       debug("browser", "page closed")
       this.pageDead = true
     })
+    for (const handler of this.pageOpenHandlers) handler(page)
     this.page = page
     this.pageDead = false
     // Tidy stray blank tabs left by profile startup, keeping the main page.
@@ -538,18 +582,30 @@ export class QwenWebBrowser {
   /** Ensure the main page sits on the Qwen origin before page-context requests. */
   async ensureOnOrigin(signal?: AbortSignal): Promise<QwenWebPage> {
     const page = await this.activePage(signal)
-    try {
-      if (!page.url().startsWith(qwenWebOrigin())) {
-        await page.goto(qwenWebUrl("/"), { waitUntil: "domcontentloaded", timeout: this.navigationTimeoutMs })
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        if (!page.url().startsWith(qwenWebOrigin())) {
+          debug("browser", "navigating to origin", { attempt, from: page.url().slice(0, 120) })
+          await page.goto(qwenWebUrl("/"), { waitUntil: "domcontentloaded", timeout: this.navigationTimeoutMs })
+        }
+        return page
+      } catch (error) {
+        if (isAbortLike(error) || signal?.aborted) throw error
+        debug("browser", "origin navigation failed; retrying once", {
+          attempt,
+          url: page.url().slice(0, 120),
+          error: error instanceof Error ? error.message.slice(0, 300) : String(error),
+        })
+        if (attempt === 2) {
+          throw new QwenWebError({
+            code: "browser_error",
+            retryable: true,
+            message: "Browser navigation to chat.qwen.ai failed",
+            cause: error,
+          })
+        }
+        await sleep(750)
       }
-    } catch (error) {
-      if (isAbortLike(error) || signal?.aborted) throw error
-      throw new QwenWebError({
-        code: "browser_error",
-        retryable: true,
-        message: "Browser navigation to chat.qwen.ai failed",
-        cause: error,
-      })
     }
     return page
   }
@@ -557,16 +613,26 @@ export class QwenWebBrowser {
   /**
    * Full authentication check: cheap signals first, then an authenticated
    * endpoint probe inside the page context as the decider.
+   *
+   * `steer: false` (used while an interactive login is in flight) never
+   * navigates the page: OAuth redirects must not be yanked back to the Qwen
+   * home page mid-flow.
    */
-  async detectAuthState(signal?: AbortSignal): Promise<QwenWebAuthState> {
-    const page = await this.ensureOnOrigin(signal)
+  async detectAuthState(signal?: AbortSignal, opts?: { steer?: boolean }): Promise<QwenWebAuthState> {
+    const steer = opts?.steer ?? true
+    const page = steer ? await this.ensureOnOrigin(signal) : await this.activePage(signal)
     const quick = await quickAuthState(page)
     if (quick === "challenge" || quick === "login") return quick
-    if (await this.sniffChallenge(page)) return "challenge"
-    const probe = await this.probeSession(page).catch(() => "unknown" as const)
-    const state = probe !== "unknown" ? probe : quick
-    if (state === "authenticated") markAuthenticated(this.profileDir)
-    return state
+    if (steer || page.url().startsWith(qwenWebOrigin())) {
+      if (await this.sniffChallenge(page)) return "challenge"
+      const probe = await this.probeSession(page).catch(() => "unknown" as const)
+      const state = probe !== "unknown" ? probe : quick
+      if (state === "authenticated") markAuthenticated(this.profileDir)
+      return state
+    }
+    // Foreign origin mid-OAuth: only the cheap signals apply; a cross-origin
+    // page cannot complete the same-origin authenticated probe fetch.
+    return quick
   }
 
   private async sniffChallenge(page: QwenWebPage): Promise<boolean> {
@@ -622,7 +688,7 @@ export class QwenWebBrowser {
     let sawChallenge = false
     for (;;) {
       if (signal?.aborted) throw aborted()
-      const state = await this.detectAuthState(signal).catch(() => "unknown" as const)
+      const state = await this.detectAuthState(signal, { steer: false }).catch(() => "unknown" as const)
       if (state === "authenticated") return
       if (state === "challenge" && !sawChallenge) {
         sawChallenge = true

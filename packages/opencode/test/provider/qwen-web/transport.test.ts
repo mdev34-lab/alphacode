@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import type { QwenWebBrowser, QwenWebPage } from "@/provider/qwen-web/browser"
-import { QwenWebError } from "@/provider/qwen-web/errors"
-import { QwenWebTransport, type JsonResponse } from "@/provider/qwen-web/transport"
+import type { QwenWebBrowser, QwenWebPage } from "@opencode-ai/webchat/adapters/qwen/browser"
+import { QwenWebError } from "@opencode-ai/webchat/adapters/qwen/errors"
+import { QWEN_WEB_CLIENT_CONTEXT_ARG } from "@opencode-ai/webchat/adapters/qwen/constants"
+import { qwenWebOrigin } from "@opencode-ai/webchat/adapters/qwen/protocol"
+import { QwenWebTransport, type JsonResponse } from "@opencode-ai/webchat/adapters/qwen/transport"
 
 interface BridgeCall {
   requestId: string
@@ -11,12 +13,14 @@ interface BridgeCall {
 interface Fake {
   page: QwenWebPage
   bindings: Map<string, (...args: any[]) => unknown>
-  evaluates: Array<{ kind: "json" | "bridge" | "abort"; arg: Record<string, any> }>
+  evaluates: Array<{ kind: "json" | "bridge" | "abort" | "signal" | "context"; arg: Record<string, any> | string }>
   jsonHandler: (arg: Record<string, any>) => JsonResponse
   onBridge: (call: BridgeCall) => void
   ensureOnOrigin: () => Promise<QwenWebPage>
   invalidated: () => boolean
   browser: QwenWebBrowser
+  wafSignals: Record<string, string>
+  cookies: Array<{ name: string; value: string }>
 }
 
 function makeFake(): Fake {
@@ -25,11 +29,31 @@ function makeFake(): Fake {
   fake.evaluates = []
   fake.jsonHandler = () => ({ status: 200, statusText: "OK", contentType: "application/json", body: "{}" })
   fake.onBridge = () => {}
+  fake.wafSignals = { "bx-v": "2.5.37", version: "0.2.91", "bx-ua": "bxua-fake", "bx-umidtoken": "tok-fake" }
+  fake.cookies = [{ name: "token", value: "abc" }, { name: "isg", value: "123" }]
   fake.page = {
     url: () => "https://chat.qwen.ai/",
     isClosed: () => false,
     goto: async () => {},
-    evaluate: (async (_fn: unknown, arg: Record<string, any>) => {
+    evaluate: (async (_fn: unknown, arg: Record<string, any> | string) => {
+      if (arg === QWEN_WEB_CLIENT_CONTEXT_ARG) {
+        fake.evaluates.push({ kind: "context", arg })
+        return {
+          "user-agent": "Chrome/151",
+          "accept-language": "en-US,en;q=0.9",
+          "sec-ch-ua": "\"Not=A?Brand\";v=\"99\", \"Chromium\";v=\"151\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"Windows\"",
+        }
+      }
+      if (typeof arg === "string") {
+        fake.evaluates.push({ kind: "signal", arg })
+        return { ...fake.wafSignals }
+      }
+      if (arg && Array.isArray((arg as { keys?: unknown }).keys)) {
+        fake.evaluates.push({ kind: "signal", arg })
+        return { ...fake.wafSignals }
+      }
       if (arg?.bindingName) {
         fake.evaluates.push({ kind: "bridge", arg })
         const call = { requestId: arg.requestId as string, bindingName: arg.bindingName as string }
@@ -47,7 +71,14 @@ function makeFake(): Fake {
       fake.bindings.set(name, callback)
     }) as QwenWebPage["exposeBinding"],
     title: async () => "",
-    context: () => ({}) as QwenWebPage["context"] extends () => infer C ? C : never,
+    context: () =>
+      ({
+        pages: () => [fake.page],
+        newPage: async () => fake.page,
+        cookies: async () => fake.cookies,
+        close: async () => {},
+        on: () => {},
+      }) as unknown as ReturnType<QwenWebPage["context"]>,
     on: () => {},
     close: async () => {},
     setDefaultTimeout: () => {},
@@ -55,11 +86,18 @@ function makeFake(): Fake {
   } as unknown as QwenWebPage
   let invalidated = false
   fake.invalidated = () => invalidated
-  fake.ensureOnOrigin = async () => fake.page
+  let pageOpen: ((page: QwenWebPage) => void) | undefined
+  fake.ensureOnOrigin = async () => {
+    pageOpen?.(fake.page)
+    return fake.page
+  }
   fake.browser = {
     ensureOnOrigin: (...args: unknown[]) => (fake.ensureOnOrigin as (...a: unknown[]) => Promise<QwenWebPage>)(...args),
     invalidatePage: () => {
       invalidated = true
+    },
+    onPageOpen: (handler: (page: QwenWebPage) => void) => {
+      pageOpen = handler
     },
   } as unknown as QwenWebBrowser
   return fake
@@ -254,5 +292,282 @@ describe("QwenWebTransport.requestStream", () => {
     await pending
     expect(calls).toHaveLength(2)
     second?.abort()
+  })
+})
+
+describe("QwenWebTransport.rawRequest", () => {
+  function mockFetch(handler: (input: RequestInfo | URL, init: RequestInit | undefined) => Promise<Response>): typeof fetch {
+    return (async (input: RequestInfo | URL, init?: RequestInit) => handler(input, init)) as unknown as typeof fetch
+  }
+
+  function pending(init: RequestInit | undefined): Promise<Response> {
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal
+      if (signal?.aborted) {
+        reject(signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted.", "AbortError"))
+        return
+      }
+      signal?.addEventListener(
+        "abort",
+        () => reject(signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted.", "AbortError")),
+        { once: true },
+      )
+    })
+  }
+
+  function signalTiedStream(init: RequestInit | undefined): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(inner) {
+        const signal = init?.signal
+        if (!signal || signal.aborted) {
+          if (signal?.aborted) {
+            inner.error(signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted.", "AbortError"))
+          }
+          return
+        }
+        signal.addEventListener(
+          "abort",
+          () =>
+            inner.error(signal.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted.", "AbortError")),
+          { once: true },
+        )
+      },
+    })
+  }
+
+  async function withFetch(mock: typeof fetch, run: () => Promise<void>): Promise<void> {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = mock
+    try {
+      await run()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  }
+
+  test("rawRequestJson sends cookies + WAF signals and returns the body", async () => {
+    const fake = makeFake()
+    const transport = new QwenWebTransport({ browser: fake.browser })
+    await withFetch(
+      mockFetch(async (input, init) => {
+        const url = typeof input === "string" ? input : (input as URL).href
+        expect(url).toBe("https://chat.qwen.ai/api/v2/chats/new")
+        const headers = (init?.headers ?? {}) as Record<string, string>
+        expect(headers["cookie"]).toBe("token=abc; isg=123")
+        expect(headers["bx-v"]).toBe("2.5.37")
+        expect(headers["bx-ua"]).toBe("bxua-fake")
+        expect(headers["bx-umidtoken"]).toBe("tok-fake")
+        expect(headers["version"]).toBe("0.2.91")
+        expect(headers["accept"]).toBe("application/json")
+        expect(headers["x-accel-buffering"]).toBe("no")
+        expect(headers["origin"]).toBe(qwenWebOrigin())
+        expect(headers["referer"]).toBe("https://chat.qwen.ai/c/c1")
+        expect(headers["source"]).toBe("web")
+        expect(headers["user-agent"]).toBe("Chrome/151")
+        expect(headers["accept-language"]).toBe("en-US,en;q=0.9")
+        expect(headers["sec-ch-ua"]).toBe("\"Not=A?Brand\";v=\"99\", \"Chromium\";v=\"151\"")
+        expect(headers["sec-ch-ua-mobile"]).toBe("?0")
+        expect(headers["sec-ch-ua-platform"]).toBe("\"Windows\"")
+        expect(init?.body).toBe('{"x":1}')
+        return new Response('{"chat_id":"c1"}', { status: 200, headers: { "content-type": "application/json" } })
+      }),
+      async () => {
+        const response = await transport.rawRequestJson("POST", "/api/v2/chats/new", {
+          body: '{"x":1}',
+          referrer: "/c/c1",
+        })
+        expect(response.status).toBe(200)
+        expect(response.contentType).toBe("application/json")
+        expect(response.body).toBe('{"chat_id":"c1"}')
+      },
+    )
+    expect(fake.evaluates.some((item) => item.kind === "signal")).toBe(true)
+    expect(fake.evaluates.some((item) => item.kind === "context")).toBe(true)
+  })
+
+  test("rawRequestStream relays the SSE bytes", async () => {
+    const fake = makeFake()
+    const transport = new QwenWebTransport({ browser: fake.browser, idleTimeoutMs: 5000 })
+    await withFetch(
+      mockFetch(async () => {
+        return new Response("data: A\n\ndata: B\n", { status: 200, headers: { "content-type": "text/event-stream" } })
+      }),
+      async () => {
+        const response = await transport.rawRequestStream("POST", "/api/v2/chat/completions?chat_id=c", { body: "{}" })
+        expect(response.status).toBe(200)
+        expect(response.contentType).toBe("text/event-stream")
+        expect(await readAll(response.stream)).toBe("data: A\n\ndata: B\n")
+      },
+    )
+  })
+
+  test("missing response headers time out", async () => {
+    const fake = makeFake()
+    const transport = new QwenWebTransport({ browser: fake.browser, metadataTimeoutMs: 30 })
+    await withFetch(mockFetch(async (_input, init) => pending(init)), async () => {
+      const error = await captureRejection(transport.rawRequestStream("POST", "/x"))
+      expect(error.code).toBe("timeout")
+      expect(error.retryable).toBe(true)
+    })
+  })
+
+  test("external abort signals surface as aborted", async () => {
+    const fake = makeFake()
+    const transport = new QwenWebTransport({ browser: fake.browser, metadataTimeoutMs: 5000 })
+    const controller = new AbortController()
+    await withFetch(
+      mockFetch(async (_input, init) => pending(init)),
+      async () => {
+        const pendingCall = transport.rawRequestStream("POST", "/x", { signal: controller.signal })
+        setTimeout(() => controller.abort(), 10)
+        const error = await captureRejection(pendingCall)
+        expect(error.code).toBe("aborted")
+      },
+    )
+  })
+
+  test("stalled streams time out on idle", async () => {
+    const fake = makeFake()
+    const transport = new QwenWebTransport({ browser: fake.browser, idleTimeoutMs: 30, metadataTimeoutMs: 1000 })
+    await withFetch(
+      mockFetch(async (_input, init) => new Response(signalTiedStream(init), { status: 200, headers: { "content-type": "text/event-stream" } })),
+      async () => {
+        const response = await transport.rawRequestStream("POST", "/x", { body: "{}" })
+        const error = await captureRejection(readAll(response.stream))
+        expect(error.code).toBe("timeout")
+      },
+    )
+  })
+
+  test("abort() ends a running raw stream cleanly", async () => {
+    const fake = makeFake()
+    const transport = new QwenWebTransport({ browser: fake.browser, idleTimeoutMs: 5000, metadataTimeoutMs: 1000 })
+    await withFetch(
+      mockFetch(async (_input, init) => new Response(signalTiedStream(init), { status: 200, headers: { "content-type": "text/event-stream" } })),
+      async () => {
+        const response = await transport.rawRequestStream("POST", "/x")
+        response.abort()
+        expect(await readAll(response.stream)).toBe("")
+      },
+    )
+  })
+
+  test("static client-version headers apply when WAF signals are not captured", async () => {
+    const fake = makeFake()
+    fake.wafSignals = {}
+    const transport = new QwenWebTransport({ browser: fake.browser, metadataTimeoutMs: 30 })
+    await withFetch(
+      mockFetch(async (_input, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>
+        expect(headers["bx-v"]).toBe("2.5.37")
+        expect(headers["version"]).toBe("0.2.91")
+        expect(headers["bx-ua"]).toBeUndefined()
+        expect(headers["bx-umidtoken"]).toBeUndefined()
+        expect(headers["user-agent"]).toBe("Chrome/151")
+        expect(headers["accept-language"]).toBe("en-US,en;q=0.9")
+        expect(headers["cookie"]).toBe("token=abc; isg=123")
+        return new Response('{"ok":true}', { status: 200, headers: { "content-type": "application/json" } })
+      }),
+      async () => {
+        const response = await transport.rawRequestJson("GET", "/ping")
+        expect(response.body).toBe('{"ok":true}')
+      },
+    )
+  })
+
+  test("streaming requests reuse the real WAF token pair captured from page traffic", async () => {
+    const fake = makeFake()
+    fake.wafSignals = {}
+    let onRequest: ((request: { url(): string; method(): string; headers(): Record<string, string> }) => void) | undefined
+    fake.page.on = ((event: string, handler: unknown) => {
+      if (event === "request") onRequest = handler as typeof onRequest
+    }) as QwenWebPage["on"]
+    const transport = new QwenWebTransport({ browser: fake.browser, metadataTimeoutMs: 30 })
+    await withFetch(
+      mockFetch(async (_input, init) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>
+        expect(headers["bx-ua"]).toBe("bxua-fake")
+        expect(headers["bx-umidtoken"]).toBe("tok-fake")
+        return new Response("data: A\n\n", { status: 200, headers: { "content-type": "text/event-stream" } })
+      }),
+      async () => {
+        setTimeout(() => {
+          onRequest?.({
+            url: () => "https://chat.qwen.ai/api/v1/auths/",
+            method: () => "GET",
+            headers: () => ({ "bx-ua": "bxua-fake", "bx-umidtoken": "tok-fake" }),
+          })
+        }, 10)
+        const response = await transport.rawRequestStream("POST", "/api/v2/chat/completions?chat_id=c", { body: "{}" })
+        expect(await readAll(response.stream)).toBe("data: A\n\n")
+      },
+    )
+  })
+
+  test("subsequent streaming requests skip the harvest and reuse the captured pair", async () => {
+    const fake = makeFake()
+    fake.wafSignals = {}
+    let onRequest: ((request: { url(): string; method(): string; headers(): Record<string, string> }) => void) | undefined
+    fake.page.on = ((event: string, handler: unknown) => {
+      if (event === "request") onRequest = handler as typeof onRequest
+    }) as QwenWebPage["on"]
+    const transport = new QwenWebTransport({ browser: fake.browser, metadataTimeoutMs: 30, idleTimeoutMs: 5000 })
+    let fetches = 0
+    await withFetch(
+      mockFetch(async (_input, init) => {
+        fetches++
+        const headers = (init?.headers ?? {}) as Record<string, string>
+        expect(headers["bx-ua"]).toBe("bxua-fake")
+        expect(headers["bx-umidtoken"]).toBe("tok-fake")
+        return new Response("data: A\n\n", { status: 200, headers: { "content-type": "text/event-stream" } })
+      }),
+      async () => {
+        setTimeout(() => {
+          onRequest?.({
+            url: () => "https://chat.qwen.ai/api/v1/auths/",
+            method: () => "GET",
+            headers: () => ({ "bx-ua": "bxua-fake", "bx-umidtoken": "tok-fake" }),
+          })
+        }, 10)
+        const first = await transport.rawRequestStream("POST", "/api/v2/chat/completions?chat_id=c", { body: "{}" })
+        expect(await readAll(first.stream)).toBe("data: A\n\n")
+        const before = fake.evaluates.length
+        const second = await transport.rawRequestStream("POST", "/api/v2/chat/completions?chat_id=c", { body: "{}" })
+        expect(await readAll(second.stream)).toBe("data: A\n\n")
+        expect(fetches).toBe(2)
+        const newSignalReads = fake.evaluates
+          .slice(before)
+          .filter((item) => item.kind === "signal").length
+        expect(newSignalReads).toBe(1)
+      },
+    )
+  })
+
+  test("streaming requests skip the harvest poll during the post-miss cooldown", async () => {
+    const fake = makeFake()
+    fake.wafSignals = {}
+    const transport = new QwenWebTransport({
+      browser: fake.browser,
+      metadataTimeoutMs: 30,
+      idleTimeoutMs: 5000,
+      wafHardWaitMs: 20,
+      wafHarvestCooldownMs: 60_000,
+    })
+    await withFetch(
+      mockFetch(async () => new Response("data: A\n\n", { status: 200, headers: { "content-type": "text/event-stream" } })),
+      async () => {
+        const first = await transport.rawRequestStream("POST", "/api/v2/chat/completions?chat_id=c", { body: "{}" })
+        expect(await readAll(first.stream)).toBe("data: A\n\n")
+        const firstSignalReads = fake.evaluates.filter((item) => item.kind === "signal").length
+        expect(firstSignalReads).toBeGreaterThan(1)
+        const before = fake.evaluates.length
+        const second = await transport.rawRequestStream("POST", "/api/v2/chat/completions?chat_id=c", { body: "{}" })
+        expect(await readAll(second.stream)).toBe("data: A\n\n")
+        const newSignalReads = fake.evaluates
+          .slice(before)
+          .filter((item) => item.kind === "signal").length
+        expect(newSignalReads).toBe(1)
+      },
+    )
   })
 })

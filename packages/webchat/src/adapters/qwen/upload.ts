@@ -9,12 +9,13 @@
  *
  * Uploads run fully in memory; no temporary files are written.
  */
+/// <reference path="./ali-oss.d.ts" />
 import { Readable } from "stream"
 import { QWEN_WEB_DEFAULTS, QWEN_WEB_PATHS } from "./constants"
 import { QwenWebError, classifyJsonError, classifyStatus, sessionExpiredError } from "./errors"
 import { debug } from "./log"
 import { buildStsBody, randomId, type QwenWebFileEntry } from "./protocol"
-import type { QwenWebMedia } from "./prompt"
+import type { QwenWebMedia } from "./media"
 import { QwenWebTransport, sharedTransport } from "./transport"
 
 export interface StsCredentials {

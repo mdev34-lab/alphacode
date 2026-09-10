@@ -27,6 +27,19 @@ export const QWEN_WEB_PATHS = {
 /** Payload `version` sent on chat completions (mirrors the web client). */
 export const QWEN_WEB_COMPLETION_VERSION = "2.1"
 
+/** API client `version` header stamped on web traffic (mirrors the web client). */
+export const QWEN_WEB_CLIENT_VERSION = "0.2.91"
+
+/** UMID SDK `bx-v` stamp on the same traffic. */
+export const QWEN_WEB_BX_V = "2.5.37"
+
+/**
+ * Sentinel argument passed to the page `evaluate` that collects browser
+ * client-context headers (`user-agent`, `sec-ch-ua*`, `accept-language`).
+ * The transport simply uses it as a marker; the test fake keys on it.
+ */
+export const QWEN_WEB_CLIENT_CONTEXT_ARG = "__alphacodeQwenClientContext"
+
 /** Chat type used for text conversations. */
 export const QWEN_WEB_CHAT_TYPE_TEXT = "t2t"
 
@@ -68,6 +81,8 @@ export const QWEN_WEB_ENV = {
   profileDir: "QWEN_WEB_PROFILE_DIR",
   /** `temp` (default, ephemeral chats) or `thread` (persisted chats). */
   chatMode: "QWEN_WEB_CHAT_MODE",
+  /** Tool protocol: `block` (default, marker-tag blocks) or `native` (local_mcp). */
+  toolMode: "QWEN_WEB_TOOL_MODE",
   /** Enable verbose provider diagnostics (`1`/`true`). */
   debug: "QWEN_WEB_DEBUG",
   /** Per-request page-operation budget in ms. */
@@ -78,6 +93,8 @@ export const QWEN_WEB_ENV = {
   metadataTimeoutMs: "QWEN_WEB_METADATA_TIMEOUT_MS",
   /** Idle gap budget between stream chunks in ms. */
   idleTimeoutMs: "QWEN_WEB_IDLE_TIMEOUT_MS",
+  /** Idle gap budget between stream chunks in ms while reasoning. */
+  reasoningIdleTimeoutMs: "QWEN_WEB_REASONING_IDLE_TIMEOUT_MS",
   /** Max concurrent streams multiplexed on the browser page. */
   maxStreams: "QWEN_WEB_MAX_STREAMS",
 } as const
@@ -85,11 +102,12 @@ export const QWEN_WEB_ENV = {
 export const QWEN_WEB_DEFAULTS = {
   headless: true,
   chatMode: "temp" as const,
+  toolMode: "block" as const,
   pageTimeoutMs: 60_000,
   navigationTimeoutMs: 45_000,
   metadataTimeoutMs: 60_000,
   idleTimeoutMs: 180_000,
-  reasoningIdleTimeoutMs: 600_000,
+  reasoningIdleTimeoutMs: 180_000,
   maxStreams: 4,
   /** Model catalog cache TTL in ms. */
   modelsCacheTtlMs: 5 * 60_000,
@@ -103,3 +121,4 @@ export const QWEN_WEB_DEFAULTS = {
 
 export type QwenWebChatMode = "temp" | "thread"
 export type QwenWebReasoningMode = "auto" | "thinking" | "fast"
+export type QwenWebToolMode = "block" | "native"
