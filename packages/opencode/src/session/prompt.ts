@@ -1435,13 +1435,23 @@ const layer = Layer.effect(
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             // Concision policy: resolved once per step so the system prompt
             // and the client-side backstop enforce the same cap.
-            const concision = SystemPrompt.chat({ hidden: agent.hidden, format: lastUser.format?.type })
-              ? Concision.resolve({
-                  config: (yield* config.get()).concision,
-                  session: session.metadata?.concision,
-                  override: Concision.turnOverrideFromHistory(msgs),
-                })
-              : undefined
+            // Delegated runs are exempt: task subagents (review, general,
+            // explore, …) produce output the parent agent consumes
+            // programmatically — capping it truncates the payload (e.g. a
+            // review verdict) and corrupts the handoff. Chat prose only.
+            const delegated = agent.mode === "subagent" || session.parentID !== undefined
+            const concision =
+              !delegated &&
+              SystemPrompt.chat({
+                hidden: agent.hidden,
+                format: lastUser.format?.type,
+              })
+                ? Concision.resolve({
+                    config: (yield* config.get()).concision,
+                    session: session.metadata?.concision,
+                    override: Concision.turnOverrideFromHistory(msgs),
+                  })
+                : undefined
             const result = yield* handle.process({
               user: effectiveUser,
               agent,
