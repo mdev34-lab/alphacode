@@ -9,6 +9,16 @@ export type ReviewLoopState = {
   workSinceReview: boolean
 }
 
+type HistoryPart = {
+  type?: unknown
+  tool?: unknown
+  state?: {
+    status?: unknown
+    input?: unknown
+    output?: unknown
+  }
+}
+
 const REVIEW_VERDICT = /\*\*Ready to proceed\?\*\*\s*(?:\[[^\]]*\]\s*)?(Approved|Needs fixes)\b/i
 const READ_ONLY_TOOLS = new Set([
   "read",
@@ -23,20 +33,32 @@ const READ_ONLY_TOOLS = new Set([
   "todo",
 ])
 
+function historyPart(part: SessionV1.WithParts["parts"][number]): HistoryPart {
+  return part as unknown as HistoryPart
+}
+
 export function parseReviewVerdict(output: string): Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined {
   const match = output.match(REVIEW_VERDICT)
   if (!match?.[1]) return undefined
   return match[1].toLowerCase() === "approved" ? "approved" : "needs-fixes"
 }
 
-function isReviewTask(part: SessionV1.ToolPart) {
-  if (part.tool !== "task") return false
-  if (typeof part.state.input !== "object" || part.state.input === null) return false
+function isReviewTask(part: HistoryPart) {
+  if (part.type !== "tool" || part.tool !== "task") return false
+  if (typeof part.state?.input !== "object" || part.state.input === null) return false
   const input = part.state.input as Record<string, unknown>
-  return input.subagent_type === "review" && input.background === false
+  return input.subagent_type === "review"
 }
 
-function isPotentiallyMutatingTool(part: SessionV1.ToolPart) {
+function isSynchronousReviewTask(part: HistoryPart) {
+  return isReviewTask(part) &&
+    typeof part.state?.input === "object" &&
+    part.state.input !== null &&
+    (part.state.input as Record<string, unknown>).background === false
+}
+
+function isPotentiallyMutatingTool(part: HistoryPart) {
+  if (part.type !== "tool" || typeof part.tool !== "string") return false
   if (part.tool === "finish" || isReviewTask(part)) return false
   return !READ_ONLY_TOOLS.has(part.tool)
 }
@@ -64,12 +86,14 @@ export function reviewLoopState(messages: readonly SessionV1.WithParts[], maxIte
   let latest: Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined
 
   for (const message of current) {
-    for (const part of message.parts) {
-      if (part.type !== "tool") continue
+    for (const rawPart of message.parts) {
+      const part = historyPart(rawPart)
 
       if (isReviewTask(part)) {
-        if (part.state.status !== "completed") {
+        if (!isSynchronousReviewTask(part)) continue
+        if (part.state?.status !== "completed") {
           latest = undefined
+          workSinceReview = true
           continue
         }
         reviews++
