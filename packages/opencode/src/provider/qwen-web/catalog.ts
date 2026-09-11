@@ -234,8 +234,8 @@ const FALLBACK_MODELS: Array<{ id: string; name: string; reasoning: boolean; vis
   // Ids verified against `GET /api/models` on chat.qwen.ai (Sep 2026):
   // older ids (qwen3-max, qwen-plus, qwen-turbo ...) are retired upstream and
   // return `Not_Found: Model not found` on `/api/v2/chat/completions`.
-  { id: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, vision: false },
-  { id: "qwen3.7-plus", name: "Qwen3.7 Plus", reasoning: true, vision: false },
+  { id: "qwen3.8-max", name: "Qwen3.8 Max", reasoning: true, vision: true },
+  { id: "qwen3.7-plus", name: "Qwen3.7 Plus", reasoning: true, vision: true },
 ]
 
 function fallbackRecords(): QwenWebModelRecord[] {

@@ -158,6 +158,11 @@ describe("fallbackModels and providerInfo", () => {
     for (const id of Object.keys(models)) {
       expect(neverIds).not.toContain(id)
     }
+    // Fallback models with vision must expose image attachment capability.
+    expect(models["qwen3.8-max"]?.capabilities.attachment).toBe(true)
+    expect(models["qwen3.7-plus"]?.capabilities.attachment).toBe(true)
+    expect(models["qwen3.8-max"]?.capabilities.input.image).toBe(true)
+    expect(models["qwen3.7-plus"]?.capabilities.input.image).toBe(true)
     const info = providerInfo()
     expect(String(info.id)).toBe("qwen-web")
     expect(info.name).toBe("Qwen Chat (beta)")
