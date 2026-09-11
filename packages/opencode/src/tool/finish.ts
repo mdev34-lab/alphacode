@@ -3,7 +3,8 @@ import DESCRIPTION from "./finish.txt"
 import { Effect, Schema } from "effect"
 import { Todo } from "../session/todo"
 import { Session } from "../session/session"
-import { finishGateError, latestReviewVerdict } from "../session/review-loop"
+import { Config } from "@/config/config"
+import { finishGateError, reviewLoopState } from "../session/review-loop"
 
 export const Parameters = Schema.Struct({
   result: Schema.String.annotate({
@@ -12,33 +13,44 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-// Every user turn is a task from the execution protocol's perspective, so
-// agents with finishTool enabled (the default) may only end their turn by
-// calling this tool — the session loop resists end-of-stream stops until it
-// completes, even when the turn used no other tools. On success it also
-// makes a best-effort attempt to close any remaining open todos for the
-// session as a safety net. The cleanup is logged but does not block task
-// completion if it fails.
+// Every user turn is a task from the execution protocol's perspective, so agents
+// with finishTool enabled (the default) may only end their turn by calling finish.
+// The review gate is enforced here, at the actual completion boundary.
 export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
     const todo = yield* Todo.Service
     const sessions = yield* Session.Service
+    const config = yield* Config.Service
 
     return {
       description: DESCRIPTION,
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          const cfg = yield* config.get()
+          const maxIterations = cfg.review_loop?.max_iterations ?? 5
           const messages = yield* sessions.messages({ sessionID: ctx.sessionID })
-          const verdict = latestReviewVerdict(messages)
-          const gateError = finishGateError(verdict)
+          const reviewState = reviewLoopState(messages, maxIterations)
+          const gateError = finishGateError(reviewState)
           if (gateError) {
             yield* Effect.logWarning("finish blocked by review gate", {
               sessionID: ctx.sessionID,
-              verdict,
+              verdict: reviewState.verdict,
+              reviews: reviewState.reviews,
+              maxIterations: reviewState.maxIterations,
+              workSinceReview: reviewState.workSinceReview,
             })
             return yield* Effect.fail(gateError)
+          }
+
+          if (reviewState.verdict === "cap") {
+            yield* Effect.logWarning("review loop terminated at cap", {
+              sessionID: ctx.sessionID,
+              reason: "review-cap",
+              reviews: reviewState.reviews,
+              maxIterations: reviewState.maxIterations,
+            })
           }
 
           yield* Effect.gen(function* () {
@@ -63,7 +75,14 @@ export const FinishTool = Tool.define(
           return {
             title: "Task completed",
             output: params.result,
-            metadata: {},
+            metadata: {
+              review: {
+                verdict: reviewState.verdict,
+                reviews: reviewState.reviews,
+                maxIterations: reviewState.maxIterations,
+                ...(reviewState.verdict === "cap" ? { termination: "review-cap" } : { termination: "approved" }),
+              },
+            },
           }
         }),
     }
