@@ -228,9 +228,14 @@ export const TuiThreadCommand = cmd({
       let stop!: () => Promise<void>
       const worker = createWorkerProcess(workerFile, {
         cwd,
-        env: Object.fromEntries(
-          Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-        ),
+        env: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+          ),
+          // Explicit marker so the child knows it is the TUI worker instead
+          // of inferring it from runtime capabilities (see worker.ts).
+          ALPHACODE_TUI_WORKER: "1",
+        },
         onRestart: async () => {
           if (!external) return
           const result = await client.call("server", network)
@@ -261,11 +266,14 @@ export const TuiThreadCommand = cmd({
       }
 
       for (const signal of forwardSignals) {
+        // Graceful shutdown first: ask the worker to dispose via RPC, then
+        // terminate it. Signaling the child before the shutdown RPC would let
+        // it die before the RPC executes (the worker has no signal handler),
+        // turning every SIGINT/SIGTERM into a 5s shutdown timeout. A SIGHUP'd
+        // parent cannot usefully continue workerless, so it exits too (129).
         const handler = () => {
-          worker.signal(signal)
           void stop().finally(() => {
-            if (signal === "SIGHUP") return
-            process.exit(signal === "SIGINT" ? 130 : 143)
+            process.exit(signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 129)
           })
         }
         try {
