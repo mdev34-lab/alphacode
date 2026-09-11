@@ -26,6 +26,23 @@ function reviewMessage(output: string, status: "completed" | "running" = "comple
   } as unknown as SessionV1.WithParts
 }
 
+function toolMessage(tool: string) {
+  return {
+    info: { role: "assistant" },
+    parts: [
+      {
+        type: "tool",
+        tool,
+        state: {
+          status: "completed",
+          input: {},
+          output: "done",
+        },
+      },
+    ],
+  } as unknown as SessionV1.WithParts
+}
+
 describe("mandatory review loop prompt contract", () => {
   test("requires a review after work that follows review findings", async () => {
     const prompt = await readPrompt("review-loop.txt")
@@ -61,6 +78,15 @@ describe("runtime review gate", () => {
     expect(finishGateError(latestReviewVerdict([findings]))).toBeInstanceOf(Error)
     expect(latestReviewVerdict([findings, approved])).toBe("approved")
     expect(finishGateError(latestReviewVerdict([findings, approved]))).toBeUndefined()
+  })
+
+  test("invalidates an approval if any later non-finish tool ran", () => {
+    const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
+    const edit = toolMessage("edit")
+
+    expect(latestReviewVerdict([approved, edit])).toBe("pending")
+    expect(finishGateError(latestReviewVerdict([approved, edit]))).toBeInstanceOf(Error)
+    expect(latestReviewVerdict([approved, toolMessage("finish")])).toBe("approved")
   })
 
   test("does not treat an incomplete or malformed review as approval", () => {
