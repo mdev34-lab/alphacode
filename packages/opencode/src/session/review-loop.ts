@@ -110,7 +110,7 @@ export interface State {
   lastVerdict: Verdict | undefined
   lastFindings: string | undefined
   stallStreak: number
-  /** Consecutive review-loop nudges after which no file mutation or review dispatch occurred. */
+  /** Number of consecutive synthetic review-loop nudges without intervening progress. */
   unresponsiveStreak: number
 }
 
@@ -138,17 +138,14 @@ export function assess(messages: readonly SessionV1.WithParts[]): State {
     stallStreak: 0,
     unresponsiveStreak: 0,
   }
-  let progressSinceNudge = 0
 
   for (const msg of taskSlice(messages)) {
     if (msg.info.role === "user") {
       const reviewNudge = msg.parts.some(
-        (part): part is SessionV1.TextPart => part.type === "text" && part.synthetic === true && part.text.startsWith(NUDGE_MARKER),
+        (part): part is SessionV1.TextPart =>
+          part.type === "text" && part.synthetic === true && part.text.startsWith(NUDGE_MARKER),
       )
-      if (reviewNudge) {
-        state.unresponsiveStreak = progressSinceNudge === 0 ? state.unresponsiveStreak + 1 : 0
-        progressSinceNudge = 0
-      }
+      if (reviewNudge) state.unresponsiveStreak += 1
     }
 
     for (const part of msg.parts) {
@@ -157,7 +154,6 @@ export function assess(messages: readonly SessionV1.WithParts[]): State {
       if (toolMutates(part) && part.state.status === "completed") {
         state.filesChanged = true
         state.progressCount += 1
-        progressSinceNudge += 1
         state.unresponsiveStreak = 0
         state.dirty = true
         state.approved = false
@@ -168,7 +164,6 @@ export function assess(messages: readonly SessionV1.WithParts[]): State {
 
       state.reviewPasses += 1
       state.progressCount += 1
-      progressSinceNudge += 1
       state.unresponsiveStreak = 0
       if (part.state.status === "pending" || part.state.status === "running") {
         state.reviewRunning = true
