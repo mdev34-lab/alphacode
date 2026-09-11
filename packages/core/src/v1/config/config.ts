@@ -84,6 +84,15 @@ export const Info = Schema.Struct({
   subagent_depth: Schema.optional(NonNegativeInt).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
   }),
+  review_loop: Schema.optional(
+    Schema.Struct({
+      max_iterations: Schema.optional(PositiveInt).annotate({
+        description: "Maximum review/fix iterations before allowing capped completion. Defaults to 5.",
+      }),
+    }),
+  ).annotate({
+    description: "Mandatory Work → Review loop configuration.",
+  }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
   }),
