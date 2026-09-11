@@ -31,7 +31,7 @@ export const FinishTool = Tool.define(
           const reviewState = reviewLoopState(messages, maxIterations)
           const gateError = finishGateError(reviewState)
           if (gateError) {
-            const phase = reviewState.workSinceReview ? "review" : reviewState.verdict === "needs-fixes" ? "work" : "review"
+            const phase = reviewState.workSinceReview ? "work" : reviewState.verdict === "needs-fixes" ? "work" : "review"
             yield* Effect.logWarning("finish blocked by review gate", {
               sessionID: ctx.sessionID,
               verdict: reviewState.verdict,
