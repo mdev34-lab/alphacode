@@ -6,6 +6,7 @@ type FakeProcess = {
   signalCode: string | null
   killed: boolean
   sent: string[]
+  signals: (string | number)[]
   exited: Promise<number>
   send(message: string): void
   kill(signal: string): void
@@ -20,6 +21,7 @@ function fakeProcess(): FakeProcess {
     signalCode: null,
     killed: false,
     sent: [],
+    signals: [],
     exited: new Promise((resolve) => {
       resolveExit = resolve
     }),
@@ -28,6 +30,7 @@ function fakeProcess(): FakeProcess {
     },
     kill(signal) {
       this.killed = true
+      this.signals.push(signal)
       this.resolveExit(0, signal)
     },
     disconnect() {},
@@ -57,6 +60,47 @@ describe("TUI worker process", () => {
     expect(children).toHaveLength(2)
     expect(children[0].sent).toHaveLength(1)
     expect(children[1].sent).toEqual([])
+    await worker.terminate()
+  })
+
+  test("forwards parent signals to the current worker", async () => {
+    const children: FakeProcess[] = []
+    const spawn = () => {
+      const child = fakeProcess()
+      children.push(child)
+      return child
+    }
+
+    const worker = createWorkerProcess("worker.ts", { spawn, log: () => {} })
+    worker.signal("SIGINT")
+
+    expect(children[0].signals).toEqual(["SIGINT"])
+    children[0].resolveExit(0)
+    await expect(worker.closed).resolves.toEqual({ code: 0, signal: null })
+    await worker.terminate()
+  })
+
+  test("fails recovery when the restart hook fails", async () => {
+    const children: FakeProcess[] = []
+    const spawn = () => {
+      const child = fakeProcess()
+      children.push(child)
+      return child
+    }
+
+    const worker = createWorkerProcess("worker.ts", {
+      spawn,
+      log: () => {},
+      onRestart: async () => {
+        throw new Error("server restart failed")
+      },
+    })
+
+    children[0].resolveExit(1, "SIGSEGV")
+    await expect(worker.restarted).rejects.toThrow("server restart failed")
+    expect(children).toHaveLength(2)
+    expect(children[1].killed).toBe(true)
+    await expect(worker.closed).resolves.toMatchObject({ signal: null })
     await worker.terminate()
   })
 
