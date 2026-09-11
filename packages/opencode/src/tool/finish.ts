@@ -27,9 +27,6 @@ export const FinishTool = Tool.define(
         Effect.gen(function* () {
           const cfg = yield* config.get()
           const maxIterations = cfg.review_loop?.max_iterations ?? 5
-          // Tool.Context.messages is the model-request snapshot and can be stale when
-          // finish follows another tool call in the same assistant response. Read the
-          // persisted session history at the completion boundary instead.
           const messages = yield* sessions.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)
           const reviewState = reviewLoopState(messages, maxIterations)
           const gateError = finishGateError(reviewState)
