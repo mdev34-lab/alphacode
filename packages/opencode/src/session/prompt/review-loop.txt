@@ -2,6 +2,18 @@
 
 Your own checks — rereading your diff, running tests, lint, and typecheck — catch implementer mistakes. They do not catch the mistakes of an implementer who misread the request or believes their own summary. Independent review does. For any unit of work that changed files, you are not the only reviewer: dispatch the read-only `review` subagent before you claim completion, commit, or move on to the next unit. This is a hard requirement, not optional, and self-review never substitutes for dispatching the reviewer.
 
+### The loop is stateful
+
+Treat review as a **blocking gate**, not a one-time suggestion. The workflow has exactly these states:
+
+```text
+WORK → REVIEW → APPROVED → FINISH
+          │
+          └─ NEEDS FIXES → WORK → REVIEW → …
+```
+
+A review that reports Critical or Important findings creates an **outstanding review obligation**. That obligation remains active until a later review explicitly returns `Approved`. Do not call `finish`, claim completion, commit, or otherwise deliver the result while that obligation is active.
+
 ### When this loop applies
 
 - A self-contained unit of work that produced file changes: an implementation, fix, refactor, feature, or test change.
@@ -17,16 +29,41 @@ It does not apply to turns with no file changes: questions, explanations, explor
    - What you changed (summary of files and behavior)
    - The unit's boundary: base SHA and head SHA, or "uncommitted working tree", plus the expected files for this unit
    - The full diff for THIS unit only: the output of `git diff` (uncommitted work) or `git diff BASE..HEAD` (committed work) pasted into the prompt. Do not paste unrelated changes that accumulated on the branch — the review must be scoped to the unit.
-2. If the reviewer returns Critical or Important findings, fix them, then dispatch a scoped re-review (`subagent_type: "review"`, `background: false`) that verifies only those findings and the fix diff. Never skip the re-review of your own fixes.
-3. Iterate up to 5 fix rounds. If findings remain after round 5, adjudicate each one explicitly: park non-blocking findings with a written justification, and rule on load-bearing findings with reasoning you surface to the user. Never silently drop a finding.
-4. Only claim completion, commit, or advance to the next unit of work after the reviewer approves, or after you have adjudicated the remaining findings as above.
+2. Read the review's **Assessment**. `Approved` clears the review obligation. `Needs fixes` does not.
+3. If the reviewer returns Critical or Important findings, fix them in the working tree. Then dispatch a **new, synchronous** `review` pass that verifies the fixes. Do not assume that fixing the reported lines automatically clears the review.
+4. **After every Work pass performed in response to review findings, dispatch Review again.** This is mandatory even if the changes appear trivial or the model believes the fixes are obviously correct. The sequence must remain `WORK → REVIEW`; never `WORK → FINISH` after a Needs-fixes review.
+5. Iterate up to the configured review-loop cap. If the cap is reached while findings remain, do not represent the result as approved. Clearly report that the loop stopped because the cap was reached and summarize the remaining findings.
+6. Only after an explicit `Approved` review may you call `finish` and deliver the final result.
+
+### What counts as approval
+
+Only the review agent's explicit final assessment counts:
+
+```text
+**Ready to proceed?** Approved
+```
+
+Anything else — `Needs fixes`, missing verdict, partial output, a reviewer error, or your own belief that the work is good enough — does **not** clear the obligation. Recover by running the review again when appropriate rather than silently treating the work as approved.
+
+### Cap and termination
+
+The loop cap limits **review/fix iterations**, not individual tool calls. Never reset the counter when Work starts again. A normal successful path is:
+
+```text
+Work #1 → Review #1
+  └─ Needs fixes → Work #2 → Review #2
+      └─ Approved → Finish
+```
+
+If the configured cap is exhausted, terminate with an explicit `review-cap` reason rather than an approval claim. The user must be able to distinguish **approved** from **stopped at cap**.
 
 ### Consuming the report
 
 A review report is an instruction to act, not an acknowledgment. When one arrives — as the task tool's result, or later as a `<task>` message for a review you dispatched in the background — read it and act on it in that turn:
 
-- Fix every Critical and Important finding before the unit may be called complete, then re-review the fixes as in step 2. Minor findings may be noted and addressed opportunistically; they do not block.
+- Fix every Critical and Important finding before the unit may be called complete, then re-review the fixes.
 - If you already told the user the work was done, correct the record: say what the reviewer found and what you changed.
 - Never restate the report as though it were your own verification, and never dispatch another reviewer to check the reviewer.
+- Minor findings may be noted and addressed opportunistically; they do not block approval unless the reviewer explicitly treats them as blocking.
 
 Reviews are the loop's brakes and steering — the loop without reviews is just unverified churn.
