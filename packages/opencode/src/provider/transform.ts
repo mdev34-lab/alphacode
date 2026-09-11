@@ -4,6 +4,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import type * as Provider from "./provider"
 import type * as ModelsDev from "@opencode-ai/core/models-dev"
 import { iife } from "@/util/iife"
+import { reasoningVariants as qwenWebReasoningVariants } from "./qwen-web/catalog"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -727,6 +728,10 @@ function googleThinkingVariants(model: Provider.Model): Record<string, Record<st
 export function variants(model: Provider.Model): Record<string, Record<string, any>> {
   if (!model.capabilities.reasoning) return {}
 
+  // Qwen Web (browser) models switch reasoning via the web client's
+  // auto/thinking/fast modes rather than provider-specific parameters.
+  if (model.providerID === "qwen-web" || model.api.npm === "qwen-web") return qwenWebReasoningVariants(true)
+
   const id = model.id.toLowerCase()
   const glm52 = ["glm-5.2", "glm-5-2", "glm-5p2"].some(
     (name) => id.includes(name) || model.api.id.toLowerCase().includes(name),
@@ -1417,6 +1422,32 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
 
 export function maxOutputTokens(model: Provider.Model, outputTokenMax = OUTPUT_TOKEN_MAX): number {
   return Math.min(model.limit.output, outputTokenMax) || outputTokenMax
+}
+
+// Qwen Web keeps one persistent chat thread per (profile + model + scope).
+// opencode-orchestrated calls are scoped by the agent that originated them so
+// a session's title/lite stream (agent=title) never contends with its primary
+// work stream (agent=work) on the same thread. An explicit caller-provided
+// threadId always wins.
+export function withQwenWebThreadScope(
+  providerOptions: { [x: string]: any },
+  agentName: string | undefined,
+  small: boolean | undefined,
+  sessionID?: string,
+) {
+  if (agentName === undefined && !small) return providerOptions
+  const qwen = providerOptions["qwen-web"]
+  const opts = typeof qwen === "object" && qwen !== null && !Array.isArray(qwen) ? qwen : {}
+  if (opts.threadId !== undefined) return providerOptions
+  const sessionSuffix = sessionID ? `:${sessionID.slice(-8)}` : ""
+  return {
+    ...providerOptions,
+    "qwen-web": {
+      ...opts,
+      threadId: `${agentName ?? "default"}${sessionSuffix}${small ? ":title" : ""}`,
+      ...(small !== undefined ? { small } : {}),
+    },
+  }
 }
 
 type JsonRecord = Record<string, unknown>

@@ -358,7 +358,12 @@ const live: Layer.Layer<
           temperature: prepared.params.temperature,
           topP: prepared.params.topP,
           topK: prepared.params.topK,
-          providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
+          providerOptions: ProviderTransform.withQwenWebThreadScope(
+            ProviderTransform.providerOptions(input.model, prepared.params.options),
+            input.agent.name,
+            input.small,
+            input.sessionID,
+          ),
           activeTools: Object.keys(prepared.tools).filter((x) => x !== "invalid"),
           tools: prepared.tools,
           toolChoice: input.toolChoice,

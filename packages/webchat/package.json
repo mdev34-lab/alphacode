@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "version": "0.1.0",
+  "name": "@opencode-ai/webchat",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "test": "bun test --timeout 30000 --only-failures",
+    "typecheck": "tsgo --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts",
+    "./thread": "./src/thread.ts",
+    "./store": "./src/store.ts",
+    "./provider": "./src/provider.ts",
+    "./adapters/qwen": "./src/adapters/qwen/index.ts",
+    "./adapters/qwen/*": "./src/adapters/qwen/*.ts"
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "catalog:",
+    "@types/bun": "catalog:",
+    "@typescript/native-preview": "catalog:"
+  },
+  "dependencies": {
+    "@opencode-ai/core": "workspace:*",
+    "ali-oss": "6.23.0",
+    "patchright": "1.62.3"
+  }
+}
