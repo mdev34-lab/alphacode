@@ -283,5 +283,37 @@ describe("QwenWebSession thread engine", () => {
       expect(errors[0].code).toBe("challenge")
       expect(errors[0].message).toContain("No browser window could be opened")
     })
+
+    test("pre-stream challenge reveals the window exactly once", async () => {
+      const captured: Captured = { payloads: [], chatCreated: 0, stops: [] }
+      let revealCalls = 0
+      const transport = {
+        ...fakeTransport([], captured, false),
+        rawRequestStream: async () => ({
+          status: 403,
+          contentType: "text/plain",
+          stream: byteStream(["FAIL_SYS_USER_VALIDATE"]),
+          abort: () => {},
+        }),
+        revealChallengeWindow: async () => {
+          revealCalls++
+          return true
+        },
+      } as unknown as QwenWebTransport
+      const sessionInstance = new QwenWebSession({ transport, store: freshStore() })
+      const thread = await sessionInstance.ensureThread({ model: "qwen3-max" })
+      // Pre-stream failures reject the turn (the user node was never delivered).
+      const error = await sessionInstance
+        .runTurn({ thread, content: "hi" })
+        .next()
+        .then(() => undefined)
+        .catch((e: unknown) => e)
+      // One reveal total: the pre-stream throw and the setup-loop rethrow
+      // share the same error object, and enrichment runs once per error.
+      expect(revealCalls).toBe(1)
+      expect(error).toBeInstanceOf(Error)
+      expect((error as { code?: string }).code).toBe("challenge")
+      expect((error as { message?: string }).message).toContain("visible browser window has been opened")
+    })
   })
 })
