@@ -75,9 +75,14 @@ describe("mandatory review loop prompt contract", () => {
 })
 
 describe("runtime review gate", () => {
-  test("parses only the reviewer's final verdict", () => {
+  test("parses the last explicit review verdict", () => {
     expect(parseReviewVerdict("### Assessment\n\n**Ready to proceed?** Approved")).toBe("approved")
     expect(parseReviewVerdict("### Assessment\n\n**Ready to proceed?** Needs fixes")).toBe("needs-fixes")
+    expect(
+      parseReviewVerdict(
+        "### Prior assessment\n\n**Ready to proceed?** Approved\n\n### Assessment\n\n**Ready to proceed?** Needs fixes",
+      ),
+    ).toBe("needs-fixes")
     expect(parseReviewVerdict("The implementation looks good, but no final assessment was emitted.")).toBeUndefined()
   })
 
