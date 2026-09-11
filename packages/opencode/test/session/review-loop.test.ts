@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { finishGateError, latestReviewVerdict, reviewLoopState, parseReviewVerdict } from "../../src/session/review-loop"
+import { finishGateError, latestReviewVerdict, parseReviewVerdict, reviewLoopState } from "../../src/session/review-loop"
 
 const directory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/session/prompt")
 
@@ -11,6 +11,13 @@ const readPrompt = (name: string) => readFile(path.join(directory, name), "utf8"
 
 function userMessage() {
   return { info: { role: "user" }, parts: [] } as unknown as SessionV1.WithParts
+}
+
+function syntheticNudge() {
+  return {
+    info: { role: "user" },
+    parts: [{ type: "text", synthetic: true, text: "Continue." }],
+  } as unknown as SessionV1.WithParts
 }
 
 function reviewMessage(output: string, status: "completed" | "running" = "completed") {
@@ -88,14 +95,24 @@ describe("runtime review gate", () => {
     expect(finishGateError(state)).toBeUndefined()
   })
 
+  test("does not treat a synthetic continuation nudge as a new turn", () => {
+    const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
+    const state = reviewLoopState([userMessage(), toolMessage("edit"), approved, syntheticNudge()])
+
+    expect(state.verdict).toBe("approved")
+  })
+
   test("keeps a Needs fixes obligation until a later review explicitly approves", () => {
     const findings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
-    expect(latestReviewVerdict([userMessage(), toolMessage("edit"), findings])).toBe("needs-fixes")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), findings]))).toBeInstanceOf(Error)
-    expect(latestReviewVerdict([userMessage(), toolMessage("edit"), findings, toolMessage("edit"), approved])).toBe("approved")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), findings, toolMessage("edit"), approved]))).toBeUndefined()
+    const findingsState = reviewLoopState([userMessage(), toolMessage("edit"), findings])
+    const approvedState = reviewLoopState([userMessage(), toolMessage("edit"), findings, toolMessage("edit"), approved])
+
+    expect(findingsState.verdict).toBe("needs-fixes")
+    expect(finishGateError(findingsState)).toBeInstanceOf(Error)
+    expect(approvedState.verdict).toBe("approved")
+    expect(finishGateError(approvedState)).toBeUndefined()
   })
 
   test("invalidates approval after later mutating work but not read-only inspection", () => {
