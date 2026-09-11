@@ -148,16 +148,17 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
           rejectReady = reject
         })
         launch()
+        const replacement = current
         void Promise.resolve()
           .then(() => options.onRestart?.())
           .then(
             () => resolveReady(),
             (error) => {
-              terminal = true
               const failure = error instanceof Error ? error : new Error(String(error))
-              log(`[alphacode] worker restart hook failed: ${failure.message}`)
               rejectReady(failure)
-              const replacement = current
+              if (replacement !== current || terminal || stopping) return
+              terminal = true
+              log(`[alphacode] worker restart hook failed: ${failure.message}`)
               replacement?.disconnect()
               replacement?.kill("SIGTERM")
             },
