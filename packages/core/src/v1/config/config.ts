@@ -63,7 +63,7 @@ export const Info = Schema.Struct({
   }),
   autoupdate: Schema.optional(Schema.Union([Schema.Boolean, Schema.Literal("notify")])).annotate({
     description:
-      "Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications",
+      "Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications.",
   }),
   disabled_providers: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Disable providers that are loaded automatically",
@@ -106,7 +106,7 @@ export const Info = Schema.Struct({
       }),
       [Schema.Record(Schema.String, ConfigAgentV1.Info)],
     ),
-  ).annotate({ description: "@deprecated Use 'agent' field instead." }),
+  ).annotate({ description: "@deprecated Use `agent` field instead." }),
   agent: Schema.optional(
     Schema.StructWithRest(
       Schema.Struct({
@@ -134,7 +134,8 @@ export const Info = Schema.Struct({
       "Enable or configure formatters. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
   }),
   lsp: Schema.optional(ConfigLSPV1.Info).annotate({
-    description: "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins with overrides.",
+    description:
+      "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
   }),
   instructions: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Additional instruction files or patterns to include",
@@ -198,7 +199,7 @@ export const Info = Schema.Struct({
           "Maximum number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction. By default retention is limited only by the preserved token budget.",
       }),
       preserve_recent_tokens: Schema.optional(NonNegativeInt).annotate({
-        description: "Maximum number of tokens from recent turns to preserve verbatim after compaction",
+        description: "Maximum number of tokens from recent tool outputs to preserve verbatim after compaction",
       }),
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
@@ -219,13 +220,13 @@ export const Info = Schema.Struct({
         description: "Continue the agent loop when a tool call is denied",
       }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
-        description: "Timeout in milliseconds for model context protocol (MCP) requests",
+        description: "Timeout in milliseconds for Model Context Protocol (MCP) requests",
       }),
       policies: Schema.optional(Schema.mutable(Schema.Array(ConfigExperimental.Policy))).annotate({
         description: "Policy statements applied to supported resources, such as provider access",
       }),
     }),
   ),
-})
+}).annotate({ identifier: "Config" })
 
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
