@@ -135,7 +135,7 @@ export const Info = Schema.Struct({
   }),
   lsp: Schema.optional(ConfigLSPV1.Info).annotate({
     description:
-      "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
+      "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins with overrides.",
   }),
   instructions: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Additional instruction files or patterns to include",
@@ -209,10 +209,10 @@ export const Info = Schema.Struct({
   experimental: Schema.optional(
     Schema.Struct({
       disable_paste_summary: Schema.optional(Schema.Boolean),
-      batch_tool: Schema.optional(Schema.Boolean).annotate({ description: "Enable the batch tool" }),
       openTelemetry: Schema.optional(Schema.Boolean).annotate({
         description: "Enable OpenTelemetry spans for AI SDK calls (using the 'experimental_telemetry' flag)",
       }),
+      batch_tool: Schema.optional(Schema.Boolean).annotate({ description: "Enable the batch tool" }),
       primary_tools: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
         description: "Tools that should only be available to primary agents.",
       }),
@@ -220,7 +220,7 @@ export const Info = Schema.Struct({
         description: "Continue the agent loop when a tool call is denied",
       }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
-        description: "Timeout in milliseconds for Model Context Protocol (MCP) requests",
+        description: "Timeout in milliseconds for model context protocol (MCP) requests",
       }),
       policies: Schema.optional(Schema.mutable(Schema.Array(ConfigExperimental.Policy))).annotate({
         description: "Policy statements applied to supported resources, such as provider access",
