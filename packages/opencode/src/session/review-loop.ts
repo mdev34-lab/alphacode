@@ -51,7 +51,7 @@ export type Verdict = "approved" | "needs-fixes" | "unknown"
 
 /**
  * A review can clear the gate only when it contains the required assessment
- * verdict and an explicit Critical/Important section with no blocking bullets.
+ * verdict and explicit Critical/Important sections with no blocking bullets.
  * Missing or contradictory review structure is never treated as approval.
  */
 export function parseVerdict(output: string): Verdict {
@@ -67,8 +67,8 @@ export function parseVerdict(output: string): Verdict {
 
 /**
  * Returns normalized Critical/Important bullet findings. `undefined` means the
- * report does not contain either required severity section. The strings
- * `None`, `None found`, and equivalent zero-finding bullets are ignored.
+ * report does not contain either required severity section. Zero-finding bullets
+ * such as `None` are ignored so an explicit clean report can be approved.
  */
 export function severityFindings(output: string): string | undefined {
   const hasCritical = /####\s*Critical/i.test(output)
@@ -108,6 +108,8 @@ export interface State {
   lastVerdict: Verdict | undefined
   lastFindings: string | undefined
   stallStreak: number
+  /** Consecutive review-loop nudges after which no file mutation or review dispatch occurred. */
+  unresponsiveStreak: number
 }
 
 export function taskSlice(messages: readonly SessionV1.WithParts[]): readonly SessionV1.WithParts[] {
@@ -132,15 +134,29 @@ export function assess(messages: readonly SessionV1.WithParts[]): State {
     lastVerdict: undefined,
     lastFindings: undefined,
     stallStreak: 0,
+    unresponsiveStreak: 0,
   }
+  let progressSinceNudge = 0
 
   for (const msg of taskSlice(messages)) {
+    if (msg.info.role === "user") {
+      const reviewNudge = msg.parts.some(
+        (part): part is SessionV1.TextPart => part.type === "text" && part.synthetic === true && part.text.startsWith(NUDGE_MARKER),
+      )
+      if (reviewNudge) {
+        state.unresponsiveStreak = progressSinceNudge === 0 ? state.unresponsiveStreak + 1 : 0
+        progressSinceNudge = 0
+      }
+    }
+
     for (const part of msg.parts) {
       if (part.type !== "tool") continue
 
       if (toolMutates(part) && part.state.status === "completed") {
         state.filesChanged = true
         state.progressCount += 1
+        progressSinceNudge += 1
+        state.unresponsiveStreak = 0
         state.dirty = true
         state.approved = false
         continue
@@ -150,6 +166,8 @@ export function assess(messages: readonly SessionV1.WithParts[]): State {
 
       state.reviewPasses += 1
       state.progressCount += 1
+      progressSinceNudge += 1
+      state.unresponsiveStreak = 0
       if (part.state.status === "pending" || part.state.status === "running") {
         state.reviewRunning = true
         continue
@@ -206,7 +224,7 @@ export function decide(
   const inLoop = state.filesChanged && state.dirty
   const stalled = state.dirty && state.stallStreak >= (input.stallLimit ?? DEFAULT_STALL_LIMIT)
   const atCap = input.cap !== undefined && state.reviewPasses >= input.cap
-  const unresponsive = state.dirty && input.nudges >= state.progressCount + UNRESPONSIVE_NUDGE_LIMIT
+  const unresponsive = state.dirty && state.unresponsiveStreak >= UNRESPONSIVE_NUDGE_LIMIT
 
   return {
     inLoop,

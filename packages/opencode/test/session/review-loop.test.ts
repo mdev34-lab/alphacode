@@ -5,13 +5,7 @@ import { ReviewLoop } from "../../src/session/review-loop"
 const msg = (role: "user" | "assistant", parts: Array<Record<string, unknown>> = []) =>
   ({ info: { role }, parts: parts.map((part, i) => ({ id: `p${i}`, ...part })) }) as unknown as SessionV1.WithParts
 
-const tool = (name: string, state: Record<string, unknown>) => ({
-  type: "tool",
-  tool: name,
-  callID: name,
-  state,
-})
-
+const tool = (name: string, state: Record<string, unknown>) => ({ type: "tool", tool: name, callID: name, state })
 const completed = (input: Record<string, unknown> = {}, output = "") => ({
   status: "completed",
   input,
@@ -24,16 +18,10 @@ const completed = (input: Record<string, unknown> = {}, output = "") => ({
 const writePart = () => tool("write", completed({ filePath: "src/a.ts" }))
 const bashPart = (command: string) => tool("bash", completed({ command }))
 const reviewPart = (output: string) => tool("task", completed({ subagent_type: "review" }, output))
-const reviewRunningPart = () => tool("task", {
-  status: "running",
-  input: { subagent_type: "review" },
-  output: "",
-})
+const reviewRunningPart = () => tool("task", { status: "running", input: { subagent_type: "review" }, output: "" })
+const reviewNudge = () => ({ type: "text", synthetic: true, text: `${ReviewLoop.NUDGE_MARKER} blocked` })
 
 const approvedReport = [
-  "### Spec Compliance",
-  "- ✅ Spec compliant",
-  "",
   "#### Critical",
   "- None",
   "",
@@ -68,12 +56,7 @@ const findingsB = [
   "**Ready to proceed?** Needs fixes",
 ].join("\n")
 
-const task = (...parts: Array<Record<string, unknown>>) => [
-  msg("user", [{ type: "text", text: "work" }]),
-  msg("assistant", parts),
-]
-
-test("approval requires explicit empty Critical and Important sections", () => {
+test("approval requires an explicit clean review report", () => {
   expect(ReviewLoop.parseVerdict(approvedReport)).toBe("approved")
   expect(ReviewLoop.parseVerdict(contradictoryApproval)).toBe("unknown")
   expect(ReviewLoop.parseVerdict("**Ready to proceed?** Approved")).toBe("unknown")
@@ -86,29 +69,31 @@ test("max_iterations counts review passes, never reminder nudges", () => {
   expect(blocked.blocked).toBe(true)
   expect(blocked.exitReason).toBeUndefined()
 
-  const reviewed = [
-    ...messages,
-    msg("assistant", [reviewPart(findingsA)]),
-  ]
+  const reviewed = [...messages, msg("user", [reviewNudge()]), msg("assistant", [reviewPart(findingsA)])]
   const capped = ReviewLoop.decide(reviewed, { cap: 1, nudges: 1 })
   expect(capped.blocked).toBe(false)
   expect(capped.exitReason).toBe("cap")
 })
 
-test("unresponsive guard is based on actual progress, not review-pass debt", () => {
-  const noReview = [msg("user", [{ type: "text", text: "work" }]), msg("assistant", [writePart()])]
-  expect(ReviewLoop.decide(noReview, { nudges: 4 }).blocked).toBe(true)
-  const released = ReviewLoop.decide(noReview, { nudges: 6 })
+test("unresponsive guard counts consecutive reminders without progress", () => {
+  const messages: SessionV1.WithParts[] = [msg("user", [{ type: "text", text: "work" }]), msg("assistant", [writePart()])]
+  for (let i = 0; i < ReviewLoop.UNRESPONSIVE_NUDGE_LIMIT; i++) {
+    messages.push(msg("user", [reviewNudge()]))
+  }
+  const released = ReviewLoop.decide(messages, { nudges: ReviewLoop.UNRESPONSIVE_NUDGE_LIMIT })
   expect(released.exitReason).toBe("unresponsive")
 
-  const progressing: SessionV1.WithParts[] = [msg("user", [{ type: "text", text: "work" }])]
-  for (let i = 0; i < 6; i++) progressing.push(msg("assistant", [writePart()]))
-  const active = ReviewLoop.decide(progressing, { nudges: 6 })
+  const progressing: SessionV1.WithParts[] = [msg("user", [{ type: "text", text: "work" }]), msg("assistant", [writePart()])]
+  for (let i = 0; i < ReviewLoop.UNRESPONSIVE_NUDGE_LIMIT + 2; i++) {
+    progressing.push(msg("user", [reviewNudge()]))
+    progressing.push(msg("assistant", [writePart()]))
+  }
+  const active = ReviewLoop.decide(progressing, { nudges: ReviewLoop.UNRESPONSIVE_NUDGE_LIMIT + 2 })
   expect(active.blocked).toBe(true)
   expect(active.exitReason).toBeUndefined()
 })
 
-test("shell mutations enter the review gate while read-only shell usage does not", () => {
+test("shell mutation detection catches writes without gating ordinary inspection", () => {
   const readOnly = [
     msg("user", [{ type: "text", text: "inspect" }]),
     msg("assistant", [bashPart("git diff --stat && git status")]),
@@ -127,6 +112,7 @@ test("shell mutations enter the review gate while read-only shell usage does not
   expect(ReviewLoop.assess(pythonWrite).filesChanged).toBe(true)
   expect(ReviewLoop.shellMayMutate("bun test packages/opencode/test/session/review-loop.test.ts")).toBe(false)
   expect(ReviewLoop.shellMayMutate("sed -i 's/old/new/' src/a.ts")).toBe(true)
+  expect(ReviewLoop.shellMayMutate("git commit -am 'save'")).toBe(true)
 })
 
 test("approval is invalidated by a later mutation", () => {
@@ -142,14 +128,23 @@ test("approval is invalidated by a later mutation", () => {
   expect(decision.exitReason).toBeUndefined()
 })
 
-test("stall detection only releases on repeated identical blocking findings", () => {
-  const repeated = task(writePart(), reviewPart(findingsA))
-    .concat([msg("assistant", [reviewPart(findingsA)]), msg("assistant", [reviewPart(findingsA)])])
+test("stall detection only releases repeated identical blocking findings", () => {
+  const repeated: SessionV1.WithParts[] = [
+    msg("user", [{ type: "text", text: "work" }]),
+    msg("assistant", [writePart(), reviewPart(findingsA)]),
+    msg("assistant", [reviewPart(findingsA)]),
+    msg("assistant", [reviewPart(findingsA)]),
+  ]
   const stalled = ReviewLoop.decide(repeated, { nudges: 0 })
   expect(stalled.stalled).toBe(true)
   expect(stalled.exitReason).toBe("stalled")
 
-  const changedFindings = task(writePart(), reviewPart(findingsA), reviewPart(findingsB), reviewPart(findingsA))
+  const changedFindings: SessionV1.WithParts[] = [
+    msg("user", [{ type: "text", text: "work" }]),
+    msg("assistant", [writePart(), reviewPart(findingsA)]),
+    msg("assistant", [reviewPart(findingsB)]),
+    msg("assistant", [reviewPart(findingsA)]),
+  ]
   const productive = ReviewLoop.decide(changedFindings, { nudges: 3 })
   expect(productive.blocked).toBe(true)
   expect(productive.exitReason).toBeUndefined()
@@ -162,11 +157,11 @@ test("running review is visible as the review phase", () => {
   expect(decision.phase).toBe("review")
 })
 
-test("synthetic nudges do not reset the current task slice", () => {
+test("synthetic review nudges do not reset the current task slice", () => {
   const messages = [
     msg("user", [{ type: "text", text: "work" }]),
     msg("assistant", [writePart()]),
-    msg("user", [{ type: "text", text: ReviewLoop.NUDGE_MARKER, synthetic: true }]),
+    msg("user", [reviewNudge()]),
   ]
   const state = ReviewLoop.assess(messages)
   expect(state.filesChanged).toBe(true)
