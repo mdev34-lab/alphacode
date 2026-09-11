@@ -20,11 +20,6 @@ import { debug } from "./log"
 import { qwenWebOrigin, qwenWebUrl } from "./protocol"
 import { QwenWebError, isAbortLike } from "./errors"
 
-// ---------------------------------------------------------------------------
-// Narrow structural interfaces (real Patchright objects satisfy these;
-// tests use lightweight doubles).
-// ---------------------------------------------------------------------------
-
 export interface QwenWebCookie {
   name: string
   value: string
@@ -88,10 +83,6 @@ export interface WaitForLoginOptions {
   pollMs?: number
 }
 
-// ---------------------------------------------------------------------------
-// Profile directory & locking
-// ---------------------------------------------------------------------------
-
 export function defaultProfileDir(): string {
   const override = process.env[QWEN_WEB_ENV.profileDir]?.trim()
   if (override) return override
@@ -106,17 +97,10 @@ export function profileExists(profileDir?: string): boolean {
   }
 }
 
-// ---------------------------------------------------------------------------
-// AlphaCode-owned profile metadata (login state; never credentials)
-// ---------------------------------------------------------------------------
-
 export interface QwenWebProfileMetadata {
   version: 1
-  /** True once a login has been observed in this profile. */
   authenticated: boolean
-  /** ISO timestamp of the first observed login. */
   loginAt?: string
-  /** ISO timestamp of the last observed authenticated state. */
   lastSeenAt?: string
 }
 
@@ -126,7 +110,6 @@ function metadataPath(profileDir: string): string {
   return path.join(profileDir, METADATA_FILENAME)
 }
 
-/** Read the login-state marker. Returns undefined when absent/corrupt. */
 export function readProfileMetadata(profileDir?: string): QwenWebProfileMetadata | undefined {
   try {
     const parsed = JSON.parse(
@@ -178,12 +161,10 @@ function isPidAlive(pid: number): boolean {
     process.kill(pid, 0)
     return true
   } catch (error) {
-    // EPERM means the process exists but belongs to another user.
     return (error as NodeJS.ErrnoException)?.code === "EPERM"
   }
 }
 
-/** True when a visible browser window can be shown on this machine. */
 export function hasDisplay(): boolean {
   if (process.platform === "darwin" || process.platform === "win32") return true
   return Boolean(process.env["DISPLAY"] || process.env["WAYLAND_DISPLAY"] || process.env["MIR_SOCKET"])
@@ -242,10 +223,6 @@ function aborted(): QwenWebError {
   return error
 }
 
-// ---------------------------------------------------------------------------
-// Default Patchright launcher (Chromium only)
-// ---------------------------------------------------------------------------
-
 async function defaultLauncher(profileDir: string, options: QwenWebLaunchOptions): Promise<QwenWebContext> {
   let chromium: { launchPersistentContext: (...args: any[]) => Promise<QwenWebContext> }
   try {
@@ -266,23 +243,6 @@ async function defaultLauncher(profileDir: string, options: QwenWebLaunchOptions
   }
 }
 
-/**
- * Launch options for the Qwen browser profile.
- *
- * The browser must look like a normal human Chromium -- chat.qwen.ai sits
- * behind Alibaba's baxia WAF, which issues interactive challenges to
- * automation-like clients. So beyond Patchright's own `navigator.webdriver`
- * masking, the launch args keep browser-automation tells out:
- *
- * - `--enable-automation` (Playwright/Patchright's default automation flag)
- *   is removed via `ignoreDefaultArgs`, and the "Chrome is being controlled"
- *   infobar is suppressed with `--disable-infobars`.
- * - `--disable-blink-features=AutomationControlled` is belt-and-braces on
- *   top of Patchright's CDP masking.
- * - Flags that only bot orchestrators use (`--disable-background-networking`,
- *   `--disable-sync`, `--disable-default-apps`) are deliberately omitted; a
- *   real user's logged-in Chromium does not carry them.
- */
 export function patchrightLaunchOptions(headless: boolean): Record<string, unknown> {
   return {
     headless,
@@ -331,10 +291,6 @@ function explainLaunchFailure(error: unknown): QwenWebError {
   })
 }
 
-// ---------------------------------------------------------------------------
-// Auth-state detection
-// ---------------------------------------------------------------------------
-
 const LOGIN_URL_MARKERS = ["/login", "/auth", "login.", "account/login", "signin", "sign-in"]
 const CHALLENGE_URL_MARKERS = ["captcha", "challenge", "verify", "validation", "security-check"]
 const CHALLENGE_BODY_MARKERS = [
@@ -363,26 +319,15 @@ function hasAuthCookie(cookies: QwenWebCookie[]): boolean {
   })
 }
 
-/** Cheap signals only: URL + cookies. Used for polling. */
 export async function quickAuthState(page: QwenWebPage): Promise<QwenWebAuthState> {
   try {
     const url = page.url()
-    // A WAF challenge is the strongest signal: it means traffic is being
-    // gated regardless of cookies, so it always wins.
     if (urlSuggestsChallenge(url)) return "challenge"
-    // Only Qwen-origin pages can carry a Qwen session: a page on the OAuth
-    // provider (e.g. accounts.google.com) has that provider's cookies, whose
-    // names (GoogleAccountsLocale_session, SID, ...) match our heuristics
-    // and would otherwise be mistaken for an authenticated Qwen login. A
-    // signin-shaped foreign URL still reads as an in-progress login.
     if (!url.startsWith(qwenWebOrigin())) return urlSuggestsLogin(url) ? "login" : "unknown"
     const cookies = await page
       .context()
       .cookies(qwenWebOrigin())
       .catch(() => [] as QwenWebCookie[])
-    // Cookies first on the Qwen origin: an authenticated user parked on a
-    // login-shaped page (/auth, /login) is still authenticated, so it must
-    // not read as `login` forever while polling for the session.
     if (hasAuthCookie(cookies)) return "authenticated"
     if (urlSuggestsLogin(url)) return "login"
     return "unknown"
@@ -391,14 +336,11 @@ export async function quickAuthState(page: QwenWebPage): Promise<QwenWebAuthStat
   }
 }
 
-// ---------------------------------------------------------------------------
-// Browser manager
-// ---------------------------------------------------------------------------
-
 export class QwenWebBrowser {
   private context: QwenWebContext | undefined
   private page: QwenWebPage | undefined
   private launching: Promise<QwenWebContext> | undefined
+  private challengeReveal: Promise<boolean> | undefined
   private contextDead = false
   private pageDead = false
   private lockHeldFor: string | undefined
@@ -410,7 +352,6 @@ export class QwenWebBrowser {
   private readonly pageTimeoutMs: number
   private readonly pageOpenHandlers = new Set<(page: QwenWebPage) => void>()
 
-  /** Register a callback that runs whenever this browser adopts a page, before any navigation on it. */
   onPageOpen(handler: (page: QwenWebPage) => void): void {
     this.pageOpenHandlers.add(handler)
   }
@@ -435,44 +376,36 @@ export class QwenWebBrowser {
     return this.profileDir
   }
 
-  /**
-   * Whether the login page will be visible to the user.
-   *
-   * The browser defaults to headless, but an interactive login flips a
-   * not-yet-running browser to headed when a display is available (unless
-   * headless mode was explicitly requested).
-   */
   get loginHeaded(): boolean {
     if (!this.headless) return true
     if (this.isRunning() || this.headlessExplicit) return false
     return hasDisplay()
   }
 
-  /**
-   * Reveal a visible window for a mid-run human-verification challenge.
-   *
-   * Headless cannot be toggled on a live persistent context, so a running
-   * headless browser is closed and relaunched headed. Returns true when a
-   * headed window is now showing (already headed, or relaunched). Returns
-   * false when no window can open: headless was explicitly requested, or
-   * no display is available. Callers must then say so instead of
-   * promising a window.
-   */
   async revealForChallenge(signal?: AbortSignal): Promise<boolean> {
     if (!this.headless) return true
     if (this.headlessExplicit || !hasDisplay()) return false
+    if (this.challengeReveal) return this.challengeReveal
+
     debug("browser", "relaunching headed so the user can solve the verification challenge")
-    this.headless = false
-    await this.restart(signal)
-    return true
+    const operation = this.restart(signal, { headless: false })
+      .then(() => {
+        this.headless = false
+        return true
+      })
+      .catch(async (error) => {
+        // A failed relaunch must not leave a stale headed state or a partially
+        // started context behind. The next challenge can safely retry the
+        // transition from the original headless state.
+        await this.close()
+        throw error
+      })
+    this.challengeReveal = operation.finally(() => {
+      this.challengeReveal = undefined
+    })
+    return this.challengeReveal
   }
 
-  /**
-   * Open the Qwen login page on the main page for an interactive login.
-   * The user logs in normally; callers poll `detectAuthState` (or use
-   * `waitForLogin`) to observe completion. Already-authenticated profiles
-   * return immediately without navigating.
-   */
   async openLoginPage(signal?: AbortSignal): Promise<QwenWebPage> {
     if (!this.isRunning() && !this.headlessExplicit && hasDisplay() && this.headless) {
       debug("browser", "switching to headed mode for interactive login")
@@ -501,14 +434,20 @@ export class QwenWebBrowser {
     return page
   }
 
-  /** Ensure a live context + main page. Launches the browser on first use. */
   async ensure(signal?: AbortSignal): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
+    return this.ensureInternal(signal)
+  }
+
+  private async ensureInternal(
+    signal?: AbortSignal,
+    headlessOverride?: boolean,
+  ): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
     if (this.context && !this.contextDead) {
       const page = await this.ensurePage()
       return { context: this.context, page }
     }
     if (!this.launching) {
-      this.launching = this.launch(signal).finally(() => {
+      this.launching = this.launch(signal, headlessOverride).finally(() => {
         this.launching = undefined
       })
     }
@@ -517,20 +456,19 @@ export class QwenWebBrowser {
     return { context, page }
   }
 
-  /** Page accessor for callers that already ensured the browser. */
   async activePage(signal?: AbortSignal): Promise<QwenWebPage> {
     const { page } = await this.ensure(signal)
     return page
   }
 
-  private async launch(signal?: AbortSignal): Promise<QwenWebContext> {
+  private async launch(signal?: AbortSignal, headless = this.headless): Promise<QwenWebContext> {
     await acquireProfileLock(this.profileDir, QWEN_WEB_DEFAULTS.profileLockTimeoutMs, signal)
     this.lockHeldFor = this.profileDir
     try {
-      debug("browser", `launching Chromium (headless=${this.headless})`, { profileDir: this.profileDir })
+      debug("browser", `launching Chromium (headless=${headless})`, { profileDir: this.profileDir })
       const startedAt = Date.now()
       const context = await this.launcher(this.profileDir, {
-        headless: this.headless,
+        headless,
         navigationTimeoutMs: this.navigationTimeoutMs,
         pageTimeoutMs: this.pageTimeoutMs,
       })
@@ -574,14 +512,12 @@ export class QwenWebBrowser {
     for (const handler of this.pageOpenHandlers) handler(page)
     this.page = page
     this.pageDead = false
-    // Tidy stray blank tabs left by profile startup, keeping the main page.
     for (const extra of existing) {
       if (extra !== page && extra.url() === "about:blank") await extra.close({ runBeforeUnload: false }).catch(() => {})
     }
     return page
   }
 
-  /** Navigate the main page to the Qwen home (best effort, bounded). */
   private async navigateHome(signal?: AbortSignal): Promise<void> {
     if (!this.context || this.contextDead) return
     const page = await this.ensurePage().catch(() => undefined)
@@ -598,14 +534,6 @@ export class QwenWebBrowser {
     }
   }
 
-  /**
-   * Ensure the main page sits on the Qwen origin before page-context requests.
-   *
-   * `steer: false` never navigates: callers that only want to reuse the page
-   * as-is (background bookkeeping such as the model catalog refresh, which
-   * must not drag a page out from under an active generation) get the page
-   * without steering.
-   */
   async ensureOnOrigin(signal?: AbortSignal, opts?: { steer?: boolean }): Promise<QwenWebPage> {
     const steer = opts?.steer ?? true
     const page = await this.activePage(signal)
@@ -638,14 +566,6 @@ export class QwenWebBrowser {
     return page
   }
 
-  /**
-   * Full authentication check: cheap signals first, then an authenticated
-   * endpoint probe inside the page context as the decider.
-   *
-   * `steer: false` (used while an interactive login is in flight) never
-   * navigates the page: OAuth redirects must not be yanked back to the Qwen
-   * home page mid-flow.
-   */
   async detectAuthState(signal?: AbortSignal, opts?: { steer?: boolean }): Promise<QwenWebAuthState> {
     const steer = opts?.steer ?? true
     const page = steer ? await this.ensureOnOrigin(signal) : await this.activePage(signal)
@@ -658,8 +578,6 @@ export class QwenWebBrowser {
       if (state === "authenticated") markAuthenticated(this.profileDir)
       return state
     }
-    // Foreign origin mid-OAuth: only the cheap signals apply; a cross-origin
-    // page cannot complete the same-origin authenticated probe fetch.
     return quick
   }
 
@@ -676,7 +594,6 @@ export class QwenWebBrowser {
     }
   }
 
-  /** `GET /api/models` in-page: 2xx = authenticated, 401/403 = login. */
   private async probeSession(page: QwenWebPage): Promise<QwenWebAuthState> {
     const url = qwenWebUrl("/api/models")
     const result = await page.evaluate(async (target: string) => {
@@ -704,10 +621,6 @@ export class QwenWebBrowser {
     return "unknown"
   }
 
-  /**
-   * Wait until the user completes login in the browser window.
-   * Challenges simply extend the wait: the user solves them manually.
-   */
   async waitForLogin(options?: WaitForLoginOptions): Promise<void> {
     const timeoutMs = options?.timeoutMs ?? QWEN_WEB_DEFAULTS.loginTimeoutMs
     const pollMs = options?.pollMs ?? 1500
@@ -720,8 +633,6 @@ export class QwenWebBrowser {
       if (state === "authenticated") return
       if (state === "challenge" && !sawChallenge) {
         sawChallenge = true
-        // Best effort: surface a visible window so the user has somewhere
-        // to solve the challenge; the wait continues regardless.
         await this.revealForChallenge(signal).catch(() => false)
         debug("browser", "human-verification challenge visible; waiting for the user to solve it manually")
       }
@@ -739,7 +650,6 @@ export class QwenWebBrowser {
     }
   }
 
-  /** Graceful shutdown: close the context and release the profile lock. */
   async close(): Promise<void> {
     const context = this.context
     this.context = undefined
@@ -751,14 +661,15 @@ export class QwenWebBrowser {
     debug("browser", "closed")
   }
 
-  /** Restart the browser (used after crashes / dead contexts). */
-  async restart(signal?: AbortSignal): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
+  async restart(
+    signal?: AbortSignal,
+    options?: { headless?: boolean },
+  ): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
     debug("browser", "restarting")
     await this.close()
-    return this.ensure(signal)
+    return this.ensureInternal(signal, options?.headless)
   }
 
-  /** Drop the cached main page so the next use recreates it. */
   invalidatePage(): void {
     this.pageDead = true
   }
@@ -784,7 +695,6 @@ function readTimeoutDefault(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-/** Process-wide shared browser. Tests construct `QwenWebBrowser` directly. */
 let shared: QwenWebBrowser | undefined
 
 export function sharedBrowser(): QwenWebBrowser {
@@ -792,7 +702,6 @@ export function sharedBrowser(): QwenWebBrowser {
   return shared
 }
 
-/** Test seam: replace or clear the shared instance. */
 export function setSharedBrowser(browser: QwenWebBrowser | undefined): void {
   shared = browser
 }
