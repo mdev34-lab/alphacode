@@ -27,7 +27,8 @@ function reviewVerdict(output: unknown) {
   return verdict.toLowerCase() === "approved" ? "approved" : "needs-fixes"
 }
 
-function isSyntheticMessage(message: { id: string }, parts: ReturnType<typeof useSync>["data"]["part"]) {
+function isSyntheticMessage(message: { id: string; role: string }, parts: ReturnType<typeof useSync>["data"]["part"]) {
+  if (message.role !== "user") return false
   const messageParts = parts[message.id] ?? []
   return messageParts.length > 0 && messageParts.every((part) => "synthetic" in part && part.synthetic === true)
 }
@@ -50,7 +51,7 @@ export function Footer() {
     if (route.data.type !== "session") return undefined
     const sessionID = route.data.sessionID
     const allMessages = sync.data.message[sessionID] ?? []
-    const start = allMessages.findLastIndex((message) => !isSyntheticMessage(message, sync.data.part))
+    const start = allMessages.findLastIndex((message) => message.role === "user" && !isSyntheticMessage(message, sync.data.part))
     const messages = start < 0 ? allMessages : allMessages.slice(start + 1)
     const parts = messages.flatMap((message) => sync.data.part[message.id] ?? [])
     const reviewConfig = sync.data.config as unknown as { review_loop?: { max_iterations?: number } }
@@ -112,7 +113,6 @@ export function Footer() {
   })
 
   onMount(() => {
-    // Track all timeouts to ensure proper cleanup
     const timeouts: ReturnType<typeof setTimeout>[] = []
 
     function tick() {
