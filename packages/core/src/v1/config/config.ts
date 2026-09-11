@@ -63,7 +63,7 @@ export const Info = Schema.Struct({
   }),
   autoupdate: Schema.optional(Schema.Union([Schema.Boolean, Schema.Literal("notify")])).annotate({
     description:
-      "Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications.",
+      "Automatically update to the latest version. Set to true to auto-update, false to disable, or 'notify' to show update notifications",
   }),
   disabled_providers: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Disable providers that are loaded automatically",
@@ -199,7 +199,7 @@ export const Info = Schema.Struct({
           "Maximum number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction. By default retention is limited only by the preserved token budget.",
       }),
       preserve_recent_tokens: Schema.optional(NonNegativeInt).annotate({
-        description: "Maximum number of tokens from recent tool outputs to preserve verbatim after compaction",
+        description: "Maximum number of tokens from recent turns to preserve verbatim after compaction",
       }),
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
