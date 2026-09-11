@@ -21,7 +21,7 @@ const SHELL_TOOL = "bash"
  * avoiding a review after ordinary inspection/test commands.
  */
 const READ_ONLY_SHELL = /^(?:
-  (?:env\s+)?(?:pwd|cd|pushd|popd|ls|dir|type|which|where|whoami|id|cat|head|tail|less|more|grep|rg|find|fd|sed|awk|sort|uniq|wc|basename|dirname|realpath|readlink|printf|echo|true|false|test|command|uname|ver|where\.exe)\b|
+  (?:env\s+)?(?:pwd|cd|pushd|popd|ls|dir|type|which|where|whoami|id|cat|head|tail|less|more|grep|rg|find|fd|awk|sort|uniq|wc|basename|dirname|realpath|readlink|printf|echo|true|false|test|command|uname|ver|where\.exe)\b|
   git\s+(?:status|diff|log|show|rev-parse|branch|tag|ls-files|check-ignore|describe|remote|config\s+--get(?:-all)?|symbolic-ref)\b|
   (?:bun|npm|pnpm|yarn)\s+(?:test|run\s+(?:test|lint|typecheck|check|format|fmt)|exec\s+(?:test|lint|typecheck|tsc)|--version|-v)\b|
   (?:node|deno|python|python3)\s+--version\b
