@@ -92,6 +92,8 @@ export const SessionPaths = {
   update: `${root}/:sessionID`,
   fork: `${root}/:sessionID/fork`,
   abort: `${root}/:sessionID/abort`,
+  abortForeground: `${root}/:sessionID/foreground_abort`,
+  abortBackground: `${root}/:sessionID/background_abort`,
   share: `${root}/:sessionID/share`,
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
@@ -212,7 +214,8 @@ export const SessionApi = HttpApi.make("session")
           OpenApi.annotations({
             identifier: "session.create",
             summary: "Create session",
-            description: "Create a new alphacode session for interacting with AI assistants and managing conversations.",
+            description:
+              "Create a new alphacode session for interacting with AI assistants and managing conversations.",
           }),
         ),
         HttpApiEndpoint.delete("remove", SessionPaths.remove, {
@@ -263,6 +266,31 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.abort",
             summary: "Abort session",
             description: "Abort an active session and stop any ongoing AI processing or command execution.",
+          }),
+        ),
+        HttpApiEndpoint.post("abortForeground", SessionPaths.abortForeground, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Aborted foreground execution"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.abortForeground",
+            summary: "Abort the session's foreground agent",
+            description: "Abort the foreground agent's active turn without interrupting running background subagents.",
+          }),
+        ),
+        HttpApiEndpoint.post("abortBackground", SessionPaths.abortBackground, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Aborted background subagents"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.abortBackground",
+            summary: "Abort the session's background subagents",
+            description:
+              "Abort running background subagents owned by the session without interrupting the foreground agent.",
           }),
         ),
         HttpApiEndpoint.post("init", SessionPaths.init, {

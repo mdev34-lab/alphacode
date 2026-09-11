@@ -124,6 +124,7 @@ function subagent(input: {
   label: string
   description: string
   status?: FooterSubagentTab["status"]
+  background?: boolean
 }) {
   return {
     sessionID: input.sessionID,
@@ -132,6 +133,7 @@ function subagent(input: {
     label: input.label,
     description: input.description,
     status: input.status ?? "running",
+    background: input.background,
     lastUpdatedAt: 1,
   } satisfies FooterSubagentTab
 }
@@ -1104,6 +1106,108 @@ test("direct footer hides the subagent hint when only completed subagents remain
     expect(frame).toContain("GPT-5")
     expect(frame).toContain("xhigh · ctrl+p cmd")
     expect(frame).not.toContain("ctrl+x down subagents")
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("direct footer shows a running indicator for background subagents while idle", async () => {
+  const app = await renderFooter({
+    providers: [provider()],
+    currentModel: { providerID: "opencode", modelID: "gpt-5" },
+    subagents: {
+      tabs: [
+        subagent({ sessionID: "s-1", label: "Explore", description: "Inspect auth flow", background: true }),
+        subagent({ sessionID: "s-2", label: "Plan", description: "Draft rollout", background: true }),
+      ],
+      details: {},
+      permissions: [],
+      questions: [],
+    },
+    width: 160,
+  })
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain("2 subagents")
+    expect(frame).toContain("esc stop subagents")
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("direct footer shows the background indicator alongside the main spinner while running", async () => {
+  const app = await renderFooter({
+    providers: [provider()],
+    currentModel: { providerID: "opencode", modelID: "gpt-5" },
+    state: { phase: "running" },
+    subagents: {
+      tabs: [subagent({ sessionID: "s-1", label: "Explore", description: "Inspect auth flow", background: true })],
+      details: {},
+      permissions: [],
+      questions: [],
+    },
+    width: 160,
+  })
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain("1 subagent")
+    expect(frame).toContain("esc interrupt")
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("direct footer arms the second interrupt press for background subagents", async () => {
+  const app = await renderFooter({
+    providers: [provider()],
+    currentModel: { providerID: "opencode", modelID: "gpt-5" },
+    state: { phase: "running", interrupt: 1 },
+    subagents: {
+      tabs: [subagent({ sessionID: "s-1", label: "Explore", description: "Inspect auth flow", background: true })],
+      details: {},
+      permissions: [],
+      questions: [],
+    },
+    width: 160,
+  })
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain("1 subagent")
+    expect(frame).toContain("esc again: stop subagents")
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("direct footer keeps the background count off for foreground subagents", async () => {
+  const app = await renderFooter({
+    providers: [provider()],
+    currentModel: { providerID: "opencode", modelID: "gpt-5" },
+    subagents: {
+      tabs: [subagent({ sessionID: "s-1", label: "Explore", description: "Inspect auth flow" })],
+      details: {},
+      permissions: [],
+      questions: [],
+    },
+    width: 160,
+  })
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).not.toContain("1 subagent")
+    expect(frame).not.toContain("stop subagents")
+    expect(frame).toContain("ctrl+x down subagents")
   } finally {
     app.cleanup()
   }

@@ -2472,6 +2472,58 @@ it.instance(
 )
 
 it.instance(
+  "cancelForeground interrupts the loop but leaves background subagents running",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const background = yield* BackgroundJob.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      yield* llm.hang
+      const msg = yield* user(chat.id, "hello")
+      yield* addSubtask(chat.id, msg.id)
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+
+      // Wait until the background subagent has been dispatched and is running.
+      const job = yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const jobs = yield* background.list()
+          return jobs.find(
+            (item) => item.type === "task" && item.status === "running" && item.metadata?.parentSessionId === chat.id,
+          )
+        }),
+        "timed out waiting for background subagent dispatch",
+      )
+      expect(job.metadata?.parentSessionId).toBe(chat.id)
+
+      // Foreground-only interrupt: the parent loop stops, the subagent keeps
+      // running.
+      yield* prompt.cancelForeground(chat.id)
+      yield* Fiber.await(fiber)
+
+      const afterForeground = yield* background.list()
+      expect(
+        afterForeground.some(
+          (item) => item.type === "task" && item.status === "running" && item.metadata?.parentSessionId === chat.id,
+        ),
+      ).toBe(true)
+
+      // Background-only interrupt: the subagent stops without touching the
+      // already-idle foreground.
+      yield* prompt.cancelBackground(chat.id)
+      const afterBackground = yield* background.list()
+      expect(
+        afterBackground.some(
+          (item) => item.type === "task" && item.status === "running" && item.metadata?.parentSessionId === chat.id,
+        ),
+      ).toBe(false)
+    }),
+  10_000,
+)
+
+it.instance(
   "running task tool preserves metadata when dispatched in the background",
   () =>
     Effect.gen(function* () {

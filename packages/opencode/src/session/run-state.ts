@@ -11,6 +11,8 @@ import { SessionStatus } from "./status"
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  readonly cancelForeground: (sessionID: SessionID) => Effect.Effect<void>
+  readonly cancelBackground: (sessionID: SessionID) => Effect.Effect<void>
   readonly ensureRunning: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
@@ -74,8 +76,7 @@ const layer = Layer.effect(
       if (existing?.busy) yield* busyError(sessionID)
     })
 
-    const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID) {
-      yield* cancelBackgroundJobs(background, sessionID)
+    const cancelForeground = Effect.fn("SessionRunState.cancelForeground")(function* (sessionID: SessionID) {
       const data = yield* InstanceState.get(state)
       const existing = data.runners.get(sessionID)
       if (!existing) {
@@ -83,6 +84,15 @@ const layer = Layer.effect(
         return
       }
       yield* existing.cancel
+    })
+
+    const cancelBackground = Effect.fn("SessionRunState.cancelBackground")(function* (sessionID: SessionID) {
+      yield* cancelBackgroundJobs(background, sessionID)
+    })
+
+    const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID) {
+      yield* cancelBackground(sessionID)
+      yield* cancelForeground(sessionID)
     })
 
     const ensureRunning = Effect.fn("SessionRunState.ensureRunning")(function* (
@@ -104,7 +114,7 @@ const layer = Layer.effect(
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
-    return Service.of({ assertNotBusy, cancel, ensureRunning, startShell })
+    return Service.of({ assertNotBusy, cancel, cancelForeground, cancelBackground, ensureRunning, startShell })
   }),
 )
 

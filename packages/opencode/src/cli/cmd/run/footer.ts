@@ -92,6 +92,7 @@ type RunFooterOptions = {
   onModelSelect?: (model: NonNullable<RunInput["model"]>) => CycleResult | void | Promise<CycleResult | void>
   onVariantSelect?: (variant: string | undefined) => CycleResult | void | Promise<CycleResult | void>
   onInterrupt?: () => void
+  onInterruptBackground?: () => void
   onBackground?: () => void
   onEditorOpen: (input: { value: string }) => Promise<string | undefined>
   onExit?: () => void
@@ -498,7 +499,12 @@ export class RunFooter implements FooterApi {
     }
 
     if (state.phase === "idle") {
-      state.interrupt = 0
+      // The interrupt arm now gates the background layer, which keeps running
+      // after the foreground turn goes idle. Only clear it once there is no
+      // background subagent left to interrupt.
+      if (this.backgroundSubagentCount() === 0) {
+        state.interrupt = 0
+      }
     }
 
     this.setState(state)
@@ -930,10 +936,12 @@ export class RunFooter implements FooterApi {
     this.clearInterruptTimer()
     this.interruptTimeout = setTimeout(() => {
       this.interruptTimeout = undefined
-      if (this.isGone || this.state().phase !== "running") {
+      if (this.isGone) {
         return
       }
 
+      // A stale armed press must not fire later, regardless of the foreground
+      // phase: the arm can outlive the foreground turn while subagents run.
       this.patch({ interrupt: 0 })
     }, 5000)
   }
@@ -959,27 +967,63 @@ export class RunFooter implements FooterApi {
     }, 5000)
   }
 
-  // Two-press interrupt: first press shows a hint ("esc again to interrupt"),
-  // second press within 5 seconds fires onInterrupt. The timer resets the
-  // counter if the user doesn't follow through.
+  // Staged interrupt ladder: a press interrupts the topmost running layer.
+  //
+  //   Esc #1 → interrupt the foreground agent
+  //   Esc #2 → interrupt running background subagents
+  //
+  // A single press never tears down both layers. The arm (interrupt > 0)
+  // gates the background rung and survives the foreground turn going idle, so
+  // the follow-up press still targets subagents. The 5 s re-arm timeout keeps
+  // a stale armed press from firing later.
   private handleInterrupt = (): boolean => {
-    if (this.isClosed || this.state().phase !== "running") {
+    if (this.isClosed) {
       return false
     }
 
-    const next = this.state().interrupt + 1
-    this.patch({ interrupt: next })
+    const busy = this.state().phase === "running"
+    const background = this.backgroundSubagentCount()
 
-    if (next < 2) {
-      this.armInterruptTimer()
+    // Already armed for the background layer: the next press targets it.
+    if (this.state().interrupt > 0) {
+      this.clearInterruptTimer()
+      this.patch({ interrupt: 0 })
+      if (background === 0) {
+        return false
+      }
+
+      this.setNotice("interrupting subagents")
+      this.options.onInterruptBackground?.()
       return true
     }
 
-    this.clearInterruptTimer()
-    this.patch({ interrupt: 0 })
-    this.setNotice("interrupting")
-    this.options.onInterrupt?.()
-    return true
+    if (busy) {
+      if (background > 0) {
+        this.patch({ interrupt: 1 })
+        this.armInterruptTimer()
+      }
+
+      this.setNotice("interrupting agent")
+      this.options.onInterrupt?.()
+      return true
+    }
+
+    if (background > 0) {
+      this.setNotice("interrupting subagents")
+      this.options.onInterruptBackground?.()
+      return true
+    }
+
+    return false
+  }
+
+  // Running background subagents, counted from the live subagent tabs. Drives
+  // both the statusline indicator and the second rung of the interrupt ladder.
+  private backgroundSubagentCount(): number {
+    return this.subagent().tabs.reduce(
+      (count, tab) => (tab.status === "running" && tab.background ? count + 1 : count),
+      0,
+    )
   }
 
   private handleExit = (): boolean => {

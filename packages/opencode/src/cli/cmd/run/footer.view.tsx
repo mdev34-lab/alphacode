@@ -168,6 +168,8 @@ export function RunFooterView(props: RunFooterViewProps) {
     return tabs().findIndex((item) => item.sessionID === sessionID) + 1
   })
   const foregroundSubagents = createMemo(() => activeTabs().some((item) => !item.background))
+  const backgroundSubagents = createMemo(() => activeTabs().filter((item) => item.background))
+  const hasBackgroundSubagents = createMemo(() => backgroundSubagents().length > 0)
   const model = createMemo(() => {
     const current = props.currentModel()
     return current ? modelInfo(props.providers(), current) : { model: props.state().model, provider: undefined }
@@ -248,6 +250,7 @@ export function RunFooterView(props: RunFooterViewProps) {
 
     return interrupt() === "escape" ? "esc" : interrupt()
   })
+  const interruptAction = createMemo(() => busy() || hasBackgroundSubagents() || armed())
   const runTheme = createMemo(() => props.theme())
   const theme = createMemo(() => runTheme().footer)
   const block = createMemo(() => runTheme().block)
@@ -404,11 +407,19 @@ export function RunFooterView(props: RunFooterViewProps) {
     }
 
     if (busy()) {
-      return armed() ? "again to interrupt" : "interrupt"
+      return armed() && hasBackgroundSubagents() ? "again: stop subagents" : "interrupt"
+    }
+
+    if (armed() && hasBackgroundSubagents()) {
+      return "again: stop subagents"
     }
 
     if (stateStatus().length > 0) {
       return stateStatus()
+    }
+
+    if (hasBackgroundSubagents()) {
+      return "stop subagents"
     }
 
     return shell() ? "Shell mode" : ""
@@ -843,7 +854,7 @@ export function RunFooterView(props: RunFooterViewProps) {
                   </Show>
 
                   <text fg={statusColor()} wrapMode="none" truncate flexGrow={1} flexShrink={1}>
-                    <Show when={busy() && !exiting()} fallback={statusText()}>
+                    <Show when={interruptAction() && !exiting()} fallback={statusText()}>
                       <Show when={interruptLabel()}>
                         {(label) => <span style={{ fg: armed() ? statusColor() : theme().muted }}>{label()} </span>}
                       </Show>
@@ -851,6 +862,24 @@ export function RunFooterView(props: RunFooterViewProps) {
                     </Show>
                   </text>
                 </box>
+
+                <Show when={hasBackgroundSubagents() && !exiting()}>
+                  <box
+                    flexDirection="row"
+                    gap={1}
+                    paddingLeft={1}
+                    paddingRight={1}
+                    backgroundColor="transparent"
+                    flexShrink={0}
+                  >
+                    <box flexShrink={0}>
+                      <spinner color={spin().color} frames={spin().frames} interval={40} />
+                    </box>
+                    <text fg={theme().muted} wrapMode="none">
+                      {backgroundSubagents().length} {backgroundSubagents().length === 1 ? "subagent" : "subagents"}
+                    </text>
+                  </box>
+                </Show>
 
                 <Show when={activityMeta().length > 0}>
                   <box paddingRight={1} backgroundColor="transparent" flexShrink={1}>
