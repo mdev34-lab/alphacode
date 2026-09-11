@@ -362,7 +362,9 @@ describe("revealForChallenge", () => {
       launcher: async (_profileDir, options) => {
         launchedHeadless.push(options.headless)
         launches++
-        if (launches === 2) throw new Error("headed relaunch failed")
+        // Every headed launch fails: the retry must attempt (and fail) again
+        // rather than finding a live headed browser or flipping headless early.
+        if (!options.headless) throw new Error("headed relaunch failed")
         return fakeContext([fakePage()])
       },
     })
