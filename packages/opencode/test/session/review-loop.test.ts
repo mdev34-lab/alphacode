@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { finishGateError, parseReviewVerdict, reviewLoopState } from "../../src/session/review-loop"
 
-const directory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/session/prompt")
+const promptDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/session/prompt")
+const toolDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/tool")
 
-const readPrompt = (name: string) => readFile(path.join(directory, name), "utf8")
+const readPrompt = (name: string) => readFile(path.join(promptDirectory, name), "utf8")
+const readTool = (name: string) => readFile(path.join(toolDirectory, name), "utf8")
 
 function userMessage() {
   return { info: { role: "user" }, parts: [] } as unknown as SessionV1.WithParts
@@ -72,6 +74,14 @@ describe("mandatory review loop prompt contract", () => {
     expect(nudge).toContain("dispatch the read-only `review` subagent again")
     expect(nudge).toContain("explicit `Approved` verdict")
   })
+
+  test("finish evaluates persisted history and fails the tool call when the gate blocks", async () => {
+    const finish = await readTool("finish.ts")
+
+    expect(finish).toContain("sessions.messages({ sessionID: ctx.sessionID })")
+    expect(finish).toContain("return yield* Effect.fail(gateError).pipe(Effect.orDie)")
+    expect(finish).not.toContain('termination: "blocked"')
+  })
 })
 
 describe("runtime review gate", () => {
@@ -115,17 +125,20 @@ describe("runtime review gate", () => {
     expect(state.verdict).toBe("approved")
   })
 
-  test("keeps a Needs fixes obligation until a later review explicitly approves", () => {
+  test("forces two work/review cycles when the first review finds fixes", () => {
     const findings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
+    const fixed = toolMessage("edit")
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
-    const findingsState = reviewLoopState([userMessage(), toolMessage("edit"), findings])
-    const approvedState = reviewLoopState([userMessage(), toolMessage("edit"), findings, toolMessage("edit"), approved])
+    const firstCycle = reviewLoopState([userMessage(), toolMessage("edit"), findings])
+    const secondCycle = reviewLoopState([userMessage(), toolMessage("edit"), findings, fixed, approved])
 
-    expect(findingsState.verdict).toBe("needs-fixes")
-    expect(finishGateError(findingsState)).toBeInstanceOf(Error)
-    expect(approvedState.verdict).toBe("approved")
-    expect(finishGateError(approvedState)).toBeUndefined()
+    expect(firstCycle.reviews).toBe(1)
+    expect(firstCycle.verdict).toBe("needs-fixes")
+    expect(finishGateError(firstCycle)).toBeInstanceOf(Error)
+    expect(secondCycle.reviews).toBe(2)
+    expect(secondCycle.verdict).toBe("approved")
+    expect(finishGateError(secondCycle)).toBeUndefined()
   })
 
   test("invalidates approval after later mutating work but not read-only inspection", () => {
