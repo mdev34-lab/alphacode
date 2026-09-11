@@ -185,7 +185,7 @@ function featureConfig(
     auto_thinking: reasoningMode === "auto",
     thinking_mode: thinkingMode,
     ...(enabled ? { thinking_format: "summary" } : {}),
-    auto_search: true,
+    auto_search: false,
     ...(localMcp ? { local_mcp: localMcp } : {}),
   }
 }
