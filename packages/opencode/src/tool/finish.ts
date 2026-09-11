@@ -13,9 +13,6 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-// Every user turn is a task from the execution protocol's perspective, so agents
-// with finishTool enabled (the default) may only end their turn by calling finish.
-// The review gate is enforced here, at the actual completion boundary.
 export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
@@ -37,9 +34,11 @@ export const FinishTool = Tool.define(
           const reviewState = reviewLoopState(messages, maxIterations)
           const gateError = finishGateError(reviewState)
           if (gateError) {
+            const phase = reviewState.workSinceReview ? "review" : reviewState.verdict === "needs-fixes" ? "work" : "review"
             yield* Effect.logWarning("finish blocked by review gate", {
               sessionID: ctx.sessionID,
               verdict: reviewState.verdict,
+              phase,
               reviews: reviewState.reviews,
               maxIterations: reviewState.maxIterations,
               workSinceReview: reviewState.workSinceReview,
@@ -50,6 +49,7 @@ export const FinishTool = Tool.define(
           if (reviewState.verdict === "cap") {
             yield* Effect.logWarning("review loop terminated at cap", {
               sessionID: ctx.sessionID,
+              phase: "review",
               reason: "review-cap",
               reviews: reviewState.reviews,
               maxIterations: reviewState.maxIterations,
