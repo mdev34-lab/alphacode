@@ -2,6 +2,8 @@ import * as Tool from "./tool"
 import DESCRIPTION from "./finish.txt"
 import { Effect, Schema } from "effect"
 import { Todo } from "../session/todo"
+import { Session } from "../session/session"
+import { finishGateError, latestReviewVerdict } from "../session/review-loop"
 
 export const Parameters = Schema.Struct({
   result: Schema.String.annotate({
@@ -21,12 +23,24 @@ export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
     const todo = yield* Todo.Service
+    const sessions = yield* Session.Service
 
     return {
       description: DESCRIPTION,
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          const messages = yield* sessions.messages({ sessionID: ctx.sessionID, limit: 200 })
+          const verdict = latestReviewVerdict(messages)
+          const gateError = finishGateError(verdict)
+          if (gateError) {
+            yield* Effect.logWarning("finish blocked by review gate", {
+              sessionID: ctx.sessionID,
+              verdict,
+            })
+            return yield* Effect.fail(gateError)
+          }
+
           yield* Effect.gen(function* () {
             const existing = yield* todo.get(ctx.sessionID)
             const hasOpen = existing.some((t) => t.status === "pending" || t.status === "in_progress")
