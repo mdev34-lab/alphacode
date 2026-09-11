@@ -80,6 +80,40 @@ describe("TUI worker process", () => {
     await worker.terminate()
   })
 
+  test("does not let a stale restart hook kill a newer worker", async () => {
+    const children: FakeProcess[] = []
+    const hooks: Array<{ resolve: () => void; reject: (error: Error) => void }> = []
+    const spawn = () => {
+      const child = fakeProcess()
+      children.push(child)
+      return child
+    }
+
+    const worker = createWorkerProcess("worker.ts", {
+      spawn,
+      log: () => {},
+      maxRestarts: 2,
+      onRestart: () =>
+        new Promise<void>((resolve, reject) => {
+          hooks.push({ resolve, reject })
+        }),
+    })
+
+    children[0].resolveExit(1, "SIGSEGV")
+    await Promise.resolve()
+    children[1].resolveExit(1, "SIGSEGV")
+    await Promise.resolve()
+
+    hooks[0].reject(new Error("stale server restart failed"))
+    await Promise.resolve()
+
+    expect(children).toHaveLength(3)
+    expect(children[2].killed).toBe(false)
+    hooks[1].resolve()
+    await worker.restarted
+    await worker.terminate()
+  })
+
   test("fails recovery when the restart hook fails", async () => {
     const children: FakeProcess[] = []
     const spawn = () => {
