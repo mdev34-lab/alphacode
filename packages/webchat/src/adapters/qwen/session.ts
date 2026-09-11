@@ -22,6 +22,8 @@ import {
   type QwenWebToolMode,
 } from "./constants"
 import {
+  CHALLENGE_NO_WINDOW_DETAIL,
+  CHALLENGE_WINDOW_OPEN_DETAIL,
   QwenWebError,
   abortedError,
   challengeError,
@@ -158,7 +160,7 @@ export class QwenWebSession implements WebChatProvider {
       reasoning: input.reasoningMode !== "fast",
       referrer: chatReferrer(chatId),
     })
-    await this.ensureStreamable(response, chatId)
+    await this.ensureStreamable(response, chatId, signal)
     return { chatId, response }
   }
 
@@ -301,7 +303,7 @@ export class QwenWebSession implements WebChatProvider {
             referrer: chatReferrer(chatId),
           })
           trace("request sent")
-          await this.ensureStreamable(streamResponse, chatId)
+          await this.ensureStreamable(streamResponse, chatId, signal)
           trace("response usable")
           response = streamResponse
           break
@@ -317,6 +319,9 @@ export class QwenWebSession implements WebChatProvider {
         // The user node was never delivered upstream: roll it back.
         removeById(thread, fid)
         this.store.put(thread)
+        if (QwenWebError.isInstance(setupError) && setupError.code === "challenge") {
+          setupError.message += ` ${await this.challengeDetail(signal)}`
+        }
         throw setupError
       }
 
@@ -485,7 +490,12 @@ export class QwenWebSession implements WebChatProvider {
           }
         }
       } catch (error) {
-        if (isAbortLike(error) || signal?.aborted) {
+        if (QwenWebError.isInstance(error) && error.code === "challenge") {
+          // Mid-stream challenge: open a visible window when possible, and
+          // say exactly what happened instead of promising a window.
+          error.message += ` ${await this.challengeDetail(signal)}`
+          failure = error
+        } else if (isAbortLike(error) || signal?.aborted) {
           failure = abortedError()
         } else if (isStallTimeout(error)) {
           // The upstream went quiet without a terminating event. Recover the
@@ -602,9 +612,16 @@ export class QwenWebSession implements WebChatProvider {
     debug("session", "stop() called; shared transport lifecycle owned elsewhere", {})
   }
 
+  /** Reveal a headed window for a challenge; returns the detail naming what happened. */
+  private async challengeDetail(signal?: AbortSignal): Promise<string> {
+    const revealed = await this.transport.revealChallengeWindow(signal).catch(() => false)
+    return revealed ? CHALLENGE_WINDOW_OPEN_DETAIL : CHALLENGE_NO_WINDOW_DETAIL
+  }
+
   private async ensureStreamable(
     response: { status: number; contentType: string; stream: ReadableStream<Uint8Array>; abort: () => void },
     chatId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const contentType = response.contentType.toLowerCase()
     if (
@@ -622,7 +639,7 @@ export class QwenWebSession implements WebChatProvider {
       contentType,
     })
     if (isWafMessage(preview) || isHtmlBody(preview) || contentType.includes("text/html")) {
-      if (isWafMessage(preview)) throw challengeError()
+      if (isWafMessage(preview)) throw challengeError(await this.challengeDetail(signal))
       throw sessionExpiredError("Qwen returned a login page instead of a stream.")
     }
     if (contentType.includes("application/json") || preview.trimStart().startsWith("{")) {

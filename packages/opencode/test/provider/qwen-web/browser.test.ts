@@ -304,6 +304,55 @@ describe("login behavior", () => {
   })
 })
 
+describe("revealForChallenge", () => {
+  test("explicit headless never opens a window", async () => {
+    let launches = 0
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      headless: true,
+      launcher: async () => {
+        launches++
+        return fakeContext([fakePage()])
+      },
+    })
+    expect(await browser.revealForChallenge()).toBe(false)
+    expect(launches).toBe(0)
+    await browser.close()
+  })
+
+  test("already-headed browser needs no relaunch", async () => {
+    let launches = 0
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      headless: false,
+      launcher: async () => {
+        launches++
+        return fakeContext([fakePage()])
+      },
+    })
+    expect(await browser.revealForChallenge()).toBe(true)
+    expect(launches).toBe(0)
+    await browser.close()
+  })
+
+  test.skipIf(!hasDisplay())("headless browser relaunches headed", async () => {
+    delete process.env["QWEN_WEB_HEADLESS"]
+    const launchedHeadless: boolean[] = []
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      launcher: async (_profileDir, options) => {
+        launchedHeadless.push(options.headless)
+        return fakeContext([fakePage()])
+      },
+    })
+    await browser.ensure()
+    expect(launchedHeadless).toEqual([true])
+    expect(await browser.revealForChallenge()).toBe(true)
+    expect(launchedHeadless).toEqual([true, false])
+    await browser.close()
+  })
+})
+
 describe("patchrightLaunchOptions", () => {
   const options = patchrightLaunchOptions(false)
 

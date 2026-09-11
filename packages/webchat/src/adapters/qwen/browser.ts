@@ -449,6 +449,25 @@ export class QwenWebBrowser {
   }
 
   /**
+   * Reveal a visible window for a mid-run human-verification challenge.
+   *
+   * Headless cannot be toggled on a live persistent context, so a running
+   * headless browser is closed and relaunched headed. Returns true when a
+   * headed window is now showing (already headed, or relaunched). Returns
+   * false when no window can open: headless was explicitly requested, or
+   * no display is available. Callers must then say so instead of
+   * promising a window.
+   */
+  async revealForChallenge(signal?: AbortSignal): Promise<boolean> {
+    if (!this.headless) return true
+    if (this.headlessExplicit || !hasDisplay()) return false
+    debug("browser", "relaunching headed so the user can solve the verification challenge")
+    this.headless = false
+    await this.restart(signal)
+    return true
+  }
+
+  /**
    * Open the Qwen login page on the main page for an interactive login.
    * The user logs in normally; callers poll `detectAuthState` (or use
    * `waitForLogin`) to observe completion. Already-authenticated profiles
@@ -701,6 +720,9 @@ export class QwenWebBrowser {
       if (state === "authenticated") return
       if (state === "challenge" && !sawChallenge) {
         sawChallenge = true
+        // Best effort: surface a visible window so the user has somewhere
+        // to solve the challenge; the wait continues regardless.
+        await this.revealForChallenge(signal).catch(() => false)
         debug("browser", "human-verification challenge visible; waiting for the user to solve it manually")
       }
       if (Date.now() >= deadline) {
