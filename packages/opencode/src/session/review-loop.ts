@@ -19,7 +19,7 @@ type HistoryPart = {
   }
 }
 
-const REVIEW_VERDICT = /\*\*Ready to proceed\?\*\*\s*(?:\[[^\]]*\]\s*)?(Approved|Needs fixes)\b/i
+const REVIEW_VERDICT = /\*\*Ready to proceed\?\*\*\s*(?:\[[^\]]*\]\s*)?(Approved|Needs fixes)\b/gi
 const READ_ONLY_TOOLS = new Set([
   "read",
   "glob",
@@ -38,9 +38,10 @@ function historyPart(part: SessionV1.WithParts["parts"][number]): HistoryPart {
 }
 
 export function parseReviewVerdict(output: string): Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined {
-  const match = output.match(REVIEW_VERDICT)
-  if (!match?.[1]) return undefined
-  return match[1].toLowerCase() === "approved" ? "approved" : "needs-fixes"
+  const matches = [...output.matchAll(REVIEW_VERDICT)]
+  const verdict = matches.at(-1)?.[1]
+  if (!verdict) return undefined
+  return verdict.toLowerCase() === "approved" ? "approved" : "needs-fixes"
 }
 
 function isReviewTask(part: HistoryPart) {
@@ -51,10 +52,12 @@ function isReviewTask(part: HistoryPart) {
 }
 
 function isSynchronousReviewTask(part: HistoryPart) {
-  return isReviewTask(part) &&
+  return (
+    isReviewTask(part) &&
     typeof part.state?.input === "object" &&
     part.state.input !== null &&
     (part.state.input as Record<string, unknown>).background === false
+  )
 }
 
 function isPotentiallyMutatingTool(part: HistoryPart) {
