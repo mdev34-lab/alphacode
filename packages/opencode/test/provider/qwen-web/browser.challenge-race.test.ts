@@ -25,7 +25,9 @@ function fakePage(): QwenWebPage {
     close: async () => {},
     setDefaultTimeout: () => {},
     setDefaultNavigationTimeout: () => {},
-  }
+    // Same escape hatch as browser.test.ts: the structural fake only needs
+    // the members under test, not the full generic page surface.
+  } as unknown as QwenWebPage
 }
 
 function fakeContext(pages: QwenWebPage[]): QwenWebContext {
@@ -52,7 +54,9 @@ test.skipIf(!hasDisplay())("challenge reveal does not reuse an incompatible in-f
   let launches = 0
 
   const browser = new QwenWebBrowser({
-    headless: true,
+    // No explicit headless option: headless-by-default without marking it
+    // explicit keeps the reveal path eligible (an explicit headless: true
+    // would make revealForChallenge refuse and return false immediately).
     launcher: async (_profileDir, options) => {
       launchedHeadless.push(options.headless)
       launches++
