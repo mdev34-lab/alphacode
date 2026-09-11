@@ -20,9 +20,18 @@ const onUncaughtException = (_error: Error) => {}
 process.on("unhandledRejection", onUnhandledRejection)
 process.on("uncaughtException", onUncaughtException)
 
+// Explicit launch marker from the parent (see cmd/tui.ts); the process.send
+// sniff remains as a fallback for environments that spawn the worker file
+// directly without the marker.
+const processWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || typeof process.send === "function"
+
 // Subscribe to global events and forward them via RPC
 GlobalBus.on("event", (event) => {
-  Rpc.emit("global.event", event)
+  if (processWorker) {
+    Rpc.emitProcess("global.event", event)
+  } else {
+    Rpc.emit("global.event", event)
+  }
 })
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
@@ -77,4 +86,8 @@ export const rpc = {
   },
 }
 
-Rpc.listen(rpc)
+if (processWorker) {
+  Rpc.listenProcess(rpc)
+} else {
+  Rpc.listen(rpc)
+}

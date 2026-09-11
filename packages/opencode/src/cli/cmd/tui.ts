@@ -1,6 +1,7 @@
 import { cmd } from "@/cli/cmd/cmd"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "../tui/worker"
+import { createWorkerProcess, type WorkerExit } from "../tui/worker-process"
 import path from "path"
 import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
@@ -208,8 +209,6 @@ export const TuiThreadCommand = cmd({
         return
       }
 
-      // Resolve relative --project paths from PWD, then use the real cwd after
-      // chdir so the thread and worker share the same directory key.
       const next = resolveThreadDirectory(args.project)
       const file = await target()
       try {
@@ -219,35 +218,72 @@ export const TuiThreadCommand = cmd({
         return
       }
       const cwd = Filesystem.resolve(process.cwd())
+      const workerFile = typeof file === "string" ? file : fileURLToPath(file)
+      const network = resolveNetworkOptionsNoConfig(args)
+      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
+      const headers = external ? ServerAuth.headers() : undefined
 
-      const worker = new Worker(file, {
-        env: Object.fromEntries(
-          Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-        ),
+      let client!: RpcClient
+      let stopped = false
+      let stop!: () => Promise<void>
+      const worker = createWorkerProcess(workerFile, {
+        cwd,
+        env: {
+          ...Object.fromEntries(
+            Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+          ),
+          // Explicit marker so the child knows it is the TUI worker instead
+          // of inferring it from runtime capabilities (see worker.ts).
+          ALPHACODE_TUI_WORKER: "1",
+        },
+        onRestart: async () => {
+          if (!external) return
+          const result = await client.call("server", network)
+          network.port = Number(new URL(result.url).port) || network.port
+        },
+        onExit: (exit: WorkerExit) => {
+          if (stopped) return
+          UI.error(`Bun worker stopped unexpectedly (${exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code ?? "unknown"}`})`)
+          process.exitCode = 1
+        },
       })
-      const client = Rpc.client<typeof rpc>(worker)
+      client = Rpc.client<typeof rpc>(worker)
       const reload = () => {
         client.call("reload", undefined).catch(() => {})
       }
       process.on("SIGUSR2", reload)
 
-      let stopped = false
-      const stop = async () => {
+      const forwardSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const
+      const signalHandlers = new Map<(typeof forwardSignals)[number], () => void>()
+
+      stop = async () => {
         if (stopped) return
         stopped = true
         process.off("SIGUSR2", reload)
+        for (const [signal, handler] of signalHandlers) process.off(signal, handler)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
-        worker.terminate()
+        await worker.terminate()
+      }
+
+      for (const signal of forwardSignals) {
+        // Graceful shutdown first: ask the worker to dispose via RPC, then
+        // terminate it. Signaling the child before the shutdown RPC would let
+        // it die before the RPC executes (the worker has no signal handler),
+        // turning every SIGINT/SIGTERM into a 5s shutdown timeout. A SIGHUP'd
+        // parent cannot usefully continue workerless, so it exits too (129).
+        const handler = () => {
+          void stop().finally(() => {
+            process.exit(signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 129)
+          })
+        }
+        try {
+          process.on(signal, handler)
+          signalHandlers.set(signal, handler)
+        } catch {}
       }
 
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
-
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
-
-      const headers = external ? ServerAuth.headers() : undefined
-
       const transport = external
         ? {
             url: (await client.call("server", network)).url,
@@ -260,6 +296,8 @@ export const TuiThreadCommand = cmd({
             fetch: createWorkerFetch(client),
             events: createEventSource(client),
           }
+
+      if (external) network.port = Number(new URL(transport.url).port) || network.port
 
       try {
         await validateSession({
@@ -319,4 +357,3 @@ export const TuiThreadCommand = cmd({
     process.exit(0)
   },
 })
-// scratch
