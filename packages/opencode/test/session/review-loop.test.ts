@@ -141,6 +141,16 @@ describe("runtime review gate", () => {
     expect(finishGateError(secondCycle)).toBeUndefined()
   })
 
+  test("ignores earlier user turns when deriving the current review gate", () => {
+    const earlierApproved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
+    const earlierTurn = [userMessage(), toolMessage("edit"), earlierApproved]
+    const currentTurn = [userMessage(), toolMessage("edit")]
+    const state = reviewLoopState([...earlierTurn, ...currentTurn])
+
+    expect(state.reviews).toBe(0)
+    expect(state.verdict).toBe("pending")
+  })
+
   test("invalidates approval after later mutating work but not read-only inspection", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
