@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { finishGateError, latestReviewVerdict, parseReviewVerdict, reviewLoopState } from "../../src/session/review-loop"
+import { finishGateError, parseReviewVerdict, reviewLoopState } from "../../src/session/review-loop"
 
 const directory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/session/prompt")
 
@@ -20,7 +20,7 @@ function syntheticNudge() {
   } as unknown as SessionV1.WithParts
 }
 
-function reviewMessage(output: string, status: "completed" | "running" = "completed") {
+function reviewMessage(output: string, options?: { status?: "completed" | "running"; background?: boolean }) {
   return {
     info: { role: "assistant" },
     parts: [
@@ -28,8 +28,8 @@ function reviewMessage(output: string, status: "completed" | "running" = "comple
         type: "tool",
         tool: "task",
         state: {
-          status,
-          input: { subagent_type: "review" },
+          status: options?.status ?? "completed",
+          input: { subagent_type: "review", background: options?.background ?? false },
           output,
         },
       },
@@ -95,6 +95,14 @@ describe("runtime review gate", () => {
     expect(finishGateError(state)).toBeUndefined()
   })
 
+  test("requires an explicit synchronous review", () => {
+    const background = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", { background: true })
+    const synchronous = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
+
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), background]).verdict).toBe("pending")
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), synchronous]).verdict).toBe("approved")
+  })
+
   test("does not treat a synthetic continuation nudge as a new turn", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
     const state = reviewLoopState([userMessage(), toolMessage("edit"), approved, syntheticNudge()])
@@ -118,8 +126,8 @@ describe("runtime review gate", () => {
   test("invalidates approval after later mutating work but not read-only inspection", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
-    expect(latestReviewVerdict([userMessage(), toolMessage("edit"), approved, toolMessage("read")])).toBe("approved")
-    expect(latestReviewVerdict([userMessage(), toolMessage("edit"), approved, toolMessage("edit")])).toBe("pending")
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read")]).verdict).toBe("approved")
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")]).verdict).toBe("pending")
     expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")]))).toBeInstanceOf(Error)
   })
 
@@ -139,12 +147,12 @@ describe("runtime review gate", () => {
   })
 
   test("does not treat an incomplete or malformed review as approval", () => {
-    const running = reviewMessage("", "running")
+    const running = reviewMessage("", { status: "running" })
     const malformed = reviewMessage("review failed before producing an assessment")
 
-    expect(latestReviewVerdict([userMessage(), toolMessage("edit"), running])).toBe("pending")
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), running]).verdict).toBe("pending")
     expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), running]))).toBeInstanceOf(Error)
-    expect(latestReviewVerdict([userMessage(), toolMessage("edit"), malformed])).toBe("pending")
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), malformed]).verdict).toBe("pending")
     expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), malformed]))).toBeInstanceOf(Error)
   })
 })
