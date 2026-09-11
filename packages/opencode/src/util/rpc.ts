@@ -10,25 +10,43 @@ type Message = {
   event?: string
   data?: unknown
   result?: unknown
+  error?: unknown
 }
 
-async function handle(rpc: Definition, raw: string) {
-  const parsed = JSON.parse(raw) as Message
-  if (parsed.type !== "rpc.request" || parsed.method === undefined || parsed.id === undefined) return
-  const result = await rpc[parsed.method](parsed.input)
-  return JSON.stringify({ type: "rpc.result", result, id: parsed.id })
+function errorReply(id: number, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return JSON.stringify({ type: "rpc.error", id, error: message })
+}
+
+export async function handleRequest(rpc: Definition, raw: string) {
+  let parsed: Message
+  try {
+    parsed = JSON.parse(raw) as Message
+  } catch {
+    // Malformed IPC input carries no id to reply to; drop it.
+    return undefined
+  }
+  if (parsed.type !== "rpc.request" || parsed.method === undefined || parsed.id === undefined) return undefined
+  const method = rpc[parsed.method]
+  if (typeof method !== "function") return errorReply(parsed.id, new Error(`Unknown RPC method: ${parsed.method}`))
+  try {
+    const result = await method(parsed.input)
+    return JSON.stringify({ type: "rpc.result", result, id: parsed.id })
+  } catch (error) {
+    return errorReply(parsed.id, error)
+  }
 }
 
 export function listen(rpc: Definition) {
   onmessage = async (evt) => {
-    const result = await handle(rpc, evt.data)
+    const result = await handleRequest(rpc, evt.data)
     if (result) postMessage(result)
   }
 }
 
 export function listenProcess(rpc: Definition) {
   process.on("message", async (message: string) => {
-    const result = await handle(rpc, message)
+    const result = await handleRequest(rpc, message)
     if (result) process.send?.(result)
   })
 }
@@ -50,12 +68,21 @@ export function client<T extends Definition>(target: {
   const listeners = new Map<string, Set<(data: any) => void>>()
   let id = 0
   target.onmessage = async (evt) => {
-    const parsed = JSON.parse(evt.data) as Message
-    if (parsed.type === "rpc.result" && parsed.id !== undefined) {
+    let parsed: Message
+    try {
+      parsed = JSON.parse(evt.data) as Message
+    } catch {
+      return
+    }
+    if ((parsed.type === "rpc.result" || parsed.type === "rpc.error") && parsed.id !== undefined) {
       const request = pending.get(parsed.id)
       if (request) {
-        request.resolve(parsed.result)
         pending.delete(parsed.id)
+        if (parsed.type === "rpc.error") {
+          request.reject(new Error(typeof parsed.error === "string" ? parsed.error : "RPC call failed"))
+        } else {
+          request.resolve(parsed.result)
+        }
       }
     }
     if (parsed.type === "rpc.event" && parsed.event !== undefined) {
