@@ -44,12 +44,17 @@ function isPotentiallyMutatingTool(part: SessionV1.ToolPart) {
   return !READ_ONLY_TOOLS.has(part.tool)
 }
 
+function isSyntheticUser(message: SessionV1.WithParts) {
+  return message.info.role === "user" && message.parts.length > 0 && message.parts.every((part) => "synthetic" in part && part.synthetic === true)
+}
+
 /**
  * Derive the review gate from persisted parent-session history. Only a completed
  * review after the latest potentially-mutating operation can authorize finish.
+ * Synthetic user messages inserted by the loop are continuation nudges, not new turns.
  */
 export function reviewLoopState(messages: readonly SessionV1.WithParts[], maxIterations = 5): ReviewLoopState {
-  const start = messages.findLastIndex((message) => message.info.role === "user")
+  const start = messages.findLastIndex((message) => message.info.role === "user" && !isSyntheticUser(message))
   const current = start < 0 ? messages : messages.slice(start + 1)
 
   let reviews = 0
