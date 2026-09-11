@@ -44,18 +44,7 @@ export const FinishTool = Tool.define(
               maxIterations: reviewState.maxIterations,
               workSinceReview: reviewState.workSinceReview,
             })
-            return {
-              title: "Review required",
-              output: gateError.message,
-              metadata: {
-                review: {
-                  verdict: reviewState.verdict,
-                  reviews: reviewState.reviews,
-                  maxIterations: reviewState.maxIterations,
-                  termination: "blocked",
-                },
-              },
-            }
+            return yield* Effect.fail(gateError).pipe(Effect.orDie)
           }
 
           if (reviewState.verdict === "cap") {
