@@ -84,7 +84,7 @@ export const FinishTool = Tool.define(
               },
             },
           }
-        }),
+        }).pipe(Effect.orDie),
     }
   }),
 )
