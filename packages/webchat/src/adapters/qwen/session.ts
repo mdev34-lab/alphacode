@@ -230,7 +230,7 @@ export class QwenWebSession implements WebChatProvider {
     if (this.running.has(thread.id)) {
       throw new QwenWebError({
         code: "upstream_error",
-        retryable: false,
+        retryable: true,
         message: `Qwen thread "${thread.id}" already has a turn in progress.`,
       })
     }
