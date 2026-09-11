@@ -24,7 +24,7 @@ import { QWEN_WEB_PROVIDER_ID, type QwenWebReasoningMode } from "@opencode-ai/we
 import { QwenWebError, isAbortLike } from "@opencode-ai/webchat/adapters/qwen/errors"
 import { debug } from "@opencode-ai/webchat/adapters/qwen/log"
 import { toUpstreamModelId } from "@opencode-ai/webchat/adapters/qwen/protocol"
-import { buildToolInstructions, functionTools, renderPrompt, type QwenWebToolDefinition } from "./prompt"
+import { buildToolInstructions, buildToolReminder, functionTools, renderPrompt, type QwenWebToolDefinition } from "./prompt"
 import { QwenWebSession } from "@opencode-ai/webchat/adapters/qwen/session"
 import { lastAnchored } from "@opencode-ai/webchat/thread"
 import { QwenWebUpload } from "@opencode-ai/webchat/adapters/qwen/upload"
@@ -162,9 +162,18 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
     const useTools = tools.length > 0 && options.toolChoice?.type !== "none"
 
     let rendered = renderPrompt(options.prompt)
-    const wrap = (p: string): string => {
+    const wrap = (p: string, full: boolean): string => {
       let out = p
-      if (useTools) out = `${buildToolInstructions(tools, options.toolChoice)}\n\n${out}`
+      if (useTools) {
+        // Incremental follow-ups ride on an upstream thread that already
+        // carries the full manifest + contract: a short reminder suffices.
+        // Forced tool choices keep the full instructions (the MUST-call rule).
+        const instructions =
+          full || options.toolChoice?.type === "tool" || options.toolChoice?.type === "required"
+            ? buildToolInstructions(tools, options.toolChoice)
+            : buildToolReminder(tools)
+        out = `${instructions}\n\n${out}`
+      }
       if (options.responseFormat?.type === "json") {
         const schema = options.responseFormat.schema
           ? `\n\nRespond with JSON matching this schema:\n${JSON.stringify(options.responseFormat.schema)}`
@@ -176,7 +185,7 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
       }
       return out
     }
-    let prompt = wrap(rendered.text)
+    let prompt = wrap(rendered.text, true)
 
     // Strip reasoning variants first, then translate any legacy catalog id
     // (e.g. `qwen3-max`) onto the live upstream catalog so requests never
@@ -200,7 +209,7 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
     const trim = incrementalPrompt(options.prompt, thread, this.isLite(options))
     if (trim) {
       rendered = trim
-      prompt = wrap(trim.text)
+      prompt = wrap(trim.text, false)
     }
     const files = rendered.media.length > 0 ? await this.uploadFiles(rendered.media, signal) : undefined
     const toolDeclarations = useTools

@@ -579,9 +579,18 @@ export class QwenWebBrowser {
     }
   }
 
-  /** Ensure the main page sits on the Qwen origin before page-context requests. */
-  async ensureOnOrigin(signal?: AbortSignal): Promise<QwenWebPage> {
+  /**
+   * Ensure the main page sits on the Qwen origin before page-context requests.
+   *
+   * `steer: false` never navigates: callers that only want to reuse the page
+   * as-is (background bookkeeping such as the model catalog refresh, which
+   * must not drag a page out from under an active generation) get the page
+   * without steering.
+   */
+  async ensureOnOrigin(signal?: AbortSignal, opts?: { steer?: boolean }): Promise<QwenWebPage> {
+    const steer = opts?.steer ?? true
     const page = await this.activePage(signal)
+    if (!steer) return page
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         if (!page.url().startsWith(qwenWebOrigin())) {

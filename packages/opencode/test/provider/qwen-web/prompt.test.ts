@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { LanguageModelV3Prompt } from "@ai-sdk/provider"
-import { buildToolInstructions, buildToolManifest, functionTools, renderPrompt } from "@/provider/qwen-web/prompt"
+import { buildToolInstructions, buildToolManifest, buildToolReminder, functionTools, renderPrompt } from "@/provider/qwen-web/prompt"
 import type { QwenWebToolDefinition } from "@/provider/qwen-web/prompt"
 
 describe("renderPrompt", () => {
@@ -144,6 +144,15 @@ describe("tool manifest and instructions", () => {
   test("functionTools filters to function tools", () => {
     expect(functionTools(tools).map((tool) => tool.name)).toEqual(["read_file"])
     expect(functionTools(undefined)).toEqual([])
+  })
+
+  test("reminder names live tools without the full manifest", () => {
+    const reminder = buildToolReminder(tools)
+    expect(reminder).toContain("read_file")
+    expect(reminder).toContain("<qw_call>")
+    expect(reminder).not.toContain("# TOOLS AVAILABLE")
+    expect(reminder).not.toContain("Read a file from disk.")
+    expect(reminder).not.toContain("web_search")
   })
 
   test("instructions embed the contract and forced choices", () => {

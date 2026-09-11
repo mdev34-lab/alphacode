@@ -302,9 +302,16 @@ function writeCachedRecords(records: QwenWebModelRecord[]): void {
 }
 
 /** Fetch the live catalog through the authenticated browser context. */
-export async function refreshModels(transport?: QwenWebTransport, signal?: AbortSignal): Promise<QwenWebModelRecord[]> {
+export async function refreshModels(
+  transport?: QwenWebTransport,
+  signal?: AbortSignal,
+  opts?: { allowNavigate?: boolean },
+): Promise<QwenWebModelRecord[]> {
   const client = transport ?? sharedTransport()
-  const response = await client.requestJson("GET", "/api/models", { signal })
+  const response = await client.requestJson("GET", "/api/models", {
+    signal,
+    ...(opts ? { allowNavigate: opts.allowNavigate } : {}),
+  })
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`Model catalog request failed (HTTP ${response.status})`)
   }
@@ -324,7 +331,7 @@ export async function refreshModels(transport?: QwenWebTransport, signal?: Abort
 /** Best-effort background refresh; never throws, never launches a browser. */
 export function refreshModelsInBackground(isBrowserRunning: () => boolean): void {
   if (!isBrowserRunning()) return
-  refreshModels().catch((error) => {
+  refreshModels(undefined, undefined, { allowNavigate: false }).catch((error) => {
     debug("catalog", "background refresh failed (non-fatal)", {
       error: error instanceof Error ? error.message : String(error),
     })

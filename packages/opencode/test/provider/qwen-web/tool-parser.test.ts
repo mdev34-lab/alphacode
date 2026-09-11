@@ -110,4 +110,57 @@ describe("StreamingToolParser", () => {
     const result = parseCompleteResponse('<qw_call name="attr_tool">{"arguments": {"x": true}}</qw_call>')
     expect(result.toolCalls[0]?.name).toBe("attr_tool")
   })
+
+  test("recovers a batch of openless blocks (missing open tags)", () => {
+    const batch =
+      '{"name": "glob", "arguments": {"pattern": "*.md", "path": "C:\\\\Desktop"}}\n' +
+      "</qw_call>\n" +
+      '{"name": "glob", "arguments": {"pattern": "*/*.md", "path": "C:\\\\Vault"}}\n' +
+      "</qw_call>"
+    const result = parseCompleteResponse(batch)
+    expect(result.toolCalls).toHaveLength(2)
+    expect(result.toolCalls.map((call) => call.name)).toEqual(["glob", "glob"])
+    expect(JSON.parse(result.toolCalls[0]!.input)).toEqual({ pattern: "*.md", path: "C:\\Desktop" })
+    expect(result.text).toBe("")
+  })
+
+  test("reconstructs an openless block whose close tag arrives in a later chunk", () => {
+    const parser = new StreamingToolParser()
+    expect(parser.push('{"name": "glob", "arguments": {"pattern": "*.md"}}\n').text).toBe("")
+    const last = parser.push("</qw_call>\nDone")
+    expect(last.toolCalls.map((call) => call.name)).toEqual(["glob"])
+    expect(last.text).toBe("\nDone")
+    expect(parser.flush().text).toBe("")
+  })
+
+  test("strips stray close tags from plain text", () => {
+    const result = parseCompleteResponse("Before </qw_call> after")
+    expect(result.toolCalls).toEqual([])
+    expect(result.text).toBe("Before after")
+  })
+
+  test("prefers the outer object when arguments contain a nested name key", () => {
+    const result = parseCompleteResponse('{"name": "write", "arguments": {"name": "file.txt", "content": "x"}}\n</qw_call>')
+    expect(result.toolCalls).toHaveLength(1)
+    expect(result.toolCalls[0]!.name).toBe("write")
+    expect(JSON.parse(result.toolCalls[0]!.input)).toEqual({ name: "file.txt", content: "x" })
+    expect(result.text).toBe("")
+  })
+
+  test("recovers an openless block that precedes a tagged block", () => {
+    const result = parseCompleteResponse(
+      '{"name": "glob", "arguments": {"pattern": "*.md"}}\n</qw_call>\n<qw_call>{"name": "read", "arguments": {"path": "a.md"}}\n</qw_call>',
+    )
+    expect(result.toolCalls.map((call) => call.name)).toEqual(["glob", "read"])
+    expect(result.text.trim()).toBe("")
+  })
+
+  test("holds back a JSON line before a partial close tag split across chunks", () => {
+    const parser = new StreamingToolParser()
+    expect(parser.push('{"name": "glob", "arguments": {"pattern": "*.md"}}\n</qw_c').text).toBe("")
+    const last = parser.push("all>\nDone")
+    expect(last.toolCalls.map((call) => call.name)).toEqual(["glob"])
+    expect(last.text).toContain("Done")
+    expect(parser.flush().text).toBe("")
+  })
 })

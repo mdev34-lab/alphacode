@@ -102,23 +102,38 @@ function trailingPartialTagLength(buffer: string): number {
   return best
 }
 
-const STRAY_CLOSE_PATTERN = new RegExp(
-  `^\\s*<\\/(?:${QWEN_WEB_TOOL_CLOSE_NAMES.map(escapeRegExp).join("|")})\\s*>`,
-  "i",
-)
-const TRAILING_STRAY_CLOSE_PATTERN = new RegExp(
-  `<\\/(?:${QWEN_WEB_TOOL_CLOSE_NAMES.map(escapeRegExp).join("|")})\\s*>\\s*$`,
-  "i",
+const ANY_STRAY_CLOSE_PATTERN = new RegExp(
+  `\\s*<\\/(?:${QWEN_WEB_TOOL_CLOSE_NAMES.map(escapeRegExp).join("|")})\\s*>`,
+  "ig",
 )
 
 function stripStrayCloses(value: string): string {
-  let result = value
-  let match: RegExpExecArray | null
-  STRAY_CLOSE_PATTERN.lastIndex = 0
-  while ((match = STRAY_CLOSE_PATTERN.exec(result))) result = result.slice(match[0].length)
-  TRAILING_STRAY_CLOSE_PATTERN.lastIndex = 0
-  while ((match = TRAILING_STRAY_CLOSE_PATTERN.exec(result))) result = result.slice(0, result.length - match[0].length)
-  return result
+  return value.replace(ANY_STRAY_CLOSE_PATTERN, "")
+}
+
+/**
+ * Recover a tool call whose opening tag the model omitted: a JSON tool-call
+ * object followed by a stray close tag (observed when batch emissions degrade
+ * mid-turn). Returns the text prefix, the parsed call, and the offset past the
+ * close tag so the caller can slice the block out of the buffer.
+ */
+function tryOpenlessBlock(
+  buffer: string,
+  declared?: Set<string>,
+): { prefix: string; call: ParsedToolCall; closeEnd: number } | undefined {
+  const close = findClose(buffer, 0)
+  if (!close) return undefined
+  const text = buffer.slice(0, close.index)
+  // Walk `{` candidates outermost-first: arguments may contain a nested
+  // `"name"` key (e.g. a filename), and an innermost-first walk would
+  // fabricate a call from that nested object and leak the outer JSON as text.
+  const starts: number[] = []
+  for (let index = text.indexOf("{"); index !== -1; index = text.indexOf("{", index + 1)) starts.push(index)
+  for (const jsonStart of starts) {
+    const call = toToolCall(repairJsonPayload(text.slice(jsonStart)), undefined, declared)
+    if (call) return { prefix: text.slice(0, jsonStart), call, closeEnd: close.index + close.length }
+  }
+  return undefined
 }
 
 /** Best-effort JSON recovery: fences, trailing commas, truncation. */
@@ -291,9 +306,43 @@ export class StreamingToolParser {
 
     for (;;) {
       const open = findOpen(this.buffer)
-      if (!open) break
+      if (!open) {
+        // The model sometimes drops the opening tag on a batch of calls
+        // (degenerate multi-call output). If a stray close tag follows a
+        // tool-call JSON object, reconstruct the block instead of pasting it.
+        const repaired = tryOpenlessBlock(this.buffer, this.declared)
+        if (repaired && !this.capped) {
+          if (stripStrayCloses(repaired.prefix).trim().length > 0) text += stripStrayCloses(repaired.prefix)
+          this.buffer = this.buffer.slice(repaired.closeEnd)
+          this.calls++
+          if (this.calls > this.maxCalls) this.capped = true
+          else toolCalls.push(repaired.call)
+          continue
+        }
+        break
+      }
+      // The prefix before the first open tag may itself hold degenerate
+      // openless blocks (a batch whose later blocks kept their tags while an
+      // earlier one lost its open tag). Drain those first so they are not
+      // emitted as text.
+      const openAt = open.index
+      let prefix = this.buffer.slice(0, openAt)
+      for (;;) {
+        const repaired = tryOpenlessBlock(prefix, this.declared)
+        if (!repaired || this.capped) break
+        const cleaned = stripStrayCloses(repaired.prefix)
+        if (cleaned.trim().length > 0) text += cleaned
+        prefix = prefix.slice(repaired.closeEnd)
+        this.calls++
+        if (this.calls > this.maxCalls) this.capped = true
+        else toolCalls.push(repaired.call)
+      }
+      if (prefix.length !== openAt) {
+        this.buffer = prefix + this.buffer.slice(openAt)
+        continue
+      }
       // Emit text preceding the block, holding back a partial tag at the end.
-      text += this.buffer.slice(0, open.index)
+      text += stripStrayCloses(this.buffer.slice(0, open.index))
       const afterOpen = open.index + open.length
       const close = findClose(this.buffer, afterOpen)
       if (!close) {
@@ -318,14 +367,37 @@ export class StreamingToolParser {
       // `text` keeps accumulating; loop to find further blocks.
     }
 
-    // No (more) open tags: emit everything except a trailing partial tag.
+    // No (more) open tags: emit everything except a trailing partial tag and a
+    // trailing line that may yet become a tool-call JSON (its close tag can
+    // arrive in the next chunk and is unrecoverable once the text is emitted).
     const holdBack = trailingPartialTagLength(this.buffer)
     if (holdBack > 0) {
-      text += this.buffer.slice(0, this.buffer.length - holdBack)
-      this.buffer = this.buffer.slice(this.buffer.length - holdBack)
+      const head = this.buffer.slice(0, this.buffer.length - holdBack)
+      const partial = this.buffer.slice(this.buffer.length - holdBack)
+      // A partial close tag may complete in the next chunk; the JSON line
+      // before it is unrecoverable once emitted, so hold it back as well.
+      const content = head.endsWith("\n") ? head.slice(0, -1) : head
+      const contentLf = content.lastIndexOf("\n")
+      const candidate = contentLf === -1 ? content : content.slice(contentLf + 1)
+      if (candidate.length > 0 && /^[ \t]*[\[{]/.test(candidate)) {
+        const holdFrom = content.length - candidate.length
+        text += stripStrayCloses(head.slice(0, holdFrom))
+        this.buffer = head.slice(holdFrom) + partial
+      } else {
+        text += stripStrayCloses(head)
+        this.buffer = partial
+      }
     } else {
-      text += this.buffer
-      this.buffer = ""
+      const lastLf = this.buffer.lastIndexOf("\n")
+      const lineStart = lastLf === this.buffer.length - 1 ? this.buffer.lastIndexOf("\n", lastLf - 1) : lastLf
+      const tail = lineStart === -1 ? this.buffer : this.buffer.slice(lineStart + 1)
+      if (tail.length > 0 && /^[ \t]*[\[{]/.test(tail)) {
+        text += stripStrayCloses(this.buffer.slice(0, this.buffer.length - tail.length))
+        this.buffer = tail
+      } else {
+        text += stripStrayCloses(this.buffer)
+        this.buffer = ""
+      }
     }
     return { text, toolCalls }
   }
@@ -334,12 +406,45 @@ export class StreamingToolParser {
   flush(): ToolParserResult {
     const toolCalls: ParsedToolCall[] = []
     let text = ""
-    const open = findOpen(this.buffer)
+
+    // Drain degenerate openless blocks first (close tag with no open tag).
+    for (;;) {
+      if (findOpen(this.buffer) || this.capped) break
+      const repaired = tryOpenlessBlock(this.buffer, this.declared)
+      if (!repaired) break
+      if (stripStrayCloses(repaired.prefix).trim().length > 0) text += stripStrayCloses(repaired.prefix)
+      this.buffer = this.buffer.slice(repaired.closeEnd)
+      this.calls++
+      if (this.calls > this.maxCalls) this.capped = true
+      else toolCalls.push(repaired.call)
+    }
+
+    let open = findOpen(this.buffer)
+    if (open && !this.capped) {
+      // Drain degenerate openless blocks from the text preceding the open tag
+      // (same as push: they must not be emitted as text).
+      const openAt = open.index
+      let prefix = this.buffer.slice(0, openAt)
+      for (;;) {
+        const repaired = tryOpenlessBlock(prefix, this.declared)
+        if (!repaired || this.capped) break
+        const cleaned = stripStrayCloses(repaired.prefix)
+        if (cleaned.trim().length > 0) text += cleaned
+        prefix = prefix.slice(repaired.closeEnd)
+        this.calls++
+        if (this.calls > this.maxCalls) this.capped = true
+        else toolCalls.push(repaired.call)
+      }
+      if (prefix.length !== openAt) {
+        this.buffer = prefix + this.buffer.slice(openAt)
+        open = findOpen(this.buffer)
+      }
+    }
     if (open && !this.capped) {
       const raw = stripStrayCloses(this.buffer.slice(open.index + open.length))
         .replace(/<\/?(?:qw_call|tool_calls?)\b[^>]*$/i, "")
         .trim()
-      text += this.buffer.slice(0, open.index)
+      text += stripStrayCloses(this.buffer.slice(0, open.index))
       const call = raw ? toToolCall(repairJsonPayload(raw), open.nameAttr, this.declared) : undefined
       if (call) {
         this.calls++
@@ -349,7 +454,7 @@ export class StreamingToolParser {
         text += raw
       }
     } else {
-      text += this.buffer
+      text += stripStrayCloses(this.buffer)
     }
     this.buffer = ""
     return { text, toolCalls }

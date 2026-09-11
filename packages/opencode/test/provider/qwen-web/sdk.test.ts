@@ -518,6 +518,91 @@ describe("incremental follow-up turns", () => {
     expect(payloadPrompt(captured.payload)).toContain("Context")
   })
 
+  test("follow-ups with tools resend a short reminder, not the full manifest", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const modelInstance = model([CREATED, textEvent("First answer"), "data: [DONE]\n"], captured)
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+          tools: [
+            {
+              type: "function",
+              name: "read",
+              inputSchema: { type: "object", properties: { p: { type: "number" } } },
+            },
+          ],
+        })
+      ).stream,
+    )
+    expect(payloadPrompt(captured.payload)).toContain("# TOOLS AVAILABLE")
+
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [
+            { role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] },
+            { role: "assistant", content: [{ type: "text", text: "First answer" }] },
+            { role: "user", content: [{ type: "text", text: "The follow-up question." }] },
+          ],
+          tools: [
+            {
+              type: "function",
+              name: "read",
+              inputSchema: { type: "object", properties: { p: { type: "number" } } },
+            },
+          ],
+        })
+      ).stream,
+    )
+    const follow = payloadPrompt(captured.payload)
+    expect(follow).toContain("The follow-up question.")
+    expect(follow).toContain("Tools still available")
+    expect(follow).not.toContain("# TOOLS AVAILABLE")
+    expect(follow).not.toContain("LONG ORIGINAL CONTEXT")
+  })
+
+  test("forced tool choices keep full instructions on follow-ups", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const modelInstance = model([CREATED, textEvent("First answer"), "data: [DONE]\n"], captured)
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+          tools: [
+            {
+              type: "function",
+              name: "read",
+              inputSchema: { type: "object", properties: { p: { type: "number" } } },
+            },
+          ],
+        })
+      ).stream,
+    )
+    await collect(
+      (
+        await modelInstance.doStream({
+          prompt: [
+            { role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] },
+            { role: "assistant", content: [{ type: "text", text: "First answer" }] },
+            { role: "user", content: [{ type: "text", text: "The follow-up question." }] },
+          ],
+          tools: [
+            {
+              type: "function",
+              name: "read",
+              inputSchema: { type: "object", properties: { p: { type: "number" } } },
+            },
+          ],
+          toolChoice: { type: "tool", toolName: "read" },
+        })
+      ).stream,
+    )
+    const follow = payloadPrompt(captured.payload)
+    expect(follow).toContain("# TOOLS AVAILABLE")
+    expect(follow).toContain('MUST call the tool "read"')
+  })
+
   test("tool-loop continuations send only the tool result tail", async () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
     const modelInstance = model([CREATED, textEvent("Answer"), "data: [DONE]\n"], captured)

@@ -259,4 +259,21 @@ describe("live catalog cache", () => {
     await expect(refreshModels(transport)).rejects.toThrow()
     expect(readCachedRecords()).toBeUndefined()
   })
+
+  test("background refresh requests never navigate the page", async () => {
+    let calledWith: { signal?: AbortSignal; allowNavigate?: boolean } | undefined
+    const transport = {
+      requestJson: (async (_method, _path, options) => {
+        calledWith = options
+        return {
+          status: 200,
+          statusText: "OK",
+          contentType: "application/json",
+          body: JSON.stringify({ data: [{ id: "background-model", name: "Bg", metadata: {} }] }),
+        }
+      }) as QwenWebTransport["requestJson"],
+    } as unknown as QwenWebTransport
+    await refreshModels(transport, undefined, { allowNavigate: false })
+    expect(calledWith?.allowNavigate).toBe(false)
+  })
 })

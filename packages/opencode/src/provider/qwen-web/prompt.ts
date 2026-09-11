@@ -250,6 +250,20 @@ CRITICAL RULES:
   return instructions
 }
 
+/**
+ * Short tool reminder for incremental follow-ups. The upstream thread already
+ * carries the full manifest + contract from the first turn, so re-send only
+ * the live tool names with a contract pointer instead of the whole manifest.
+ */
+export function buildToolReminder(tools: QwenWebToolDefinition[]): string {
+  const names = tools.filter(isFunctionTool).map((tool) => tool.name)
+  return (
+    `Tools still available: ${names.join(", ")}.\n` +
+    `To call one, output JSON wrapped EXACTLY in ${QWEN_WEB_TOOL_OPEN} and ${QWEN_WEB_TOOL_CLOSE} tags ` +
+    `with an exact "name" from the list above; NEVER output raw JSON.`
+  )
+}
+
 /** Provider-executed tools are never executed by AlphaCode; only `function` tools are supported. */
 export function functionTools(tools: QwenWebToolDefinition[] | undefined): LanguageModelV3FunctionTool[] {
   if (!tools) return []

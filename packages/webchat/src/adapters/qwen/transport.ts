@@ -80,6 +80,12 @@ export interface RequestOptions {
   referrer?: string
   timeoutMs?: number
   signal?: AbortSignal
+  /**
+   * False to reuse the page without steering it to the Qwen origin. Used by
+   * background bookkeeping (model catalog refresh) that must never navigate
+   * the shared page while a generation is streaming.
+   */
+  allowNavigate?: boolean
 }
 
 export interface JsonResponse {
@@ -229,7 +235,7 @@ export class QwenWebTransport {
     const body = options?.body
     const referrer = options?.referrer
     try {
-      const page = await this.browser.ensureOnOrigin(signal)
+      const page = await this.browser.ensureOnOrigin(signal, { steer: options?.allowNavigate ?? true })
       return await page.evaluate(
         async (arg: {
           url: string
@@ -278,7 +284,7 @@ export class QwenWebTransport {
     if (signal?.aborted) throw abortedError()
     const releaseSlot = await this.slots.acquire(signal)
     try {
-      const page = await this.browser.ensureOnOrigin(signal)
+      const page = await this.browser.ensureOnOrigin(signal, { steer: options?.allowNavigate ?? true })
       await this.ensureBinding(page)
       return await this.startStream(page, method, path, options, releaseSlot)
     } catch (error) {
@@ -323,7 +329,7 @@ export class QwenWebTransport {
     if (signal?.aborted) throw abortedError()
     const releaseSlot = await this.slots.acquire(signal)
     try {
-      const page = await this.browser.ensureOnOrigin(signal)
+      const page = await this.browser.ensureOnOrigin(signal, { steer: options?.allowNavigate ?? true })
       const readyAt = Date.now()
       const [cookies, signals] = await Promise.all([this.browserCookies(page), this.collectWafSignals(page, stream)])
       debug("transport", "raw request prepared", {
