@@ -9,6 +9,7 @@ type Message = {
   input?: unknown
   event?: string
   data?: unknown
+  result?: unknown
 }
 
 async function handle(rpc: Definition, raw: string) {

@@ -50,6 +50,7 @@ export interface WorkerProcessOptions {
   env?: Record<string, string>
   maxRestarts?: number
   onRestart?: () => void | Promise<void>
+  onExit?: (exit: WorkerExit) => void | Promise<void>
   log?: (message: string) => void
   spawn?: Spawn
 }
@@ -58,6 +59,7 @@ export interface WorkerProcess extends WorkerMessageTarget {
   readonly restarted: Promise<void>
   readonly closed: Promise<WorkerExit>
   terminate(): Promise<void>
+  signal(signal: string | number): void
 }
 
 export function createWorkerProcess(target: string, options: WorkerProcessOptions = {}): WorkerProcess {
@@ -67,6 +69,7 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
 
   let current: Subprocess | undefined
   let stopping = false
+  let terminal = false
   let restarts = 0
   let restarted = Promise.resolve()
   let resolveClosed!: (exit: WorkerExit) => void
@@ -91,11 +94,23 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
     if (!current) throw new Error("Bun worker is not running")
     current.send(data)
   }
+  transport.signal = (signal) => {
+    current?.kill(signal)
+  }
   transport.terminate = async () => {
     stopping = true
-    current?.disconnect()
-    current?.kill("SIGTERM")
-    await current?.exited.catch(() => undefined)
+    const child = current
+    child?.disconnect()
+    child?.kill("SIGTERM")
+    await child?.exited.catch(() => undefined)
+  }
+
+  const finish = (exit: WorkerExit) => {
+    resolveClosed(exit)
+    if (stopping) return
+    void Promise.resolve(options.onExit?.(exit)).catch((error) => {
+      log(`[alphacode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   const launch = () => {
@@ -118,26 +133,35 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
         code: typeof code === "number" ? code : null,
         signal: child.signalCode,
       }
-      const crash = !stopping && isCrash(exit.signal, exit.code)
+      const crash = !stopping && !terminal && isCrash(exit.signal, exit.code)
       transport.onclose?.(new Error(`Bun worker exited with ${describeExit(exit)}`))
 
       if (crash && restarts < maxRestarts) {
         restarts += 1
         log(`[alphacode] Bun worker crashed (${describeExit(exit)}); restarting (${restarts}/${maxRestarts})...`)
         let resolveReady!: () => void
-        restarted = new Promise<void>((resolve) => {
+        let rejectReady!: (error: Error) => void
+        restarted = new Promise<void>((resolve, reject) => {
           resolveReady = resolve
+          rejectReady = reject
         })
         launch()
-        Promise.resolve(options.onRestart?.())
-          .catch((error) =>
-            log(`[alphacode] worker restart hook failed: ${error instanceof Error ? error.message : String(error)}`),
-          )
-          .finally(() => resolveReady())
+        Promise.resolve(options.onRestart?.()).then(
+          () => resolveReady(),
+          (error) => {
+            terminal = true
+            const failure = error instanceof Error ? error : new Error(String(error))
+            log(`[alphacode] worker restart hook failed: ${failure.message}`)
+            rejectReady(failure)
+            const replacement = current
+            replacement?.disconnect()
+            replacement?.kill("SIGTERM")
+          },
+        )
         return
       }
 
-      resolveClosed(exit)
+      finish(exit)
     })
   }
 

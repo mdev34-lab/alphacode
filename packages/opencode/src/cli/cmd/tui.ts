@@ -1,7 +1,7 @@
 import { cmd } from "@/cli/cmd/cmd"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "../tui/worker"
-import { createWorkerProcess } from "../tui/worker-process"
+import { createWorkerProcess, type WorkerExit } from "../tui/worker-process"
 import path from "path"
 import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
@@ -234,6 +234,10 @@ export const TuiThreadCommand = cmd({
           const result = await client.call("server", network)
           network.port = Number(new URL(result.url).port) || network.port
         },
+        onExit: (exit: WorkerExit) => {
+          UI.error(`Bun worker stopped unexpectedly (${exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code ?? "unknown"}`})`)
+          process.exitCode = 1
+        },
       })
       client = Rpc.client<typeof rpc>(worker)
       const reload = () => {
@@ -241,11 +245,22 @@ export const TuiThreadCommand = cmd({
       }
       process.on("SIGUSR2", reload)
 
+      const forwardSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const
+      const signalHandlers = new Map<(typeof forwardSignals)[number], () => void>()
+      for (const signal of forwardSignals) {
+        const handler = () => worker.signal(signal)
+        try {
+          process.on(signal, handler)
+          signalHandlers.set(signal, handler)
+        } catch {}
+      }
+
       let stopped = false
       const stop = async () => {
         if (stopped) return
         stopped = true
         process.off("SIGUSR2", reload)
+        for (const [signal, handler] of signalHandlers) process.off(signal, handler)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
         await worker.terminate()
       }
