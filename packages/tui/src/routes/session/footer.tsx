@@ -100,12 +100,7 @@ export function Footer() {
     if (latestReview === "needs-fixes" && busy && !reviewRunning) phase = "work"
 
     if (reviews === 0 && termination === undefined && !busy) return undefined
-    return {
-      reviews,
-      maxIterations,
-      phase,
-      termination,
-    }
+    return { reviews, maxIterations, phase, termination }
   })
 
   const [store, setStore] = createStore({ welcome: false })
