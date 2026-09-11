@@ -84,6 +84,15 @@ export const Info = Schema.Struct({
   subagent_depth: Schema.optional(NonNegativeInt).annotate({
     description: "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
   }),
+  review_loop: Schema.optional(
+    Schema.Struct({
+      max_iterations: Schema.optional(PositiveInt).annotate({
+        description: "Maximum review/fix iterations before allowing capped completion. Defaults to 5.",
+      }),
+    }),
+  ).annotate({
+    description: "Mandatory Work → Review loop configuration.",
+  }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
   }),
@@ -97,7 +106,7 @@ export const Info = Schema.Struct({
       }),
       [Schema.Record(Schema.String, ConfigAgentV1.Info)],
     ),
-  ).annotate({ description: "@deprecated Use `agent` field instead." }),
+  ).annotate({ description: "@deprecated Use 'agent' field instead." }),
   agent: Schema.optional(
     Schema.StructWithRest(
       Schema.Struct({
@@ -125,8 +134,7 @@ export const Info = Schema.Struct({
       "Enable or configure formatters. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
   }),
   lsp: Schema.optional(ConfigLSPV1.Info).annotate({
-    description:
-      "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins, or an object to enable built-ins with overrides.",
+    description: "Enable or configure LSP servers. Omit or set to false to disable, true to enable built-ins with overrides.",
   }),
   instructions: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
     description: "Additional instruction files or patterns to include",
@@ -218,6 +226,6 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
-}).annotate({ identifier: "Config" })
+})
 
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
