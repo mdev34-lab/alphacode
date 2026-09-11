@@ -2,7 +2,6 @@ import * as Tool from "./tool"
 import DESCRIPTION from "./finish.txt"
 import { Effect, Schema } from "effect"
 import { Todo } from "../session/todo"
-import { Session } from "../session/session"
 import { Config } from "@/config/config"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 
@@ -20,7 +19,6 @@ export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
     const todo = yield* Todo.Service
-    const sessions = yield* Session.Service
     const config = yield* Config.Service
 
     return {
@@ -30,8 +28,7 @@ export const FinishTool = Tool.define(
         Effect.gen(function* () {
           const cfg = yield* config.get()
           const maxIterations = cfg.review_loop?.max_iterations ?? 5
-          const messages = yield* sessions.messages({ sessionID: ctx.sessionID })
-          const reviewState = reviewLoopState(messages, maxIterations)
+          const reviewState = reviewLoopState(ctx.messages, maxIterations)
           const gateError = finishGateError(reviewState)
           if (gateError) {
             yield* Effect.logWarning("finish blocked by review gate", {
@@ -41,7 +38,18 @@ export const FinishTool = Tool.define(
               maxIterations: reviewState.maxIterations,
               workSinceReview: reviewState.workSinceReview,
             })
-            return yield* Effect.fail(gateError)
+            return {
+              title: "Review required",
+              output: gateError.message,
+              metadata: {
+                review: {
+                  verdict: reviewState.verdict,
+                  reviews: reviewState.reviews,
+                  maxIterations: reviewState.maxIterations,
+                  termination: "blocked",
+                },
+              },
+            }
           }
 
           if (reviewState.verdict === "cap") {
@@ -84,7 +92,7 @@ export const FinishTool = Tool.define(
               },
             },
           }
-        }).pipe(Effect.orDie),
+        }),
     }
   }),
 )
