@@ -20,9 +20,15 @@ const onUncaughtException = (_error: Error) => {}
 process.on("unhandledRejection", onUnhandledRejection)
 process.on("uncaughtException", onUncaughtException)
 
+const processWorker = typeof process.send === "function"
+
 // Subscribe to global events and forward them via RPC
 GlobalBus.on("event", (event) => {
-  Rpc.emit("global.event", event)
+  if (processWorker) {
+    Rpc.emitProcess("global.event", event)
+  } else {
+    Rpc.emit("global.event", event)
+  }
 })
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
@@ -77,4 +83,8 @@ export const rpc = {
   },
 }
 
-Rpc.listen(rpc)
+if (processWorker) {
+  Rpc.listenProcess(rpc)
+} else {
+  Rpc.listen(rpc)
+}

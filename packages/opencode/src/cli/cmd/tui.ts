@@ -1,6 +1,7 @@
 import { cmd } from "@/cli/cmd/cmd"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "../tui/worker"
+import { createWorkerProcess } from "../tui/worker-process"
 import path from "path"
 import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
@@ -208,8 +209,6 @@ export const TuiThreadCommand = cmd({
         return
       }
 
-      // Resolve relative --project paths from PWD, then use the real cwd after
-      // chdir so the thread and worker share the same directory key.
       const next = resolveThreadDirectory(args.project)
       const file = await target()
       try {
@@ -219,13 +218,24 @@ export const TuiThreadCommand = cmd({
         return
       }
       const cwd = Filesystem.resolve(process.cwd())
+      const workerFile = typeof file === "string" ? file : fileURLToPath(file)
+      const network = resolveNetworkOptionsNoConfig(args)
+      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
+      const headers = external ? ServerAuth.headers() : undefined
 
-      const worker = new Worker(file, {
+      let client!: RpcClient
+      const worker = createWorkerProcess(workerFile, {
+        cwd,
         env: Object.fromEntries(
           Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
         ),
+        onRestart: async () => {
+          if (!external) return
+          const result = await client.call("server", network)
+          network.port = Number(new URL(result.url).port) || network.port
+        },
       })
-      const client = Rpc.client<typeof rpc>(worker)
+      client = Rpc.client<typeof rpc>(worker)
       const reload = () => {
         client.call("reload", undefined).catch(() => {})
       }
@@ -237,17 +247,11 @@ export const TuiThreadCommand = cmd({
         stopped = true
         process.off("SIGUSR2", reload)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
-        worker.terminate()
+        await worker.terminate()
       }
 
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
-
-      const network = resolveNetworkOptionsNoConfig(args)
-      const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
-
-      const headers = external ? ServerAuth.headers() : undefined
-
       const transport = external
         ? {
             url: (await client.call("server", network)).url,
@@ -260,6 +264,8 @@ export const TuiThreadCommand = cmd({
             fetch: createWorkerFetch(client),
             events: createEventSource(client),
           }
+
+      if (external) network.port = Number(new URL(transport.url).port) || network.port
 
       try {
         await validateSession({
@@ -319,4 +325,3 @@ export const TuiThreadCommand = cmd({
     process.exit(0)
   },
 })
-// scratch
