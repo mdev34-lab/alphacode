@@ -113,6 +113,8 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  readonly cancelForeground: (sessionID: SessionID) => Effect.Effect<void>
+  readonly cancelBackground: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
@@ -166,6 +168,16 @@ const layer = Layer.effect(
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       yield* state.cancel(sessionID)
+    })
+
+    const cancelForeground = Effect.fn("SessionPrompt.cancelForeground")(function* (sessionID: SessionID) {
+      yield* Effect.logInfo("cancel foreground", { "session.id": sessionID })
+      yield* state.cancelForeground(sessionID)
+    })
+
+    const cancelBackground = Effect.fn("SessionPrompt.cancelBackground")(function* (sessionID: SessionID) {
+      yield* Effect.logInfo("cancel background", { "session.id": sessionID })
+      yield* state.cancelBackground(sessionID)
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -1649,6 +1661,8 @@ const layer = Layer.effect(
 
     return Service.of({
       cancel,
+      cancelForeground,
+      cancelBackground,
       prompt,
       loop,
       shell,

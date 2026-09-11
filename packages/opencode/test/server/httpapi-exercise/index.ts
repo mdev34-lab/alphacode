@@ -1430,6 +1430,46 @@ const scenarios: Scenario[] = [
       check(body === true, "missing session abort should remain a no-op success")
     }),
   http.protected
+    .post("/session/{sessionID}/foreground_abort", "session.abortForeground")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Abort foreground session" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/foreground_abort", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check(body === true, "foreground abort should return true")
+    }),
+  http.protected
+    .post("/session/{sessionID}/foreground_abort", "session.abortForeground.missing")
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/foreground_abort", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check(body === true, "missing session foreground abort should remain a no-op success")
+    }),
+  http.protected
+    .post("/session/{sessionID}/background_abort", "session.abortBackground")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Abort background session" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/background_abort", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check(body === true, "background abort should return true")
+    }),
+  http.protected
+    .post("/session/{sessionID}/background_abort", "session.abortBackground.missing")
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/background_abort", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check(body === true, "missing session background abort should remain a no-op success")
+    }),
+  http.protected
     .post("/session/{sessionID}/init", "session.init")
     .preserveDatabase()
     .withLlm()

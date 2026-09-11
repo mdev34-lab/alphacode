@@ -175,7 +175,11 @@ import type {
   QuestionReplyErrors,
   QuestionReplyResponses,
   QuestionV2Reply,
+  SessionAbortBackgroundErrors,
+  SessionAbortBackgroundResponses,
   SessionAbortErrors,
+  SessionAbortForegroundErrors,
+  SessionAbortForegroundResponses,
   SessionAbortResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
@@ -3943,6 +3947,78 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SessionAbortResponses, SessionAbortErrors, ThrowOnError>({
       url: "/session/{sessionID}/abort",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Abort the session's foreground agent
+   *
+   * Abort the foreground agent's active turn without interrupting running background subagents.
+   */
+  public abortForeground<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionAbortForegroundResponses,
+      SessionAbortForegroundErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/foreground_abort",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Abort the session's background subagents
+   *
+   * Abort running background subagents owned by the session without interrupting the foreground agent.
+   */
+  public abortBackground<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionAbortBackgroundResponses,
+      SessionAbortBackgroundErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/background_abort",
       ...options,
       ...params,
     })

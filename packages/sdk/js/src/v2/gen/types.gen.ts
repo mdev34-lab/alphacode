@@ -10351,6 +10351,66 @@ export type SessionAbortResponses = {
 
 export type SessionAbortResponse = SessionAbortResponses[keyof SessionAbortResponses]
 
+export type SessionAbortForegroundData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/foreground_abort"
+}
+
+export type SessionAbortForegroundErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionAbortForegroundError = SessionAbortForegroundErrors[keyof SessionAbortForegroundErrors]
+
+export type SessionAbortForegroundResponses = {
+  /**
+   * Aborted foreground execution
+   */
+  200: boolean
+}
+
+export type SessionAbortForegroundResponse = SessionAbortForegroundResponses[keyof SessionAbortForegroundResponses]
+
+export type SessionAbortBackgroundData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/background_abort"
+}
+
+export type SessionAbortBackgroundErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionAbortBackgroundError = SessionAbortBackgroundErrors[keyof SessionAbortBackgroundErrors]
+
+export type SessionAbortBackgroundResponses = {
+  /**
+   * Aborted background subagents
+   */
+  200: boolean
+}
+
+export type SessionAbortBackgroundResponse = SessionAbortBackgroundResponses[keyof SessionAbortBackgroundResponses]
+
 export type SessionInitData = {
   body?: {
     modelID: string

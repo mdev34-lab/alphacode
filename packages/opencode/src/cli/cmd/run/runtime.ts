@@ -117,6 +117,7 @@ function createSessionResolver(fn?: CreateSession) {
 type RuntimeState = {
   shown: boolean
   aborting: boolean
+  abortingBackground: boolean
   model: RunInput["model"]
   providers: RunProvider[]
   variants: string[]
@@ -195,6 +196,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
   const state: RuntimeState = {
     shown: !session.first,
     aborting: false,
+    abortingBackground: false,
     model: ctx.model,
     providers: [],
     variants: [],
@@ -347,6 +349,21 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
         .catch(() => {})
         .finally(() => {
           state.aborting = false
+        })
+    },
+    onInterruptBackground: () => {
+      if (!hasSession(input, state) || state.abortingBackground) {
+        return
+      }
+
+      state.abortingBackground = true
+      void ctx.sdk.session
+        .abortBackground({
+          sessionID: state.sessionID,
+        })
+        .catch(() => {})
+        .finally(() => {
+          state.abortingBackground = false
         })
     },
     onBackground: () => {

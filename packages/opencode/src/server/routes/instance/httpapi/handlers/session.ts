@@ -257,6 +257,20 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const abortForeground = Effect.fn("SessionHttpApi.abortForeground")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      yield* promptSvc.cancelForeground(ctx.params.sessionID)
+      return true
+    })
+
+    const abortBackground = Effect.fn("SessionHttpApi.abortBackground")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      yield* promptSvc.cancelBackground(ctx.params.sessionID)
+      return true
+    })
+
     const init = Effect.fn("SessionHttpApi.init")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof InitPayload.Type
@@ -447,6 +461,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("update", update)
       .handleRaw("fork", forkRaw)
       .handle("abort", abort)
+      .handle("abortForeground", abortForeground)
+      .handle("abortBackground", abortBackground)
       .handle("init", init)
       .handle("share", share)
       .handle("unshare", unshare)
