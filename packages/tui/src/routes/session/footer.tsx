@@ -112,7 +112,6 @@ export function Footer() {
 
   onMount(() => {
     const timeouts: ReturnType<typeof setTimeout>[] = []
-
     function tick() {
       if (connected()) return
       if (!store.welcome) {
@@ -120,15 +119,12 @@ export function Footer() {
         timeouts.push(setTimeout(() => tick(), 5000))
         return
       }
-
       if (store.welcome) {
         setStore("welcome", false)
         timeouts.push(setTimeout(() => tick(), 10_000))
-        return
       }
     }
     timeouts.push(setTimeout(() => tick(), 10_000))
-
     onCleanup(() => timeouts.forEach(clearTimeout))
   })
 
