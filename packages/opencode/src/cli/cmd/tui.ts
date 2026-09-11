@@ -224,6 +224,8 @@ export const TuiThreadCommand = cmd({
       const headers = external ? ServerAuth.headers() : undefined
 
       let client!: RpcClient
+      let stopped = false
+      let stop!: () => Promise<void>
       const worker = createWorkerProcess(workerFile, {
         cwd,
         env: Object.fromEntries(
@@ -235,6 +237,7 @@ export const TuiThreadCommand = cmd({
           network.port = Number(new URL(result.url).port) || network.port
         },
         onExit: (exit: WorkerExit) => {
+          if (stopped) return
           UI.error(`Bun worker stopped unexpectedly (${exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code ?? "unknown"}`})`)
           process.exitCode = 1
         },
@@ -247,22 +250,28 @@ export const TuiThreadCommand = cmd({
 
       const forwardSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const
       const signalHandlers = new Map<(typeof forwardSignals)[number], () => void>()
-      for (const signal of forwardSignals) {
-        const handler = () => worker.signal(signal)
-        try {
-          process.on(signal, handler)
-          signalHandlers.set(signal, handler)
-        } catch {}
-      }
 
-      let stopped = false
-      const stop = async () => {
+      stop = async () => {
         if (stopped) return
         stopped = true
         process.off("SIGUSR2", reload)
         for (const [signal, handler] of signalHandlers) process.off(signal, handler)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
         await worker.terminate()
+      }
+
+      for (const signal of forwardSignals) {
+        const handler = () => {
+          worker.signal(signal)
+          void stop().finally(() => {
+            if (signal === "SIGHUP") return
+            process.exit(signal === "SIGINT" ? 130 : 143)
+          })
+        }
+        try {
+          process.on(signal, handler)
+          signalHandlers.set(signal, handler)
+        } catch {}
       }
 
       const prompt = await input(args.prompt)
