@@ -108,9 +108,7 @@ export function Footer() {
     }
   })
 
-  const [store, setStore] = createStore({
-    welcome: false,
-  })
+  const [store, setStore] = createStore({ welcome: false })
 
   onMount(() => {
     const timeouts: ReturnType<typeof setTimeout>[] = []
@@ -131,9 +129,7 @@ export function Footer() {
     }
     timeouts.push(setTimeout(() => tick(), 10_000))
 
-    onCleanup(() => {
-      timeouts.forEach(clearTimeout)
-    })
+    onCleanup(() => timeouts.forEach(clearTimeout))
   })
 
   return (
