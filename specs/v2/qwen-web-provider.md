@@ -100,6 +100,8 @@ Profile layout (under the AlphaCode data dir):
   <chromium files>
 ```
 
+⚠️ **Security note: the browser profile IS credential material.** It contains the authenticated Qwen session (cookies, localStorage, sessionStorage). Anyone with filesystem access to `<data>/qwen-web/browser-profile/` can impersonate the Qwen session. Treat it as you would an API key or OAuth token. The lockfile (`alphacode.lock`) prevents concurrent corruption but does not protect against malicious local access.
+
 Foreign navigations are healed: `ensureOnOrigin` steers stray pages back
 to `https://chat.qwen.ai` before any request.
 
@@ -119,6 +121,11 @@ Base origin `https://chat.qwen.ai`, JSON over page-context `fetch`:
   generic provider transform layer.
 - Generations run on fresh ephemeral chats by default
   (`QWEN_WEB_CHAT_MODE=temp`); `thread` mode reuses a persistent thread.
+  **`thread` mode is explicit opt-in:** it shares the same upstream Qwen
+  conversation across AlphaCode turns. This is intended for workflows that
+  deliberately want to reuse Qwen's conversation memory; it is NOT the
+  default because it can leak context between unrelated AlphaCode sessions
+  using the same Qwen account.
 - Cancellation propagates `AbortSignal` end to end: SDK -> session ->
   in-page `AbortController` registry plus an upstream stop request.
 
@@ -162,7 +169,9 @@ resolves them in the profile window.
 
 - One shared browser per process (`sharedBrowser`), one page per request
   context, stream slots serialized through a semaphore
-  (`QWEN_WEB_MAX_STREAMS`, default 4).
+  (`QWEN_WEB_MAX_STREAMS`, default 4). **Tunable via env var
+  `QWEN_WEB_MAX_STREAMS`** — reduce to 1-2 if Qwen rate-limits or
+  account limits are hit; increase only if the account quota allows.
 - Idle contexts close after `QWEN_WEB_IDLE_TIMEOUT_MS` (default 3 min;
   10 min while reasoning streams).
 - Model catalog caches for 5 minutes; thinking models keep longer idle
@@ -197,7 +206,7 @@ Environment:
 | `QWEN_WEB_NAVIGATION_TIMEOUT_MS` | `45000`                | Navigation budget               |
 | `QWEN_WEB_METADATA_TIMEOUT_MS`   | `60000`                | JSON request budget             |
 | `QWEN_WEB_IDLE_TIMEOUT_MS`       | `180000`               | Idle context shutdown           |
-| `QWEN_WEB_MAX_STREAMS`           | `4`                    | Concurrent stream slots         |
+| `QWEN_WEB_MAX_STREAMS`           | `4`                    | Concurrent stream slots (tunable; reduce if rate-limited) |
 
 ## Dependencies
 
@@ -265,6 +274,10 @@ Gates (all green on the feature branch):
 
 - Web-protocol drift: Qwen may change endpoints/payloads; `protocol.ts`
   centralizes them and unknown SSE events are ignored defensively.
+  **Monitoring:** watch for `verification_required` / `upstream_error` rate
+  increases after Qwen web updates; unknown SSE event logs (`debug` level)
+  indicate drift. Regression tests cover payload builders but not live
+  endpoints.
 - No headless CAPTCHA solving: verification pauses with a typed error.
 - Single page per request context; high parallelism is intentionally
   capped by the stream semaphore.

@@ -669,7 +669,11 @@ async function readPreview(stream: ReadableStream<Uint8Array>, maxBytes: number)
 }
 
 function readChatModeDefault(): QwenWebChatMode {
-  return process.env[QWEN_WEB_ENV.chatMode]?.toLowerCase() === "thread" ? "thread" : "temp"
+  const raw = process.env[QWEN_WEB_ENV.chatMode]?.toLowerCase()
+  if (raw === "thread" || raw === "thread-explicit") {
+    debug("session", "THREAD MODE ENABLED — shares upstream Qwen conversation across turns. This can leak context between unrelated AlphaCode sessions using the same Qwen account. Use QWEN_WEB_CHAT_MODE=thread-explicit to acknowledge.")
+  }
+  return raw === "thread-explicit" ? "thread" : "temp"
 }
 
 function readToolModeDefault(): QwenWebToolMode {
