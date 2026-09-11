@@ -30,7 +30,7 @@ export const FinishTool = Tool.define(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const messages = yield* sessions.messages({ sessionID: ctx.sessionID, limit: 200 })
+          const messages = yield* sessions.messages({ sessionID: ctx.sessionID })
           const verdict = latestReviewVerdict(messages)
           const gateError = finishGateError(verdict)
           if (gateError) {
