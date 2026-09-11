@@ -1,4 +1,4 @@
-type WorkerExit = {
+export type WorkerExit = {
   code: number | null
   signal: string | number | null
 }
@@ -147,6 +147,7 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
           resolveReady = resolve
           rejectReady = reject
         })
+        restarted.catch(() => {})
         launch()
         const replacement = current
         void Promise.resolve()
