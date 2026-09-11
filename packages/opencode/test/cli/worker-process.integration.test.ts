@@ -9,7 +9,7 @@ process.on("message", (message) => {
   if (message === "ping") process.send?.("pong")
   if (message === "crash") process.kill(process.pid, "SIGSEGV")
 })
-process.send?.("ready")
+setTimeout(() => process.send?.("ready"), 50)
 setInterval(() => {}, 1000)
 `
 

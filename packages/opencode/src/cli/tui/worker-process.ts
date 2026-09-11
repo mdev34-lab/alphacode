@@ -108,9 +108,11 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
   const finish = (exit: WorkerExit) => {
     resolveClosed(exit)
     if (stopping) return
-    void Promise.resolve(options.onExit?.(exit)).catch((error) => {
-      log(`[alphacode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
-    })
+    void Promise.resolve()
+      .then(() => options.onExit?.(exit))
+      .catch((error) => {
+        log(`[alphacode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
   }
 
   const launch = () => {
@@ -146,18 +148,20 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
           rejectReady = reject
         })
         launch()
-        Promise.resolve(options.onRestart?.()).then(
-          () => resolveReady(),
-          (error) => {
-            terminal = true
-            const failure = error instanceof Error ? error : new Error(String(error))
-            log(`[alphacode] worker restart hook failed: ${failure.message}`)
-            rejectReady(failure)
-            const replacement = current
-            replacement?.disconnect()
-            replacement?.kill("SIGTERM")
-          },
-        )
+        void Promise.resolve()
+          .then(() => options.onRestart?.())
+          .then(
+            () => resolveReady(),
+            (error) => {
+              terminal = true
+              const failure = error instanceof Error ? error : new Error(String(error))
+              log(`[alphacode] worker restart hook failed: ${failure.message}`)
+              rejectReady(failure)
+              const replacement = current
+              replacement?.disconnect()
+              replacement?.kill("SIGTERM")
+            },
+          )
         return
       }
 
