@@ -22,6 +22,8 @@ import {
   type QwenWebToolMode,
 } from "./constants"
 import {
+  CHALLENGE_NO_WINDOW_DETAIL,
+  CHALLENGE_WINDOW_OPEN_DETAIL,
   QwenWebError,
   abortedError,
   challengeError,
@@ -74,6 +76,13 @@ export interface QwenWebSessionOptions {
   /** Persistence for threads; defaults to the data dir. Tests inject a temp store. */
   store?: ThreadStore
 }
+
+/**
+ * Challenge errors already passed through reveal+enrich. The same error
+ * object can surface at several sites (pre-stream throw, setup-loop
+ * rethrow), and the headed relaunch must run only once per error.
+ */
+const enrichedChallenges = new WeakSet<QwenWebError>()
 
 export interface StartGenerationInput {
   prompt: string
@@ -158,7 +167,7 @@ export class QwenWebSession implements WebChatProvider {
       reasoning: input.reasoningMode !== "fast",
       referrer: chatReferrer(chatId),
     })
-    await this.ensureStreamable(response, chatId)
+    await this.ensureStreamable(response, chatId, signal)
     return { chatId, response }
   }
 
@@ -301,7 +310,7 @@ export class QwenWebSession implements WebChatProvider {
             referrer: chatReferrer(chatId),
           })
           trace("request sent")
-          await this.ensureStreamable(streamResponse, chatId)
+          await this.ensureStreamable(streamResponse, chatId, signal)
           trace("response usable")
           response = streamResponse
           break
@@ -317,6 +326,9 @@ export class QwenWebSession implements WebChatProvider {
         // The user node was never delivered upstream: roll it back.
         removeById(thread, fid)
         this.store.put(thread)
+        if (QwenWebError.isInstance(setupError) && setupError.code === "challenge") {
+          throw await this.enrichChallenge(setupError, signal)
+        }
         throw setupError
       }
 
@@ -485,7 +497,11 @@ export class QwenWebSession implements WebChatProvider {
           }
         }
       } catch (error) {
-        if (isAbortLike(error) || signal?.aborted) {
+        if (QwenWebError.isInstance(error) && error.code === "challenge") {
+          // Mid-stream challenge: open a visible window when possible, and
+          // say exactly what happened instead of promising a window.
+          failure = await this.enrichChallenge(error, signal)
+        } else if (isAbortLike(error) || signal?.aborted) {
           failure = abortedError()
         } else if (isStallTimeout(error)) {
           // The upstream went quiet without a terminating event. Recover the
@@ -602,9 +618,28 @@ export class QwenWebSession implements WebChatProvider {
     debug("session", "stop() called; shared transport lifecycle owned elsewhere", {})
   }
 
+  /** Reveal a headed window for a challenge; returns the detail naming what happened. */
+  private async challengeDetail(signal?: AbortSignal): Promise<string> {
+    const revealed = await this.transport.revealChallengeWindow(signal).catch(() => false)
+    return revealed ? CHALLENGE_WINDOW_OPEN_DETAIL : CHALLENGE_NO_WINDOW_DETAIL
+  }
+
+  /**
+   * Attach the reveal detail to a challenge error exactly once. The same
+   * error object can pass several sites (pre-stream throw -> setup-loop
+   * rethrow), and the reveal (headed relaunch) must run only once.
+   */
+  private async enrichChallenge(error: QwenWebError, signal?: AbortSignal): Promise<QwenWebError> {
+    if (enrichedChallenges.has(error)) return error
+    enrichedChallenges.add(error)
+    error.message += ` ${await this.challengeDetail(signal)}`
+    return error
+  }
+
   private async ensureStreamable(
     response: { status: number; contentType: string; stream: ReadableStream<Uint8Array>; abort: () => void },
     chatId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const contentType = response.contentType.toLowerCase()
     if (
@@ -622,7 +657,7 @@ export class QwenWebSession implements WebChatProvider {
       contentType,
     })
     if (isWafMessage(preview) || isHtmlBody(preview) || contentType.includes("text/html")) {
-      if (isWafMessage(preview)) throw challengeError()
+      if (isWafMessage(preview)) throw await this.enrichChallenge(challengeError(), signal)
       throw sessionExpiredError("Qwen returned a login page instead of a stream.")
     }
     if (contentType.includes("application/json") || preview.trimStart().startsWith("{")) {

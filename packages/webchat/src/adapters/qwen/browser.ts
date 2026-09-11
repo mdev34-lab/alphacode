@@ -399,6 +399,7 @@ export class QwenWebBrowser {
   private context: QwenWebContext | undefined
   private page: QwenWebPage | undefined
   private launching: Promise<QwenWebContext> | undefined
+  private challengeReveal: Promise<boolean> | undefined
   private contextDead = false
   private pageDead = false
   private lockHeldFor: string | undefined
@@ -449,6 +450,44 @@ export class QwenWebBrowser {
   }
 
   /**
+   * Reveal a visible window for a mid-run human-verification challenge.
+   *
+   * Headless cannot be toggled on a live persistent context, so a running
+   * headless browser is closed and relaunched headed. Returns true when a
+   * headed window is now showing (already headed, or relaunched). Returns
+   * false when no window can open: headless was explicitly requested, or
+   * no display is available. Callers must then say so instead of
+   * promising a window.
+   */
+  async revealForChallenge(signal?: AbortSignal): Promise<boolean> {
+    if (!this.headless) return true
+    if (this.headlessExplicit || !hasDisplay()) return false
+    if (this.challengeReveal) return this.challengeReveal
+
+    const inFlightLaunch = this.launching
+    if (inFlightLaunch) {
+      await inFlightLaunch.catch(() => {})
+      if (this.launching === inFlightLaunch) this.launching = undefined
+    }
+
+    debug("browser", "relaunching headed so the user can solve the verification challenge")
+    const operation = this.restartWithHeadless(signal, false)
+      .then(() => {
+        this.headless = false
+        return true
+      })
+      .catch(async (error) => {
+        // Roll back the logical mode and clean up any partially-created headed context.
+        await this.close()
+        throw error
+      })
+    this.challengeReveal = operation.finally(() => {
+      this.challengeReveal = undefined
+    })
+    return this.challengeReveal
+  }
+
+  /**
    * Open the Qwen login page on the main page for an interactive login.
    * The user logs in normally; callers poll `detectAuthState` (or use
    * `waitForLogin`) to observe completion. Already-authenticated profiles
@@ -484,12 +523,19 @@ export class QwenWebBrowser {
 
   /** Ensure a live context + main page. Launches the browser on first use. */
   async ensure(signal?: AbortSignal): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
+    return this.ensureInternal(signal)
+  }
+
+  private async ensureInternal(
+    signal?: AbortSignal,
+    headlessOverride?: boolean,
+  ): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
     if (this.context && !this.contextDead) {
       const page = await this.ensurePage()
       return { context: this.context, page }
     }
     if (!this.launching) {
-      this.launching = this.launch(signal).finally(() => {
+      this.launching = this.launch(signal, headlessOverride).finally(() => {
         this.launching = undefined
       })
     }
@@ -504,14 +550,14 @@ export class QwenWebBrowser {
     return page
   }
 
-  private async launch(signal?: AbortSignal): Promise<QwenWebContext> {
+  private async launch(signal?: AbortSignal, headless = this.headless): Promise<QwenWebContext> {
     await acquireProfileLock(this.profileDir, QWEN_WEB_DEFAULTS.profileLockTimeoutMs, signal)
     this.lockHeldFor = this.profileDir
     try {
-      debug("browser", `launching Chromium (headless=${this.headless})`, { profileDir: this.profileDir })
+      debug("browser", `launching Chromium (headless=${headless})`, { profileDir: this.profileDir })
       const startedAt = Date.now()
       const context = await this.launcher(this.profileDir, {
-        headless: this.headless,
+        headless,
         navigationTimeoutMs: this.navigationTimeoutMs,
         pageTimeoutMs: this.pageTimeoutMs,
       })
@@ -701,6 +747,9 @@ export class QwenWebBrowser {
       if (state === "authenticated") return
       if (state === "challenge" && !sawChallenge) {
         sawChallenge = true
+        // Best effort: surface a visible window so the user has somewhere
+        // to solve the challenge; the wait continues regardless.
+        await this.revealForChallenge(signal).catch(() => false)
         debug("browser", "human-verification challenge visible; waiting for the user to solve it manually")
       }
       if (Date.now() >= deadline) {
@@ -731,9 +780,16 @@ export class QwenWebBrowser {
 
   /** Restart the browser (used after crashes / dead contexts). */
   async restart(signal?: AbortSignal): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
+    return this.restartWithHeadless(signal)
+  }
+
+  private async restartWithHeadless(
+    signal?: AbortSignal,
+    headlessOverride?: boolean,
+  ): Promise<{ context: QwenWebContext; page: QwenWebPage }> {
     debug("browser", "restarting")
     await this.close()
-    return this.ensure(signal)
+    return this.ensureInternal(signal, headlessOverride)
   }
 
   /** Drop the cached main page so the next use recreates it. */

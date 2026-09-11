@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   abortedError,
+  CHALLENGE_WINDOW_OPEN_DETAIL,
   challengeError,
   classifyJsonError,
   classifyStatus,
@@ -36,6 +37,9 @@ describe("QwenWebError", () => {
     expect(sessionExpiredError().status).toBe(401)
     expect(challengeError().code).toBe("challenge")
     expect(challengeError().message).toMatch(/never solves challenges/i)
+    // The default never promises a window that was never opened.
+    expect(challengeError().message).toContain("No browser window could be opened")
+    expect(challengeError(CHALLENGE_WINDOW_OPEN_DETAIL).message).toContain("visible browser window")
   })
 
   test("abortedError is AbortError-shaped", () => {

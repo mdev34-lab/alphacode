@@ -225,6 +225,15 @@ export class QwenWebTransport {
     return reasoning ? this.reasoningIdleTimeoutMs : this.idleTimeoutMs
   }
 
+  /**
+   * Relaunch the browser headed so the user can solve a verification
+   * challenge. True when a visible window is showing; false when no
+   * window can open (explicit headless, no display).
+   */
+  async revealChallengeWindow(signal?: AbortSignal): Promise<boolean> {
+    return this.browser.revealForChallenge(signal)
+  }
+
   /** One-shot JSON/text request executed inside the page. */
   async requestJson(method: string, path: string, options?: RequestOptions): Promise<JsonResponse> {
     const signal = options?.signal

@@ -304,6 +304,111 @@ describe("login behavior", () => {
   })
 })
 
+describe("revealForChallenge", () => {
+  test("explicit headless never opens a window", async () => {
+    let launches = 0
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      headless: true,
+      launcher: async () => {
+        launches++
+        return fakeContext([fakePage()])
+      },
+    })
+    expect(await browser.revealForChallenge()).toBe(false)
+    expect(launches).toBe(0)
+    await browser.close()
+  })
+
+  test("already-headed browser needs no relaunch", async () => {
+    let launches = 0
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      headless: false,
+      launcher: async () => {
+        launches++
+        return fakeContext([fakePage()])
+      },
+    })
+    expect(await browser.revealForChallenge()).toBe(true)
+    expect(launches).toBe(0)
+    await browser.close()
+  })
+
+  test.skipIf(!hasDisplay())("headless browser relaunches headed", async () => {
+    delete process.env["QWEN_WEB_HEADLESS"]
+    const launchedHeadless: boolean[] = []
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      launcher: async (_profileDir, options) => {
+        launchedHeadless.push(options.headless)
+        return fakeContext([fakePage()])
+      },
+    })
+    await browser.ensure()
+    expect(launchedHeadless).toEqual([true])
+    expect(await browser.revealForChallenge()).toBe(true)
+    expect(launchedHeadless).toEqual([true, false])
+    await browser.close()
+  })
+
+  test("restores headless state when the headed relaunch fails", async () => {
+    delete process.env["QWEN_WEB_HEADLESS"]
+    if (process.platform !== "darwin" && process.platform !== "win32") process.env["DISPLAY"] = ":1"
+    const launchedHeadless: boolean[] = []
+    let launches = 0
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      launcher: async (_profileDir, options) => {
+        launchedHeadless.push(options.headless)
+        launches++
+        // Every headed launch fails: the retry must attempt (and fail) again
+        // rather than finding a live headed browser or flipping headless early.
+        if (!options.headless) throw new Error("headed relaunch failed")
+        return fakeContext([fakePage()])
+      },
+    })
+    await browser.ensure()
+    await expect(browser.revealForChallenge()).rejects.toThrow("headed relaunch failed")
+    await expect(browser.revealForChallenge()).rejects.toThrow("headed relaunch failed")
+    expect(launchedHeadless).toEqual([true, false, false])
+    await browser.close()
+  })
+
+  test("concurrent reveals share one headed relaunch", async () => {
+    delete process.env["QWEN_WEB_HEADLESS"]
+    if (process.platform !== "darwin" && process.platform !== "win32") process.env["DISPLAY"] = ":1"
+    const launchedHeadless: boolean[] = []
+    let releaseRelaunch!: () => void
+    const relaunchGate = new Promise<void>((resolve) => {
+      releaseRelaunch = resolve
+    })
+    let launches = 0
+    const browser = new QwenWebBrowser({
+      profileDir: tmpProfile(),
+      launcher: async (_profileDir, options) => {
+        launchedHeadless.push(options.headless)
+        launches++
+        if (launches === 2) await relaunchGate
+        return fakeContext([fakePage()])
+      },
+    })
+    await browser.ensure()
+    const first = browser.revealForChallenge()
+    const second = browser.revealForChallenge()
+    const secondSettledEarly = await Promise.race([
+      second.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 20)),
+    ])
+    expect(secondSettledEarly).toBe(false)
+    releaseRelaunch()
+    await expect(first).resolves.toBe(true)
+    await expect(second).resolves.toBe(true)
+    expect(launchedHeadless).toEqual([true, false])
+    await browser.close()
+  })
+})
+
 describe("patchrightLaunchOptions", () => {
   const options = patchrightLaunchOptions(false)
 

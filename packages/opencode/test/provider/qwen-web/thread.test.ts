@@ -245,4 +245,75 @@ describe("QwenWebSession thread engine", () => {
     await sessionInstance.deleteThread({ thread })
     expect(await sessionInstance.readThread({ thread })).toBe(thread)
   })
+
+  describe("mid-stream challenge reveal", () => {
+    const CHALLENGE_LINE = 'data: {"error":{"code":"waf_challenge","message":"please complete the captcha"}}\n'
+
+    async function runChallengeTurn(revealed: boolean) {
+      const captured: Captured = { payloads: [], chatCreated: 0, stops: [] }
+      let revealCalls = 0
+      const transport = {
+        ...fakeTransport([CREATED("r1", "c1"), CHALLENGE_LINE], captured, false),
+        revealChallengeWindow: async () => {
+          revealCalls++
+          return revealed
+        },
+      } as unknown as QwenWebTransport
+      const sessionInstance = new QwenWebSession({ transport, store: freshStore() })
+      const thread = await sessionInstance.ensureThread({ model: "qwen3-max" })
+      const errors: Array<{ code?: string; message?: string }> = []
+      for await (const event of sessionInstance.runTurn({ thread, content: "hi" })) {
+        if (event.type === "error") errors.push(event.error as { code?: string; message?: string })
+      }
+      return { errors, revealCalls }
+    }
+
+    test("names the opened window when reveal succeeds", async () => {
+      const { errors, revealCalls } = await runChallengeTurn(true)
+      expect(revealCalls).toBe(1)
+      expect(errors).toHaveLength(1)
+      expect(errors[0].code).toBe("challenge")
+      expect(errors[0].message).toContain("visible browser window has been opened")
+    })
+
+    test("says no window when reveal fails", async () => {
+      const { errors, revealCalls } = await runChallengeTurn(false)
+      expect(revealCalls).toBe(1)
+      expect(errors).toHaveLength(1)
+      expect(errors[0].code).toBe("challenge")
+      expect(errors[0].message).toContain("No browser window could be opened")
+    })
+
+    test("pre-stream challenge reveals the window exactly once", async () => {
+      const captured: Captured = { payloads: [], chatCreated: 0, stops: [] }
+      let revealCalls = 0
+      const transport = {
+        ...fakeTransport([], captured, false),
+        rawRequestStream: async () => ({
+          status: 403,
+          contentType: "text/plain",
+          stream: byteStream(["FAIL_SYS_USER_VALIDATE"]),
+          abort: () => {},
+        }),
+        revealChallengeWindow: async () => {
+          revealCalls++
+          return true
+        },
+      } as unknown as QwenWebTransport
+      const sessionInstance = new QwenWebSession({ transport, store: freshStore() })
+      const thread = await sessionInstance.ensureThread({ model: "qwen3-max" })
+      // Pre-stream failures reject the turn (the user node was never delivered).
+      const error = await sessionInstance
+        .runTurn({ thread, content: "hi" })
+        .next()
+        .then(() => undefined)
+        .catch((e: unknown) => e)
+      // One reveal total: the pre-stream throw and the setup-loop rethrow
+      // share the same error object, and enrichment runs once per error.
+      expect(revealCalls).toBe(1)
+      expect(error).toBeInstanceOf(Error)
+      expect((error as { code?: string }).code).toBe("challenge")
+      expect((error as { message?: string }).message).toContain("visible browser window has been opened")
+    })
+  })
 })

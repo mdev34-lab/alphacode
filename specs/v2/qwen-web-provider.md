@@ -162,8 +162,11 @@ typed `session_expired` / `upstream_error` codes.
 and feed the standard retry path; page/context loss invalidates the page
 so the next request rebuilds it. Rate limits surface as `rate_limited`
 with upstream backoff hints preserved; human-verification challenges
-surface as `verification_required` and pause automation until the user
-resolves them in the profile window.
+surface as `challenge` and pause automation. On challenge detection the
+browser relaunches headed (`revealForChallenge`) so the user gets a real
+visible window to solve it in — unless headless was explicitly requested
+or no display exists, in which case the error says so instead of
+promising a window (`CHALLENGE_NO_WINDOW_DETAIL`).
 
 ## Concurrency and performance
 

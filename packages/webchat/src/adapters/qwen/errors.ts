@@ -75,15 +75,23 @@ export function sessionExpiredError(detail?: string): QwenWebError {
   })
 }
 
+/** Detail when a visible challenge window was opened for the user. */
+export const CHALLENGE_WINDOW_OPEN_DETAIL =
+  "A visible browser window has been opened — solve the challenge there, then retry."
+/** Detail when no visible window can open (explicit headless, no display). */
+export const CHALLENGE_NO_WINDOW_DETAIL =
+  "No browser window could be opened (headless mode with no display, or QWEN_WEB_HEADLESS is set). " +
+  "Open chat.qwen.ai in your own browser to check for verification prompts, then retry."
+
 export function challengeError(detail?: string): QwenWebError {
   return new QwenWebError({
     code: "challenge",
     retryable: false,
     status: 403,
     message:
-      "Qwen is showing a human-verification challenge. Complete it in the browser window, then retry. " +
+      "Qwen is showing a human-verification challenge, which paused this run. " +
       "AlphaCode never solves challenges automatically. " +
-      (detail ?? ""),
+      (detail ?? CHALLENGE_NO_WINDOW_DETAIL),
   })
 }
 
