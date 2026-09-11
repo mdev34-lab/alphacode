@@ -60,6 +60,8 @@ export function parseVerdict(output: string): Verdict {
 
   const verdict = /^approved$/i.test(match[1]) ? "approved" : "needs-fixes"
   if (verdict !== "approved") return verdict
+  if (!/####\s*Critical[^\n]*\n/i.test(output)) return "unknown"
+  if (!/####\s*Important[^\n]*\n/i.test(output)) return "unknown"
 
   const findings = severityFindings(output)
   return findings === "" ? "approved" : "unknown"
