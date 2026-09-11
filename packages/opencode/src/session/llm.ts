@@ -362,6 +362,7 @@ const live: Layer.Layer<
             ProviderTransform.providerOptions(input.model, prepared.params.options),
             input.agent.name,
             input.small,
+            input.sessionID,
           ),
           activeTools: Object.keys(prepared.tools).filter((x) => x !== "invalid"),
           tools: prepared.tools,

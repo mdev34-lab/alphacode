@@ -1433,16 +1433,18 @@ export function withQwenWebThreadScope(
   providerOptions: { [x: string]: any },
   agentName: string | undefined,
   small: boolean | undefined,
+  sessionID?: string,
 ) {
   if (agentName === undefined && !small) return providerOptions
   const qwen = providerOptions["qwen-web"]
   const opts = typeof qwen === "object" && qwen !== null && !Array.isArray(qwen) ? qwen : {}
   if (opts.threadId !== undefined) return providerOptions
+  const sessionSuffix = sessionID ? `:${sessionID.slice(-8)}` : ""
   return {
     ...providerOptions,
     "qwen-web": {
       ...opts,
-      threadId: `${agentName ?? "default"}${small ? ":title" : ""}`,
+      threadId: `${agentName ?? "default"}${sessionSuffix}${small ? ":title" : ""}`,
       ...(small !== undefined ? { small } : {}),
     },
   }

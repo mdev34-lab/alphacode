@@ -24,6 +24,7 @@ import { QWEN_WEB_PROVIDER_ID, type QwenWebReasoningMode } from "@opencode-ai/we
 import { QwenWebError, isAbortLike } from "@opencode-ai/webchat/adapters/qwen/errors"
 import { debug } from "@opencode-ai/webchat/adapters/qwen/log"
 import { toUpstreamModelId } from "@opencode-ai/webchat/adapters/qwen/protocol"
+import { randomId } from "@opencode-ai/webchat/adapters/qwen/protocol"
 import { buildToolInstructions, buildToolReminder, functionTools, renderPrompt, type QwenWebToolDefinition } from "./prompt"
 import { QwenWebSession } from "@opencode-ai/webchat/adapters/qwen/session"
 import { lastAnchored } from "@opencode-ai/webchat/thread"
@@ -78,12 +79,14 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
   private readonly options: QwenWebModelOptions
   private readonly session: QwenWebSession
   private readonly upload: QwenWebUpload
+  private readonly instanceId: string
 
   constructor(modelId: string, options?: QwenWebModelOptions) {
     this.modelId = modelId
     this.options = options ?? {}
     this.session = options?.session ?? new QwenWebSession()
     this.upload = options?.upload ?? new QwenWebUpload()
+    this.instanceId = randomId()
   }
 
   async doGenerate(options: LanguageModelV3CallOptions): Promise<LanguageModelV3GenerateResult> {
@@ -249,10 +252,11 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
     return { stream }
   }
 
-  private threadScope(options: LanguageModelV3CallOptions): string | undefined {
+  private threadScope(options: LanguageModelV3CallOptions): string {
     const providerOptions = (options.providerOptions?.[QWEN_WEB_PROVIDER_ID] ?? {}) as Record<string, unknown>
     const threadId = providerOptions["threadId"]
-    return typeof threadId === "string" && threadId ? threadId : undefined
+    if (typeof threadId === "string" && threadId) return threadId
+    return this.instanceId
   }
 
   private isLite(options: LanguageModelV3CallOptions): boolean {
