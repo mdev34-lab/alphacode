@@ -100,12 +100,13 @@ describe("TUI worker process", () => {
     })
 
     children[0].resolveExit(1, "SIGSEGV")
-    await Promise.resolve()
+    const firstRestart = worker.restarted
+    await new Promise((resolve) => setTimeout(resolve, 0))
     children[1].resolveExit(1, "SIGSEGV")
-    await Promise.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     hooks[0].reject(new Error("stale server restart failed"))
-    await Promise.resolve()
+    await expect(firstRestart).rejects.toThrow("stale server restart failed")
 
     expect(children).toHaveLength(3)
     expect(children[2].killed).toBe(false)
