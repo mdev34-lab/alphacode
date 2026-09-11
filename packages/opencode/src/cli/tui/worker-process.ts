@@ -32,12 +32,17 @@ type Spawn = (command: string[], options: SpawnOptions) => Subprocess
 const CRASH_SIGNALS = new Set(["SIGABRT", "SIGBUS", "SIGFPE", "SIGILL", "SIGSEGV", "SIGSYS", "SIGTRAP"])
 const CRASH_SIGNAL_NUMBERS = new Set([4, 5, 6, 7, 8, 11, 12])
 const WINDOWS_CRASH_CODES = new Set([0xc0000005, 0xc000001d, 0xc0000094, 0xc0000409])
+// abort() exits 134 where POSIX signals do not exist (Windows). It is the
+// exit-code counterpart of SIGABRT and always means abnormal termination,
+// so it classifies as a crash on every platform.
+const ABORT_EXIT_CODE = 134
 const MAX_RESTARTS = 3
 
 function isCrash(signal: string | number | null, code: number | null) {
   if (typeof signal === "string") return CRASH_SIGNALS.has(signal)
   if (typeof signal === "number") return CRASH_SIGNAL_NUMBERS.has(signal)
   if (typeof code !== "number") return false
+  if (code === ABORT_EXIT_CODE) return true
   return WINDOWS_CRASH_CODES.has(code >>> 0)
 }
 
@@ -55,9 +60,34 @@ export interface WorkerProcessOptions {
   spawn?: Spawn
 }
 
+/**
+ * Crash-restart contract for the isolated Bun worker:
+ *
+ * - The worker is a crash-only boundary. When the underlying process dies,
+ *   `onclose` fires with the exit reason BEFORE any replacement is launched,
+ *   and every in-flight call is rejected. Nothing is replayed: a call that
+ *   was in flight during a crash has unknown effects, so the higher level
+ *   must decide whether and how to retry.
+ * - `onclose` therefore means "this transport died", not "the worker is
+ *   gone for good" — a replacement follows automatically for crashes
+ *   (bounded by `maxRestarts`), and `onRestart` re-establishes parent-side
+ *   state (e.g. re-issuing the server listen) on the new process.
+ * - Only crash-classified exits restart (see `isWorkerCrash`). Clean exits,
+ *   shutdowns, and plain `exit code 1` terminate via `closed` instead.
+ */
 export interface WorkerProcess extends WorkerMessageTarget {
-  readonly restarted: Promise<void>
   readonly closed: Promise<WorkerExit>
+  /**
+   * Wait for the earliest crash-restart cycle whose outcome is still unknown
+   * (or the next cycle to start when every known outcome already settled).
+   * Resolves once the replacement is spawned and `onRestart` settles;
+   * rejects if the restart hook fails.
+   *
+   * This is NOT a readiness signal: the replacement process may still be
+   * initializing when this resolves. Wait for application-level readiness
+   * (first message, successful RPC) separately.
+   */
+  waitForRestart(): Promise<void>
   terminate(): Promise<void>
   signal(signal: string | number): void
 }
@@ -71,7 +101,16 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
   let stopping = false
   let terminal = false
   let restarts = 0
-  let restarted = Promise.resolve()
+  type RestartWaiter = { resolve: () => void; reject: (error: Error) => void }
+  type RestartCycle = { waiters: RestartWaiter[] }
+  // Cycles whose restart hook has not settled yet, oldest first. A waiter
+  // joins the earliest cycle whose outcome is still unknown at registration
+  // time — or waits for the next cycle to start when every known outcome is
+  // already settled. Either way a waiter registered before (or while)
+  // triggering a crash always observes that crash's outcome, and overlapping
+  // crashes fan their waiters out to the matching cycles.
+  let openCycles: RestartCycle[] = []
+  let queuedWaiters: RestartWaiter[] = []
   let resolveClosed!: (exit: WorkerExit) => void
   const closed = new Promise<WorkerExit>((resolve) => {
     resolveClosed = resolve
@@ -79,10 +118,6 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
 
   const transport = {} as WorkerProcess
   Object.defineProperties(transport, {
-    restarted: {
-      enumerable: true,
-      get: () => restarted,
-    },
     closed: {
       enumerable: true,
       value: closed,
@@ -90,6 +125,17 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
   })
   transport.onmessage = null
   transport.onclose = null
+  transport.waitForRestart = () => {
+    const waiter = new Promise<void>((resolve, reject) => {
+      const open = openCycles[0]
+      if (open) open.waiters.push({ resolve, reject })
+      else queuedWaiters.push({ resolve, reject })
+    })
+    // A fire-and-forget waiter must not surface as an unhandled rejection;
+    // awaiting callers still observe the original settlement.
+    waiter.catch(() => {})
+    return waiter
+  }
   transport.postMessage = (data) => {
     if (!current) throw new Error("Bun worker is not running")
     current.send(data)
@@ -141,22 +187,24 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
       if (crash && restarts < maxRestarts) {
         restarts += 1
         log(`[alphacode] Bun worker crashed (${describeExit(exit)}); restarting (${restarts}/${maxRestarts})...`)
-        let resolveReady!: () => void
-        let rejectReady!: (error: Error) => void
-        restarted = new Promise<void>((resolve, reject) => {
-          resolveReady = resolve
-          rejectReady = reject
-        })
-        restarted.catch(() => {})
+        const cycle: RestartCycle = { waiters: queuedWaiters }
+        queuedWaiters = []
+        openCycles.push(cycle)
+        const settleCycle = (action: (waiter: RestartWaiter) => void) => {
+          openCycles = openCycles.filter((open) => open !== cycle)
+          for (const waiter of cycle.waiters) action(waiter)
+        }
         launch()
         const replacement = current
         void Promise.resolve()
           .then(() => options.onRestart?.())
           .then(
-            () => resolveReady(),
+            () => {
+              settleCycle((waiter) => waiter.resolve())
+            },
             (error) => {
               const failure = error instanceof Error ? error : new Error(String(error))
-              rejectReady(failure)
+              settleCycle((waiter) => waiter.reject(failure))
               if (replacement !== current || terminal || stopping) return
               terminal = true
               log(`[alphacode] worker restart hook failed: ${failure.message}`)

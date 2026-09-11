@@ -55,7 +55,7 @@ describe("TUI worker process", () => {
     worker.postMessage(JSON.stringify({ type: "rpc.request", id: 1, method: "work" }))
 
     children[0].resolveExit(1, "SIGSEGV")
-    await worker.restarted
+    await worker.waitForRestart()
 
     expect(children).toHaveLength(2)
     expect(children[0].sent).toHaveLength(1)
@@ -100,7 +100,7 @@ describe("TUI worker process", () => {
     })
 
     children[0].resolveExit(1, "SIGSEGV")
-    const firstRestart = worker.restarted
+    const firstRestart = worker.waitForRestart()
     await new Promise((resolve) => setTimeout(resolve, 0))
     children[1].resolveExit(1, "SIGSEGV")
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -110,8 +110,11 @@ describe("TUI worker process", () => {
 
     expect(children).toHaveLength(3)
     expect(children[2].killed).toBe(false)
+    // Subscribe before completing the second hook: a waiter registered after
+    // its cycle already settled would never fire.
+    const secondRestart = worker.waitForRestart()
     hooks[1].resolve()
-    await worker.restarted
+    await secondRestart
     await worker.terminate()
   })
 
@@ -132,10 +135,12 @@ describe("TUI worker process", () => {
     })
 
     children[0].resolveExit(1, "SIGSEGV")
-    await expect(worker.restarted).rejects.toThrow("server restart failed")
+    await expect(worker.waitForRestart()).rejects.toThrow("server restart failed")
     expect(children).toHaveLength(2)
     expect(children[1].killed).toBe(true)
-    await expect(worker.closed).resolves.toMatchObject({ signal: null })
+    // The parent kills the replacement after the hook failure, so closed
+    // carries that terminal SIGTERM exit rather than the original crash.
+    await expect(worker.closed).resolves.toMatchObject({ code: 0, signal: "SIGTERM" })
     await worker.terminate()
   })
 
@@ -160,6 +165,8 @@ describe("TUI worker process", () => {
     expect(isWorkerCrash(11, null)).toBe(true)
     expect(isWorkerCrash(15, null)).toBe(false)
     expect(isWorkerCrash(null, 0xc0000005)).toBe(true)
+    expect(isWorkerCrash(null, 134)).toBe(true)
+    expect(isWorkerCrash(null, 1)).toBe(false)
     expect(isWorkerCrash(null, 0)).toBe(false)
   })
 })
