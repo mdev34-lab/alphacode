@@ -29,14 +29,11 @@ export function parseReviewVerdict(output: string): Exclude<ReviewVerdict, "pend
   return match[1].toLowerCase() === "approved" ? "approved" : "needs-fixes"
 }
 
-function isToolPart(part: SessionV1.Part): part is SessionV1.ToolPart {
-  return part.type === "tool"
-}
-
-function isReviewTask(part: SessionV1.Part): part is SessionV1.ToolPart {
-  if (!isToolPart(part) || part.tool !== "task") return false
+function isReviewTask(part: SessionV1.ToolPart) {
+  if (part.tool !== "task") return false
   if (typeof part.state.input !== "object" || part.state.input === null) return false
-  return (part.state.input as Record<string, unknown>).subagent_type === "review"
+  const input = part.state.input as Record<string, unknown>
+  return input.subagent_type === "review" && input.background === false
 }
 
 function isPotentiallyMutatingTool(part: SessionV1.ToolPart) {
@@ -45,12 +42,16 @@ function isPotentiallyMutatingTool(part: SessionV1.ToolPart) {
 }
 
 function isSyntheticUser(message: SessionV1.WithParts) {
-  return message.info.role === "user" && message.parts.length > 0 && message.parts.every((part) => "synthetic" in part && part.synthetic === true)
+  return (
+    message.info.role === "user" &&
+    message.parts.length > 0 &&
+    message.parts.every((part) => "synthetic" in part && part.synthetic === true)
+  )
 }
 
 /**
  * Derive the review gate from persisted parent-session history. Only a completed
- * review after the latest potentially-mutating operation can authorize finish.
+ * synchronous review after the latest potentially-mutating operation can authorize finish.
  * Synthetic user messages inserted by the loop are continuation nudges, not new turns.
  */
 export function reviewLoopState(messages: readonly SessionV1.WithParts[], maxIterations = 5): ReviewLoopState {
@@ -64,7 +65,7 @@ export function reviewLoopState(messages: readonly SessionV1.WithParts[], maxIte
 
   for (const message of current) {
     for (const part of message.parts) {
-      if (!isToolPart(part)) continue
+      if (part.type !== "tool") continue
 
       if (isReviewTask(part)) {
         if (part.state.status !== "completed") {
