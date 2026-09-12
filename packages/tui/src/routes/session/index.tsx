@@ -82,7 +82,9 @@ import { capOutputLines } from "../../util/cap-lines"
 import {
   activityHeader,
   computeActivityGroups,
+  resolveActivityExpanded,
   summarizeActivity,
+  toggleActivityOverride,
   toolPartOutcome,
   type ActivityGroupPart,
   type ActivityGroups,
@@ -247,11 +249,10 @@ export function Session() {
       })),
     ),
   )
-  const activityExpanded = (groupID: string) => activityAllExpanded() || activityOverrides[groupID] === true
+  const activityExpanded = (groupID: string) =>
+    resolveActivityExpanded(activityOverrides[groupID], activityAllExpanded())
   const toggleActivity = (groupID: string) => {
-    // Set undefined instead of false so collapsed groups leave no residue
-    // behind in the override map.
-    setActivityOverrides(groupID, activityExpanded(groupID) ? undefined : true)
+    setActivityOverrides(groupID, toggleActivityOverride(activityOverrides[groupID], activityAllExpanded()))
   }
   const clearActivityOverrides = () => {
     // setStore merges, so clearing requires removing every key explicitly.
@@ -308,7 +309,8 @@ export function Session() {
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
   const [activityAllExpanded, setActivityAllExpanded] = kv.signal("activity_groups_expanded", false)
-  // Values are only ever `true`; `undefined` removes a key (solid store merges).
+  // Per-group overrides; only groups differing from the global default are
+  // stored, `undefined` follows the global default (solid store merges).
   const [activityOverrides, setActivityOverrides] = createStore<Record<string, boolean | undefined>>({})
 
   const wide = createMemo(() => dimensions().width > 120)

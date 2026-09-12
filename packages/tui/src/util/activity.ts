@@ -144,6 +144,27 @@ export function summarizeActivity(parts: readonly ToolPart[]): ActivitySummary {
   return { count: parts.length, working, failed, denied, interrupted, durationMs }
 }
 
+export type ActivityExpandedOverride = boolean | undefined
+
+// A group's expanded state is its explicit per-group override when the user
+// toggled it, otherwise it follows the global expand-all/collapse-all
+// default. Resolving never writes: a newly rendered group with no override
+// simply follows the default without touching any other group's toggle.
+export function resolveActivityExpanded(override: ActivityExpandedOverride, allExpanded: boolean): boolean {
+  return override ?? allExpanded
+}
+
+// The override to store after toggling a group. Overrides that match the
+// global default are cleared so the map only holds groups that differ from
+// the default and collapsed groups leave no residue behind.
+export function toggleActivityOverride(
+  override: ActivityExpandedOverride,
+  allExpanded: boolean,
+): ActivityExpandedOverride {
+  const next = !resolveActivityExpanded(override, allExpanded)
+  return next === allExpanded ? undefined : next
+}
+
 export type ActivityHeader = {
   marker: "▸" | "▾"
   main: string

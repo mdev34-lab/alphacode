@@ -3,7 +3,9 @@ import type { AssistantMessage, ToolPart, UserMessage } from "@opencode-ai/sdk/v
 import {
   activityHeader,
   computeActivityGroups,
+  resolveActivityExpanded,
   summarizeActivity,
+  toggleActivityOverride,
   toolPartOutcome,
   type ActivityRow,
 } from "../../src/util/activity"
@@ -531,5 +533,38 @@ describe("activityHeader", () => {
       { expanded: false, duration: "1.0s" },
     )
     expect(denied).toMatchObject({ marker: "▸", note: "denied" })
+  })
+})
+
+describe("activity expanded overrides", () => {
+  test("follows the global default without an override", () => {
+    expect(resolveActivityExpanded(undefined, false)).toBe(false)
+    expect(resolveActivityExpanded(undefined, true)).toBe(true)
+  })
+
+  test("an explicit override wins over the global default", () => {
+    expect(resolveActivityExpanded(true, false)).toBe(true)
+    expect(resolveActivityExpanded(false, true)).toBe(false)
+  })
+
+  test("toggling stores only overrides that differ from the default", () => {
+    // collapsed -> expanded
+    expect(toggleActivityOverride(undefined, false)).toBe(true)
+    // expanded -> collapsed clears back to the default
+    expect(toggleActivityOverride(true, false)).toBe(undefined)
+    // expanded (via global) -> collapsed stores an explicit false
+    expect(toggleActivityOverride(undefined, true)).toBe(false)
+    // collapsed (via override) -> expanded clears back to the default
+    expect(toggleActivityOverride(false, true)).toBe(undefined)
+  })
+
+  test("toggling twice returns to the previous state", () => {
+    for (const allExpanded of [false, true]) {
+      for (const override of [undefined, true, false] as const) {
+        const once = toggleActivityOverride(override, allExpanded)
+        const twice = toggleActivityOverride(once, allExpanded)
+        expect(resolveActivityExpanded(twice, allExpanded)).toBe(resolveActivityExpanded(override, allExpanded))
+      }
+    }
   })
 })
