@@ -132,49 +132,41 @@ Invoke-Step "Reinstall globally" {
   Remove-Item -LiteralPath $destOld -Force -ErrorAction SilentlyContinue
 
   $swapped = $false
-  if (Test-Path -LiteralPath $destExe) {
-    # Preserve the previous binary before stopping any process or overwriting
-    # it, so every install path retains a rollback target.
-    try {
-      Rename-Item -LiteralPath $destExe -NewName "alphacode.exe.old" -ErrorAction Stop
-      $swapped = $true
-      if ($KillRunning) {
-        Write-Host "Preserved previous binary before stopping running sessions."
-      } else {
-        Write-Host "Swapped running binary aside (no session killed)."
-      }
-    } catch {
-      if (-not $KillRunning) {
-        throw "Cannot swap $destExe aside (still locked?). Close the TUI session and rerun, or pass -KillRunning."
-      }
-    }
-  }
-
-  if ($KillRunning) {
-    for ($round = 1; $round -le 3; $round++) {
-      $running = @(Get-Process -Name "alphacode" -ErrorAction SilentlyContinue)
-      if ($running.Count -eq 0) { break }
-      Write-Host "Stopping $($running.Count) running alphacode process(es) (round $round)..." -ForegroundColor Yellow
-      $running | Stop-Process -Force
-      Start-Sleep -Seconds 2
-    }
-    $leftover = @(Get-Process -Name "alphacode" -ErrorAction SilentlyContinue)
-    if ($leftover.Count -gt 0) {
-      throw "Could not stop alphacode (PIDs $($leftover.Id -join ',')). Close it manually and rerun."
-    }
-
-    if ((Test-Path -LiteralPath $destExe) -and -not $swapped) {
+  try {
+    if (Test-Path -LiteralPath $destExe) {
+      # Preserve the previous binary before stopping any process or overwriting
+      # it, so every install path retains a rollback target.
       try {
         Rename-Item -LiteralPath $destExe -NewName "alphacode.exe.old" -ErrorAction Stop
         $swapped = $true
-        Write-Host "Preserved previous binary after stopping running sessions."
+        Write-Host "Preserved previous binary before installation."
       } catch {
-        throw "Cannot swap $destExe aside after stopping alphacode."
+        if (-not $KillRunning) {
+          throw "Cannot swap $destExe aside (still locked?). Close the TUI session and rerun, or pass -KillRunning."
+        }
       }
     }
-  }
 
-  try {
+    if ($KillRunning) {
+      for ($round = 1; $round -le 3; $round++) {
+        $running = @(Get-Process -Name "alphacode" -ErrorAction SilentlyContinue)
+        if ($running.Count -eq 0) { break }
+        Write-Host "Stopping $($running.Count) running alphacode process(es) (round $round)..." -ForegroundColor Yellow
+        $running | Stop-Process -Force
+        Start-Sleep -Seconds 2
+      }
+      $leftover = @(Get-Process -Name "alphacode" -ErrorAction SilentlyContinue)
+      if ($leftover.Count -gt 0) {
+        throw "Could not stop alphacode (PIDs $($leftover.Id -join ',')). Close it manually and rerun."
+      }
+
+      if ((Test-Path -LiteralPath $destExe) -and -not $swapped) {
+        Rename-Item -LiteralPath $destExe -NewName "alphacode.exe.old" -ErrorAction Stop
+        $swapped = $true
+        Write-Host "Preserved previous binary after stopping running sessions."
+      }
+    }
+
     # Copy with retries: AV scanners and lazy closes can hold the new file
     # briefly even after the old one is gone.
     $copied = $false
@@ -199,12 +191,12 @@ Invoke-Step "Reinstall globally" {
       throw "Version mismatch: expected '$Version' in '$reported'"
     }
   } catch {
-    # Treat copy + smoke test as one transaction. Never leave a known-bad new
-    # binary installed when the previous binary is still recoverable.
+    # Treat backup, process termination, copy, and smoke test as one
+    # transaction. Never leave a known-bad install or an orphaned backup.
     Remove-Item -LiteralPath $destExe -Force -ErrorAction SilentlyContinue
     if ($swapped -and (Test-Path -LiteralPath $destOld)) {
       Rename-Item -LiteralPath $destOld -NewName "alphacode.exe" -ErrorAction SilentlyContinue
-      Write-Host "Restored previous binary after install/smoke-test failure." -ForegroundColor Yellow
+      Write-Host "Restored previous binary after install failure." -ForegroundColor Yellow
     }
     throw
   }
