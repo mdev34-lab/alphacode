@@ -27,7 +27,7 @@ import { ToastProvider } from "../../../src/ui/toast"
 import { LocationProvider } from "../../../src/context/location"
 import { OPENCODE_BASE_MODE, OpencodeKeymapProvider, registerOpencodeKeymap, useBindings } from "../../../src/keymap"
 import { ActivityGroup, AssistantMessageRow, SessionContext } from "../../../src/routes/session"
-import { computeActivityGroups } from "../../../src/util/activity"
+import { computeActivityGroups, resolveActivityExpanded, toggleActivityOverride } from "../../../src/util/activity"
 
 const SESSION = "ses_activity_ui"
 const BASE = 1_700_000_000_000
@@ -164,7 +164,7 @@ async function mountActivity(options: {
   let scroll: ScrollBoxRenderable | undefined
   const [allExpanded, setAllExpanded] = createSignal(false)
   const [overrides, setOverrides] = createStore<Record<string, boolean | undefined>>({})
-  const isExpanded = (groupID: string) => allExpanded() || overrides[groupID] === true
+  const isExpanded = (groupID: string) => resolveActivityExpanded(overrides[groupID], allExpanded())
 
   function KeymapBindings() {
     const tui = useTuiConfig()
@@ -224,7 +224,8 @@ async function mountActivity(options: {
       activity: () => activity(),
       activityAllExpanded: () => allExpanded(),
       activityExpanded: isExpanded,
-      toggleActivity: (groupID: string) => setOverrides(groupID, isExpanded(groupID) ? undefined : true),
+      toggleActivity: (groupID: string) =>
+        setOverrides(groupID, toggleActivityOverride(overrides[groupID], allExpanded())),
     }
     return (
       <OpencodeKeymapProvider keymap={keymap}>
@@ -879,6 +880,144 @@ describe("activity group TUI", () => {
       // Three substantive turns, each with content, each gets its own footer
       const footerMarkers = (frame.match(/▣/g) || []).length
       expect(footerMarkers).toBe(3)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("collapsing an expanded group keeps it collapsed across live updates", async () => {
+    const { app, sync } = await mountActivity()
+    try {
+      const { m1, m2, t1, t2 } = twoRunningTools()
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2] },
+      ])
+      await app.waitForFrame((frame: string) => frame.includes("Working... 2 tool calls"))
+      expect(frameOf(app)).toContain("▸")
+
+      // collapsed -> expanded
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      expect(frameOf(app)).toContain("▾")
+
+      // expanded -> collapsed
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      expect(frameOf(app)).toContain("▸")
+
+      // Live updates must not reopen a collapsed group.
+      const t3 = running(m2.id, "bash", { command: "bun test" }, 1200)
+      reseedParts(sync, { [m1.id]: [completed(t1, 1000, 1400)], [m2.id]: [t2, t3] })
+      await app.waitForFrame((frame: string) => frame.includes("Working... 3 tool calls"))
+      const collapsed = frameOf(app)
+      expect(collapsed).toContain("▸")
+      expect(collapsed).not.toContain("▾")
+      expect(collapsed).not.toContain("Read src/a.ts")
+      expect(collapsed).not.toContain("bun test")
+
+      // The toggle still works after updates.
+      await app.mockMouse.click(5, rowOf(collapsed, "Working... 3 tool calls"))
+      await app.waitForFrame((frame: string) => frame.includes("bun test") && frame.includes("Read src/a.ts"))
+      expect(frameOf(app)).toContain("▾")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("toggles each group independently while live updates stream in", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m2.id, "read", { filePath: "src/b.ts" }, 1100)
+      // Created before t3/t4 so its part id sorts ahead of them in the store.
+      const note = textPart(m3.id, "In between.")
+      const t3 = running(m3.id, "read", { filePath: "src/c.ts" }, 1200)
+      const t4 = running(m3.id, "read", { filePath: "src/d.ts" }, 1300)
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2] },
+        { message: m3, parts: [note, t3, t4] },
+      ])
+      await app.waitForFrame(
+        (frame: string) => frame.includes("In between.") && frame.match(/Working... 2 tool calls/g)?.length === 2,
+      )
+
+      // Expand only the first group.
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      expect(frameOf(app)).not.toContain("Read src/c.ts")
+
+      // Updates to both groups preserve each toggle state.
+      const t5 = running(m3.id, "read", { filePath: "src/e.ts" }, 1400)
+      reseedParts(sync, { [m1.id]: [completed(t1, 1000, 1500)], [m3.id]: [note, t3, t4, t5] })
+      await app.waitForFrame((frame: string) => frame.includes("Working... 3 tool calls"))
+      const afterUpdate = frameOf(app)
+      expect(afterUpdate).toContain("Read src/a.ts")
+      expect(afterUpdate).toContain("Read src/b.ts")
+      expect(afterUpdate).not.toContain("Read src/c.ts")
+      expect(afterUpdate).not.toContain("Read src/e.ts")
+
+      // Expanding the second group leaves the first expanded.
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 3 tool calls"))
+      await app.waitForFrame((frame: string) => frame.includes("Read src/c.ts") && frame.includes("Read src/e.ts"))
+      expect(frameOf(app)).toContain("Read src/a.ts")
+
+      // Collapsing the first group leaves the second expanded.
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      const final = frameOf(app)
+      expect(final).not.toContain("Read src/b.ts")
+      expect(final).toContain("Read src/c.ts")
+      expect(final).toContain("Read src/e.ts")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("collapses one group while all groups are expanded", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m2.id, "read", { filePath: "src/b.ts" }, 1100)
+      // Created before t3/t4 so its part id sorts ahead of them in the store.
+      const note = textPart(m3.id, "In between.")
+      const t3 = running(m3.id, "read", { filePath: "src/c.ts" }, 1200)
+      const t4 = running(m3.id, "read", { filePath: "src/d.ts" }, 1300)
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2] },
+        { message: m3, parts: [note, t3, t4] },
+      ])
+      await app.waitForFrame(
+        (frame: string) => frame.includes("In between.") && frame.match(/Working... 2 tool calls/g)?.length === 2,
+      )
+
+      // Expand everything globally.
+      app.mockInput.pressKey("o", { ctrl: true })
+      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts") && frame.includes("Read src/c.ts"))
+      expect(frameOf(app).match(/▾/g)?.length).toBe(2)
+
+      // Clicking one group collapses only that group.
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      const oneCollapsed = frameOf(app)
+      expect(oneCollapsed).not.toContain("Read src/b.ts")
+      expect(oneCollapsed).toContain("Read src/c.ts")
+      expect(oneCollapsed).toContain("Read src/d.ts")
+      expect(oneCollapsed.match(/▸/g)?.length).toBe(1)
+      expect(oneCollapsed.match(/▾/g)?.length).toBe(1)
+
+      // Clicking it again re-expands it.
+      await app.mockMouse.click(5, rowOf(oneCollapsed, "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts") && frame.includes("Read src/c.ts"))
+      expect(frameOf(app).match(/▾/g)?.length).toBe(2)
     } finally {
       app.renderer.destroy()
     }
