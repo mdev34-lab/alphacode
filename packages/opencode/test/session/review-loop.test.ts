@@ -105,18 +105,26 @@ describe("runtime review gate", () => {
     expect(parseReviewVerdict("The implementation looks good, but no final assessment was emitted.")).toBeUndefined()
   })
 
-  test("requires review for a mutating turn even when no review exists yet", () => {
-    const state = reviewLoopState([userMessage(), toolMessage("edit")])
-
-    expect(state.verdict).toBe("pending")
-    expect(finishGateError(state)).toBeInstanceOf(Error)
-  })
-
   test("allows no-tool turns to finish without review", () => {
     const state = reviewLoopState([userMessage()])
 
     expect(state.verdict).toBe("none")
     expect(finishGateError(state)).toBeUndefined()
+  })
+
+  test("allows read-only tool turns to finish without review", () => {
+    expect(reviewLoopState([userMessage(), toolMessage("read")]).verdict).toBe("none")
+    expect(reviewLoopState([userMessage(), toolMessage("shell")]).verdict).toBe("none")
+    expect(reviewLoopState([userMessage(), toolMessage("grep")]).verdict).toBe("none")
+    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("shell")]))).toBeUndefined()
+  })
+
+  test("requires review for file-writing tools even when no review exists yet", () => {
+    for (const tool of ["edit", "write", "apply_patch"]) {
+      const state = reviewLoopState([userMessage(), toolMessage(tool)])
+      expect(state.verdict).toBe("pending")
+      expect(finishGateError(state)).toBeInstanceOf(Error)
+    }
   })
 
   test("requires an explicit synchronous review", () => {
@@ -160,14 +168,19 @@ describe("runtime review gate", () => {
     expect(state.verdict).toBe("pending")
   })
 
-  test("uses explicit review-safe metadata instead of a denylist", () => {
+  test("requires review only for file-writing tools", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
     expect(
       reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read", { reviewSafe: true })])
         .verdict,
     ).toBe("approved")
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read")]).verdict).toBe("pending")
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read")]).verdict).toBe(
+      "approved",
+    )
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("shell")]).verdict).toBe(
+      "approved",
+    )
     expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")]).verdict).toBe("pending")
     expect(
       finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")])),

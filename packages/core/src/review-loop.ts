@@ -117,10 +117,17 @@ function isReviewSafeTool(part: ReviewHistoryPart) {
   return reviewLoop?.reviewSafe === true
 }
 
+function isFileWritingTool(part: ReviewHistoryPart) {
+  if (part.type !== "tool" || typeof part.tool !== "string") return false
+  if (part.state?.status !== "completed") return false
+  const fileWritingTools = new Set(["edit", "write", "apply_patch"])
+  return fileWritingTools.has(part.tool)
+}
+
 function isPotentiallyMutatingTool(part: ReviewHistoryPart) {
   if (part.type !== "tool" || typeof part.tool !== "string") return false
   if (part.tool === "finish" || isReviewTask(part)) return false
-  return !isReviewSafeTool(part)
+  return isFileWritingTool(part)
 }
 
 function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefined {
@@ -134,8 +141,9 @@ function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefin
 /**
  * Evaluate the current user turn. Synthetic continuation messages are deliberately
  * ignored as turn boundaries so a review/fix cycle cannot reset its counter.
- * Unknown tools are treated as mutating; a tool must explicitly advertise the
- * review-safe metadata before it can leave an approval intact.
+ * Only file-writing tools (edit, write, apply_patch) count as work that requires
+ * review. Read-only tools like read, grep, shell, glob, etc. do not trigger the
+ * review gate even without explicit review-safe metadata.
  */
 export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIterations = 5): ReviewLoopState {
   const max = Number.isFinite(maxIterations) && maxIterations > 0 ? maxIterations : 1
