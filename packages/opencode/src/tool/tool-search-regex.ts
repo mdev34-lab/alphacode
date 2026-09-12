@@ -63,5 +63,4 @@ export const ToolSearchRegexTool = Tool.define(
         }),
     }
   }),
-  { reviewSafe: true },
 )

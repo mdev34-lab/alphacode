@@ -15,8 +15,8 @@ interface Metadata {
 }
 
 export type ToolMetadata = {
-  /** The tool does not change work that would require a fresh review. */
-  readonly reviewSafe?: boolean
+  /** The tool writes files and therefore starts a review cycle. */
+  readonly writesFiles?: boolean
 }
 
 // TODO: remove this hack
@@ -112,7 +112,7 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
     Effect.gen(function* () {
       const toolInfo = typeof init === "function" ? { ...(yield* init()) } : { ...init }
       const reviewMetadata =
-        definitionMetadata?.reviewSafe === true ? { [REVIEW_LOOP_METADATA]: { reviewSafe: true } } : undefined
+        definitionMetadata?.writesFiles === true ? { [REVIEW_LOOP_METADATA]: { writesFiles: true } } : undefined
       // Compile the parser closure once per tool init; `decodeUnknownEffect`
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.

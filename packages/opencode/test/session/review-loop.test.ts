@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url"
 import { REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { finishGateError, parseReviewVerdict, reviewLoopState } from "../../src/session/review-loop"
+import { ApplyPatchTool } from "../../src/tool/apply_patch"
+import { EditTool } from "../../src/tool/edit"
+import { WriteTool } from "../../src/tool/write"
 
 const promptDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/session/prompt")
 const toolDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/tool")
@@ -40,7 +43,7 @@ function reviewMessage(output: string, options?: { status?: "completed" | "runni
   } as unknown as SessionV1.WithParts
 }
 
-function toolMessage(tool: string, options?: { reviewSafe?: boolean }) {
+function toolMessage(tool: string, options?: { writesFiles?: boolean }) {
   return {
     info: { role: "assistant" },
     parts: [
@@ -51,7 +54,7 @@ function toolMessage(tool: string, options?: { reviewSafe?: boolean }) {
           status: "completed",
           input: {},
           output: "done",
-          ...(options?.reviewSafe ? { metadata: { [REVIEW_LOOP_METADATA]: { reviewSafe: true } } } : {}),
+          ...(options?.writesFiles ? { metadata: { [REVIEW_LOOP_METADATA]: { writesFiles: true } } } : {}),
         },
       },
     ],
@@ -85,10 +88,10 @@ describe("mandatory review loop prompt contract", () => {
     expect(finish).not.toContain('termination: "blocked"')
   })
 
-  test("persistent-state tools do not advertise review-safe metadata", async () => {
-    for (const name of ["attachment.ts", "plan.ts", "todo.ts"]) {
-      expect(await readTool(name)).not.toContain("reviewSafe: true")
-    }
+  test("file-writing tools advertise writes-files metadata", () => {
+    expect(EditTool.metadata).toEqual({ writesFiles: true })
+    expect(WriteTool.metadata).toEqual({ writesFiles: true })
+    expect(ApplyPatchTool.metadata).toEqual({ writesFiles: true })
   })
 })
 
@@ -114,14 +117,15 @@ describe("runtime review gate", () => {
 
   test("allows read-only tool turns to finish without review", () => {
     expect(reviewLoopState([userMessage(), toolMessage("read")]).verdict).toBe("none")
-    expect(reviewLoopState([userMessage(), toolMessage("shell")]).verdict).toBe("none")
+    expect(reviewLoopState([userMessage(), toolMessage("bash")]).verdict).toBe("none")
     expect(reviewLoopState([userMessage(), toolMessage("grep")]).verdict).toBe("none")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("shell")]))).toBeUndefined()
+    expect(reviewLoopState([userMessage(), toolMessage("future_writer")]).verdict).toBe("none")
+    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("bash")]))).toBeUndefined()
   })
 
-  test("requires review for file-writing tools even when no review exists yet", () => {
-    for (const tool of ["edit", "write", "apply_patch"]) {
-      const state = reviewLoopState([userMessage(), toolMessage(tool)])
+  test("requires review for tools that declare file writes even when no review exists yet", () => {
+    for (const tool of ["edit", "write", "apply_patch", "future_writer"]) {
+      const state = reviewLoopState([userMessage(), toolMessage(tool, { writesFiles: true })])
       expect(state.verdict).toBe("pending")
       expect(finishGateError(state)).toBeInstanceOf(Error)
     }
@@ -131,24 +135,24 @@ describe("runtime review gate", () => {
     const background = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", { background: true })
     const synchronous = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), background]).verdict).toBe("pending")
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), synchronous]).verdict).toBe("approved")
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), background]).verdict).toBe("pending")
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), synchronous]).verdict).toBe("approved")
   })
 
   test("does not treat a synthetic continuation nudge as a new turn", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
-    const state = reviewLoopState([userMessage(), toolMessage("edit"), approved, syntheticNudge()])
+    const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, syntheticNudge()])
 
     expect(state.verdict).toBe("approved")
   })
 
   test("forces two work/review cycles when the first review finds fixes", () => {
     const findings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
-    const fixed = toolMessage("edit")
+    const fixed = toolMessage("edit", { writesFiles: true })
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
-    const firstCycle = reviewLoopState([userMessage(), toolMessage("edit"), findings])
-    const secondCycle = reviewLoopState([userMessage(), toolMessage("edit"), findings, fixed, approved])
+    const firstCycle = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), findings])
+    const secondCycle = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), findings, fixed, approved])
 
     expect(firstCycle.reviews).toBe(1)
     expect(firstCycle.verdict).toBe("needs-fixes")
@@ -160,30 +164,34 @@ describe("runtime review gate", () => {
 
   test("ignores earlier user turns when deriving the current review gate", () => {
     const earlierApproved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
-    const earlierTurn = [userMessage(), toolMessage("edit"), earlierApproved]
-    const currentTurn = [userMessage(), toolMessage("edit")]
+    const earlierTurn = [userMessage(), toolMessage("edit", { writesFiles: true }), earlierApproved]
+    const currentTurn = [userMessage(), toolMessage("edit", { writesFiles: true })]
     const state = reviewLoopState([...earlierTurn, ...currentTurn])
 
     expect(state.reviews).toBe(0)
     expect(state.verdict).toBe("pending")
   })
 
-  test("requires review only for file-writing tools", () => {
+  test("requires review only for declared file-writing tools", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
     expect(
-      reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read", { reviewSafe: true })])
-        .verdict,
+      reviewLoopState([
+        userMessage(),
+        toolMessage("edit", { writesFiles: true }),
+        approved,
+        toolMessage("read"),
+      ]).verdict,
     ).toBe("approved")
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read")]).verdict).toBe(
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("read")]).verdict).toBe(
       "approved",
     )
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("shell")]).verdict).toBe(
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("bash")]).verdict).toBe(
       "approved",
     )
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")]).verdict).toBe("pending")
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("edit", { writesFiles: true })]).verdict).toBe("pending")
     expect(
-      finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")])),
+      finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("edit", { writesFiles: true })])),
     ).toBeInstanceOf(Error)
   })
 
@@ -192,7 +200,7 @@ describe("runtime review gate", () => {
     const secondFindings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
 
     const state = reviewLoopState(
-      [userMessage(), toolMessage("edit"), findings, toolMessage("edit"), secondFindings],
+      [userMessage(), toolMessage("edit", { writesFiles: true }), findings, toolMessage("edit", { writesFiles: true }), secondFindings],
       2,
     )
 
@@ -206,9 +214,9 @@ describe("runtime review gate", () => {
     const running = reviewMessage("", { status: "running" })
     const malformed = reviewMessage("review failed before producing an assessment")
 
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), running]).verdict).toBe("pending")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), running]))).toBeInstanceOf(Error)
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), malformed]).verdict).toBe("pending")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), malformed]))).toBeInstanceOf(Error)
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), running]).verdict).toBe("pending")
+    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), running]))).toBeInstanceOf(Error)
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), malformed]).verdict).toBe("pending")
+    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), malformed]))).toBeInstanceOf(Error)
   })
 })

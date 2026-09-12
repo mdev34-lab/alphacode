@@ -41,5 +41,4 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
         }).pipe(Effect.orDie),
     }
   }),
-  { reviewSafe: true },
 )
