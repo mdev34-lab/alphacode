@@ -132,15 +132,21 @@ Invoke-Step "Reinstall globally" {
   Remove-Item -LiteralPath $destOld -Force -ErrorAction SilentlyContinue
 
   $swapped = $false
-  if ((Test-Path -LiteralPath $destExe) -and -not $KillRunning) {
-    # Renaming a running image is allowed on Windows; only writing to it is
-    # locked. Swap aside so a live TUI session is never killed.
+  if (Test-Path -LiteralPath $destExe) {
+    # Preserve the previous binary before stopping any process or overwriting
+    # it, so every install path retains a rollback target.
     try {
       Rename-Item -LiteralPath $destExe -NewName "alphacode.exe.old" -ErrorAction Stop
       $swapped = $true
-      Write-Host "Swapped running binary aside (no session killed)."
+      if ($KillRunning) {
+        Write-Host "Preserved previous binary before stopping running sessions."
+      } else {
+        Write-Host "Swapped running binary aside (no session killed)."
+      }
     } catch {
-      throw "Cannot swap $destExe aside (still locked?). Close the TUI session and rerun, or pass -KillRunning."
+      if (-not $KillRunning) {
+        throw "Cannot swap $destExe aside (still locked?). Close the TUI session and rerun, or pass -KillRunning."
+      }
     }
   }
 
@@ -155,6 +161,16 @@ Invoke-Step "Reinstall globally" {
     $leftover = @(Get-Process -Name "alphacode" -ErrorAction SilentlyContinue)
     if ($leftover.Count -gt 0) {
       throw "Could not stop alphacode (PIDs $($leftover.Id -join ',')). Close it manually and rerun."
+    }
+
+    if ((Test-Path -LiteralPath $destExe) -and -not $swapped) {
+      try {
+        Rename-Item -LiteralPath $destExe -NewName "alphacode.exe.old" -ErrorAction Stop
+        $swapped = $true
+        Write-Host "Preserved previous binary after stopping running sessions."
+      } catch {
+        throw "Cannot swap $destExe aside after stopping alphacode."
+      }
     }
   }
 
