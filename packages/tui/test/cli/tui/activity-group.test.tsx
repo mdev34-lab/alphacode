@@ -77,6 +77,24 @@ function completed(part: ToolPart, start: number, end: number): ToolPart {
   }
 }
 
+// A settled to-do call renders as its own "# Todos" block in the transcript.
+function todoBlock(messageID: string, content: string, start: number, end: number): ToolPart {
+  const todos = [{ content, status: "pending" }]
+  return toolPart(
+    messageID,
+    "todowrite",
+    { todos },
+    {
+      status: "completed",
+      input: { todos },
+      output: "",
+      title: "",
+      metadata: { todos },
+      time: { start, end },
+    },
+  )
+}
+
 async function waitUntil(fn: () => boolean, timeout = 5000) {
   const start = Date.now()
   while (!fn()) {
@@ -112,6 +130,20 @@ function rowOf(frame: string, needle: string): number {
   const row = frame.split("\n").findIndex((line) => line.includes(needle))
   if (row === -1) throw new Error(`needle "${needle}" not found in frame:\n${frame}`)
   return row
+}
+
+function rowOfNth(frame: string, needle: string, occurrence: number): number {
+  let seen = 0
+  const rows = frame.split("\n")
+  for (let index = 0; index < rows.length; index++) {
+    if (!rows[index].includes(needle)) continue
+    if (seen++ === occurrence - 1) return index
+  }
+  throw new Error(`needle "${needle}" found ${seen} of ${occurrence} times in frame:\n${frame}`)
+}
+
+function countOf(frame: string, needle: string): number {
+  return frame.split("\n").filter((line) => line.includes(needle)).length
 }
 
 function findGroup(sync: Sync): string | undefined {
@@ -657,6 +689,177 @@ describe("activity group TUI", () => {
       // The excluded calls render as their own native rows regardless.
       expect(frame).toContain("Completing task...")
       expect(frame).toContain("Updating todos...")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("closes the Working block at a to-do call and opens a new one after it", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m2.id, "grep", { pattern: "alpha" }, 1100)
+      const todo = todoBlock(m2.id, "Plan the fix", 1300, 1400)
+      const t3 = running(m3.id, "bash", { command: "bun test" }, 1600)
+      const t4 = running(m3.id, "edit", { filePath: "src/b.ts" }, 1700)
+      // Without the to-do call all four tool calls stream into one working run.
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2] },
+        { message: m3, parts: [t3, t4] },
+      ])
+      await app.waitForFrame((frame: string) => frame.includes("Working... 4 tool calls"))
+
+      // The to-do call lands inside that run: it ends the block above it and the
+      // work after it opens a fresh block instead of resuming the old one.
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2, todo] },
+        { message: m3, parts: [t3, t4] },
+      ])
+      await app.waitForFrame((frame: string) => countOf(frame, "Working... 2 tool calls") === 2)
+      const frame = frameOf(app)
+      expect(frame).not.toContain("Working... 3 tool calls")
+      expect(frame).not.toContain("Working... 4 tool calls")
+      // The to-do renders as its own top-level block, between the two runs.
+      expect(frame).toContain("Plan the fix")
+      expect(rowOf(frame, "Working... 2 tool calls")).toBeLessThan(rowOf(frame, "# Todos"))
+      expect(rowOf(frame, "# Todos")).toBeLessThan(rowOfNth(frame, "Working... 2 tool calls", 2))
+      // Both blocks keep the usual collapsed behaviour.
+      expect(frame).not.toContain("Read src/a.ts")
+      expect(frame).not.toContain("bun test")
+
+      // The block closed by the to-do call finalizes on its own timing: neither
+      // the to-do call nor the continued work stretches it.
+      reseedParts(sync, {
+        [m1.id]: [completed(t1, 1000, 2400)],
+        [m2.id]: [completed(t2, 1100, 2400), todo],
+      })
+      await app.waitForFrame((frame: string) => frame.includes("Worked for 1.4s · 2 tool calls"))
+      const done = frameOf(app)
+      expect(done).toContain("Worked for 1.4s · 2 tool calls")
+      expect(done).toContain("Working... 2 tool calls")
+      expect(done).not.toContain("Worked for 1.4s · 3 tool calls")
+      expect(done).not.toContain("Worked for 1.4s · 4 tool calls")
+      expect(rowOf(done, "Worked for 1.4s · 2 tool calls")).toBeLessThan(rowOf(done, "# Todos"))
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("does not resume a streaming Working block when a to-do call lands", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m1.id, "grep", { pattern: "alpha" }, 1100)
+      const todo = running(m1.id, "todowrite", { todos: [] }, 1200)
+      const t3 = running(m2.id, "bash", { command: "bun test" }, 1300)
+      const t4 = running(m2.id, "edit", { filePath: "src/b.ts" }, 1400)
+      seed(sync, [{ message: m1, parts: [t1, t2] }])
+      await app.waitForFrame((frame: string) => frame.includes("Working... 2 tool calls"))
+
+      // A to-do call that is still running closes the open block right away: it
+      // never counts toward the block and does not wait for its own settlement.
+      reseedParts(sync, { [m1.id]: [t1, t2, todo] })
+      await app.waitForFrame((frame: string) => frame.includes("Updating todos..."))
+      expect(frameOf(app)).not.toContain("Working... 3 tool calls")
+
+      seed(sync, [
+        { message: m1, parts: [t1, t2, todo] },
+        { message: m2, parts: [t3, t4] },
+      ])
+      await app.waitForFrame((frame: string) => countOf(frame, "Working... 2 tool calls") === 2)
+      const frame = frameOf(app)
+      expect(frame).not.toContain("Working... 3 tool calls")
+      expect(frame).not.toContain("Working... 4 tool calls")
+      expect(rowOf(frame, "Working... 2 tool calls")).toBeLessThan(rowOf(frame, "Updating todos..."))
+      expect(rowOf(frame, "Updating todos...")).toBeLessThan(rowOfNth(frame, "Working... 2 tool calls", 2))
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("renders sequential to-do calls as separate top-level blocks", async () => {
+    const { app, sync } = await mountActivity({ height: 34 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const m4 = assistant("m4", at(4))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m1.id, "grep", { pattern: "alpha" }, 1100)
+      const first = todoBlock(m2.id, "First list", 1200, 1300)
+      const second = todoBlock(m3.id, "Second list", 1400, 1500)
+      const t3 = running(m4.id, "bash", { command: "bun test" }, 1600)
+      const t4 = running(m4.id, "edit", { filePath: "src/b.ts" }, 1700)
+      seed(sync, [
+        { message: m1, parts: [t1, t2] },
+        { message: m2, parts: [first] },
+        { message: m3, parts: [second] },
+        { message: m4, parts: [t3, t4] },
+      ])
+      await app.waitForFrame((frame: string) => countOf(frame, "# Todos") === 2)
+      const frame = frameOf(app)
+      // Back-to-back to-do calls form no run of their own and leave exactly the
+      // two work blocks on either side of them.
+      expect(countOf(frame, "Working... 2 tool calls")).toBe(2)
+      expect(frame).not.toContain("Working... 4 tool calls")
+      expect(rowOf(frame, "Working... 2 tool calls")).toBeLessThan(rowOfNth(frame, "# Todos", 1))
+      expect(rowOfNth(frame, "# Todos", 1)).toBeLessThan(rowOfNth(frame, "# Todos", 2))
+      expect(rowOfNth(frame, "# Todos", 2)).toBeLessThan(rowOfNth(frame, "Working... 2 tool calls", 2))
+      expect(frame).toContain("First list")
+      expect(frame).toContain("Second list")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("keeps the Working blocks around a to-do call independently collapsible", async () => {
+    const { app, sync } = await mountActivity({ height: 34 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m2.id, "grep", { pattern: "alpha" }, 1100)
+      const todo = todoBlock(m2.id, "Plan the fix", 1300, 1400)
+      const t3 = running(m3.id, "bash", { command: "bun test" }, 1600)
+      const t4 = running(m3.id, "edit", { filePath: "src/b.ts" }, 1700)
+      seed(sync, [
+        { message: m1, parts: [t1] },
+        { message: m2, parts: [t2, todo] },
+        { message: m3, parts: [t3, t4] },
+      ])
+      await app.waitForFrame((frame: string) => countOf(frame, "Working... 2 tool calls") === 2)
+
+      // Expanding the first block reveals only its own rows, and the to-do
+      // block stays a top-level sibling below them instead of being nested.
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      const expanded = frameOf(app)
+      expect(expanded).toContain('Grep "alpha"')
+      expect(expanded).not.toContain("bun test")
+      expect(rowOf(expanded, 'Grep "alpha"')).toBeLessThan(rowOf(expanded, "# Todos"))
+      expect(rowOf(expanded, "# Todos")).toBeLessThan(rowOfNth(expanded, "Working... 2 tool calls", 2))
+
+      await app.mockMouse.click(5, rowOfNth(frameOf(app), "Working... 2 tool calls", 2))
+      await app.waitForFrame((frame: string) => frame.includes("bun test"))
+      expect(frameOf(app)).toContain("Read src/a.ts")
+
+      // Collapsing the first block leaves the second one open: the blocks own
+      // separate activity state because they are separate groups.
+      await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
+      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      const final = frameOf(app)
+      expect(final).not.toContain("Read src/a.ts")
+      expect(final).toContain("bun test")
+      expect(final).toContain("# Todos")
+      expect(countOf(final, "Working... 2 tool calls")).toBe(2)
     } finally {
       app.renderer.destroy()
     }

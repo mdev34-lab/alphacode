@@ -431,6 +431,160 @@ describe("computeActivityGroups", () => {
     expect(summary).toMatchObject({ count: 3, working: false, failed: 1 })
     expect(summary.durationMs).toBe(240 - 150)
   })
+
+  test("closes the run at a to-do call and opens a new one after it", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "read"),
+          tool("m1", "t2", completed(1, 2), "bash"),
+          tool("m1", "t3", completed(2, 3), "todowrite"),
+          tool("m1", "t4", completed(3, 4), "edit"),
+          tool("m1", "t5", completed(4, 5), "bash"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    // Two ids, not one: the closed run is never resumed by the work that
+    // follows the to-do call. Separate ids are also what keeps the collapse
+    // and expand state of the two blocks independent in the transcript.
+    expect([...result.byID.keys()]).toEqual(["act-t1", "act-t4"])
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+    expect(result.byID.get("act-t4")?.items.map((item) => item.part.id)).toEqual(["t4", "t5"])
+    // The to-do call belongs to neither run; it renders as its own block.
+    expect(result.groupOf.get("t3")).toBeUndefined()
+    expect(result.groupOf.get("t1")).toBe("act-t1")
+    expect(result.groupOf.get("t4")).toBe("act-t4")
+  })
+
+  test("finalizes a streaming run at a to-do call without waiting on later work", () => {
+    const todo = tool("m2", "t3", completed(300, 350), "todowrite")
+    const t4 = tool("m2", "t4", running(400), "edit")
+    const streaming = computeActivityGroups([
+      {
+        message: assistant("m1", 1),
+        parts: [tool("m1", "t1", running(100), "read"), tool("m1", "t2", running(200), "bash")],
+      },
+      { message: assistant("m2", 2), parts: [todo, t4] },
+    ])
+    // The to-do call closes the run even while its own tools are in flight, so
+    // the work that follows it never gets folded into the block above.
+    expect([...streaming.byID.keys()]).toEqual(["act-t1", "act-t4"])
+    expect(streaming.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+    expect(streaming.byID.get("act-t4")?.items.map((item) => item.part.id)).toEqual(["t4"])
+    expect(summarizeActivity(streaming.byID.get("act-t4")!.items.map((item) => item.part)).working).toBe(true)
+
+    // Once its own tools settle, the closed run finalizes on its own timing:
+    // neither the to-do call nor the new run stretches it.
+    const settled = computeActivityGroups([
+      {
+        message: assistant("m1", 1),
+        parts: [tool("m1", "t1", completed(100, 500), "read"), tool("m1", "t2", completed(200, 700), "bash")],
+      },
+      { message: assistant("m2", 2), parts: [todo, t4] },
+    ])
+    const summary = summarizeActivity(settled.byID.get("act-t1")!.items.map((item) => item.part))
+    expect(summary).toMatchObject({ count: 2, working: false, failed: 0 })
+    expect(summary.durationMs).toBe(700 - 100)
+  })
+
+  test("splits the run at each of several sequential to-do calls", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "read"),
+          tool("m1", "t2", completed(1, 2), "bash"),
+          tool("m1", "t3", completed(2, 3), "todowrite"),
+          tool("m1", "t4", completed(3, 4), "todoread"),
+          tool("m1", "t5", completed(4, 5), "edit"),
+          tool("m1", "t6", completed(5, 6), "todowrite"),
+          tool("m1", "t7", completed(6, 7), "grep"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect([...result.byID.keys()]).toEqual(["act-t1", "act-t5", "act-t7"])
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+    expect(result.byID.get("act-t5")?.items.map((item) => item.part.id)).toEqual(["t5"])
+    expect(result.byID.get("act-t7")?.items.map((item) => item.part.id)).toEqual(["t7"])
+    expect(result.groupOf.size).toBe(4)
+  })
+
+  test("keeps sequential to-do calls from forming a run of their own", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "todowrite"),
+          tool("m1", "t2", completed(1, 2), "todoread"),
+          tool("m1", "t3", completed(2, 3), "todowrite"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(0)
+    expect(result.groupOf.size).toBe(0)
+  })
+
+  test("keeps ordinary consecutive tool calls in one run", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "read"),
+          tool("m1", "t2", completed(1, 2), "finish"),
+          tool("m1", "t3", completed(2, 3), "task"),
+        ],
+      },
+      {
+        message: assistant("m2", 2),
+        parts: [tool("m2", "t4", completed(3, 4), "grep"), tool("m2", "t5", completed(4, 5), "edit")],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect([...result.byID.keys()]).toEqual(["act-t1"])
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t4", "t5"])
+  })
+
+  test("attaches reasoning after a to-do call to the new run", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1), "read"),
+          tool("m1", "t2", completed(1, 2), "bash"),
+          tool("m1", "t3", completed(2, 3), "todowrite"),
+          reasoning("m1", "r1", "planning the next step"),
+          tool("m1", "t4", completed(3, 4), "edit"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.get("act-t1")?.parts.map((item) => item.part.id)).toEqual(["t1", "t2"])
+    expect(result.byID.get("act-t4")?.parts.map((item) => item.part.id)).toEqual(["r1", "t4"])
+    expect(result.groupOf.get("r1")).toBe("act-t4")
+  })
+
+  test("does not pull reasoning from before a to-do call into the next run", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          reasoning("m1", "r1", "thinking before the to-do call"),
+          tool("m1", "t1", completed(0, 1), "todowrite"),
+          tool("m1", "t2", completed(1, 2), "bash"),
+          tool("m1", "t3", completed(2, 3), "grep"),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    // The run boundary behaves like assistant text: reasoning rendered in front
+    // of the to-do call stays out of the group opened after it.
+    expect(result.byID.get("act-t2")?.parts.map((item) => item.part.id)).toEqual(["t2", "t3"])
+    expect(result.groupOf.has("r1")).toBe(false)
+  })
 })
 
 describe("summarizeActivity", () => {
