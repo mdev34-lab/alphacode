@@ -27,6 +27,7 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Reference } from "@opencode-ai/core/reference"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { ProjectOverview } from "./project-overview"
 
 export const STE_LITE = PROMPT_STE_LITE
 
@@ -68,7 +69,7 @@ export function provider(model: Provider.Model) {
 }
 
 export interface Interface {
-  readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
+  readonly environment: (model: Provider.Model, agent?: Agent.Info) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
   readonly mcp: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
 }
@@ -84,9 +85,10 @@ const layer = Layer.effect(
     const config = yield* Config.Service
 
     return Service.of({
-      environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
+      environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model, agent?: Agent.Info) {
         const ctx = yield* InstanceState.context
-        const shell = Shell.name(Shell.acceptable((yield* config.get()).shell))
+        const cfg = yield* config.get()
+        const shell = Shell.name(Shell.acceptable(cfg.shell))
         const references = yield* Effect.gen(function* () {
           return (yield* (yield* Reference.Service).list()).filter((reference) => reference.description !== undefined)
         }).pipe(Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(ctx.directory) }))))
@@ -102,6 +104,12 @@ const layer = Layer.effect(
             `  Today's date: ${new Date().toDateString()}`,
             `</env>`,
           ].join("\n"),
+          agent?.name === "code"
+            ? ProjectOverview.summarize({
+                directory: ctx.directory,
+                lspServers: Object.values(cfg.lsp ?? {}).filter((entry) => entry.disabled !== true).length,
+              })
+            : undefined,
           references.length === 0
             ? undefined
             : [

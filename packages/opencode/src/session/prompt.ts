@@ -1424,7 +1424,7 @@ const layer = Layer.effect(
 
             const [skills, env, instructions, mcpInstructions, toolOverview, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
-              sys.environment(model),
+              sys.environment(model, agent),
               instruction.system().pipe(Effect.orDie),
               sys.mcp(agent, session.permission),
               catalog.overview(session.id),

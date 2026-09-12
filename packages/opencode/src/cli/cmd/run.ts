@@ -1,4 +1,5 @@
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { AgentSelection } from "@opencode-ai/core/agent-selection"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 // CLI entry point for `opencode run` and `opencode --mini`.
 //
@@ -614,6 +615,10 @@ export const RunCommand = effectCmd({
             `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`,
           )
           return undefined
+        }
+        if (entry.name === AgentSelection.CODE && (!localInstance || !AgentSelection.findGitRoot(localInstance.directory))) {
+          UI.error(AgentSelection.CODE_REFUSAL)
+          process.exit(1)
         }
         return name
       }
