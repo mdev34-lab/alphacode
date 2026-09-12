@@ -248,9 +248,14 @@ export type KnightRiderStyle = "blocks" | "diamonds"
 export interface KnightRiderOptions {
   width?: number
   style?: KnightRiderStyle
-  /** Scan direction (default: "forward"). Forward wraps from end back to start; "bidirectional" reverses at each end. */
-  direction?: "forward" | "backward" | "bidirectional"
+  /**
+   * Scan direction (default: "forward"). "forward" sweeps left-to-right and wraps from the last
+   * column back to the first; "bidirectional" reverses at each end with optional holds.
+   */
+  direction?: "forward" | "bidirectional"
+  /** Hold frames at the start of a sweep. Only applies when direction is "bidirectional". */
   holdStart?: number
+  /** Hold frames at the end of a sweep. Only applies when direction is "bidirectional". */
   holdEnd?: number
   colors?: ColorInput[]
   /** Single color to derive trail from (alternative to providing colors array) */
