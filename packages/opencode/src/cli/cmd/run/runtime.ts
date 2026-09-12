@@ -698,7 +698,7 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             }
           }
         : undefined,
-      onContinueSession: async () => {
+      onContinueSession: async (signal) => {
         // Fresh, demo, or no-message sessions have nothing to resume.
         if (state.demo || !hasSession(input, state) || state.history.length === 0) {
           footer.event({
@@ -713,7 +713,6 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
         await state.switching?.catch(() => {})
 
-        const ctrl = new AbortController()
         try {
           const next = await ensureStream()
           await next.handle.runPromptTurn({
@@ -724,10 +723,10 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             files: input.files,
             includeFiles: false,
             resume: true,
-            signal: ctrl.signal,
+            signal,
           })
         } catch (error) {
-          if (ctrl.signal.aborted || footer.isClosed) {
+          if (signal.aborted || footer.isClosed) {
             return
           }
 

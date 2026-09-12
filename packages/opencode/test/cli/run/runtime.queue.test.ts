@@ -245,6 +245,32 @@ describe("run runtime queue", () => {
     ).toBe(true)
   })
 
+  test("close aborts an in-flight continue", async () => {
+    const ui = footer()
+    let aborted = false
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      onContinueSession: (signal) =>
+        new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => {
+            aborted = true
+            resolve()
+          })
+        }),
+      run: async () => {
+        ui.api.close()
+      },
+    })
+
+    ui.submit("/continue")
+    await Promise.resolve()
+    ui.api.close()
+    await task
+
+    expect(aborted).toBe(true)
+  })
+
   test("shell mode submits /continue as a shell command", async () => {
     const ui = footer()
     const seen: RunPrompt[] = []

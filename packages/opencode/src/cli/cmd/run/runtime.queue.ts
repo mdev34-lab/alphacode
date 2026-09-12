@@ -29,7 +29,7 @@ export type QueueInput = {
   trace?: Trace
   onSend?: (prompt: RunPrompt) => void
   onNewSession?: () => void | Promise<void>
-  onContinueSession?: () => void | Promise<void>
+  onContinueSession?: (signal: AbortSignal) => void | Promise<void>
   run: (prompt: RunPrompt, signal: AbortSignal) => Promise<void>
 }
 
@@ -199,7 +199,17 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
                 queue: state.queue.length,
               },
             )
-            await input.onContinueSession()
+            // Own the controller on the queue's state so close() aborts an
+            // in-flight resume exactly like an ordinary prompt turn.
+            const ctrl = new AbortController()
+            state.ctrl = ctrl
+            try {
+              await input.onContinueSession(ctrl.signal)
+            } finally {
+              if (state.ctrl === ctrl) {
+                state.ctrl = undefined
+              }
+            }
             continue
           }
 

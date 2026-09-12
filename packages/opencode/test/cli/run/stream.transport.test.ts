@@ -2402,4 +2402,58 @@ describe("run stream transport", () => {
       await transport.close()
     }
   })
+
+  test("resume turn does not settle on idle events before the resume request completes", async () => {
+    const src = eventFeed()
+    const ui = footer()
+    const trace = mock((_type: string, _data?: unknown) => {})
+    const gate = defer<void>()
+    const resume = mock(async (_parameters: { sessionID: string }) => {
+      await gate.promise
+      return ok(true)
+    })
+    const transport = await createSessionTransport({
+      sdk: sdk({ stream: src.stream, resume }),
+      sessionID: "session-1",
+      thinking: true,
+      limits: () => ({}),
+      footer: ui.api,
+      trace: { write: trace },
+    })
+
+    try {
+      let settled = false
+      const turn = transport
+        .runPromptTurn({
+          agent: undefined,
+          model: undefined,
+          variant: undefined,
+          prompt: { text: "", parts: [] },
+          files: [],
+          includeFiles: false,
+          resume: true,
+        })
+        .then(() => {
+          settled = true
+        })
+
+      await waitFor(() => (resume.mock.calls.length === 1 ? true : undefined))
+
+      // Consume a full busy -> idle cycle while the resume request is still
+      // gated. The turn must not resolve: completion is armed only by the
+      // resume response, so a premature idle cannot end the turn.
+      src.push(busy())
+      src.push(idle())
+      await waitFor(() => (trace.mock.calls.filter((call) => call[0] === "recv.event").length >= 2 ? true : undefined))
+      await Bun.sleep(20)
+      expect(settled).toBe(false)
+
+      gate.resolve()
+      await turn
+      expect(settled).toBe(true)
+    } finally {
+      src.close()
+      await transport.close()
+    }
+  })
 })
