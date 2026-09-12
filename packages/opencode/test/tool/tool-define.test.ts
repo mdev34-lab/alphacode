@@ -109,21 +109,21 @@ describe("Tool.define", () => {
     }),
   )
 
-  it.effect("read-only tool definitions mark successful results for the review gate", () =>
+  it.effect("review-safe tool definitions mark successful results for the review gate", () =>
     Effect.gen(function* () {
       const info = yield* Tool.define(
-        "read-only",
+        "review-safe",
         Effect.succeed({
-          description: "read-only tool",
+          description: "review-safe tool",
           parameters: params,
-          execute: () => Effect.succeed({ title: "read-only", output: "ok", metadata: { truncated: false } }),
+          execute: () => Effect.succeed({ title: "review-safe", output: "ok", metadata: { truncated: false } }),
         }),
-        { readOnly: true },
+        { reviewSafe: true },
       )
       const tool = yield* info.init()
       const result = yield* tool.execute({ input: "ok" }, makeCtx())
 
-      expect((result.metadata as Record<string, unknown>)[REVIEW_LOOP_METADATA]).toEqual({ readOnly: true })
+      expect((result.metadata as Record<string, unknown>)[REVIEW_LOOP_METADATA]).toEqual({ reviewSafe: true })
     }),
   )
 

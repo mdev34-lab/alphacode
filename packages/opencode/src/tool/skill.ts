@@ -67,5 +67,5 @@ export const SkillTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
-  { readOnly: true },
+  { reviewSafe: true },
 )

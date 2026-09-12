@@ -40,7 +40,7 @@ function reviewMessage(output: string, options?: { status?: "completed" | "runni
   } as unknown as SessionV1.WithParts
 }
 
-function toolMessage(tool: string, options?: { readOnly?: boolean }) {
+function toolMessage(tool: string, options?: { reviewSafe?: boolean }) {
   return {
     info: { role: "assistant" },
     parts: [
@@ -51,7 +51,7 @@ function toolMessage(tool: string, options?: { readOnly?: boolean }) {
           status: "completed",
           input: {},
           output: "done",
-          ...(options?.readOnly ? { metadata: { [REVIEW_LOOP_METADATA]: { readOnly: true } } } : {}),
+          ...(options?.reviewSafe ? { metadata: { [REVIEW_LOOP_METADATA]: { reviewSafe: true } } } : {}),
         },
       },
     ],
@@ -83,6 +83,12 @@ describe("mandatory review loop prompt contract", () => {
     expect(finish).toContain("return yield* Effect.fail(new ToolFailure({ message: gateError.message }))")
     expect(finish).not.toContain("Effect.orDie")
     expect(finish).not.toContain('termination: "blocked"')
+  })
+
+  test("persistent-state tools do not advertise review-safe metadata", async () => {
+    for (const name of ["attachment.ts", "plan.ts", "todo.ts"]) {
+      expect(await readTool(name)).not.toContain("reviewSafe: true")
+    }
   })
 })
 
@@ -154,11 +160,12 @@ describe("runtime review gate", () => {
     expect(state.verdict).toBe("pending")
   })
 
-  test("uses explicit tool metadata instead of a denylist", () => {
+  test("uses explicit review-safe metadata instead of a denylist", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
     expect(
-      reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read", { readOnly: true })]).verdict,
+      reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read", { reviewSafe: true })])
+        .verdict,
     ).toBe("approved")
     expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read")]).verdict).toBe("pending")
     expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")]).verdict).toBe("pending")

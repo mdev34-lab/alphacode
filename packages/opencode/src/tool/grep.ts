@@ -112,5 +112,5 @@ export const GrepTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
-  { readOnly: true },
+  { reviewSafe: true },
 )
