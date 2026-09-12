@@ -10,6 +10,8 @@ Use delegation to cross the Work/Code boundary:
 
 Guidelines:
 - Give the task a clear contract: goal, acceptance criteria, and constraints. The `constraints` fields (readOnly, allowCommit) become hard permission rules for the child, not requests.
-- `cwd` must stay inside the current workspace; the child operates there.
+- `readOnly: true` also hides the subagent tools (task/delegate) and MCP tools from the child, so it cannot hand its write access to another session.
+- Commits are denied unless you set `allowCommit: true`. The rules cover the common `git commit` forms; if the repository HEAD still moves, the result carries a violation warning and you should treat it as unverified.
+- `cwd` must stay inside the current workspace; the child operates there, and relative `changedFiles` are resolved against it.
 - Delegation is synchronous: you get the result before continuing. Nested delegation is bounded by `subagent_depth`.
 - Do not delegate to the agent you are, and do not use delegation to parallelize work that a single agent can do.

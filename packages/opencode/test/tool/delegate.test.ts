@@ -9,6 +9,8 @@ import { Config } from "@/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Session } from "@/session/session"
+import { MCP } from "@/mcp"
+import { InstanceState } from "@/effect/instance-state"
 import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
@@ -21,6 +23,7 @@ import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Wildcard } from "@opencode-ai/core/util/wildcard"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -52,6 +55,7 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
       RuntimeFlags.node,
       Ripgrep.node,
       FSUtil.node,
+      MCP.node,
     ]),
     [[RuntimeFlags.node, RuntimeFlags.layer(flags)]],
   )
@@ -233,7 +237,30 @@ describe("tool.delegate", () => {
       expect(denies("edit")).toBe(true)
       expect(denies("write")).toBe(true)
       expect(denies("apply_patch")).toBe(true)
+      // A read-only child must not be able to hand write access to another
+      // session through a subagent tool.
+      expect(denies("task")).toBe(true)
+      expect(denies("delegate")).toBe(true)
+      // Commit denial is on by default even though only readOnly was set.
       expect(denies("bash", "git commit *")).toBe(true)
+      expect(denies("bash", "git * commit *")).toBe(true)
+      expect(denies("bash", "*git commit*")).toBe(true)
+    }),
+  )
+
+  it.instance("allows commits only when allowCommit is explicitly true", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTool()
+
+      const result = yield* def.execute(
+        { agent: "code", task: "Ship the fix", constraints: { allowCommit: true } },
+        context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
+      )
+      const child = yield* sessions.get(result.metadata.sessionId as SessionID)
+      const deniesCommit = child.permission?.some((rule) => rule.permission === "bash" && rule.action === "deny")
+      expect(deniesCommit).toBe(false)
     }),
   )
 
@@ -256,7 +283,8 @@ describe("tool.delegate", () => {
       expect(calls[0]).toEqual({
         permission: "delegate",
         patterns: ["code"],
-        always: ["*"],
+        // "Always" is remembered for this agent only, not the whole permission space.
+        always: ["code"],
         metadata: {
           agent: "code",
           task: "Organize the codebase",
@@ -394,9 +422,96 @@ describe("tool.delegate", () => {
       expect(cancelled).toContain(kids[0]?.id)
     }),
   )
+
+  it.instance("reports a violation when HEAD moves despite a commit ban", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const instance = yield* InstanceState.context
+      const { chat, assistant } = yield* seed()
+      // The child "runs" a commit the way a model would smuggle one past the
+      // permission rules: the stubbed prompt performs a real commit in the
+      // delegation cwd.
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: () =>
+          Effect.gen(function* () {
+            const proc = Bun.spawn(["git", "commit", "--allow-empty", "-m", "sneaky bypass"], {
+              cwd: instance.directory,
+              stdout: "ignore",
+              stderr: "ignore",
+            })
+            yield* Effect.promise(() => proc.exited)
+            return { info: { role: "assistant" as const }, parts: [] } as unknown as SessionV1.WithParts
+          }),
+      }
+      const def = yield* initTool()
+
+      const result = yield* def.execute(
+        { agent: "code", task: "do something", constraints: { allowCommit: false } },
+        context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps } }),
+      )
+
+      const reported = JSON.parse(result.output) as DelegationResult
+      expect(reported.status).toBe("completed")
+      expect(reported.warnings.some((warning) => warning.includes("HEAD moved"))).toBe(true)
+    }),
+    { git: true },
+  )
+
+  it.instance("does not flag a HEAD baseline when commits are allowed", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const instance = yield* InstanceState.context
+      const { chat, assistant } = yield* seed()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: () =>
+          Effect.gen(function* () {
+            const proc = Bun.spawn(["git", "commit", "--allow-empty", "-m", "allowed"], {
+              cwd: instance.directory,
+              stdout: "ignore",
+              stderr: "ignore",
+            })
+            yield* Effect.promise(() => proc.exited)
+            return { info: { role: "assistant" as const }, parts: [] } as unknown as SessionV1.WithParts
+          }),
+      }
+      const def = yield* initTool()
+
+      const result = yield* def.execute(
+        { agent: "code", task: "ship it", constraints: { allowCommit: true } },
+        context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps } }),
+      )
+
+      const reported = JSON.parse(result.output) as DelegationResult
+      expect(reported.status).toBe("completed")
+      expect(reported.warnings.some((warning) => warning.includes("HEAD moved"))).toBe(false)
+    }),
+    { git: true },
+  )
 })
 
 describe("deriveDelegationResult", () => {
+  const filePart = (tool: string, input: Record<string, unknown>) =>
+    ({
+      type: "tool",
+      tool,
+      callID: "c1",
+      id: "p1",
+      messageID: "m1",
+      sessionID: "s1",
+      state: {
+        status: "completed",
+        input,
+        output: "ok",
+        title: tool,
+        metadata: {},
+        time: { start: 1, end: 2 },
+      },
+    }) as never
+
   it.effect("falls back to the raw finish text when it is not JSON", () =>
     Effect.sync(() => {
       const result = deriveDelegationResult({
@@ -424,9 +539,26 @@ describe("deriveDelegationResult", () => {
         },
       ],
         status: "completed",
+        cwd: "/tmp",
       })
       expect(result.summary).toBe("All done, nothing to add")
       expect(result.warnings).toHaveLength(0)
+    }),
+  )
+
+  it.effect("resolves relative changed files against the child's working directory", () =>
+    Effect.sync(() => {
+      const result = deriveDelegationResult({
+        messages: [
+          {
+            info: { id: "m1", sessionID: "s1", role: "assistant" } as never,
+            parts: [filePart("write", { filePath: "src/index.ts" })],
+          },
+        ],
+        status: "completed",
+        cwd: "/repo/packages/foo",
+      })
+      expect(result.changedFiles).toEqual(["/repo/packages/foo/src/index.ts"])
     }),
   )
 
@@ -456,6 +588,7 @@ describe("deriveDelegationResult", () => {
       ],
         status: "error",
         failure: "provider exploded",
+        cwd: "/tmp",
       })
       expect(result.status).toBe("error")
       expect(result.warnings).toContain("bash failed: boom")
@@ -465,18 +598,41 @@ describe("deriveDelegationResult", () => {
 
   it.effect("reports a missing final report on completion", () =>
     Effect.sync(() => {
-      const result = deriveDelegationResult({ messages: [], status: "completed" })
+      const result = deriveDelegationResult({ messages: [], status: "completed", cwd: "/tmp" })
       expect(result.summary).toBe("Delegation finished without a final report.")
     }),
   )
 })
 
 describe("commitRules", () => {
-  it.effect("denies git commit only when commits are disallowed", () =>
+  it.effect("denies git commit by default and only allows it when explicitly permitted", () =>
     Effect.sync(() => {
-      expect(commitRules({ allowCommit: false })).toEqual([{ permission: "bash", pattern: "git commit *", action: "deny" }])
+      const patterns = commitRules(undefined).map((rule) => rule.pattern)
+      expect(patterns).toEqual(["git commit *", "git * commit *", "*git commit*"])
+      expect(commitRules({ allowCommit: false })).toEqual(commitRules(undefined))
       expect(commitRules({ allowCommit: true })).toEqual([])
-      expect(commitRules(undefined)).toEqual([])
+    }),
+  )
+
+  it.effect("patterns match the commit forms the shell tool reports, and nothing else", () =>
+    Effect.sync(() => {
+      // The shell tool asks one pattern per parsed command; these are the
+      // command sources a model could use to commit.
+      const denied = (command: string) =>
+        commitRules(undefined).some((rule) => Wildcard.match(command, rule.pattern))
+      expect(denied("git commit")).toBe(true)
+      expect(denied("git commit -m \"fix\"")).toBe(true)
+      expect(denied("git -C . commit")).toBe(true)
+      expect(denied("git -c user.name=x commit -m y")).toBe(true)
+      expect(denied("sh -c \"git commit\"")).toBe(true)
+      expect(denied("FOO=1 git commit -m x")).toBe(true)
+      expect(denied("git add .")).toBe(false)
+      expect(denied("git push")).toBe(false)
+      expect(denied("git log --oneline")).toBe(false)
+      expect(denied("git config commit.gpgsign false")).toBe(false)
+      // The catch-all also denies `git commit-graph write`; it mutates
+      // repository state, so that false positive is acceptable.
+      expect(denied("git commit-graph write")).toBe(true)
     }),
   )
 })

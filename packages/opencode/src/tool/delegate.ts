@@ -8,6 +8,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { TaskPromptOps } from "./task"
 import { Config } from "@/config/config"
+import { MCP } from "@/mcp"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "../project/instance-context"
 import { parsePatch } from "../patch"
@@ -22,9 +23,17 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import path from "path"
 
 export interface Constraints {
-  /** The delegate may not modify files or run state-changing shell commands. */
+  /**
+   * The delegate may not modify files: no file tools, no shell, and no
+   * subagent (task/delegate) or MCP tools, so it cannot cause side effects
+   * out of band either.
+   */
   readOnly?: boolean
-  /** When false (the default), the delegate must not run `git commit`. */
+  /**
+   * When true, the delegate may run `git commit`. Default is false: commit
+   * commands are denied by permission rules and any HEAD change is reported
+   * in the result warnings as a possible rule bypass.
+   */
   allowCommit?: boolean
 }
 
@@ -44,10 +53,12 @@ export const Parameters = Schema.Struct({
   constraints: Schema.optional(
     Schema.Struct({
       readOnly: Schema.optional(Schema.Boolean).annotate({
-        description: "If true, the delegate cannot modify files and cannot run shell commands.",
+        description:
+          "If true, the delegate cannot modify files, run shell commands, launch subagents (task/delegate), or call MCP tools.",
       }),
       allowCommit: Schema.optional(Schema.Boolean).annotate({
-        description: "If false (the default), the delegate must not run git commit.",
+        description:
+          "If true, the delegate may run git commit. Default is false: commits are denied and any repository HEAD change is reported in the result warnings.",
       }),
     }),
   ).annotate({ description: "Isolation constraints for the delegation." }),
@@ -89,9 +100,9 @@ function renderContract(input: { agent: string; task: string; cwd: string; const
   const constraintLines: string[] = []
   if (input.constraints?.readOnly === true)
     constraintLines.push(
-      "- Read-only: do not create, modify, or delete files, and do not run shell commands that change state.",
+      "- Read-only: do not create, modify, or delete files, do not run shell commands, and do not launch subagents or MCP tools.",
     )
-  if (input.constraints?.allowCommit === false) constraintLines.push("- Commits are forbidden: do not run `git commit`.")
+  if (input.constraints?.allowCommit !== true) constraintLines.push("- Commits are forbidden: do not run `git commit`.")
   return [
     `You are the \`${input.agent}\` agent running as an isolated delegate of another agent.`,
     "The caller only sees the result you report: be complete about what was done and what was not.",
@@ -115,12 +126,15 @@ function renderContract(input: { agent: string; task: string; cwd: string; const
  * Derives the machine-readable delegation result from the child session's
  * transcript. Changed files and test outcomes are observed facts from the
  * child's tool calls, not self-reports; the summary and extra warnings come
- * from the child's `finish` result when it is valid JSON.
+ * from the child's `finish` result when it is valid JSON. Relative tool
+ * paths are resolved against the child's working directory, not the
+ * process cwd.
  */
 export function deriveDelegationResult(input: {
   messages: SessionV1.WithParts[]
   status: DelegationResult["status"]
   failure?: string
+  cwd: string
 }): DelegationResult {
   const changedFiles: string[] = []
   const tests: TestOutcome[] = []
@@ -130,7 +144,7 @@ export function deriveDelegationResult(input: {
 
   const addFile = (file: string | undefined) => {
     if (!file) return
-    const resolved = path.isAbsolute(file) ? file : path.resolve(file)
+    const resolved = path.isAbsolute(file) ? file : path.resolve(input.cwd, file)
     if (!changedFiles.includes(resolved)) changedFiles.push(resolved)
   }
 
@@ -196,21 +210,64 @@ function truncate(text: string, length: number): string {
   return text.slice(0, length - 1) + "…"
 }
 
-/** Hard sandbox for read-only delegations: no file mutation, no shell. */
+/**
+ * Hard sandbox for read-only delegations: no file mutation, no shell, and
+ * no subagent tools, so the child cannot hand write access to another
+ * session to get around its own ruleset.
+ */
 function constraintRules(constraints: Constraints | undefined): PermissionV1.Ruleset {
   if (constraints?.readOnly !== true) return []
-  return (["bash", "edit", "write", "apply_patch"] as const).map((permission) => ({
+  return (["bash", "edit", "write", "apply_patch", "task", "delegate"] as const).map((permission) => ({
     permission,
     pattern: "*" as const,
     action: "deny" as const,
   }))
 }
 
-/** Prohibits commits in the child's ruleset when the contract forbids them. */
-export function commitRules(constraints: Constraints | undefined): PermissionV1.Ruleset {
-  if (constraints?.allowCommit === false) return [{ permission: "bash", pattern: "git commit *", action: "deny" }]
-  return []
+/**
+ * Hides every MCP tool from a read-only child. MCP tools are not covered by
+ * the file/shell rules above but can still change state, so a read-only
+ * contract has to exclude them too.
+ */
+export function mcpRules(tools: string[]): PermissionV1.Ruleset {
+  return tools.map((permission) => ({ permission, pattern: "*" as const, action: "deny" as const }))
 }
+
+/**
+ * Prohibits commits in the child's ruleset. Commits are denied by default;
+ * only `allowCommit: true` lifts the restriction. The shell permission
+ * matcher sees one pattern per command of the parsed shell line, so the
+ * rules cover the direct form (`git commit`, `git commit ...`), git with
+ * leading options (`git -C . commit`), and wrapped or env-prefixed
+ * invocations (`sh -c "git commit"`). Commands that build the string
+ * dynamically (e.g. `eval`) are not matchable by any pattern; the
+ * post-delegation HEAD check reports those as violations instead.
+ */
+export function commitRules(constraints: Constraints | undefined): PermissionV1.Ruleset {
+  if (constraints?.allowCommit === true) return []
+  return [
+    { permission: "bash", pattern: "git commit *", action: "deny" },
+    { permission: "bash", pattern: "git * commit *", action: "deny" },
+    { permission: "bash", pattern: "*git commit*", action: "deny" },
+  ]
+}
+
+/** Resolves the repository HEAD at `cwd`, or undefined when there is no repository. */
+function gitHead(cwd: string): Effect.Effect<string | undefined> {
+  return Effect.tryPromise({
+    try: async () => {
+      const proc = Bun.spawn(["git", "rev-parse", "HEAD"], { cwd, stdout: "pipe", stderr: "ignore" })
+      const [code, text] = await Promise.all([proc.exited, new Response(proc.stdout).text()])
+      if (code !== 0) return undefined
+      const head = text.trim()
+      return head || undefined
+    },
+    catch: () => new Error("git rev-parse failed"),
+  }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+}
+
+const COMMIT_VIOLATION =
+  "allowCommit is false but the repository HEAD moved during the delegation - a commit may have bypassed the permission rules; treat the result as unverified"
 
 export const DelegateTool = Tool.define(
   id,
@@ -218,6 +275,7 @@ export const DelegateTool = Tool.define(
     const agent = yield* Agent.Service
     const config = yield* Config.Service
     const sessions = yield* Session.Service
+    const mcp = yield* MCP.Service
     const scope = yield* Scope.Scope
     const database = yield* Database.Service
     const fs = yield* FSUtil.Service
@@ -251,10 +309,12 @@ export const DelegateTool = Tool.define(
         )
       }
 
+      // Remembering "always" for one agent must not silently authorize
+      // delegating to every other agent.
       yield* ctx.ask({
         permission: id,
         patterns: [params.agent],
-        always: ["*"],
+        always: [params.agent],
         metadata: {
           agent: params.agent,
           task: truncate(params.task, 120),
@@ -276,10 +336,13 @@ export const DelegateTool = Tool.define(
       }
 
       const parent = yield* sessions.get(ctx.sessionID)
+      const readOnly = params.constraints?.readOnly === true
+      const mcpTools = readOnly ? Object.keys(yield* mcp.tools()) : []
       const childPermission: PermissionV1.Ruleset = [
         ...deriveSubagentSessionPermission({ parentSessionPermission: parent.permission ?? [], subagent: target }),
         ...constraintRules(params.constraints),
         ...commitRules(params.constraints),
+        ...mcpRules(mcpTools),
       ]
       const child = yield* sessions.create({
         parentID: ctx.sessionID,
@@ -287,6 +350,10 @@ export const DelegateTool = Tool.define(
         agent: target.name,
         permission: childPermission,
       })
+
+      // Baseline for the post-delegation commit check; skipped when commits
+      // are explicitly allowed or the cwd is not a repository.
+      const headBefore = commitRules(params.constraints).length > 0 ? yield* gitHead(cwd) : undefined
 
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
@@ -331,7 +398,12 @@ export const DelegateTool = Tool.define(
           const messages = yield* sessions
             .messages({ sessionID: child.id })
             .pipe(Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])))
-          const result = deriveDelegationResult({ messages, status, failure })
+          const derived = deriveDelegationResult({ messages, status, failure, cwd })
+          const headAfter = headBefore === undefined ? undefined : yield* gitHead(cwd)
+          const commitBypassed = headBefore !== undefined && headAfter !== undefined && headAfter !== headBefore
+          const result: DelegationResult = commitBypassed
+            ? { ...derived, warnings: [...derived.warnings, COMMIT_VIOLATION].slice(0, 10) }
+            : derived
           return {
             title: `Delegation (@${target.name}): ${truncate(params.task, 60)}`,
             metadata: {

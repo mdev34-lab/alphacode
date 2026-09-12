@@ -10,8 +10,8 @@ export const CODE = "code"
 
 export type LaunchAgent = typeof WORK | typeof CODE
 
-/** Message shown when Code is launched outside a Git/project workspace. */
-export const CODE_REFUSAL = "Code requires a Git/project workspace. Use Work for general filesystem tasks."
+/** Message shown when Code is launched outside a Git repository. */
+export const CODE_REFUSAL = "Code requires a Git repository. Use Work for general filesystem tasks."
 
 /** True when a CLI positional names a launch agent (case-insensitive). */
 export function isLaunchAgent(value: string): value is LaunchAgent {
@@ -36,10 +36,10 @@ export function resolvePositional(value: string | undefined, exists: (target: st
 }
 
 /**
- * Finds the nearest Git root at or above `directory` by walking up the
- * directory tree looking for a `.git` entry. Returns undefined when the
- * directory is not inside a Git worktree. A `.git` file (linked worktrees,
- * submodules) counts as a root, not just a `.git` directory.
+ * Finds the nearest ancestor of `directory` (inclusive) that contains a
+ * `.git` entry. A `.git` file counts as well as a directory, so linked
+ * worktrees are found too. This is a launch heuristic: it does not verify
+ * the entry belongs to a healthy repository.
  */
 export function findGitRoot(directory: string): string | undefined {
   let current = path.resolve(directory)
