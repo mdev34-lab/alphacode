@@ -95,6 +95,8 @@ export type SessionTurnInput = {
   prompt: RunPrompt
   files: RunFilePart[]
   includeFiles: boolean
+  // Drive the session's pending/current state without sending a user message.
+  resume?: boolean
   onVisibleOutput?: (anchor: LocalReplayAnchor) => void
   signal?: AbortSignal
 }
@@ -1230,8 +1232,36 @@ function createLayer(input: StreamInput) {
             ],
           }
           const command = next.prompt.command
-          const send =
-            next.prompt.mode === "shell"
+          const send = next.resume
+            ? Effect.sync(() => {
+                input.trace?.write("send.resume", {
+                  sessionID: input.sessionID,
+                })
+              }).pipe(
+                Effect.andThen(
+                  Effect.promise(() =>
+                    input.sdk.session.resume(
+                      { sessionID: input.sessionID },
+                      { signal: turn.signal, throwOnError: true },
+                    ),
+                  ).pipe(
+                    Effect.tap(() =>
+                      Effect.sync(() => {
+                        input.trace?.write("send.resume.ok", {
+                          sessionID: input.sessionID,
+                        })
+                        item.armed = true
+                        item.live = true
+                      }),
+                    ),
+                    Effect.flatMap(() => Deferred.succeed(item.done, undefined).pipe(Effect.ignore)),
+                    Effect.catch((error) => Deferred.fail(item.done, error).pipe(Effect.ignore)),
+                    Effect.forkIn(scope, { startImmediately: true }),
+                    Effect.asVoid,
+                  ),
+                ),
+              )
+            : next.prompt.mode === "shell"
               ? Effect.sync(() => {
                   input.trace?.write("send.shell", {
                     sessionID: input.sessionID,

@@ -420,6 +420,7 @@ function sdk(
     subscribe?: OpencodeClient["event"]["subscribe"]
     globalEvent?: OpencodeClient["global"]["event"]
     promptAsync?: OpencodeClient["session"]["promptAsync"]
+    resume?: OpencodeClient["session"]["resume"]
     status?: OpencodeClient["session"]["status"]
     messages?: OpencodeClient["session"]["messages"]
     children?: OpencodeClient["session"]["children"]
@@ -433,6 +434,7 @@ function sdk(
   const globalEvent: OpencodeClient["global"]["event"] =
     input.globalEvent ?? (() => globalSse(input.globalStream ?? wrapGlobalStream(input.stream ?? emptyStream())))
   const promptAsync: OpencodeClient["session"]["promptAsync"] = input.promptAsync ?? (() => ok(undefined))
+  const resume: OpencodeClient["session"]["resume"] = input.resume ?? (() => ok(true))
   const status: OpencodeClient["session"]["status"] = input.status ?? (() => ok({}))
   const messages: OpencodeClient["session"]["messages"] = input.messages ?? (() => ok([]))
   const children: OpencodeClient["session"]["children"] = input.children ?? (() => ok([]))
@@ -442,6 +444,7 @@ function sdk(
   spyOn(client.event, "subscribe").mockImplementation(subscribe)
   spyOn(client.global, "event").mockImplementation(globalEvent)
   spyOn(client.session, "promptAsync").mockImplementation(promptAsync)
+  spyOn(client.session, "resume").mockImplementation(resume)
   spyOn(client.session, "status").mockImplementation(status)
   spyOn(client.session, "messages").mockImplementation(messages)
   spyOn(client.session, "children").mockImplementation(children)
@@ -2355,6 +2358,99 @@ describe("run stream transport", () => {
 
       ctrl.abort()
       await task
+    } finally {
+      src.close()
+      await transport.close()
+    }
+  })
+
+  test("resume drives the session without sending a user message", async () => {
+    const src = eventFeed()
+    const ui = footer()
+    const resume = mock(async (_parameters: { sessionID: string }) => ok(true))
+    const promptAsync = mock(async () => ok(undefined))
+    const transport = await createSessionTransport({
+      sdk: sdk({ stream: src.stream, resume, promptAsync }),
+      sessionID: "session-1",
+      thinking: true,
+      limits: () => ({}),
+      footer: ui.api,
+    })
+
+    try {
+      const turn = transport.runPromptTurn({
+        agent: undefined,
+        model: undefined,
+        variant: undefined,
+        prompt: { text: "", parts: [] },
+        files: [],
+        includeFiles: false,
+        resume: true,
+      })
+
+      await waitFor(() => (resume.mock.calls.length === 1 ? true : undefined))
+      expect(resume.mock.calls[0][0]).toEqual({ sessionID: "session-1" })
+      await turn
+
+      expect(promptAsync).not.toHaveBeenCalled()
+      expect(ui.commits).toEqual([])
+      expect(ui.events).toContainEqual({
+        type: "turn.wait",
+      })
+    } finally {
+      src.close()
+      await transport.close()
+    }
+  })
+
+  test("resume turn does not settle on idle events before the resume request completes", async () => {
+    const src = eventFeed()
+    const ui = footer()
+    const trace = mock((_type: string, _data?: unknown) => {})
+    const gate = defer<void>()
+    const resume = mock(async (_parameters: { sessionID: string }) => {
+      await gate.promise
+      return ok(true)
+    })
+    const transport = await createSessionTransport({
+      sdk: sdk({ stream: src.stream, resume }),
+      sessionID: "session-1",
+      thinking: true,
+      limits: () => ({}),
+      footer: ui.api,
+      trace: { write: trace },
+    })
+
+    try {
+      let settled = false
+      const turn = transport
+        .runPromptTurn({
+          agent: undefined,
+          model: undefined,
+          variant: undefined,
+          prompt: { text: "", parts: [] },
+          files: [],
+          includeFiles: false,
+          resume: true,
+        })
+        .then(() => {
+          settled = true
+        })
+
+      await waitFor(() => (resume.mock.calls.length === 1 ? true : undefined))
+
+      // Consume a full busy -> idle cycle while the resume request is still
+      // gated. The turn must not resolve: completion is armed only by the
+      // resume response, so a premature idle cannot end the turn.
+      src.push(busy())
+      src.push(idle())
+      await waitFor(() => (trace.mock.calls.filter((call) => call[0] === "recv.event").length >= 2 ? true : undefined))
+      await Bun.sleep(20)
+      expect(settled).toBe(false)
+
+      gate.resolve()
+      await turn
+      expect(settled).toBe(true)
     } finally {
       src.close()
       await transport.close()

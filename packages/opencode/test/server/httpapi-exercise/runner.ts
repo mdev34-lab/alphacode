@@ -152,10 +152,15 @@ function withContext<A, E>(
                 role: "user",
                 time: { created: Date.now() },
                 agent: "work",
-                model: {
-                  providerID: ProviderV2.ID.opencode,
-                  modelID: ModelV2.ID.make("test"),
-                },
+                model: input?.model
+                  ? {
+                      providerID: ProviderV2.ID.make(input.model.providerID),
+                      modelID: ModelV2.ID.make(input.model.modelID),
+                    }
+                  : {
+                      providerID: ProviderV2.ID.opencode,
+                      modelID: ModelV2.ID.make("test"),
+                    },
               }
               const part: SessionV1.TextPart = {
                 id: PartID.ascending(),

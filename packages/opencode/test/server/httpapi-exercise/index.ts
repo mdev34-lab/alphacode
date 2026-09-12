@@ -1653,6 +1653,69 @@ const scenarios: Scenario[] = [
       "status",
     ),
   http.protected
+    .post("/session/{sessionID}/resume", "session.resume")
+    .preserveDatabase()
+    .withLlm()
+    .seeded((ctx) =>
+      Effect.gen(function* () {
+        const session = yield* ctx.session({ title: "Resume session" })
+        yield* ctx.message(session.id, {
+          text: "pending work",
+          model: { providerID: "test", modelID: "test-model" },
+        })
+        yield* ctx.llmText("fake resumed assistant")
+        yield* ctx.llmText("fake resumed assistant")
+        return session
+      }),
+    )
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/resume", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .jsonEffect(
+      200,
+      (body, ctx) =>
+        Effect.gen(function* () {
+          check(body === true, "resume should drive pending state")
+          const messages = yield* ctx.messages(ctx.state.id)
+          check(
+            messages.some(
+              (message) =>
+                message.info.role === "assistant" &&
+                message.parts.some((part) => part.type === "text" && part.text === "fake resumed assistant"),
+            ),
+            "resume should produce an assistant reply from pending state",
+          )
+          check(
+            messages.filter((message) => message.info.role === "user").length === 1,
+            "resume should not add another user message",
+          )
+          yield* ctx.llmWait(1)
+        }),
+      "status",
+    ),
+  http.protected
+    .post("/session/{sessionID}/resume", "session.resume.empty")
+    .seeded((ctx) => ctx.session({ title: "Resume empty session" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/resume", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .jsonEffect(200, (body, ctx) =>
+      Effect.gen(function* () {
+        check(body === false, "resume without messages should report nothing to resume")
+        const messages = yield* ctx.messages(ctx.state.id)
+        check(messages.length === 0, "resume without messages should stay empty")
+      }),
+    ),
+  http.protected
+    .post("/session/{sessionID}/resume", "session.resume.missing")
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/resume", { sessionID: "ses_httpapi_missing" }),
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
     .post("/session/{sessionID}/revert", "session.revert")
     .mutating()
     .seeded((ctx) =>
@@ -1804,6 +1867,7 @@ const llmScenarios = new Set([
   "session.prompt_async",
   "session.command",
   "session.summarize",
+  "session.resume",
 ])
 
 const main = Effect.gen(function* () {

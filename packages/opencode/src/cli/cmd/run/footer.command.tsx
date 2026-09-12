@@ -355,7 +355,7 @@ export function RunCommandMenuBody(props: {
   const skills = createMemo(() => (props.commands() ?? []).filter((item) => item.source === "skill"))
   const activeSubagentCount = createMemo(() => props.subagents().filter((item) => item.status === "running").length)
   const entries = createMemo<CommandEntry[]>(() => {
-    const builtins = ["editor", "new"]
+    const builtins = ["editor", "new", "continue"]
     const session: CommandEntry[] = [
       {
         action: "editor",
@@ -363,6 +363,14 @@ export function RunCommandMenuBody(props: {
         display: "Open editor",
         footer: "/editor",
         keywords: "editor compose draft external editor",
+      },
+      {
+        action: "slash",
+        category: "Session",
+        name: "continue",
+        display: "Continue session",
+        footer: "/continue",
+        keywords: "continue session resume pending current",
       },
       ...(props.subagents().length > 0
         ? [
