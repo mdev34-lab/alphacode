@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   createPromptHistory,
   isExitCommand,
+  isContinueCommand,
   isNewCommand,
   movePromptHistory,
   pushPromptHistory,
@@ -97,5 +98,11 @@ describe("run prompt shared", () => {
     expect(isNewCommand("/new")).toBe(true)
     expect(isNewCommand(" /NEW ")).toBe(true)
     expect(isNewCommand("/new now")).toBe(false)
+  })
+
+  test("recognizes the continue command", () => {
+    expect(isContinueCommand("/continue")).toBe(true)
+    expect(isContinueCommand(" /Continue ")).toBe(true)
+    expect(isContinueCommand("/continue now")).toBe(false)
   })
 })

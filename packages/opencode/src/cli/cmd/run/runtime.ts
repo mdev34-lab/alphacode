@@ -556,6 +556,53 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
 
     const mod = await import("./runtime.queue")
     const createSession = input.createSession
+    const runTurn = async (prompt: RunPrompt, signal: AbortSignal) => {
+      if (state.demo && (await state.demo.prompt(prompt, signal))) {
+        return
+      }
+
+      await state.switching?.catch(() => {})
+
+      let outputAnchor: LocalReplayAnchor | undefined
+      try {
+        const next = await ensureStream()
+        await next.handle.runPromptTurn({
+          agent: state.agent,
+          model: state.model,
+          variant: state.activeVariant,
+          prompt,
+          files: input.files,
+          includeFiles,
+          onVisibleOutput: (anchor) => {
+            outputAnchor = anchor
+          },
+          signal,
+        })
+        if (prompt.messageID) {
+          state.localRows = state.localRows.filter(
+            (row) => row.commit.kind !== "user" || row.commit.messageID !== prompt.messageID,
+          )
+        }
+        includeFiles = false
+      } catch (error) {
+        if (signal.aborted || footer.isClosed) {
+          return
+        }
+
+        const text =
+          (await state.stream?.then((item) => item.mod).catch(() => undefined))?.formatUnknownError(error) ??
+          (error instanceof Error ? error.message : String(error))
+        const commit = {
+          kind: "error",
+          text,
+          phase: "start",
+          source: "system",
+          messageID: prompt.messageID,
+        } as const
+        rememberLocal(commit, outputAnchor)
+        footer.append(commit)
+      }
+    }
     await mod.runPromptQueue({
       footer,
       initialInput: input.initialInput,
@@ -651,36 +698,36 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             }
           }
         : undefined,
-      run: async (prompt, signal) => {
-        if (state.demo && (await state.demo.prompt(prompt, signal))) {
+      onContinueSession: async () => {
+        // Fresh, demo, or no-message sessions have nothing to resume.
+        if (state.demo || !hasSession(input, state) || state.history.length === 0) {
+          footer.event({
+            type: "stream.patch",
+            patch: {
+              phase: "idle",
+              status: "nothing to continue",
+            },
+          })
           return
         }
 
         await state.switching?.catch(() => {})
 
-        let outputAnchor: LocalReplayAnchor | undefined
+        const ctrl = new AbortController()
         try {
           const next = await ensureStream()
           await next.handle.runPromptTurn({
             agent: state.agent,
             model: state.model,
             variant: state.activeVariant,
-            prompt,
+            prompt: { text: "", parts: [] },
             files: input.files,
-            includeFiles,
-            onVisibleOutput: (anchor) => {
-              outputAnchor = anchor
-            },
-            signal,
+            includeFiles: false,
+            resume: true,
+            signal: ctrl.signal,
           })
-          if (prompt.messageID) {
-            state.localRows = state.localRows.filter(
-              (row) => row.commit.kind !== "user" || row.commit.messageID !== prompt.messageID,
-            )
-          }
-          includeFiles = false
         } catch (error) {
-          if (signal.aborted || footer.isClosed) {
+          if (ctrl.signal.aborted || footer.isClosed) {
             return
           }
 
@@ -692,12 +739,13 @@ async function runInteractiveRuntime(input: RunRuntimeInput, deps: RunRuntimeDep
             text,
             phase: "start",
             source: "system",
-            messageID: prompt.messageID,
+            messageID: MessageID.ascending(),
           } as const
-          rememberLocal(commit, outputAnchor)
+          rememberLocal(commit)
           footer.append(commit)
         }
       },
+      run: runTurn,
     })
   }
 

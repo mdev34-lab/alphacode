@@ -10,7 +10,7 @@
 // Resolves when the footer closes and all in-flight work finishes.
 import * as Locale from "@/util/locale"
 import { MessageID, PartID } from "@/session/schema"
-import { isExitCommand, isNewCommand } from "./prompt.shared"
+import { isContinueCommand, isExitCommand, isNewCommand } from "./prompt.shared"
 import type { FooterApi, FooterEvent, FooterQueuedPrompt, RunPrompt } from "./types"
 
 type Trace = {
@@ -29,6 +29,7 @@ export type QueueInput = {
   trace?: Trace
   onSend?: (prompt: RunPrompt) => void
   onNewSession?: () => void | Promise<void>
+  onContinueSession?: () => void | Promise<void>
   run: (prompt: RunPrompt, signal: AbortSignal) => Promise<void>
 }
 
@@ -89,8 +90,12 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
     syncQueue()
   }
 
+  // Resolved only by close(); never gated on `draining` -- a drain that
+  // completed synchronously (control command with no await) would otherwise
+  // leave a stale truthy `draining` behind and hang shutdown. runPromptQueue's
+  // own finally still awaits the in-flight drain before returning.
   const finish = () => {
-    if (!state.closed || draining) {
+    if (!state.closed) {
       return
     }
 
@@ -159,6 +164,42 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
               },
             )
             await input.onNewSession()
+            continue
+          }
+
+          if (prompt.mode !== "shell" && isContinueCommand(prompt.text)) {
+            syncQueue()
+            if (!input.onContinueSession) {
+              emit(
+                {
+                  type: "stream.patch",
+                  patch: {
+                    status: "nothing to continue",
+                  },
+                },
+                {
+                  status: "nothing to continue",
+                },
+              )
+              continue
+            }
+
+            emit(
+              {
+                type: "stream.patch",
+                patch: {
+                  phase: "running",
+                  status: "resuming session",
+                  queue: state.queue.length,
+                },
+              },
+              {
+                phase: "running",
+                status: "resuming session",
+                queue: state.queue.length,
+              },
+            )
+            await input.onContinueSession()
             continue
           }
 
@@ -275,6 +316,11 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
       return
     }
 
+    // Control commands (/new, /continue) act immediately instead of queueing
+    // behind an active ordinary turn.
+    const control =
+      prompt.mode !== "shell" && !prompt.command && (isNewCommand(prompt.text) || isContinueCommand(prompt.text))
+
     const active = state.active
     if (
       active &&
@@ -282,7 +328,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
       !active.command &&
       prompt.mode !== "shell" &&
       !prompt.command &&
-      !isNewCommand(prompt.text)
+      !control
     ) {
       const queued: FooterQueuedPrompt = {
         messageID: MessageID.ascending(),
@@ -297,7 +343,7 @@ export async function runPromptQueue(input: QueueInput): Promise<void> {
 
     state.queue.push(prompt)
     syncQueue()
-    if (prompt.mode !== "shell" && isNewCommand(prompt.text)) {
+    if (control) {
       drain()
       return
     }

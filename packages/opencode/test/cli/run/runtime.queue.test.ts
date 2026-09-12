@@ -191,6 +191,118 @@ describe("run runtime queue", () => {
     expect(ui.commits).toEqual([])
   })
 
+  test("treats /continue as a local session command", async () => {
+    const ui = footer()
+    const seen: string[] = []
+    let continued = 0
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      onContinueSession: async () => {
+        continued += 1
+      },
+      run: async (input) => {
+        seen.push(input.text)
+        ui.api.close()
+      },
+    })
+
+    ui.submit("/continue")
+    ui.submit("hello")
+    await task
+
+    expect(continued).toBe(1)
+    expect(seen).toEqual(["hello"])
+    expect(ui.commits).toEqual([
+      {
+        kind: "user",
+        text: "hello",
+        phase: "start",
+        source: "system",
+        messageID: expect.any(String),
+      },
+    ])
+  })
+
+  test("reports nothing to continue without a continue handler", async () => {
+    const ui = footer()
+    let calls = 0
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      run: async () => {
+        calls += 1
+      },
+    })
+
+    ui.submit("/continue")
+    ui.api.close()
+    await task
+
+    expect(calls).toBe(0)
+    expect(
+      ui.events.some((event) => event.type === "stream.patch" && event.patch.status === "nothing to continue"),
+    ).toBe(true)
+  })
+
+  test("shell mode submits /continue as a shell command", async () => {
+    const ui = footer()
+    const seen: RunPrompt[] = []
+    let continued = 0
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      onContinueSession: async () => {
+        continued += 1
+      },
+      run: async (input) => {
+        seen.push(input)
+        ui.api.close()
+      },
+    })
+
+    ui.submit("/continue", "shell")
+    await task
+
+    expect(continued).toBe(0)
+    expect(seen).toEqual([{ text: "/continue", parts: [], mode: "shell" }])
+    expect(ui.commits).toEqual([])
+  })
+
+  test("processes /continue after in-flight and queued prompts", async () => {
+    const ui = footer()
+    const order: string[] = []
+    let wake: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      wake = resolve
+    })
+
+    const task = runPromptQueue({
+      footer: ui.api,
+      onContinueSession: async () => {
+        order.push("continue")
+        ui.api.close()
+      },
+      run: async (input) => {
+        order.push(input.text)
+        if (input.text === "one") {
+          await gate
+        }
+      },
+    })
+
+    ui.submit("one")
+    await Promise.resolve()
+    ui.submit("two")
+    ui.submit("/continue")
+
+    wake?.()
+    await task
+
+    expect(order).toEqual(["one", "two", "continue"])
+    expect(ui.commits.map((commit) => (commit.kind === "user" ? commit.text : ""))).toEqual(["one", "two"])
+  })
+
   test("shell mode does not append a synthetic user row", async () => {
     const ui = footer()
 
