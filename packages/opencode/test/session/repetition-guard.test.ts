@@ -84,20 +84,6 @@ describe("RepetitionGuard.guard", () => {
     }),
   )
 
-  it.effect("passes repetition below the thresholds", () =>
-    Effect.gen(function* () {
-      const input = [
-        LLMEvent.stepStart({ index: 0 }),
-        LLMEvent.textStart({ id: "text-1" }),
-        ...Array.from({ length: 4 }, () => text(`${SHORT_LINE}\n`)),
-        LLMEvent.textEnd({ id: "text-1" }),
-        LLMEvent.finish({ reason: "stop" }),
-      ]
-      const collected = yield* RepetitionGuard.guard(Stream.fromIterable(input), defaults()).pipe(Stream.runCollect)
-      expect(Array.from(collected)).toStrictEqual(input)
-    }),
-  )
-
   it.effect("aborts the issue #94 loop mid-generation with a clear error", () =>
     Effect.gen(function* () {
       // 100 repetitions of the repro sentence: the guard must fail the
@@ -269,6 +255,57 @@ describe("RepetitionGuard.guard", () => {
       ]
       const collected = yield* RepetitionGuard.guard(Stream.fromIterable(input), defaults()).pipe(Stream.runCollect)
       expect(Array.from(collected)).toStrictEqual(input)
+    }),
+  )
+
+  it.effect("does not trip on a wall of separator characters", () =>
+    Effect.gen(function* () {
+      // Sixty unfenced 40-dash rows: periodic text, but not a loop worth
+      // aborting — the line rule ignores lines without an alphanumeric, and
+      // the fragment rule requires one in the confirmed unit.
+      const rows = Array.from({ length: 60 }, () => text(`${"-".repeat(40)}\n`))
+      const input = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        ...rows,
+        LLMEvent.textEnd({ id: "text-1" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]
+      const collected = yield* RepetitionGuard.guard(Stream.fromIterable(input), defaults()).pipe(Stream.runCollect)
+      expect(Array.from(collected)).toStrictEqual(input)
+    }),
+  )
+
+  it.effect("detects a long verbatim unit loop", () =>
+    Effect.gen(function* () {
+      // A ~580-character unit with no newlines, repeated. The tail is 2048
+      // characters, so three copies (just under 1.8k) still fit.
+      const unit = `${"This block of fixed summary wording repeats verbatim each time. ".repeat(9)}#`
+      const source = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
+        Stream.fromIterable(Array.from({ length: 6 }, () => text(`${unit}\n`))),
+      )
+      const error = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runDrain, Effect.flip)
+      expect(error).toBeInstanceOf(RepetitionGuard.RepetitionDetectedError)
+    }),
+  )
+
+  it.effect("leaves very long unit loops to the generation cap", () =>
+    Effect.gen(function* () {
+      // A ~940-character unit: three copies exceed the 2048-character tail,
+      // so the fragment rule cannot confirm it and the generation cap
+      // remains the backstop. Four lines keep the line rule below its
+      // threshold too.
+      const unit = `${"A deliberately longer block of fixed summary wording that repeats verbatim each and every single time it is emitted. ".repeat(9)}#`
+      const source = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
+        Stream.concat(
+          Stream.fromIterable(Array.from({ length: 4 }, () => text(`${unit}\n`))),
+          Stream.make(LLMEvent.textEnd({ id: "text-1" }), LLMEvent.finish({ reason: "stop" })),
+        ),
+      )
+      const collected = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runCollect)
+      expect(collected.length).toBe(8)
     }),
   )
 
