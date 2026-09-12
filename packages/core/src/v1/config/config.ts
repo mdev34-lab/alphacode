@@ -91,7 +91,7 @@ export const Info = Schema.Struct({
       }),
     }),
   ).annotate({
-    description: "Mandatory Work → Review loop configuration.",
+    description: "Work → Review loop configuration. Review is nudged before finish, not enforced.",
   }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",

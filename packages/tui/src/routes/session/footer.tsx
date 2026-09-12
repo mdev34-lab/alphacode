@@ -67,7 +67,7 @@ export function Footer() {
               fg={
                 status().termination === "approved"
                   ? theme.success
-                  : status().termination === "review-cap"
+                  : status().termination === "review-cap" || status().termination === "skipped"
                     ? theme.warning
                     : theme.text
               }
@@ -77,7 +77,9 @@ export function Footer() {
                 ? "approved"
                 : status().termination === "review-cap"
                   ? "cap"
-                  : status().phase}
+                  : status().termination === "skipped"
+                    ? "skipped"
+                    : status().phase}
             </text>
           )}
         </Show>

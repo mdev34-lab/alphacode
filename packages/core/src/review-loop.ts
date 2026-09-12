@@ -2,7 +2,7 @@ export const REVIEW_LOOP_METADATA = "reviewLoop" as const
 
 export type ReviewVerdict = "approved" | "needs-fixes" | "pending" | "none" | "cap"
 export type ReviewPhase = "work" | "review"
-export type ReviewTermination = "approved" | "review-cap"
+export type ReviewTermination = "approved" | "review-cap" | "skipped"
 
 export type ReviewHistoryPart = {
   readonly type?: unknown
@@ -30,6 +30,8 @@ export type ReviewLoopState = {
   readonly maxIterations: number
   readonly workSinceReview: boolean
   readonly reviewInProgress: boolean
+  /** A `finish` call was already declined with a review nudge for the current work. */
+  readonly nudged: boolean
   readonly phase: ReviewPhase
   readonly termination?: ReviewTermination
 }
@@ -125,12 +127,21 @@ function isPotentiallyMutatingTool(part: ReviewHistoryPart) {
   return isFileWritingTool(part)
 }
 
+function finishReviewMetadata(part: ReviewHistoryPart) {
+  if (part.type !== "tool" || part.tool !== "finish") return undefined
+  const metadata = isRecord(part.state?.metadata) ? part.state.metadata : undefined
+  return isRecord(metadata?.review) ? metadata.review : undefined
+}
+
 function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefined {
-  if (part.type !== "tool" || part.tool !== "finish" || part.state?.status !== "completed") return undefined
-  const metadata = isRecord(part.state.metadata) ? part.state.metadata : undefined
-  const review = isRecord(metadata?.review) ? metadata.review : undefined
-  if (review?.termination === "approved" || review?.termination === "review-cap") return review.termination
+  if (part.state?.status !== "completed") return undefined
+  const termination = finishReviewMetadata(part)?.termination
+  if (termination === "approved" || termination === "review-cap" || termination === "skipped") return termination
   return undefined
+}
+
+function isFinishNudge(part: ReviewHistoryPart) {
+  return part.state?.status === "error" && finishReviewMetadata(part)?.nudged === true
 }
 
 /**
@@ -140,6 +151,10 @@ function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefin
  * count as work that requires review. The declaration lives on the tool definition,
  * so a new file-writing tool is classified where it is defined. Unmarked tools,
  * including shell, do not trigger the review gate.
+ *
+ * The gate is a nudge, not a hard block: a `finish` call declined for missing
+ * review is remembered as `nudged`, and the next `finish` for the same work is
+ * allowed through as an explicit skip. New file writes or a new review reset it.
  */
 export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIterations = 5): ReviewLoopState {
   const max = Number.isFinite(maxIterations) && maxIterations > 0 ? maxIterations : 1
@@ -150,6 +165,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
   let workSeen = false
   let workSinceReview = false
   let reviewInProgress = false
+  let nudged = false
   let latest: Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined
   let termination: ReviewTermination | undefined
 
@@ -161,6 +177,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
         latest = undefined
         workSinceReview = true
         reviewInProgress = part.state?.status === "pending" || part.state?.status === "running"
+        nudged = false
         termination = undefined
         continue
       }
@@ -169,7 +186,13 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       latest = parseReviewVerdict(typeof part.state.output === "string" ? part.state.output : "")
       workSinceReview = false
       reviewInProgress = false
+      nudged = false
       termination = undefined
+      continue
+    }
+
+    if (isFinishNudge(part)) {
+      nudged = true
       continue
     }
 
@@ -183,6 +206,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       workSeen = true
       workSinceReview = true
       reviewInProgress = false
+      nudged = false
       latest = undefined
       termination = undefined
     }
@@ -206,20 +230,30 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
     maxIterations: max,
     workSinceReview,
     reviewInProgress,
+    nudged,
     phase,
     ...(termination ? { termination } : {}),
   }
 }
 
+const SKIP_HINT =
+  "If you have determined that another review pass is unnecessary, call finish again to skip review and deliver the result as-is."
+
+/**
+ * Decide whether this `finish` call should be declined with a review nudge.
+ * Only the first `finish` for a given unit of unreviewed work is declined; once
+ * the agent has been nudged it keeps the agency to finish anyway.
+ */
 export function finishGateError(state: ReviewLoopState): Error | undefined {
+  if (state.nudged) return undefined
   if (state.verdict === "needs-fixes") {
     return new Error(
-      "Review gate: the latest review returned Needs fixes. Address the findings and run a new synchronous review before calling finish.",
+      `Review nudge: the latest review returned Needs fixes. It is strongly recommended to address the findings and run a new synchronous review before finishing. ${SKIP_HINT}`,
     )
   }
   if (state.verdict === "pending") {
     return new Error(
-      "Review gate: the current work has no explicit Approved review yet. Run a fresh review before calling finish.",
+      `Review nudge: the current work has no explicit Approved review yet. It is strongly recommended to run a synchronous review before finishing. ${SKIP_HINT}`,
     )
   }
   return undefined

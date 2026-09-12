@@ -43,6 +43,24 @@ function reviewMessage(output: string, options?: { status?: "completed" | "runni
   } as unknown as SessionV1.WithParts
 }
 
+function finishNudgeMessage() {
+  return {
+    info: { role: "assistant" },
+    parts: [
+      {
+        type: "tool",
+        tool: "finish",
+        state: {
+          status: "error",
+          input: { result: "done" },
+          error: "Review nudge",
+          metadata: { review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } },
+        },
+      },
+    ],
+  } as unknown as SessionV1.WithParts
+}
+
 function toolMessage(tool: string, options?: { writesFiles?: boolean }) {
   return {
     info: { role: "assistant" },
@@ -61,20 +79,29 @@ function toolMessage(tool: string, options?: { writesFiles?: boolean }) {
   } as unknown as SessionV1.WithParts
 }
 
-describe("mandatory review loop prompt contract", () => {
-  test("requires a review after work that follows review findings", async () => {
+describe("review loop prompt contract", () => {
+  test("recommends a review after work that follows review findings", async () => {
     const prompt = await readPrompt("review-loop.txt")
 
     expect(prompt).toContain("After every Work pass made in response to findings, return to Review")
-    expect(prompt).toContain("Do not call `finish` until a later review explicitly approves")
+    expect(prompt).toContain("Prefer not to call `finish` until a later review explicitly approves")
     expect(prompt).toContain("review-cap")
   })
 
-  test("finish nudge preserves the review gate", async () => {
+  test("presents review as a nudge the agent may explicitly skip", async () => {
+    const prompt = await readPrompt("review-loop.txt")
+
+    expect(prompt).toContain("Review is guidance, not an enforcement gate")
+    expect(prompt).toContain("call `finish` again to explicitly skip review")
+    expect(prompt).not.toContain("Mandatory Review Loop")
+  })
+
+  test("finish nudge preserves the review recommendation and the skip path", async () => {
     const nudge = await readPrompt("finish-nudge.txt")
 
     expect(nudge).toContain("synchronous `review` task")
     expect(nudge).toContain("latest review returned `Needs fixes`")
+    expect(nudge).toContain("call `finish` again to explicitly skip review")
     expect(nudge).toContain("review-cap")
   })
 
@@ -123,25 +150,115 @@ describe("runtime review gate", () => {
     expect(finishGateError(reviewLoopState([userMessage(), toolMessage("bash")]))).toBeUndefined()
   })
 
-  test("requires review for tools that declare file writes even when no review exists yet", () => {
+  test("nudges review for tools that declare file writes even when no review exists yet", () => {
     for (const tool of ["edit", "write", "apply_patch", "future_writer"]) {
       const state = reviewLoopState([userMessage(), toolMessage(tool, { writesFiles: true })])
       expect(state.verdict).toBe("pending")
+      expect(state.nudged).toBe(false)
       expect(finishGateError(state)).toBeInstanceOf(Error)
+      expect(finishGateError(state)?.message).toContain("call finish again to skip review")
     }
+  })
+
+  test("lets a second finish call skip review after a nudge", () => {
+    const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), finishNudgeMessage()])
+
+    expect(state.verdict).toBe("pending")
+    expect(state.nudged).toBe(true)
+    expect(finishGateError(state)).toBeUndefined()
+  })
+
+  test("lets a second finish call skip review after needs-fixes findings", () => {
+    const findings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      findings,
+      finishNudgeMessage(),
+    ])
+
+    expect(state.verdict).toBe("needs-fixes")
+    expect(state.nudged).toBe(true)
+    expect(finishGateError(state)).toBeUndefined()
+  })
+
+  test("new file writes after a nudge start a fresh nudge", () => {
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      finishNudgeMessage(),
+      toolMessage("edit", { writesFiles: true }),
+    ])
+
+    expect(state.nudged).toBe(false)
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("a review after a nudge resets the nudge and is honoured", () => {
+    const findings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      finishNudgeMessage(),
+      findings,
+    ])
+
+    expect(state.nudged).toBe(false)
+    expect(state.verdict).toBe("needs-fixes")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("does not carry a nudge across user turns", () => {
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      finishNudgeMessage(),
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+    ])
+
+    expect(state.nudged).toBe(false)
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("surfaces a skipped termination from a completed finish", () => {
+    const skipped = {
+      info: { role: "assistant" },
+      parts: [
+        {
+          type: "tool",
+          tool: "finish",
+          state: { status: "completed", input: {}, output: "done", metadata: { review: { termination: "skipped" } } },
+        },
+      ],
+    } as unknown as SessionV1.WithParts
+
+    expect(
+      reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), finishNudgeMessage(), skipped])
+        .termination,
+    ).toBe("skipped")
   })
 
   test("requires an explicit synchronous review", () => {
     const background = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", { background: true })
     const synchronous = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
-    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), background]).verdict).toBe("pending")
-    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), synchronous]).verdict).toBe("approved")
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), background]).verdict).toBe(
+      "pending",
+    )
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), synchronous]).verdict).toBe(
+      "approved",
+    )
   })
 
   test("does not treat a synthetic continuation nudge as a new turn", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
-    const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, syntheticNudge()])
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      approved,
+      syntheticNudge(),
+    ])
 
     expect(state.verdict).toBe("approved")
   })
@@ -152,7 +269,13 @@ describe("runtime review gate", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
     const firstCycle = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), findings])
-    const secondCycle = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), findings, fixed, approved])
+    const secondCycle = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      findings,
+      fixed,
+      approved,
+    ])
 
     expect(firstCycle.reviews).toBe(1)
     expect(firstCycle.verdict).toBe("needs-fixes")
@@ -176,22 +299,34 @@ describe("runtime review gate", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
     expect(
+      reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("read")])
+        .verdict,
+    ).toBe("approved")
+    expect(
+      reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("read")])
+        .verdict,
+    ).toBe("approved")
+    expect(
+      reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("bash")])
+        .verdict,
+    ).toBe("approved")
+    expect(
       reviewLoopState([
         userMessage(),
         toolMessage("edit", { writesFiles: true }),
         approved,
-        toolMessage("read"),
+        toolMessage("edit", { writesFiles: true }),
       ]).verdict,
-    ).toBe("approved")
-    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("read")]).verdict).toBe(
-      "approved",
-    )
-    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("bash")]).verdict).toBe(
-      "approved",
-    )
-    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("edit", { writesFiles: true })]).verdict).toBe("pending")
+    ).toBe("pending")
     expect(
-      finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), approved, toolMessage("edit", { writesFiles: true })])),
+      finishGateError(
+        reviewLoopState([
+          userMessage(),
+          toolMessage("edit", { writesFiles: true }),
+          approved,
+          toolMessage("edit", { writesFiles: true }),
+        ]),
+      ),
     ).toBeInstanceOf(Error)
   })
 
@@ -200,7 +335,13 @@ describe("runtime review gate", () => {
     const secondFindings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
 
     const state = reviewLoopState(
-      [userMessage(), toolMessage("edit", { writesFiles: true }), findings, toolMessage("edit", { writesFiles: true }), secondFindings],
+      [
+        userMessage(),
+        toolMessage("edit", { writesFiles: true }),
+        findings,
+        toolMessage("edit", { writesFiles: true }),
+        secondFindings,
+      ],
       2,
     )
 
@@ -214,9 +355,17 @@ describe("runtime review gate", () => {
     const running = reviewMessage("", { status: "running" })
     const malformed = reviewMessage("review failed before producing an assessment")
 
-    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), running]).verdict).toBe("pending")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), running]))).toBeInstanceOf(Error)
-    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), malformed]).verdict).toBe("pending")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), malformed]))).toBeInstanceOf(Error)
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), running]).verdict).toBe(
+      "pending",
+    )
+    expect(
+      finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), running])),
+    ).toBeInstanceOf(Error)
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), malformed]).verdict).toBe(
+      "pending",
+    )
+    expect(
+      finishGateError(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), malformed])),
+    ).toBeInstanceOf(Error)
   })
 })

@@ -1,7 +1,7 @@
 [WARNING] The turn ended without a successful finish call.
 
-Call `finish` to complete the turn. If the current work changed files, first run a synchronous `review` task with `subagent_type: "review"` and `background: false`. If the latest review returned `Needs fixes`, fix the findings and review those fixes again; the previous review no longer applies.
+Call `finish` to complete the turn. If the current work changed files, it is strongly recommended to first run a synchronous `review` task with `subagent_type: "review"` and `background: false`. If the latest review returned `Needs fixes`, fix the findings and review those fixes again; the previous review no longer applies.
 
-After an explicit approval, call `finish` exactly once with a concise result. If the review cap is reached, report `review-cap` rather than claiming approval.
+After an explicit approval, call `finish` exactly once with a concise result. If your previous `finish` call was declined with a review nudge and you have determined that another review pass is unnecessary, call `finish` again to explicitly skip review and deliver the result; say so in the result. If the review cap is reached, report `review-cap` rather than claiming approval.
 
 (This is an automated reminder. Do not answer it conversationally.)

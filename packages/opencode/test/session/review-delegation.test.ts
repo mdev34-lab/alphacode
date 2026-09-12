@@ -249,12 +249,12 @@ const toolNames = (hit: { body: unknown }) =>
 // reach these matchers.
 const policyMatch = (hit: { body: unknown }) => {
   const body = bodyString(hit)
-  return body.includes("Mandatory Review Loop") && !body.includes("Senior Code Reviewer")
+  return body.includes("## Review Loop") && !body.includes("Senior Code Reviewer")
 }
 
 const noPolicyMatch = (hit: { body: unknown }) => {
   const body = bodyString(hit)
-  return body.includes("You are opencode") && !body.includes("Mandatory Review Loop")
+  return body.includes("You are opencode") && !body.includes("## Review Loop")
 }
 
 const reviewMatch = (hit: { body: unknown }) => bodyString(hit).includes("Senior Code Reviewer")
@@ -310,10 +310,7 @@ const scriptPolicyFollowingModel = Effect.gen(function* () {
   // Policy present, verdict received: consume it and fix the finding.
   yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
   // Policy absent (control arm): self-review, the old behavior.
-  yield* llm.pushMatch(
-    noPolicyMatch,
-    reply().text("I re-read the diff and the tests pass — the fix looks correct."),
-  )
+  yield* llm.pushMatch(noPolicyMatch, reply().text("I re-read the diff and the tests pass — the fix looks correct."))
 })
 
 type CompletedToolPart = SessionV1.ToolPart & { state: SessionV1.ToolStateCompleted }
@@ -347,8 +344,12 @@ it.instance(
       // The trigger: units of work that changed files, the verification stage,
       // and explicit user review requests.
       expect(body).toContain("unit of work that changed files")
-      expect(body).toContain("the next step is review, not completion")
+      expect(body).toContain("the recommended next step is review, not completion")
       expect(body).toContain("explicitly asks for a code review")
+
+      // Review is a nudge, not a gate: the agent keeps the ability to finish.
+      expect(body).toContain("Review is guidance, not an enforcement gate")
+      expect(body).toContain("call `finish` again to explicitly skip review")
 
       // The carve-out: trivial turns with no file changes must not be reviewed.
       expect(body).toContain("does not apply to turns with no file changes")
@@ -421,7 +422,7 @@ it.instance(
       // so reviews cannot recurse.
       const reviewBody = bodyString(reviewHits[0])
       expect(reviewBody).toContain("Senior Code Reviewer")
-      expect(reviewBody).not.toContain("Mandatory Review Loop")
+      expect(reviewBody).not.toContain("## Review Loop")
       expect(reviewBody).toContain("uncommitted working tree")
 
       // The reviewer keeps its read-only toolset but still gets the finish
@@ -489,20 +490,18 @@ it.instance(
       // Manipulation check: this agent's request really did lack the policy.
       const noPolicyHits = hits.filter(noPolicyMatch)
       expect(noPolicyHits).toHaveLength(1)
-      expect(bodyString(noPolicyHits[0])).not.toContain("Mandatory Review Loop")
+      expect(bodyString(noPolicyHits[0])).not.toContain("## Review Loop")
 
       // ...so the same model that delegated above did not dispatch a reviewer.
       expect(hits.filter(policyMatch)).toHaveLength(0)
       expect(hits.filter(reviewMatch)).toHaveLength(0)
       const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
-      expect(
-        msgs.flatMap((msg) => msg.parts).some((part) => part.type === "tool" || part.type === "subtask"),
-      ).toBe(false)
+      expect(msgs.flatMap((msg) => msg.parts).some((part) => part.type === "tool" || part.type === "subtask")).toBe(
+        false,
+      )
       expect(
         msgs.some((msg) =>
-          msg.parts.some(
-            (part) => part.type === "text" && part.text.includes("I re-read the diff and the tests pass"),
-          ),
+          msg.parts.some((part) => part.type === "text" && part.text.includes("I re-read the diff and the tests pass")),
         ),
       ).toBe(true)
     }),
@@ -546,8 +545,7 @@ it.instance(
       expect(parts.some((part) => part.type === "subtask")).toBe(false)
       expect(
         parts.filter(
-          (part): part is SessionV1.TextPart =>
-            part.type === "text" && "synthetic" in part && part.synthetic === true,
+          (part): part is SessionV1.TextPart => part.type === "text" && "synthetic" in part && part.synthetic === true,
         ),
       ).toHaveLength(0)
     }),
