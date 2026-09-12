@@ -45,6 +45,7 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
+  readonly waitForOtherTools: (toolCallID: string) => Effect.Effect<void>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
 }
 
@@ -59,6 +60,7 @@ export interface Interface {
 }
 
 type ToolCall = {
+  tool: string
   partID: SessionV1.ToolPart["id"]
   messageID: SessionV1.ToolPart["messageID"]
   sessionID: SessionV1.ToolPart["sessionID"]
@@ -128,6 +130,20 @@ const layer = Layer.effect(
         if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
       })
 
+      const waitForOtherTools = Effect.fn("SessionProcessor.waitForOtherTools")(function* (toolCallID: string) {
+        // Let sibling tool invocations register before taking the first snapshot. Recheck after
+        // each batch because a provider can emit another tool call while an earlier one settles.
+        yield* Effect.yieldNow
+        while (true) {
+          const pending = Object.entries(ctx.toolcalls)
+            .filter(([id, call]) => id !== toolCallID && call.tool !== "finish")
+            .map(([, call]) => Deferred.await(call.done))
+          if (pending.length === 0) return
+          yield* Effect.all(pending, { concurrency: "unbounded" })
+          yield* Effect.yieldNow
+        }
+      })
+
       const readToolCall = Effect.fn("SessionProcessor.readToolCall")(function* (toolCallID: string) {
         const call = ctx.toolcalls[toolCallID]
         if (!call) return undefined
@@ -138,6 +154,7 @@ const layer = Layer.effect(
         })
         if (!part || part.type !== "tool") {
           delete ctx.toolcalls[toolCallID]
+          yield* Deferred.succeed(call.done, undefined).pipe(Effect.ignore)
           return undefined
         }
         return { call, part }
@@ -246,6 +263,7 @@ const layer = Layer.effect(
           metadata: input.providerExecuted ? { providerExecuted: true } : undefined,
         } satisfies SessionV1.ToolPart)
         ctx.toolcalls[input.id] = {
+          tool: input.name,
           done: yield* Deferred.make<void>(),
           partID: part.id,
           messageID: part.messageID,
@@ -734,6 +752,7 @@ const layer = Layer.effect(
         },
         updateToolCall,
         completeToolCall,
+        waitForOtherTools,
         process,
       } satisfies Handle
     })

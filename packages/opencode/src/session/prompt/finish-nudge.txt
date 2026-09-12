@@ -1,11 +1,7 @@
-[WARNING] You ended your turn without calling the finish tool, so the turn is not complete.
+[WARNING] The turn ended without a successful finish call.
 
-Ending your response never completes the turn by itself. You MUST call the finish tool at the end of every turn — including turns that only need a conversational answer and no other tools.
+Call `finish` to complete the turn. If the current work changed files, first run a synchronous `review` task with `subagent_type: "review"` and `background: false`. If the latest review returned `Needs fixes`, fix the findings and review those fixes again; the previous review no longer applies.
 
-If the mandatory review loop has an outstanding `Needs fixes` verdict, you MUST NOT finish yet. First address the review findings, then dispatch the read-only `review` subagent again with `background: false`, and wait for its explicit `Approved` verdict. A previous review does not approve the changes made afterward.
+After an explicit approval, call `finish` exactly once with a concise result. If the review cap is reached, report `review-cap` rather than claiming approval.
 
-Otherwise:
-- Provide your final answer, or finish the work using the available tools.
-- Then call the finish tool exactly once with a concise summary of the result.
-
-(This is an automated reminder, so do not respond to it conversationally.)
+(This is an automated reminder. Do not answer it conversationally.)

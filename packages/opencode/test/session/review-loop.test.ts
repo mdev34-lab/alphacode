@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { finishGateError, parseReviewVerdict, reviewLoopState } from "../../src/session/review-loop"
 
@@ -39,7 +40,7 @@ function reviewMessage(output: string, options?: { status?: "completed" | "runni
   } as unknown as SessionV1.WithParts
 }
 
-function toolMessage(tool: string) {
+function toolMessage(tool: string, options?: { reviewSafe?: boolean }) {
   return {
     info: { role: "assistant" },
     parts: [
@@ -50,6 +51,7 @@ function toolMessage(tool: string) {
           status: "completed",
           input: {},
           output: "done",
+          ...(options?.reviewSafe ? { metadata: { [REVIEW_LOOP_METADATA]: { reviewSafe: true } } } : {}),
         },
       },
     ],
@@ -60,39 +62,46 @@ describe("mandatory review loop prompt contract", () => {
   test("requires a review after work that follows review findings", async () => {
     const prompt = await readPrompt("review-loop.txt")
 
-    expect(prompt).toContain("WORK → REVIEW → APPROVED → FINISH")
-    expect(prompt).toContain("NEEDS FIXES → WORK → REVIEW")
-    expect(prompt).toContain("After every Work pass performed in response to review findings, dispatch Review again")
-    expect(prompt).toContain("Only after an explicit `Approved` review may you call `finish`")
+    expect(prompt).toContain("After every Work pass made in response to findings, return to Review")
+    expect(prompt).toContain("Do not call `finish` until a later review explicitly approves")
     expect(prompt).toContain("review-cap")
   })
 
   test("finish nudge preserves the review gate", async () => {
     const nudge = await readPrompt("finish-nudge.txt")
 
-    expect(nudge).toContain("outstanding `Needs fixes` verdict")
-    expect(nudge).toContain("dispatch the read-only `review` subagent again")
-    expect(nudge).toContain("explicit `Approved` verdict")
+    expect(nudge).toContain("synchronous `review` task")
+    expect(nudge).toContain("latest review returned `Needs fixes`")
+    expect(nudge).toContain("review-cap")
   })
 
   test("finish evaluates persisted history and fails the tool call when the gate blocks", async () => {
     const finish = await readTool("finish.ts")
 
-    expect(finish).toContain("sessions.messages({ sessionID: ctx.sessionID })")
-    expect(finish).toContain("return yield* Effect.fail(gateError).pipe(Effect.orDie)")
+    expect(finish).toContain("ctx.waitForOtherTools ?? Effect.void")
+    expect(finish).toContain(".messages({ sessionID: ctx.sessionID })")
+    expect(finish).toContain("return yield* Effect.fail(new ToolFailure({ message: gateError.message }))")
+    expect(finish).not.toContain("Effect.orDie")
     expect(finish).not.toContain('termination: "blocked"')
+  })
+
+  test("persistent-state tools do not advertise review-safe metadata", async () => {
+    for (const name of ["attachment.ts", "plan.ts", "todo.ts"]) {
+      expect(await readTool(name)).not.toContain("reviewSafe: true")
+    }
   })
 })
 
 describe("runtime review gate", () => {
-  test("parses the last explicit review verdict", () => {
+  test("parses the last explicit review verdict without depending on one markdown shape", () => {
     expect(parseReviewVerdict("### Assessment\n\n**Ready to proceed?** Approved")).toBe("approved")
-    expect(parseReviewVerdict("### Assessment\n\n**Ready to proceed?** Needs fixes")).toBe("needs-fixes")
+    expect(parseReviewVerdict("Assessment: Approved")).toBe("approved")
+    expect(parseReviewVerdict("- Verdict — Needs fixes")).toBe("needs-fixes")
     expect(
-      parseReviewVerdict(
-        "### Prior assessment\n\n**Ready to proceed?** Approved\n\n### Assessment\n\n**Ready to proceed?** Needs fixes",
-      ),
+      parseReviewVerdict("### Prior assessment\n\nAssessment: Approved\n\n### Assessment\n\nAssessment: Needs fixes"),
     ).toBe("needs-fixes")
+    expect(parseReviewVerdict("Assessment: [Approved | Needs fixes]")).toBeUndefined()
+    expect(parseReviewVerdict("Assessment: Approved (no Needs fixes remain)")).toBe("approved")
     expect(parseReviewVerdict("The implementation looks good, but no final assessment was emitted.")).toBeUndefined()
   })
 
@@ -151,12 +160,18 @@ describe("runtime review gate", () => {
     expect(state.verdict).toBe("pending")
   })
 
-  test("invalidates approval after later mutating work but not read-only inspection", () => {
+  test("uses explicit review-safe metadata instead of a denylist", () => {
     const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
 
-    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read")]).verdict).toBe("approved")
+    expect(
+      reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read", { reviewSafe: true })])
+        .verdict,
+    ).toBe("approved")
+    expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("read")]).verdict).toBe("pending")
     expect(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")]).verdict).toBe("pending")
-    expect(finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")]))).toBeInstanceOf(Error)
+    expect(
+      finishGateError(reviewLoopState([userMessage(), toolMessage("edit"), approved, toolMessage("edit")])),
+    ).toBeInstanceOf(Error)
   })
 
   test("stops at the configured cap after completed non-approval reviews", () => {

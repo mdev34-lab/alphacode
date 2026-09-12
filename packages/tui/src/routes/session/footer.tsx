@@ -5,33 +5,7 @@ import { useDirectory } from "../../context/directory"
 import { useConnected } from "../../component/use-connected"
 import { createStore } from "solid-js/store"
 import { useRoute } from "../../context/route"
-
-const REVIEW_READ_ONLY_TOOLS = new Set([
-  "read",
-  "glob",
-  "grep",
-  "webfetch",
-  "websearch",
-  "lsp",
-  "tool_search",
-  "tool_search_regex",
-  "question",
-  "todo",
-])
-
-function reviewVerdict(output: unknown) {
-  if (typeof output !== "string") return undefined
-  const matches = [...output.matchAll(/\*\*Ready to proceed\?\*\*\s*(?:\[[^\]]*\]\s*)?(Approved|Needs fixes)\b/gi)]
-  const verdict = matches.at(-1)?.[1]
-  if (!verdict) return undefined
-  return verdict.toLowerCase() === "approved" ? "approved" : "needs-fixes"
-}
-
-function isSyntheticMessage(message: { id: string; role: string }, parts: ReturnType<typeof useSync>["data"]["part"]) {
-  if (message.role !== "user") return false
-  const messageParts = parts[message.id] ?? []
-  return messageParts.length > 0 && messageParts.every((part) => "synthetic" in part && part.synthetic === true)
-}
+import { reviewLoopState } from "@opencode-ai/core/review-loop"
 
 export function Footer() {
   const { theme } = useTheme()
@@ -50,57 +24,17 @@ export function Footer() {
   const reviewStatus = createMemo(() => {
     if (route.data.type !== "session") return undefined
     const sessionID = route.data.sessionID
-    const allMessages = sync.data.message[sessionID] ?? []
-    const start = allMessages.findLastIndex((message) => message.role === "user" && !isSyntheticMessage(message, sync.data.part))
-    const messages = start < 0 ? allMessages : allMessages.slice(start + 1)
-    const parts = messages.flatMap((message) => sync.data.part[message.id] ?? [])
     const reviewConfig = sync.data.config as unknown as { review_loop?: { max_iterations?: number } }
     const maxIterations = reviewConfig.review_loop?.max_iterations ?? 5
-
-    let reviews = 0
-    let latestReview: "approved" | "needs-fixes" | undefined
-    let reviewRunning = false
-    let phase: "work" | "review" = "work"
-    let termination: "approved" | "review-cap" | undefined
-
-    for (const part of parts) {
-      if (part.type !== "tool") continue
-
-      if (part.tool === "task") {
-        const input = part.state.input as Record<string, unknown>
-        if (input.subagent_type !== "review" || input.background !== false) continue
-        if (part.state.status === "running" || part.state.status === "pending") {
-          reviewRunning = true
-          phase = "review"
-          continue
-        }
-        if (part.state.status === "completed") {
-          reviews++
-          latestReview = reviewVerdict(part.state.output)
-          phase = latestReview === "approved" ? "review" : "work"
-        }
-        continue
-      }
-
-      if (part.tool === "finish") {
-        if (part.state.status !== "completed") continue
-        const metadata = part.state.metadata as Record<string, unknown> | undefined
-        const review = metadata?.review as Record<string, unknown> | undefined
-        if (review?.termination === "approved") termination = "approved"
-        if (review?.termination === "review-cap") termination = "review-cap"
-        continue
-      }
-
-      if (!REVIEW_READ_ONLY_TOOLS.has(part.tool)) phase = "work"
-    }
-
+    const messages = (sync.data.message[sessionID] ?? []).map((message) => ({
+      role: message.role,
+      parts: sync.data.part[message.id] ?? [],
+    }))
+    const state = reviewLoopState(messages, maxIterations)
     const busy = sync.data.session_status[sessionID]?.type === "busy"
-    if (!busy && termination) phase = termination === "approved" ? "review" : "work"
-    if (reviewRunning) phase = "review"
-    if (latestReview === "needs-fixes" && busy && !reviewRunning) phase = "work"
 
-    if (reviews === 0 && termination === undefined && !busy) return undefined
-    return { reviews, maxIterations, phase, termination }
+    if (state.reviews === 0 && state.termination === undefined && !busy) return undefined
+    return state
   })
 
   const [store, setStore] = createStore({ welcome: false })
@@ -129,8 +63,21 @@ export function Footer() {
       <box gap={2} flexDirection="row" flexShrink={0}>
         <Show when={reviewStatus()}>
           {(status) => (
-            <text fg={status().termination === "approved" ? theme.success : status().termination === "review-cap" ? theme.warning : theme.text}>
-              Review {status().reviews}/{status().maxIterations} · {status().termination === "approved" ? "approved" : status().termination === "review-cap" ? "cap" : status().phase}
+            <text
+              fg={
+                status().termination === "approved"
+                  ? theme.success
+                  : status().termination === "review-cap"
+                    ? theme.warning
+                    : theme.text
+              }
+            >
+              Review {status().reviews}/{status().maxIterations} ·{" "}
+              {status().termination === "approved"
+                ? "approved"
+                : status().termination === "review-cap"
+                  ? "cap"
+                  : status().phase}
             </text>
           )}
         </Show>

@@ -1,4 +1,5 @@
 import * as Tool from "./tool"
+import { ToolFailure } from "@opencode-ai/llm"
 import DESCRIPTION from "./finish.txt"
 import { Effect, Schema } from "effect"
 import { Todo } from "../session/todo"
@@ -25,13 +26,20 @@ export const FinishTool = Tool.define(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          yield* ctx.waitForOtherTools ?? Effect.void
           const cfg = yield* config.get()
           const maxIterations = cfg.review_loop?.max_iterations ?? 5
-          const messages = yield* sessions.messages({ sessionID: ctx.sessionID }).pipe(Effect.orDie)
+          const messages = yield* sessions
+            .messages({ sessionID: ctx.sessionID })
+            .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
           const reviewState = reviewLoopState(messages, maxIterations)
           const gateError = finishGateError(reviewState)
           if (gateError) {
-            const phase = reviewState.workSinceReview ? "work" : reviewState.verdict === "needs-fixes" ? "work" : "review"
+            const phase = reviewState.workSinceReview
+              ? "work"
+              : reviewState.verdict === "needs-fixes"
+                ? "work"
+                : "review"
             yield* Effect.logWarning("finish blocked by review gate", {
               sessionID: ctx.sessionID,
               verdict: reviewState.verdict,
@@ -40,7 +48,7 @@ export const FinishTool = Tool.define(
               maxIterations: reviewState.maxIterations,
               workSinceReview: reviewState.workSinceReview,
             })
-            return yield* Effect.fail(gateError).pipe(Effect.orDie)
+            return yield* Effect.fail(new ToolFailure({ message: gateError.message }))
           }
 
           if (reviewState.verdict === "cap") {

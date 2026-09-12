@@ -87,7 +87,7 @@ function describeFor(mcpTools: Record<string, MCP.McpTool>, servers?: string[], 
 }
 
 // Program failures die at the tool boundary; recover the defect for message assertions.
-async function failure(effect: Effect.Effect<unknown>) {
+async function failure(effect: Effect.Effect<unknown, unknown>) {
   const exit = await Effect.runPromise(effect.pipe(Effect.exit))
   if (Exit.isSuccess(exit)) throw new Error("expected the tool to fail")
   return Cause.squash(exit.cause) as Error

@@ -349,6 +349,7 @@ const layer = Layer.effect(
               .join("\n"),
             parameters: output.parameters,
             jsonSchema,
+            metadata: tool.metadata,
             execute: tool.execute,
             formatValidationError: tool.formatValidationError,
           }

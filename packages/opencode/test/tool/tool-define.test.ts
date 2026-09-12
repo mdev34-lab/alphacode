@@ -1,6 +1,8 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
 import { Cause, Effect, Exit, Schema } from "effect"
+import { ToolFailure } from "@opencode-ai/llm"
 import { Agent } from "../../src/agent/agent"
 import { MessageID, SessionID } from "../../src/session/schema"
 import { Tool } from "@/tool/tool"
@@ -107,11 +109,29 @@ describe("Tool.define", () => {
     }),
   )
 
+  it.effect("review-safe tool definitions mark successful results for the review gate", () =>
+    Effect.gen(function* () {
+      const info = yield* Tool.define(
+        "review-safe",
+        Effect.succeed({
+          description: "review-safe tool",
+          parameters: params,
+          execute: () => Effect.succeed({ title: "review-safe", output: "ok", metadata: { truncated: false } }),
+        }),
+        { reviewSafe: true },
+      )
+      const tool = yield* info.init()
+      const result = yield* tool.execute({ input: "ok" }, makeCtx())
+
+      expect((result.metadata as Record<string, unknown>)[REVIEW_LOOP_METADATA]).toEqual({ reviewSafe: true })
+    }),
+  )
+
   // Regression for #28438: the wrap is the canonical "untyped → typed" boundary.
   // When the LLM emits a tool call with a payload that fails the parameter
-  // schema, the wrap must surface a typed `Tool.InvalidArgumentsError` whose
-  // `.message` is the actionable prose the AI SDK feeds back to the model.
-  it.effect("invalid args surface as Tool.InvalidArgumentsError with friendly message and JSON path", () =>
+  // schema, the wrap must surface a typed `ToolFailure` whose nested
+  // `InvalidArgumentsError` retains the actionable model-facing message.
+  it.effect("invalid args surface as ToolFailure with friendly message and JSON path", () =>
     Effect.gen(function* () {
       const parameters = Schema.Struct({
         questions: Schema.Array(
@@ -139,16 +159,16 @@ describe("Tool.define", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       if (!Exit.isFailure(exit)) return
 
-      // The wrap ends with Effect.orDie, so the failure lives in the cause as a
-      // defect. Recover the typed instance from there.
-      const die = exit.cause.reasons.find(Cause.isDieReason)
-      const error = die?.defect
+      const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
+      expect(failure).toBeInstanceOf(ToolFailure)
+      if (!(failure instanceof ToolFailure)) return
+      const error = failure.error
       expect(error).toBeInstanceOf(Tool.InvalidArgumentsError)
-      const args = error as Tool.InvalidArgumentsError
-      expect(args.tool).toBe("qtest")
-      expect(args.message).toContain("qtest tool was called with invalid arguments")
-      expect(args.message).toContain("Please rewrite the input")
-      expect(args.message).toContain(`["questions"][0]["question"]`)
+      if (!(error instanceof Tool.InvalidArgumentsError)) return
+      expect(error.tool).toBe("qtest")
+      expect(error.message).toContain("qtest tool was called with invalid arguments")
+      expect(error.message).toContain("Please rewrite the input")
+      expect(error.message).toContain(`["questions"][0]["question"]`)
     }),
   )
 })
