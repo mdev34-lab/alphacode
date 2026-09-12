@@ -248,6 +248,8 @@ export type KnightRiderStyle = "blocks" | "diamonds"
 export interface KnightRiderOptions {
   width?: number
   style?: KnightRiderStyle
+  /** Scan direction (default: "forward"). Forward wraps from end back to start; "bidirectional" reverses at each end. */
+  direction?: "forward" | "backward" | "bidirectional"
   holdStart?: number
   holdEnd?: number
   colors?: ColorInput[]
@@ -274,6 +276,7 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
   const style = options.style ?? "diamonds"
   const holdStart = options.holdStart ?? 30
   const holdEnd = options.holdEnd ?? 9
+  const direction = options.direction ?? "forward"
 
   const colors =
     options.colors ??
@@ -296,14 +299,15 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
     colors,
     trailLength: colors.length,
     defaultColor,
-    direction: "bidirectional" as const,
+    direction,
     holdFrames: { start: holdStart, end: holdEnd },
     enableFading: options.enableFading,
     minAlpha: options.minAlpha,
   }
 
-  // Bidirectional cycle: Forward (width) + Hold End + Backward (width-1) + Hold Start
-  const totalFrames = width + holdEnd + (width - 1) + holdStart
+  // Forward/backward cycle: one sweep across the width that wraps back to the
+  // start. Bidirectional adds hold frames at each end plus the return sweep.
+  const totalFrames = direction === "bidirectional" ? width + holdEnd + (width - 1) + holdStart : width
 
   // Generate dynamic frames where inactive pixels are dots and active ones are blocks
   const frames = Array.from({ length: totalFrames }, (_, frameIndex) => {
@@ -336,6 +340,7 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
 export function createColors(options: KnightRiderOptions = {}): ColorGenerator {
   const holdStart = options.holdStart ?? 30
   const holdEnd = options.holdEnd ?? 9
+  const direction = options.direction ?? "forward"
 
   const colors =
     options.colors ??
@@ -358,7 +363,7 @@ export function createColors(options: KnightRiderOptions = {}): ColorGenerator {
     colors,
     trailLength: colors.length,
     defaultColor,
-    direction: "bidirectional" as const,
+    direction,
     holdFrames: { start: holdStart, end: holdEnd },
     enableFading: options.enableFading,
     minAlpha: options.minAlpha,
