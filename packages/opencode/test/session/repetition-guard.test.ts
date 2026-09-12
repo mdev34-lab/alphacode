@@ -193,6 +193,85 @@ describe("RepetitionGuard.guard", () => {
     }),
   )
 
+  it.effect("never feeds fenced repetition to fragment detection after the fence closes", () =>
+    Effect.gen(function* () {
+      // Fenced rows followed by unfenced prose. The prose alone is well under
+      // every threshold, but if the fenced rows were still resident in the
+      // fragment window after the close, a scan could inspect them against
+      // the new text. The fence boundary must start a fresh window.
+      const rows = Array.from({ length: 20 }, () => text(`${FIXTURE_ROW}\n`))
+      const prose = Array.from({ length: 6 }, (_, i) =>
+        text(`Paragraph ${i} of the summary follows here, with varied wording.\n\n`),
+      )
+      const input = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        text("```\n"),
+        ...rows,
+        text("```\n"),
+        ...prose,
+        LLMEvent.textEnd({ id: "text-1" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]
+      const collected = yield* RepetitionGuard.guard(Stream.fromIterable(input), defaults()).pipe(Stream.runCollect)
+      expect(Array.from(collected)).toStrictEqual(input)
+    }),
+  )
+
+  it.effect("repeated verbatim fenced blocks stay exempt", () =>
+    Effect.gen(function* () {
+      // The same whole code block eight times in a row. Repetition that
+      // spans fence boundaries is treated as legitimate output by design:
+      // the exemption is structural (fenced bytes never enter the fragment
+      // window), so the generation-length cap bounds this shape instead.
+      const block = text("```\nAll quiet on the western front, nothing changed here at all.\n```\n")
+      const source = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
+        Stream.concat(
+          Stream.fromIterable(Array.from({ length: 8 }, () => block)),
+          Stream.make(LLMEvent.textEnd({ id: "text-1" }), LLMEvent.finish({ reason: "stop" })),
+        ),
+      )
+      const collected = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runCollect)
+      expect(collected.length).toBe(12)
+    }),
+  )
+
+  it.effect("a real repetition after a closed fence still trips", () =>
+    Effect.gen(function* () {
+      // The fence reset must not over-suppress: once the block has closed,
+      // a genuinely repetitive unfenced tail still aborts the stream.
+      const rows = Array.from({ length: 12 }, () => text(`${FIXTURE_ROW}\n`))
+      const loop = Array.from({ length: 10 }, () => text(`${ISSUE_LINE}\n`))
+      const source = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" }), text("```\n")),
+        Stream.concat(Stream.fromIterable(rows), Stream.concat(Stream.make(text("```\n")), Stream.fromIterable(loop))),
+      )
+      const error = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runDrain, Effect.flip)
+      expect(error).toBeInstanceOf(RepetitionGuard.RepetitionDetectedError)
+    }),
+  )
+
+  it.effect("passes a long varied stream through window eviction", () =>
+    Effect.gen(function* () {
+      // 150 distinct 84-character lines: 12.6k characters, well past the
+      // 8k fragment window, forcing many ring-buffer evictions and scans.
+      // Varied content must pass through untouched.
+      const lines = Array.from({ length: 150 }, (_, i) =>
+        text(`Entry ${String(i).padStart(4, "0")}: the quick brown fox jumps over the lazy dog again ${i}\n`),
+      )
+      const input = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        ...lines,
+        LLMEvent.textEnd({ id: "text-1" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]
+      const collected = yield* RepetitionGuard.guard(Stream.fromIterable(input), defaults()).pipe(Stream.runCollect)
+      expect(Array.from(collected)).toStrictEqual(input)
+    }),
+  )
+
   it.effect("resets between text parts", () =>
     Effect.gen(function* () {
       // 4 + 4 identical lines across two text parts: neither part reaches the
