@@ -16,6 +16,7 @@ import { FinishTool } from "@/tool/finish"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -88,19 +89,21 @@ const addToolPart = Effect.fn("FinishTest.addToolPart")(function* (
       input,
       output,
       title: tool,
-      metadata: {},
+      // Mirror Tool.define, which stamps file-writing tools with review metadata.
+      metadata: tool === "edit" ? { [REVIEW_LOOP_METADATA]: { writesFiles: true } } : {},
       time: { start: now, end: now },
     },
   })
 })
 
-describe("tool.finish – persisted review gate", () => {
-  it.instance("returns a typed tool failure until work has an approved synchronous review", () =>
+describe("tool.finish – persisted review nudge", () => {
+  it.instance("declines the first finish with a review nudge when work has no approved synchronous review", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seedSession()
       yield* addToolPart(chat.id, assistant.id, "edit")
       const tool = yield* FinishTool
       const def = yield* tool.init()
+      const recorded: Record<string, unknown>[] = []
 
       const exit = yield* def
         .execute(
@@ -111,7 +114,10 @@ describe("tool.finish – persisted review gate", () => {
             agent: "work",
             abort: new AbortController().signal,
             messages: [],
-            metadata: () => Effect.void,
+            metadata: (input) => {
+              recorded.push(input.metadata ?? {})
+              return Effect.void
+            },
             ask: () => Effect.void,
           },
         )
@@ -123,6 +129,50 @@ describe("tool.finish – persisted review gate", () => {
       expect(failure).toBeInstanceOf(ToolFailure)
       if (!(failure instanceof ToolFailure)) return
       expect(failure.message).toContain("no explicit Approved review")
+      expect(failure.message).toContain("call finish again to skip review")
+      expect(recorded).toEqual([{ review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } }])
+    }),
+  )
+
+  it.instance("lets a second finish call skip review once the nudge is persisted", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      yield* addToolPart(chat.id, assistant.id, "edit")
+      const session = yield* Session.Service
+      const now = Date.now()
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: chat.id,
+        type: "tool",
+        tool: "finish",
+        callID: "finish-call-1",
+        state: {
+          status: "error",
+          input: { result: "done" },
+          error: "Review nudge",
+          metadata: { review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } },
+          time: { start: now, end: now },
+        },
+      })
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        { result: "done" },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.title).toBe("Task completed")
+      expect(result.metadata.review.termination).toBe("skipped")
+      expect(result.metadata.review.verdict).toBe("pending")
     }),
   )
 
@@ -373,8 +423,16 @@ describe("todo state – granular planning and sequential execution", () => {
       const granularPlan = [
         { content: "Trace current model-selection state flow", status: "pending" as const, priority: "high" as const },
         { content: "Trace agent-turn configuration resolution", status: "pending" as const, priority: "high" as const },
-        { content: "Identify where pending configuration is deferred", status: "pending" as const, priority: "high" as const },
-        { content: "Define next-turn configuration semantics", status: "pending" as const, priority: "medium" as const },
+        {
+          content: "Identify where pending configuration is deferred",
+          status: "pending" as const,
+          priority: "high" as const,
+        },
+        {
+          content: "Define next-turn configuration semantics",
+          status: "pending" as const,
+          priority: "medium" as const,
+        },
         { content: "Implement pending model state", status: "pending" as const, priority: "high" as const },
         { content: "Add model-switch test", status: "pending" as const, priority: "medium" as const },
         { content: "Run targeted tests", status: "pending" as const, priority: "medium" as const },
@@ -487,7 +545,7 @@ describe("todo state – granular planning and sequential execution", () => {
           { content: "task 2", status: "pending", priority: "medium" },
         ],
       })
-      expect((yield* todos.get(chat.id))).toHaveLength(2)
+      expect(yield* todos.get(chat.id)).toHaveLength(2)
 
       yield* todos.update({
         sessionID: chat.id,
@@ -516,7 +574,7 @@ describe("todo state – granular planning and sequential execution", () => {
       expect(after[0].content).toBe("task 1 revised")
 
       yield* todos.update({ sessionID: chat.id, todos: [] })
-      expect((yield* todos.get(chat.id))).toHaveLength(0)
+      expect(yield* todos.get(chat.id)).toHaveLength(0)
     }),
   )
 })

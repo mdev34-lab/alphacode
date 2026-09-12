@@ -40,7 +40,7 @@ export const FinishTool = Tool.define(
               : reviewState.verdict === "needs-fixes"
                 ? "work"
                 : "review"
-            yield* Effect.logWarning("finish blocked by review gate", {
+            yield* Effect.logWarning("finish declined with review nudge", {
               sessionID: ctx.sessionID,
               verdict: reviewState.verdict,
               phase,
@@ -48,7 +48,31 @@ export const FinishTool = Tool.define(
               maxIterations: reviewState.maxIterations,
               workSinceReview: reviewState.workSinceReview,
             })
+            // Persist the nudge on the failed part so the next finish call for the
+            // same work is recognised as an explicit skip instead of being declined again.
+            yield* ctx.metadata({
+              title: "Review suggested",
+              metadata: {
+                review: {
+                  nudged: true,
+                  verdict: reviewState.verdict,
+                  reviews: reviewState.reviews,
+                  maxIterations: reviewState.maxIterations,
+                },
+              },
+            })
             return yield* Effect.fail(new ToolFailure({ message: gateError.message }))
+          }
+
+          const skipped =
+            reviewState.nudged && (reviewState.verdict === "pending" || reviewState.verdict === "needs-fixes")
+          if (skipped) {
+            yield* Effect.logWarning("review skipped by explicit finish", {
+              sessionID: ctx.sessionID,
+              verdict: reviewState.verdict,
+              reviews: reviewState.reviews,
+              maxIterations: reviewState.maxIterations,
+            })
           }
 
           if (reviewState.verdict === "cap") {
@@ -66,9 +90,7 @@ export const FinishTool = Tool.define(
             const hasOpen = existing.some((t) => t.status === "pending" || t.status === "in_progress")
             if (!hasOpen) return
             const closed = existing.map((t) =>
-              t.status === "pending" || t.status === "in_progress"
-                ? { ...t, status: "cancelled" as const }
-                : t,
+              t.status === "pending" || t.status === "in_progress" ? { ...t, status: "cancelled" as const } : t,
             )
             yield* todo.update({ sessionID: ctx.sessionID, todos: closed })
           }).pipe(
@@ -88,7 +110,7 @@ export const FinishTool = Tool.define(
                 verdict: reviewState.verdict,
                 reviews: reviewState.reviews,
                 maxIterations: reviewState.maxIterations,
-                ...(reviewState.verdict === "cap" ? { termination: "review-cap" } : { termination: "approved" }),
+                termination: skipped ? "skipped" : reviewState.verdict === "cap" ? "review-cap" : "approved",
               },
             },
           }
