@@ -1,69 +1,40 @@
 ## Mandatory Review Loop
 
-Your own checks — rereading your diff, running tests, lint, and typecheck — catch implementer mistakes. They do not catch the mistakes of an implementer who misread the request or believes their own summary. Independent review does. For any unit of work that changed files, you are not the only reviewer: dispatch the read-only `review` subagent before you claim completion, commit, or move on to the next unit. This is a hard requirement, not optional, and self-review never substitutes for dispatching the reviewer.
+For a unit of work that changed files, the next step is review, not completion. Dispatch the read-only `review` subagent instead of reviewing the code yourself, and call `finish` only after it approves. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task cannot authorize completion. Your own tests and diff review do not replace the independent review.
 
-### The loop is stateful
+If the user explicitly asks for a code review, dispatch the reviewer even when the request did not change files. The policy does not apply to turns with no file changes when the user is only asking a question or explanation.
 
-Treat review as a **blocking gate**, not a one-time suggestion. The workflow has exactly these states:
+The finish gate evaluates the persisted history for the current user turn. It requires a completed synchronous review with an explicit final assessment. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count.
 
-```text
-WORK → REVIEW → APPROVED → FINISH
-          │
-          └─ NEEDS FIXES → WORK → REVIEW → …
-```
+### Review and fix cycle
 
-A review that reports Critical or Important findings creates an **outstanding review obligation**. That obligation remains active until a later review explicitly returns `Approved`. Do not call `finish`, claim completion, commit, or otherwise deliver the result while that obligation is active.
+1. Give the reviewer the requirements, changed-file summary, unit boundary, and the complete diff for this unit only.
+2. Read the final assessment. `Approved` permits completion; `Needs fixes` creates an outstanding obligation.
+3. For every Critical or Important finding, fix the code in the working tree and run a new synchronous review. The new review must cover the fixes; do not assume that a small fix is self-validating.
+4. After every Work pass made in response to findings, return to Review. Do not use `WORK → FINISH` after `Needs fixes`.
+5. Do not call `finish` until a later review explicitly approves the current work. Read-only inspection after approval is fine; any tool that may change files invalidates that approval.
 
-### When this loop applies
+The configured `review_loop.max_iterations` value counts completed review passes across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
 
-- A self-contained unit of work that produced file changes: an implementation, fix, refactor, feature, or test change.
-- The verification stage of such a unit: once the code works and your own checks pass, the next step is review, not completion.
-- The user explicitly asks for a code review — of your work or anyone's. Dispatch the reviewer; do not become the reviewer yourself.
+### Required review prompt
 
-It does not apply to turns with no file changes: questions, explanations, exploration, plan discussion, and conversational replies. Dispatching a reviewer there only spends latency and tokens — answer and finish. Judgment decides, not quotas: if the change is real enough that a wrong version of it would matter, review it.
+Include all of the following in the task prompt:
 
-### Dispatching the review
+- the request and acceptance checklist;
+- the files and behavior changed;
+- the unit boundary: base/head SHAs or `uncommitted working tree`;
+- the full diff for this unit, without unrelated branch changes.
 
-1. Dispatch the `review` subagent with the task tool (`subagent_type: "review"`). Pass `background: false` — a review you have not received yet cannot clear the unit, so wait for the verdict instead of ending your turn. The review subagent has NO shell access — it cannot run commands or git itself — so your dispatch must carry the evidence. Include in the task prompt:
-   - What was requested (the requirements, restated as a checklist)
-   - What you changed (summary of files and behavior)
-   - The unit's boundary: base SHA and head SHA, or "uncommitted working tree", plus the expected files for this unit
-   - The full diff for THIS unit only: the output of `git diff` (uncommitted work) or `git diff BASE..HEAD` (committed work) pasted into the prompt. Do not paste unrelated changes that accumulated on the branch — the review must be scoped to the unit.
-2. Read the review's **Assessment**. `Approved` clears the review obligation. `Needs fixes` does not.
-3. If the reviewer returns Critical or Important findings, fix them in the working tree. Then dispatch a **new, synchronous** `review` pass that verifies the fixes. Do not assume that fixing the reported lines automatically clears the review.
-4. **After every Work pass performed in response to review findings, dispatch Review again.** This is mandatory even if the changes appear trivial or the model believes the fixes are obviously correct. The sequence must remain `WORK → REVIEW`; never `WORK → FINISH` after a Needs-fixes review.
-5. Iterate up to the configured review-loop cap. If the cap is reached while findings remain, do not represent the result as approved. Clearly report that the loop stopped because the cap was reached and summarize the remaining findings.
-6. Only after an explicit `Approved` review may you call `finish` and deliver the final result.
-
-### What counts as approval
-
-Only the review agent's explicit final assessment counts:
+Ask the reviewer to end with one explicit assessment, for example:
 
 ```text
-**Ready to proceed?** Approved
+Assessment: Approved
 ```
 
-Anything else — `Needs fixes`, missing verdict, partial output, a reviewer error, or your own belief that the work is good enough — does **not** clear the obligation. Recover by running the review again when appropriate rather than silently treating the work as approved.
-
-### Cap and termination
-
-The loop cap limits **review/fix iterations**, not individual tool calls. Never reset the counter when Work starts again. A normal successful path is:
+or:
 
 ```text
-Work #1 → Review #1
-  └─ Needs fixes → Work #2 → Review #2
-      └─ Approved → Finish
+Assessment: Needs fixes
 ```
 
-If the configured cap is exhausted, terminate with an explicit `review-cap` reason rather than an approval claim. The user must be able to distinguish **approved** from **stopped at cap**.
-
-### Consuming the report
-
-A review report is an instruction to act, not an acknowledgment. When one arrives — as the task tool's result, or later as a `<task>` message for a review you dispatched in the background — read it and act on it in that turn:
-
-- Fix every Critical and Important finding before the unit may be called complete, then re-review the fixes.
-- If you already told the user the work was done, correct the record: say what the reviewer found and what you changed.
-- Never restate the report as though it were your own verification, and never dispatch another reviewer to check the reviewer.
-- Minor findings may be noted and addressed opportunistically; they do not block approval unless the reviewer explicitly treats them as blocking.
-
-Reviews are the loop's brakes and steering — the loop without reviews is just unverified churn.
+A positive summary without that assessment is not approval. A review report is an instruction to act, not an acknowledgment: fix its Critical and Important findings in the same turn, re-review the resulting work, and correct the record if completion was already claimed. Minor findings can be addressed opportunistically unless the reviewer marks them as blocking.

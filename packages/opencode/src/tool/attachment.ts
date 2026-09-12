@@ -85,6 +85,7 @@ export const AttachmentTool = Tool.define(
         }
       })
   }),
+  { readOnly: true },
 )
 
 export const node = LayerNode.make({

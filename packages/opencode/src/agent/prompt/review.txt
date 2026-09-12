@@ -95,6 +95,6 @@ For each issue: file:line, what's wrong, why it matters, how to fix (if not obvi
 
 ### Assessment
 
-**Ready to proceed?** [Approved | Needs fixes]
+Assessment: [Approved | Needs fixes]
 
-**Reasoning:** [1-2 sentence technical assessment]
+Reasoning: [1-2 sentence technical assessment]

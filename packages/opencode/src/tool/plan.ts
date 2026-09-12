@@ -76,4 +76,5 @@ export const PlanExitTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
+  { readOnly: true },
 )

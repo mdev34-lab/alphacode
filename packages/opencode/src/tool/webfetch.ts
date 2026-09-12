@@ -153,6 +153,7 @@ export const WebFetchTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
+  { readOnly: true },
 )
 
 function extractTextFromHTML(html: string) {

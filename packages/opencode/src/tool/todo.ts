@@ -43,4 +43,5 @@ export const TodoWriteTool = Tool.define<typeof Parameters, Metadata, Todo.Servi
         }),
     } satisfies Tool.DefWithoutID<typeof Parameters, Metadata>
   }),
+  { readOnly: true },
 )

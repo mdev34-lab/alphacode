@@ -1,5 +1,6 @@
+import { ToolFailure } from "@opencode-ai/llm"
 import { Effect } from "effect"
-import { effectCmd } from "../../effect-cmd"
+import { CliError, effectCmd } from "../../effect-cmd"
 
 export const AgentCommand = effectCmd({
   command: "agent <name>",
@@ -22,6 +23,10 @@ export const AgentCommand = effectCmd({
   handler: (args) =>
     Effect.gen(function* () {
       const { debugAgent } = yield* Effect.promise(() => import("./agent.handler"))
-      return yield* debugAgent(args)
+      return yield* debugAgent(args).pipe(
+        Effect.mapError((error) =>
+          error instanceof ToolFailure ? new CliError({ message: error.message, exitCode: 1 }) : error,
+        ),
+      )
     }),
 })

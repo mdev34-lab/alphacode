@@ -1,5 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
 import { Effect, Schema } from "effect"
+import { ToolFailure } from "@opencode-ai/llm"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type { MessageV2 } from "../session/message-v2"
@@ -12,15 +14,14 @@ interface Metadata {
   [key: string]: any
 }
 
+export type ToolMetadata = {
+  readonly readOnly?: boolean
+}
+
 // TODO: remove this hack
 export type DynamicDescription = (agent: Agent.Info) => Effect.Effect<string>
 
-/**
- * Raised when the LLM calls a tool with arguments that fail the parameter
- * schema. This is the canonical "rewrite the input" tool error: the typed
- * error class makes it matchable upstream, and its `message` getter produces
- * the model-facing prose that the AI SDK feeds back as the tool result.
- */
+/** Formats parameter validation failures before they become model-facing tool errors. */
 export class InvalidArgumentsError extends Schema.TaggedErrorClass<InvalidArgumentsError>()(
   "ToolInvalidArgumentsError",
   {
@@ -41,6 +42,7 @@ export type Context<M extends Metadata = Metadata> = {
   callID?: string
   extra?: { [key: string]: unknown }
   messages: SessionV1.WithParts[]
+  waitForOtherTools?: Effect.Effect<void>
   metadata(input: { title?: string; metadata?: M }): Effect.Effect<void>
   ask(input: Omit<PermissionV1.Request, "id" | "sessionID" | "tool">): Effect.Effect<void>
 }
@@ -60,7 +62,8 @@ export interface Def<
   description: string
   parameters: Parameters
   jsonSchema?: JSONSchema7
-  execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
+  metadata?: ToolMetadata
+  execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>, ToolFailure>
   formatValidationError?(error: unknown): string
 }
 export type DefWithoutID<
@@ -73,6 +76,7 @@ export interface Info<
   M extends Metadata = Metadata,
 > {
   id: string
+  metadata?: ToolMetadata
   init: () => Effect.Effect<DefWithoutID<Parameters, M>>
 }
 
@@ -101,10 +105,13 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
   init: Init<Parameters, Result>,
   truncate: Truncate.Interface,
   agents: Agent.Interface,
+  definitionMetadata?: ToolMetadata,
 ) {
   return () =>
     Effect.gen(function* () {
       const toolInfo = typeof init === "function" ? { ...(yield* init()) } : { ...init }
+      const reviewMetadata =
+        definitionMetadata?.readOnly === true ? { [REVIEW_LOOP_METADATA]: { readOnly: true } } : undefined
       // Compile the parser closure once per tool init; `decodeUnknownEffect`
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.
@@ -119,32 +126,35 @@ function wrap<Parameters extends Schema.Decoder<unknown>, Result extends Metadat
         }
         return Effect.gen(function* () {
           const decoded = yield* decode(args).pipe(
-            Effect.mapError(
-              (error) =>
-                new InvalidArgumentsError({
-                  tool: id,
-                  detail: toolInfo.formatValidationError ? toolInfo.formatValidationError(error) : String(error),
-                }),
-            ),
+            Effect.mapError((error) => {
+              const invalid = new InvalidArgumentsError({
+                tool: id,
+                detail: toolInfo.formatValidationError ? toolInfo.formatValidationError(error) : String(error),
+              })
+              return new ToolFailure({ message: invalid.message, error: invalid })
+            }),
           )
           const result = yield* execute(decoded as Schema.Schema.Type<Parameters>, ctx)
-          if (result.metadata.truncated !== undefined) {
-            return result
-          }
+          const marked = reviewMetadata ? { ...result, metadata: { ...result.metadata, ...reviewMetadata } } : result
+          if (marked.metadata.truncated !== undefined) return marked
+
           const agent = yield* agents.get(ctx.agent)
-          const truncated = yield* truncate.output(result.output, {}, agent)
+          const truncated = yield* truncate.output(marked.output, {}, agent)
           return {
-            ...result,
+            ...marked,
             output: truncated.content,
             metadata: {
-              ...result.metadata,
+              ...marked.metadata,
               truncated: truncated.truncated,
               ...(truncated.truncated && { outputPath: truncated.outputPath }),
             },
           }
-        }).pipe(Effect.orDie, Effect.withSpan("Tool.execute", { attributes: attrs }))
+        }).pipe(Effect.withSpan("Tool.execute", { attributes: attrs }))
       }
-      return toolInfo
+      return {
+        ...toolInfo,
+        ...(definitionMetadata ? { metadata: definitionMetadata } : {}),
+      }
     })
 }
 
@@ -156,15 +166,19 @@ export function define<
 >(
   id: ID,
   init: Effect.Effect<Init<Parameters, Result>, never, R>,
-): Effect.Effect<Info<Parameters, Result>, never, R | Truncate.Service | Agent.Service> & { id: ID } {
+  metadata?: ToolMetadata,
+): Effect.Effect<Info<Parameters, Result>, never, R | Truncate.Service | Agent.Service> & {
+  id: ID
+  metadata?: ToolMetadata
+} {
   return Object.assign(
     Effect.gen(function* () {
       const resolved = yield* init
       const truncate = yield* Truncate.Service
       const agents = yield* Agent.Service
-      return { id, init: wrap(id, resolved, truncate, agents) }
+      return { id, metadata, init: wrap(id, resolved, truncate, agents, metadata) }
     }),
-    { id },
+    { id, metadata },
   )
 }
 
@@ -176,6 +190,7 @@ export function init<P extends Schema.Decoder<unknown>, M extends Metadata>(
     return {
       ...init,
       id: info.id,
+      ...(info.metadata ? { metadata: info.metadata } : {}),
     }
   })
 }

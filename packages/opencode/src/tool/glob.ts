@@ -73,4 +73,5 @@ export const GlobTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
+  { readOnly: true },
 )

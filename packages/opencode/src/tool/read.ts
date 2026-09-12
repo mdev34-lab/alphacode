@@ -383,4 +383,5 @@ export const ReadTool = Tool.define<
         run(params, ctx).pipe(Effect.orDie),
     }
   }),
+  { readOnly: true },
 )

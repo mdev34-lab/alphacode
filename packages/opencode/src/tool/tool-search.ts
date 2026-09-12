@@ -49,6 +49,7 @@ export const ToolSearchTool = Tool.define(
         }),
     }
   }),
+  { readOnly: true },
 )
 
 /**

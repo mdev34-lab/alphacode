@@ -140,4 +140,5 @@ export const WebSearchTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
+  { readOnly: true },
 )

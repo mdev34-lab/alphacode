@@ -2,10 +2,11 @@ import { afterEach, describe, expect } from "bun:test"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Effect } from "effect"
+import { Cause, Effect, Exit } from "effect"
+import { ToolFailure } from "@opencode-ai/llm"
 import { Session } from "@/session/session"
 import { Todo } from "@/session/todo"
-import { MessageID } from "@/session/schema"
+import { MessageID, PartID, SessionID } from "@/session/schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Truncate } from "@/tool/truncate"
 import { Agent } from "@/agent/agent"
@@ -64,6 +65,97 @@ const seedSession = Effect.fn("FinishTest.seedSession")(function* (title = "test
   }
   yield* session.updateMessage(assistant)
   return { chat, assistant }
+})
+
+const addToolPart = Effect.fn("FinishTest.addToolPart")(function* (
+  sessionID: SessionID,
+  messageID: MessageID,
+  tool: string,
+  input: Record<string, unknown> = {},
+  output = "done",
+) {
+  const session = yield* Session.Service
+  const now = Date.now()
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID,
+    sessionID,
+    type: "tool",
+    tool,
+    callID: `${tool}-call`,
+    state: {
+      status: "completed",
+      input,
+      output,
+      title: tool,
+      metadata: {},
+      time: { start: now, end: now },
+    },
+  })
+})
+
+describe("tool.finish – persisted review gate", () => {
+  it.instance("returns a typed tool failure until work has an approved synchronous review", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      yield* addToolPart(chat.id, assistant.id, "edit")
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          { result: "done" },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
+      expect(failure).toBeInstanceOf(ToolFailure)
+      if (!(failure instanceof ToolFailure)) return
+      expect(failure.message).toContain("no explicit Approved review")
+    }),
+  )
+
+  it.instance("records approval only after a completed synchronous review", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      yield* addToolPart(chat.id, assistant.id, "edit")
+      yield* addToolPart(
+        chat.id,
+        assistant.id,
+        "task",
+        { subagent_type: "review", background: false },
+        "Assessment: Approved",
+      )
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        { result: "done" },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.metadata.review.termination).toBe("approved")
+      expect(result.metadata.review.verdict).toBe("approved")
+    }),
+  )
 })
 
 describe("tool.finish – todo closure safety net", () => {
