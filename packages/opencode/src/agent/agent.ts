@@ -163,7 +163,7 @@ const layer = Layer.effect(
           code: {
             name: "code",
             description:
-              "Software-engineering agent for Git repositories. Orient with the project overview, use LSP, Git, and test/build/lint discovery, and keep changes minimal and verified. Use for code changes, debugging, refactors, and repository work; it delegates non-code work to Work.",
+              "Software-engineering agent for Git repositories. Orient with the project overview, use LSP, Git, and test/build/lint discovery, and keep changes minimal and verified. Use for code changes, debugging, refactors, and repository work; it can delegate non-code work to Work.",
             options: {},
             permission: Permission.merge(
               defaults,

@@ -19,6 +19,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { commitRules, deriveDelegationResult, type DelegationResult } from "../../src/tool/delegate"
 import { DelegateTool } from "../../src/tool/delegate"
 import type { TaskPromptOps } from "../../src/tool/task"
+import type * as Tool from "../../src/tool/tool"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -312,30 +313,43 @@ describe("tool.delegate", () => {
     }),
   )
 
-  it.instance("refuses unknown agents", () =>
-    Effect.gen(function* () {
-      const { chat, assistant } = yield* seed()
-      const def = yield* initTool()
-      const exit = yield* def
-        .execute(
-          { agent: "nope", task: "task" },
-          context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
-        )
-        .pipe(Effect.exit)
-      expect(Exit.isFailure(exit)).toBe(true)
-    }),
-  )
-
-  it.instance("keeps the delegation cwd inside the workspace", () =>
+  it.instance("refuses unknown agents without asking permission", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
       const def = yield* initTool()
+      const asks: unknown[] = []
+
+      const exit = yield* def
+        .execute(
+          { agent: "nope", task: "task" },
+          {
+            ...context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
+            ask: (input) => Effect.sync(() => asks.push(input)),
+          },
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(asks).toHaveLength(0)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("keeps the delegation cwd inside the workspace without asking permission", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTool()
+      const asks: unknown[] = []
+      const ctx = (input: Parameters<typeof context>[0]) => ({
+        ...context(input),
+        ask: (ask: Parameters<Tool.Context["ask"]>[0]) => Effect.sync(() => asks.push(ask)),
+      })
 
       const outside = yield* def
         .execute(
           { agent: "code", task: "task", cwd: "/etc" },
-          context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
+          ctx({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
         )
         .pipe(Effect.exit)
       expect(Exit.isFailure(outside)).toBe(true)
@@ -344,10 +358,12 @@ describe("tool.delegate", () => {
       const missing = yield* def
         .execute(
           { agent: "code", task: "task", cwd: "does-not-exist" },
-          context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
+          ctx({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
         )
         .pipe(Effect.exit)
       expect(Exit.isFailure(missing)).toBe(true)
+      // Neither invalid cwd may have produced a permission prompt.
+      expect(asks).toHaveLength(0)
     }),
   )
 

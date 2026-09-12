@@ -309,6 +309,20 @@ export const DelegateTool = Tool.define(
         )
       }
 
+      // Validate the deterministic inputs before asking for permission, so a
+      // bad agent name or cwd fails fast instead of prompting the user first.
+      const target = yield* agent.get(params.agent)
+      if (!target) return yield* Effect.fail(new Error(`Unknown agent: ${params.agent} is not a valid agent`))
+      if (target.hidden) return yield* Effect.fail(new Error(`Agent ${params.agent} is hidden and cannot be delegated to`))
+
+      const cwd = params.cwd ? path.resolve(instance.directory, params.cwd) : instance.directory
+      if (!containsPath(cwd, instance)) {
+        return yield* Effect.fail(new Error(`Delegation cwd must stay inside the current workspace: ${cwd}`))
+      }
+      if (!(yield* fs.isDir(cwd))) {
+        return yield* Effect.fail(new Error(`Delegation cwd is not a directory: ${cwd}`))
+      }
+
       // Remembering "always" for one agent must not silently authorize
       // delegating to every other agent.
       yield* ctx.ask({
@@ -322,18 +336,6 @@ export const DelegateTool = Tool.define(
           constraints: params.constraints,
         },
       })
-
-      const target = yield* agent.get(params.agent)
-      if (!target) return yield* Effect.fail(new Error(`Unknown agent: ${params.agent} is not a valid agent`))
-      if (target.hidden) return yield* Effect.fail(new Error(`Agent ${params.agent} is hidden and cannot be delegated to`))
-
-      const cwd = params.cwd ? path.resolve(instance.directory, params.cwd) : instance.directory
-      if (!containsPath(cwd, instance)) {
-        return yield* Effect.fail(new Error(`Delegation cwd must stay inside the current workspace: ${cwd}`))
-      }
-      if (!(yield* fs.isDir(cwd))) {
-        return yield* Effect.fail(new Error(`Delegation cwd is not a directory: ${cwd}`))
-      }
 
       const parent = yield* sessions.get(ctx.sessionID)
       const readOnly = params.constraints?.readOnly === true

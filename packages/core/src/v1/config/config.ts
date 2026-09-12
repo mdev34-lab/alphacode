@@ -82,7 +82,8 @@ export const Info = Schema.Struct({
       "Default agent to use when none is specified. Must be a primary agent. Falls back to 'work' if not set or if the specified agent is invalid. The legacy id 'build' is still accepted and resolves to 'work'.",
   }),
   subagent_depth: Schema.optional(NonNegativeInt).annotate({
-    description: "Maximum subagent nesting depth. Defaults to 1, which prevents subagents from launching subagents.",
+    description:
+      "Maximum subagent nesting depth for the task and delegate tools. Defaults to 1, which prevents subagents from launching subagents. A value of 2 allows a Work -> Code -> Work delegation round trip.",
   }),
   review_loop: Schema.optional(
     Schema.Struct({

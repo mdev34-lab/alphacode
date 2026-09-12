@@ -25,6 +25,8 @@ The `delegate` tool hands a bounded task to another agent (typically `work` for 
 * The task is not software engineering (file organization, document processing, downloads).
 * The task needs a different working directory outside this project.
 
+Nesting is bounded by `subagent_depth` (default 1): a session running as a delegate is already one level deep, so with the default it cannot delegate again. The Work → Code → Work round trip therefore requires `subagent_depth: 2`; if your own delegation attempt reports the depth limit, say so in your finish report instead of retrying.
+
 Do not delegate code changes back and forth to avoid doing the work; delegation is for crossing the Work/Code boundary, not for parallelizing code.
 
 # Output
