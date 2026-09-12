@@ -1,3 +1,5 @@
+import path from "path"
+
 export type WorkerExit = {
   code: number | null
   signal: string | number | null
@@ -221,6 +223,78 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
 
   launch()
   return transport
+}
+
+/**
+ * Thread-worker transport for standalone compiled executables.
+ *
+ * A compiled Bun binary always runs its main entrypoint, so it cannot spawn an
+ * embedded entrypoint as a separate process (Bun resolves neither argv nor
+ * `Bun.spawn` against the embedded module table). Bun's `Worker` constructor
+ * does resolve embedded entrypoints, which is how the TUI backend is launched
+ * here. The thread shares the parent process, so there is nothing to restart
+ * on failure: report the exit and let the caller observe it like any other
+ * dead backend.
+ */
+function createThreadWorker(target: string, options: WorkerProcessOptions = {}): WorkerProcess {
+  const worker = new Worker(target, {
+    env: options.env,
+  })
+  const log = options.log ?? console.error
+
+  const transport = {} as WorkerProcess
+  Object.defineProperties(transport, {
+    closed: {
+      enumerable: true,
+      value: new Promise<WorkerExit>((resolve) => {
+        worker.onerror = () => resolve({ code: 1, signal: null })
+      }),
+    },
+  })
+  transport.postMessage = (data) => {
+    worker.postMessage(data)
+  }
+  transport.signal = () => {}
+  transport.terminate = async () => {
+    worker.terminate()
+  }
+  transport.waitForRestart = () => Promise.resolve()
+
+  worker.onmessage = (evt) => {
+    transport.onmessage?.({ data: evt.data as string } as MessageEvent<string>)
+  }
+  worker.onerror = (event) => {
+    const message = event instanceof MessageEvent ? String(event.data ?? "unknown worker error") : "unknown worker error"
+    transport.onclose?.(new Error(`Bun worker exited with error: ${message}`))
+    void Promise.resolve()
+      .then(() => options.onExit?.({ code: 1, signal: null }))
+      .catch((error) => {
+        log(`[alphacode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+  }
+  return transport
+}
+
+export function createTuiWorker(target: string, options: WorkerProcessOptions = {}): WorkerProcess {
+  // A compiled standalone binary always runs its main entrypoint, so it can
+  // only host the worker as a thread (Bun resolves `Worker` entrypoints from
+  // the embedded module table). Under `bun dev`/`bun run` the child is instead
+  // a subprocess so crashes can be contained and restarted.
+  const compiled = path.basename(process.execPath).replace(/\.exe$/, "") !== "bun"
+  if (compiled) {
+    // ALPHACODE_TUI_WORKER selects process-message RPC (`Rpc.listenProcess`);
+    // a thread worker must not receive it (there is no `process.send`).
+    return createThreadWorker(target, options)
+  }
+  return createWorkerProcess(target, {
+    ...options,
+    env: {
+      ...options.env,
+      // Explicit marker so the child knows it is the TUI worker instead of
+      // inferring it from runtime capabilities (see worker.ts).
+      ALPHACODE_TUI_WORKER: "1",
+    },
+  })
 }
 
 export function isWorkerCrash(signal: string | number | null, code: number | null) {

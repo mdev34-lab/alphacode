@@ -1,7 +1,7 @@
 import { cmd } from "@/cli/cmd/cmd"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "../tui/worker"
-import { createWorkerProcess, type WorkerExit } from "../tui/worker-process"
+import { createTuiWorker, type WorkerExit } from "../tui/worker-process"
 import path from "path"
 import { fileURLToPath } from "url"
 import { UI } from "@/cli/ui"
@@ -226,16 +226,12 @@ export const TuiThreadCommand = cmd({
       let client!: RpcClient
       let stopped = false
       let stop!: () => Promise<void>
-      const worker = createWorkerProcess(workerFile, {
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      )
+      const worker = createTuiWorker(workerFile, {
         cwd,
-        env: {
-          ...Object.fromEntries(
-            Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-          ),
-          // Explicit marker so the child knows it is the TUI worker instead
-          // of inferring it from runtime capabilities (see worker.ts).
-          ALPHACODE_TUI_WORKER: "1",
-        },
+        env,
         onRestart: async () => {
           if (!external) return
           const result = await client.call("server", network)
