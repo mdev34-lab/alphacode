@@ -1,12 +1,12 @@
 <#Requires -Version 7.0
 <#
 .SYNOPSIS
-  Pull a branch, build alphacode for the current platform, reinstall globally.
+  Pull a branch, build alphacode for Windows, reinstall globally.
 
 .DESCRIPTION
   1. Fetches origin/<Branch> and fast-forwards the local branch (default dev).
   2. Builds the current-platform binary only (bun run build -- --single).
-  3. Copies the fresh binary to ~/.local/bin/alphacode.exe and smoke-tests it.
+  3. Copies the fresh Windows binary to ~/.local/bin/alphacode.exe and smoke-tests it.
 
 .PARAMETER Branch
   Branch to pull and build. Defaults to dev (tracked against origin).
@@ -19,7 +19,7 @@
 
 .PARAMETER AllowDirty
   Skip the clean-working-tree check. Uncommitted changes stay in place and
-  end up in the binary.
+  end up in the binary. The requested branch still must fast-forward cleanly.
 
 .PARAMETER KeepDist
   Keep packages/opencode/dist after install. By default it is removed to
@@ -83,7 +83,7 @@ if (-not $SkipBuild) {
         if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed" }
       }
       git pull --ff-only origin $Branch
-      if ($LASTEXITCODE -ne 0) { throw "Fast-forward pull failed (branch diverged?)" }
+      if ($LASTEXITCODE -ne 0) { throw "Fast-forward pull failed (branch diverged or local changes conflict)" }
       git log --oneline -1
     } finally {
       Pop-Location
@@ -109,11 +109,11 @@ if (-not $SkipBuild) {
   Write-Host "`n=== Skipping pull/build (-SkipBuild); using existing dist ===" -ForegroundColor Cyan
 }
 
-$platformDir = Get-ChildItem -LiteralPath $distDir -Directory -Filter "alphacode-*" |
-  Select-Object -First 1
-if (-not $platformDir) {
-  throw "No alphacode-* platform directory found in $distDir"
+$platformDirs = @(Get-ChildItem -LiteralPath $distDir -Directory -Filter "alphacode-*")
+if ($platformDirs.Count -ne 1) {
+  throw "Expected exactly one alphacode-* platform directory in $distDir, found $($platformDirs.Count). Remove stale dist output or run a fresh build."
 }
+$platformDir = $platformDirs[0]
 $candidate = Join-Path $platformDir.FullName "bin/alphacode.exe"
 if (-not (Test-Path -LiteralPath $candidate)) {
   $candidate = Join-Path $platformDir.FullName "bin/alphacode"
@@ -123,6 +123,7 @@ if (-not (Test-Path -LiteralPath $candidate)) {
 }
 Write-Host "Built: $candidate (platform dir: $($platformDir.Name))"
 
+$reported = $null
 Invoke-Step "Reinstall globally" {
   if (-not (Test-Path -LiteralPath $destDir)) {
     New-Item -ItemType Directory -Path $destDir | Out-Null
@@ -157,34 +158,39 @@ Invoke-Step "Reinstall globally" {
     }
   }
 
-  # Copy with retries: AV scanners and lazy closes can hold the new file
-  # briefly even after the old one is gone.
-  $copied = $false
-  for ($attempt = 1; $attempt -le 10; $attempt++) {
-    try {
-      Copy-Item -LiteralPath $candidate -Destination $destExe -Force -ErrorAction Stop
-      $copied = $true
-      break
-    } catch {
-      if ($attempt -eq 10) { break }
-      Start-Sleep -Milliseconds 500
+  try {
+    # Copy with retries: AV scanners and lazy closes can hold the new file
+    # briefly even after the old one is gone.
+    $copied = $false
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+      try {
+        Copy-Item -LiteralPath $candidate -Destination $destExe -Force -ErrorAction Stop
+        $copied = $true
+        break
+      } catch {
+        if ($attempt -eq 10) { break }
+        Start-Sleep -Milliseconds 500
+      }
     }
-  }
-  if (-not $copied) {
-    if ($swapped) {
-      Rename-Item -LiteralPath $destOld -NewName "alphacode.exe" -ErrorAction SilentlyContinue
-      Write-Host "Restored previous binary after copy failure." -ForegroundColor Yellow
+    if (-not $copied) {
+      throw "Copy to $destExe kept failing (file lock?). Close the TUI session and rerun, or pass -KillRunning."
     }
-    throw "Copy to $destExe kept failing (file lock?). Close the TUI session and rerun, or pass -KillRunning."
-  }
-  Write-Host "Installed: $destExe"
-}
 
-Invoke-Step "Smoke test" {
-  $reported = (& $destExe --version).Trim()
-  Write-Host "alphacode --version => $reported"
-  if ($Version -ne "" -and ($reported -notlike "*$Version*")) {
-    throw "Version mismatch: expected '$Version' in '$reported'"
+    Write-Host "Installed: $destExe"
+    $reported = (& $destExe --version).Trim()
+    Write-Host "alphacode --version => $reported"
+    if ($Version -ne "" -and ($reported -notlike "*$Version*")) {
+      throw "Version mismatch: expected '$Version' in '$reported'"
+    }
+  } catch {
+    # Treat copy + smoke test as one transaction. Never leave a known-bad new
+    # binary installed when the previous binary is still recoverable.
+    Remove-Item -LiteralPath $destExe -Force -ErrorAction SilentlyContinue
+    if ($swapped -and (Test-Path -LiteralPath $destOld)) {
+      Rename-Item -LiteralPath $destOld -NewName "alphacode.exe" -ErrorAction SilentlyContinue
+      Write-Host "Restored previous binary after install/smoke-test failure." -ForegroundColor Yellow
+    }
+    throw
   }
 }
 
