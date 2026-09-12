@@ -10,6 +10,10 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { WorkspaceLabel } from "../../component/workspace-label"
 import { BRAND_PREFIX, BRAND_SUFFIX } from "../../brand"
 
+// Stable handle for the panel renderable, mirroring the `id` the transcript sets
+// on each message box so layout can be located by id.
+export const SIDEBAR_ID = "session-sidebar"
+
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const pluginRuntime = usePluginRuntime()
   const project = useProject()
@@ -27,6 +31,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   return (
     <Show when={session()}>
       <box
+        id={SIDEBAR_ID}
         backgroundColor={theme.backgroundPanel}
         width={42}
         height="100%"
