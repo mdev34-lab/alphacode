@@ -110,5 +110,4 @@ export const LspTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
-  { reviewSafe: true },
 )

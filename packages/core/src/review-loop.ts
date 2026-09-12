@@ -108,19 +108,21 @@ function isSynchronousReviewTask(part: ReviewHistoryPart) {
   return isReviewTask(part) && inputRecord(part)?.background === false
 }
 
-function isReviewSafeTool(part: ReviewHistoryPart) {
+function isFileWritingTool(part: ReviewHistoryPart) {
+  if (part.type !== "tool" || typeof part.tool !== "string") return false
+  if (part.state?.status !== "completed") return false
   const metadata = {
     ...(isRecord(part.metadata) ? part.metadata : {}),
     ...(isRecord(part.state?.metadata) ? part.state.metadata : {}),
   }
   const reviewLoop = isRecord(metadata[REVIEW_LOOP_METADATA]) ? metadata[REVIEW_LOOP_METADATA] : undefined
-  return reviewLoop?.reviewSafe === true
+  return reviewLoop?.writesFiles === true
 }
 
 function isPotentiallyMutatingTool(part: ReviewHistoryPart) {
   if (part.type !== "tool" || typeof part.tool !== "string") return false
   if (part.tool === "finish" || isReviewTask(part)) return false
-  return !isReviewSafeTool(part)
+  return isFileWritingTool(part)
 }
 
 function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefined {
@@ -134,8 +136,10 @@ function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefin
 /**
  * Evaluate the current user turn. Synthetic continuation messages are deliberately
  * ignored as turn boundaries so a review/fix cycle cannot reset its counter.
- * Unknown tools are treated as mutating; a tool must explicitly advertise the
- * review-safe metadata before it can leave an approval intact.
+ * Only completed tools whose persisted metadata explicitly declares `writesFiles`
+ * count as work that requires review. The declaration lives on the tool definition,
+ * so a new file-writing tool is classified where it is defined. Unmarked tools,
+ * including shell, do not trigger the review gate.
  */
 export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIterations = 5): ReviewLoopState {
   const max = Number.isFinite(maxIterations) && maxIterations > 0 ? maxIterations : 1

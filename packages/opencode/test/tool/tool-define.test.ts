@@ -109,21 +109,21 @@ describe("Tool.define", () => {
     }),
   )
 
-  it.effect("review-safe tool definitions mark successful results for the review gate", () =>
+  it.effect("file-writing tool definitions mark successful results for the review gate", () =>
     Effect.gen(function* () {
       const info = yield* Tool.define(
-        "review-safe",
+        "file-writer",
         Effect.succeed({
-          description: "review-safe tool",
+          description: "file-writing tool",
           parameters: params,
-          execute: () => Effect.succeed({ title: "review-safe", output: "ok", metadata: { truncated: false } }),
+          execute: () => Effect.succeed({ title: "file-writer", output: "ok", metadata: { truncated: false } }),
         }),
-        { reviewSafe: true },
+        { writesFiles: true },
       )
       const tool = yield* info.init()
       const result = yield* tool.execute({ input: "ok" }, makeCtx())
 
-      expect((result.metadata as Record<string, unknown>)[REVIEW_LOOP_METADATA]).toEqual({ reviewSafe: true })
+      expect((result.metadata as Record<string, unknown>)[REVIEW_LOOP_METADATA]).toEqual({ writesFiles: true })
     }),
   )
 

@@ -101,4 +101,5 @@ export const WriteTool = Tool.define(
         }).pipe(Effect.orDie),
     }
   }),
+  { writesFiles: true },
 )

@@ -49,7 +49,6 @@ export const ToolSearchTool = Tool.define(
         }),
     }
   }),
-  { reviewSafe: true },
 )
 
 /**
