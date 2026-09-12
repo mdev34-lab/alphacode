@@ -2,13 +2,18 @@ import type { AssistantMessage, Message, Part, ReasoningPart, ToolPart } from "@
 
 const ACTIVITY_ID_PREFIX = "act-"
 
+// To-do calls are bookkeeping rather than work, and they render as a
+// top-level block of their own, so they also close the run they land in.
+const TODO_TOOLS = new Set<string>(["todowrite", "todoread"])
+
 // Orchestration/protocol tools — turn/task completion, todo-management
 // bookkeeping, and subagent delegation — represent control flow rather than
 // concrete user-facing work. They are excluded from activity counting and
 // rendering so the "Working... N tool calls" summary reflects meaningful work
-// only. Excluded calls do not break a run and render as their own native
-// inline tool rows, so they stay available to the transcript/session system.
-export const NON_WORK_TOOLS = new Set<string>(["finish", "todowrite", "todoread", "task"])
+// only. Excluded calls render as their own native inline tool rows, so they
+// stay available to the transcript/session system. They do not break a run,
+// except for to-do calls (see TODO_TOOLS) which close the run they land in.
+export const NON_WORK_TOOLS = new Set<string>(["finish", ...TODO_TOOLS, "task"])
 
 export type ActivityItem = {
   message: AssistantMessage
@@ -43,9 +48,10 @@ export type ActivityRow = {
 // (per-turn CoT) belong to the run but do not start an activity until a tool is
 // present. Invisible parts (step-start/finish, snapshots, patches, ...) do not
 // break a run. Orchestration/protocol tools (see NON_WORK_TOOLS) are skipped
-// entirely: they neither count as work nor break a run. The group id is
-// derived from the first tool part so it stays stable while the run grows at
-// its tail during streaming.
+// entirely: they neither count as work nor break a run, apart from to-do calls
+// (see TODO_TOOLS) which are top-level blocks of their own and therefore close
+// the run they land in. The group id is derived from the first tool part so it
+// stays stable while the run grows at its tail during streaming.
 export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGroups {
   const byID = new Map<string, ActivityGroup>()
   const groupOf = new Map<string, string>()
@@ -74,6 +80,16 @@ export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGro
         continue
       }
       if (part.type !== "tool") continue
+      if (TODO_TOOLS.has(part.tool)) {
+        // A to-do call renders as its own top-level block, so it ends the
+        // current run the same way assistant text does: closing `current`
+        // finalizes the group instead of letting the work after the to-do
+        // resume it, and dropping `pending` keeps reasoning that had not found
+        // a run yet out of the group that opens afterwards.
+        current = undefined
+        pending.length = 0
+        continue
+      }
       if (NON_WORK_TOOLS.has(part.tool)) continue
       if (!current) {
         current = { id: ACTIVITY_ID_PREFIX + part.id, items: [], parts: [...pending] }
