@@ -6,6 +6,7 @@ import { Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import type { ToolMetadata } from "@/tool/tool"
 
 export const Event = PermissionV1.Event
 
@@ -201,26 +202,49 @@ export function merge(...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule[] 
   return rulesets.flat()
 }
 
-const EDIT_TOOLS = ["edit", "write", "apply_patch"]
-const READ_TOOLS = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
+/**
+ * A tool reference for permission resolution: either the tool's id alone (whose
+ * key is the id) or a definition carrying metadata (whose key is
+ * `metadata.permission`, defaulting to the id).
+ */
+export type ToolRef = string | { id: string; metadata?: ToolMetadata }
 
-/** The permission key a tool's calls are evaluated against. */
-export function permissionKey(tool: string): string {
-  if (EDIT_TOOLS.includes(tool)) return "edit"
-  if (READ_TOOLS.includes(tool)) return "read"
-  return tool
+/**
+ * The permission key a tool's calls are evaluated against. Reads the key the
+ * tool declares in its own metadata (the value it passes to `ctx.ask`), falling
+ * back to the tool's id. Groupings such as write/apply_patch → "edit" are
+ * declared on the tool definitions, so this stays free of a central alias table.
+ */
+export function permissionKey(tool: ToolRef): string {
+  if (typeof tool === "string") return tool
+  return tool.metadata?.permission ?? tool.id
 }
 
-export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<string> {
+/**
+ * The permission keys denied in a read-only sandbox: every tool that declares
+ * the `mutates` trait, resolved to its permission key. Derived from tool
+ * metadata, so a newly registered mutating tool is covered by declaring
+ * `mutates: true` on its definition — there is no list to keep in sync.
+ */
+export function mutatingKeys(tools: ReadonlyArray<{ id: string; metadata?: ToolMetadata }>): string[] {
+  return Array.from(
+    new Set(tools.filter((tool) => tool.metadata?.mutates === true).map((tool) => permissionKey(tool))),
+  )
+}
+
+export function disabled(tools: ReadonlyArray<ToolRef>, ruleset: PermissionV1.Ruleset): Set<string> {
   return new Set(
-    tools.filter((tool) => {
-      const rule = ruleset.findLast((rule) => Wildcard.match(permissionKey(tool), rule.permission))
-      return rule?.pattern === "*" && rule.action === "deny"
-    }),
+    tools
+      .filter((tool) => {
+        const rule = ruleset.findLast((rule) => Wildcard.match(permissionKey(tool), rule.permission))
+        return rule?.pattern === "*" && rule.action === "deny"
+      })
+      .map((tool) => (typeof tool === "string" ? tool : tool.id)),
   )
 }
 
 export function visibleTools<T>(tools: Record<string, T>, ruleset: PermissionV1.Ruleset): Record<string, T> {
+  // Only ever called with MCP tools, whose permission key is their own id.
   const hidden = disabled(Object.keys(tools), ruleset)
   return Object.fromEntries(Object.entries(tools).filter(([name]) => !hidden.has(name)))
 }

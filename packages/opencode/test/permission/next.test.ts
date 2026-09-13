@@ -5,6 +5,9 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Permission } from "../../src/permission"
+import { EditTool } from "../../src/tool/edit"
+import { WriteTool } from "../../src/tool/write"
+import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { InstanceBootstrap } from "../../src/project/bootstrap"
 import { InstanceStore } from "../../src/project/instance-store"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
@@ -468,8 +471,10 @@ test("disabled - disables tool when denied", () => {
 })
 
 test("disabled - disables edit/write/apply_patch when edit denied", () => {
+  // write/apply_patch declare the "edit" permission in their metadata, so a
+  // deny on "edit" hides all three — the grouping comes from tool metadata.
   const result = Permission.disabled(
-    ["edit", "write", "apply_patch", "bash"],
+    [EditTool, WriteTool, ApplyPatchTool, "bash"],
     [
       { permission: "*", pattern: "*", action: "allow" },
       { permission: "edit", pattern: "*", action: "deny" },

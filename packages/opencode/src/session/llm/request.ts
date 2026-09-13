@@ -28,6 +28,7 @@ type PrepareInput = {
   readonly messages: ModelMessage[]
   readonly small?: boolean
   readonly tools: Record<string, Tool>
+  readonly permissionKeys?: Record<string, string>
   readonly provider: Provider.Info
   readonly auth: Auth.Info | undefined
   readonly plugin: Plugin.Interface
@@ -217,11 +218,15 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
 // without it" property, never to smuggle a capability past a permission rule.
 const PROTOCOL_TOOLS = new Set(["finish"])
 
-function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {
-  const disabled = Permission.disabled(
-    Object.keys(input.tools),
-    Permission.merge(input.agent.permission, input.permission ?? []),
-  )
+function resolveTools(input: Pick<PrepareInput, "tools" | "permissionKeys" | "agent" | "permission" | "user">) {
+  // Each tool's permission key is resolved from tool metadata (threaded in as
+  // permissionKeys), so permission-based hiding uses the same key the tool asks
+  // with at runtime — there is no separate alias table to keep in sync.
+  const defs = Object.keys(input.tools).map((id) => {
+    const key = input.permissionKeys?.[id]
+    return { id, metadata: key === undefined ? undefined : { permission: key } }
+  })
+  const disabled = Permission.disabled(defs, Permission.merge(input.agent.permission, input.permission ?? []))
   return Record.filter(
     input.tools,
     (_, k) => input.user.tools?.[k] !== false && (PROTOCOL_TOOLS.has(k) || !disabled.has(k)),

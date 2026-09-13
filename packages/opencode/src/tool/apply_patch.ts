@@ -310,5 +310,5 @@ export const ApplyPatchTool = Tool.define(
         run(params, ctx).pipe(Effect.orDie),
     }
   }),
-  { writesFiles: true, mutates: true },
+  { permission: "edit", writesFiles: true, mutates: true },
 )

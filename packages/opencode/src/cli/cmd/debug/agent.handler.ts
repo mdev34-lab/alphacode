@@ -86,10 +86,7 @@ const getAvailableTools = Effect.fn("Cli.debug.agent.getAvailableTools")(functio
 })
 
 function resolveTools(agent: Agent.Info, availableTools: { id: string }[]) {
-  const disabled = Permission.disabled(
-    availableTools.map((tool) => tool.id),
-    agent.permission,
-  )
+  const disabled = Permission.disabled(availableTools, agent.permission)
   const resolved: Record<string, boolean> = {}
   for (const tool of availableTools) {
     resolved[tool.id] = !disabled.has(tool.id)

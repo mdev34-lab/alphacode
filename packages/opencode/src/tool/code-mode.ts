@@ -307,4 +307,7 @@ export const CodeModeTool = Tool.define(
     }
     return init
   }),
+  // Runs a script that can invoke connected MCP tools, any of which may change
+  // state, so read-only delegations deny it like any other mutating tool.
+  { mutates: true },
 )

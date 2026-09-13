@@ -26,11 +26,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
-const MCP_RESOURCE_TOOLS = {
-  list: "list_mcp_resources",
-  listTemplates: "list_mcp_resource_templates",
-  read: "read_mcp_resource",
-} as const
+import { MCP_RESOURCE_PERMISSION_KEY, MCP_RESOURCE_TOOLS } from "./mcp-resource"
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
@@ -67,11 +63,17 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const entries: ToolCatalog.Entry[] = []
   const hidden = (entry: ToolCatalog.Entry) => entry.deferred && !discovered.has(entry.id)
 
+  const allTools = yield* registry.all()
   // Permission keys for every tool that declares the `mutates` trait; read-only
-  // delegations deny this set so the sandbox derives from tool metadata.
-  const mutatingPermissionKeys = (yield* registry.all())
-    .filter((tool) => tool.metadata?.mutates === true)
-    .map((tool) => Permission.permissionKey(tool.id))
+  // delegations deny this set, so the sandbox derives from tool metadata.
+  const mutatingPermissionKeys = Permission.mutatingKeys(allTools)
+  // The permission key each tool's calls are evaluated against, resolved from
+  // tool metadata. Threaded to the request prep so permission-based hiding uses
+  // the same key the tool asks with at runtime. MCP resource tools (not in the
+  // registry) ask "read"; MCP tools use their own id.
+  const permissionKeys: Record<string, string> = {}
+  for (const tool of allTools) permissionKeys[tool.id] = Permission.permissionKey(tool)
+  for (const id of Object.values(MCP_RESOURCE_TOOLS)) permissionKeys[id] = MCP_RESOURCE_PERMISSION_KEY
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -420,7 +422,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   if (flags.experimentalCodeMode) {
     yield* catalog.sync(entries, toolSearch)
-    return tools
+    return { tools, permissionKeys }
   }
 
   const servers = Object.keys(yield* mcp.clients()).map((name) => ({ name, prefix: McpCatalog.sanitize(name) + "_" }))
@@ -542,7 +544,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   yield* catalog.sync(entries, toolSearch)
 
-  return tools
+  return { tools, permissionKeys }
 })
 
 function toRecord(value: unknown) {

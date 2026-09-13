@@ -24,6 +24,15 @@ export type ToolMetadata = {
    * of updating a denylist.
    */
   readonly mutates?: boolean
+  /**
+   * The permission key this tool's calls are evaluated against (the value it
+   * passes to `ctx.ask({ permission })`). Defaults to the tool's own id.
+   * Tools that share a permission group declare the group here — e.g. `write`
+   * and `apply_patch` declare `"edit"` so they are governed by the same rules
+   * as `edit` — so the permission machinery derives groupings from tool
+   * metadata instead of a central alias table.
+   */
+  readonly permission?: string
 }
 
 // TODO: remove this hack

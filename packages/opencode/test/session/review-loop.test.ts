@@ -88,10 +88,12 @@ describe("mandatory review loop prompt contract", () => {
     expect(finish).not.toContain('termination: "blocked"')
   })
 
-  test("file-writing tools advertise writes-files metadata", () => {
-    expect(EditTool.metadata).toEqual({ writesFiles: true, mutates: true })
-    expect(WriteTool.metadata).toEqual({ writesFiles: true, mutates: true })
-    expect(ApplyPatchTool.metadata).toEqual({ writesFiles: true, mutates: true })
+  test("file-writing tools advertise writes-files and edit-permission metadata", () => {
+    // write/apply_patch share the "edit" permission key, declared in metadata
+    // so the permission machinery groups them with edit without an alias list.
+    expect(EditTool.metadata).toEqual({ permission: "edit", writesFiles: true, mutates: true })
+    expect(WriteTool.metadata).toEqual({ permission: "edit", writesFiles: true, mutates: true })
+    expect(ApplyPatchTool.metadata).toEqual({ permission: "edit", writesFiles: true, mutates: true })
   })
 })
 

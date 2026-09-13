@@ -5,6 +5,9 @@ import { Effect } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { deriveSubagentSessionPermission } from "../../src/agent/subagent-permissions"
 import { Permission } from "../../src/permission"
+import { EditTool } from "../../src/tool/edit"
+import { WriteTool } from "../../src/tool/write"
+import { ApplyPatchTool } from "../../src/tool/apply_patch"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(Agent.node))
@@ -34,8 +37,8 @@ it.instance("subagent permissions take precedence over parent agent restrictions
     expect(planAgent).toBeDefined()
     expect(generalAgent).toBeDefined()
     // Sanity: the plan agent itself blocks edit. (Note: `write` and
-    // `apply_patch` route through the `edit` permission at the runtime
-    // tool layer — see Permission.disabled / EDIT_TOOLS.)
+    // `apply_patch` declare the `edit` permission in their metadata, so the
+    // runtime groups them with `edit`.)
     expect(Permission.evaluate("edit", "/some/file.ts", planAgent!.permission).action).toBe("deny")
 
     const parentSessionPermission: PermissionV1.Ruleset = []
@@ -50,7 +53,7 @@ it.instance("subagent permissions take precedence over parent agent restrictions
     const effective = Permission.merge(generalAgent!.permission, subagentSessionPermission)
 
     expect(Permission.evaluate("edit", "/some/file.ts", effective).action).not.toBe("deny")
-    expect(Permission.disabled(["edit", "write", "apply_patch"], effective)).toEqual(new Set())
+    expect(Permission.disabled([EditTool, WriteTool, ApplyPatchTool], effective)).toEqual(new Set())
   }),
 )
 
@@ -88,7 +91,7 @@ it.instance(
 
       expect(Permission.evaluate("edit", "/some/file.ts", planAgent!.permission).action).toBe("deny")
       expect(Permission.evaluate("edit", "/some/file.ts", effective).action).toBe("allow")
-      expect(Permission.disabled(["edit", "write", "apply_patch"], effective)).toEqual(new Set())
+      expect(Permission.disabled([EditTool, WriteTool, ApplyPatchTool], effective)).toEqual(new Set())
     }),
   {
     config: {
@@ -134,7 +137,7 @@ it.effect("subagent self permissions are preserved", () =>
     expect(Permission.evaluate("bash", "git status", effective).action).toBe("allow")
     expect(Permission.evaluate("task", "worker", effective).action).toBe("allow")
     expect(Permission.evaluate("task", "other", effective).action).toBe("deny")
-    expect(Permission.disabled(["edit", "write", "apply_patch"], effective)).toEqual(new Set())
+    expect(Permission.disabled([EditTool, WriteTool, ApplyPatchTool], effective)).toEqual(new Set())
   }),
 )
 

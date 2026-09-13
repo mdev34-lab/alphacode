@@ -33,9 +33,15 @@ export interface Constraints {
    */
   readOnly?: boolean
   /**
-   * When true, the delegate may run `git commit`. Default is false: commit
-   * commands are denied by permission rules and any HEAD change is reported
-   * in the result warnings as a possible rule bypass.
+   * When true, the delegate may run `git commit`. Default is false. The
+   * contract has three parts, and only the first is enforcement:
+   *  1. The child's permission rules deny the known `git commit` forms up
+   *     front, preventing the direct invocations.
+   *  2. A before/after HEAD comparison is a post-hoc bypass *detector*, not
+   *     enforcement: it catches commits the static patterns can't match (e.g.
+   *     built via `eval`), after the side effect has already happened.
+   *  3. When it fires, the delegation result is marked unverified in the
+   *     warnings so the caller knows the commit ban was bypassed.
    */
   allowCommit?: boolean
 }
@@ -61,7 +67,7 @@ export const Parameters = Schema.Struct({
       }),
       allowCommit: Schema.optional(Schema.Boolean).annotate({
         description:
-          "If true, the delegate may run git commit. Default is false: commits are denied and any repository HEAD change is reported in the result warnings.",
+          "If true, the delegate may run git commit. Default is false: the known git commit forms are denied up front by permission rules, and a before/after HEAD check reports any commit that bypassed them as an unverified result in the warnings.",
       }),
     }),
   ).annotate({ description: "Isolation constraints for the delegation." }),
@@ -133,15 +139,16 @@ export function mcpRules(tools: string[]): PermissionV1.Ruleset {
 }
 
 /**
- * Prohibits commits in the child's ruleset. Commits are denied by default;
- * only `allowCommit: true` lifts the restriction. The shell permission
- * matcher sees one pattern per command of the parsed shell line, so the
- * rules cover the direct form (`git commit`, `git commit ...`), git with
- * leading options (`git -C . commit`), and wrapped or env-prefixed
+ * Prevents known commit invocations in the child's ruleset — the preventive
+ * half of the commit ban. Only `allowCommit: true` lifts these. The shell
+ * permission matcher sees one pattern per command of the parsed shell line,
+ * so the rules cover the direct form (`git commit`, `git commit ...`), git
+ * with leading options (`git -C . commit`), and wrapped or env-prefixed
  * invocations (`sh -c "git commit"`, `sh -c "git -C . commit"`). Commands
  * that build the string dynamically (e.g. `eval`) are not matchable by any
- * static pattern; the post-delegation HEAD check reports those as
- * violations instead.
+ * static pattern; those are left to the post-hoc HEAD check, which detects
+ * the bypass after the fact and marks the result unverified — it does not
+ * prevent the commit.
  */
 export function commitRules(constraints: Constraints | undefined): PermissionV1.Ruleset {
   if (constraints?.allowCommit === true) return []
