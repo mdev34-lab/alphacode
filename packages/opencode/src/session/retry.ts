@@ -3,6 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Cause, Clock, Data, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
 import { GenerationLimit } from "./llm/generation-limit"
+import { RepetitionGuard } from "./llm/repetition-guard"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
 
@@ -91,6 +92,10 @@ export function retryable(error: Err, provider: string) {
   // can contain digit sequences matching the retryable patterns below, so
   // this exclusion must stay above the pattern checks (see issue #89).
   if (isGenerationLimit(error)) return undefined
+  // Same for a tripped repetition guard: the retry would deterministically
+  // regenerate the same looping output (issue #94). The quoted line preview
+  // can itself match a retryable pattern, so this also stays above them.
+  if (isRepetitionDetected(error)) return undefined
   if (SessionV1.APIError.isInstance(error)) {
     const status = error.data.statusCode
     // 5xx errors are transient server failures and should always be retried,
@@ -167,6 +172,11 @@ function matchesRetryableMessage(value: unknown) {
 function isGenerationLimit(error: Err) {
   const message = isRecord(error.data) ? error.data.message : undefined
   return typeof message === "string" && message.includes(GenerationLimit.GENERATION_LIMIT_MESSAGE)
+}
+
+function isRepetitionDetected(error: Err) {
+  const message = isRecord(error.data) ? error.data.message : undefined
+  return typeof message === "string" && message.includes(RepetitionGuard.REPETITION_MESSAGE)
 }
 
 function str(value: unknown) {
