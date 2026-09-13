@@ -31,6 +31,7 @@ import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { GenerationLimit } from "./llm/generation-limit"
 import { ReasoningWatchdog } from "./llm/reasoning-watchdog"
+import { RepetitionGuard } from "./llm/repetition-guard"
 import { SystemPrompt } from "./system"
 import { ToolCatalog } from "@/tool/catalog"
 
@@ -132,6 +133,14 @@ const live: Layer.Layer<
       const maxGenerationChars = GenerationLimit.resolveMaxChars({
         maxOutputTokens: prepared.params.maxOutputTokens,
         override: flags.generationCharMax,
+      })
+      // Loop detector for a model that regenerates the same text verbatim
+      // without ever reaching a tool call (issue #94). Fires far below the
+      // character cap above so a repetitive loop aborts before the token
+      // budget is anywhere near exhausted.
+      const repetitionThresholds = RepetitionGuard.resolveThresholds({
+        lineRepeats: flags.repetitionLineRepeats,
+        unitRepeats: flags.repetitionUnitRepeats,
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
@@ -273,6 +282,7 @@ const live: Layer.Layer<
             stream: native.stream,
             summarizedReasoning,
             maxGenerationChars,
+            repetitionThresholds,
           }
         }
         yield* Effect.logInfo("llm runtime selected", {
@@ -303,6 +313,7 @@ const live: Layer.Layer<
         type: "ai-sdk" as const,
         summarizedReasoning,
         maxGenerationChars,
+        repetitionThresholds,
         result: streamText({
           onError(error) {
             bridge.fork(
@@ -417,12 +428,11 @@ const live: Layer.Layer<
 
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here. Both are
-            // wrapped in the inactivity watchdog and the generation-length
-            // cap so a pathological unbounded stream aborts cleanly instead
-            // of taking the host process down (issue #89).
-            // Single choke point for the generation-length cap: both runtimes
-            // funnel through the one guarded stream below, so no runtime can
-            // bypass it (issue #89).
+            // wrapped in the inactivity watchdog, the repetition guard, and the
+            // generation-length cap so a pathological stream aborts cleanly
+            // instead of taking the host process down (issues #89 and #94).
+            // Single choke point: both runtimes funnel through the one guarded
+            // stream below, so no runtime can bypass the guards.
             const state = LLMAISDK.adapterState()
             const inner =
               result.type === "native"
@@ -434,7 +444,10 @@ const live: Layer.Layer<
                     Stream.flatMap((events) => Stream.fromIterable(events)),
                   )
             return GenerationLimit.guard(
-              ReasoningWatchdog.guard(inner, { summarized: result.summarizedReasoning }),
+              RepetitionGuard.guard(
+                ReasoningWatchdog.guard(inner, { summarized: result.summarizedReasoning }),
+                { thresholds: result.repetitionThresholds },
+              ),
               { maxChars: result.maxGenerationChars },
             )
           }),

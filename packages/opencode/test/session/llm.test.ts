@@ -23,6 +23,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { LLMAISDK } from "@/session/llm/ai-sdk"
 import { GenerationLimit } from "@/session/llm/generation-limit"
+import { RepetitionGuard } from "@/session/llm/repetition-guard"
 import { SessionRetry } from "@/session/retry"
 import { Session as SessionNs } from "@/session/session"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -1584,6 +1585,144 @@ describe("session.llm.stream", () => {
         expect(SessionRetry.retryable(parsed, "openai")).toBeUndefined()
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },
+  )
+
+  it.instance(
+    "aborts a looping stream through the repetition guard",
+    () =>
+      Effect.gen(function* () {
+        // The issue #94 shape: the same sentence regenerated verbatim without
+        // ever reaching a tool call, streamed by a real provider response.
+        // The guard sits on the single choke point in LLM.stream, so this
+        // covers the default ai-sdk runtime wiring end to end.
+        const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+        const request = waitRequest(
+          "/chat/completions",
+          new Response(createChatStream(`${"The file I need is packages/core/src/fs-util.ts. Let me read it:"}\n`.repeat(30)), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        )
+
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(vivgridFixture.providerID),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const sessionID = SessionID.make("session-test-repetition")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+
+        const error = yield* LLM.Service.use((svc) =>
+          svc
+            .stream({
+              user: {
+                id: MessageID.make("msg_user-repetition"),
+                sessionID,
+                role: "user",
+                time: { created: Date.now() },
+                agent: agent.name,
+                model: { providerID: ProviderV2.ID.make(vivgridFixture.providerID), modelID: resolved.id },
+              } satisfies SessionV1.User,
+              sessionID,
+              model: resolved,
+              agent,
+              system: ["You are a helpful assistant."],
+              messages: [{ role: "user", content: "Hello" }],
+              tools: {},
+            })
+            .pipe(Stream.runDrain, Effect.flip),
+        )
+
+        yield* Effect.promise(() => request)
+
+        expect(error).toBeInstanceOf(RepetitionGuard.RepetitionDetectedError)
+        if (!(error instanceof RepetitionGuard.RepetitionDetectedError)) return
+        expect(error.message).toContain(RepetitionGuard.REPETITION_MESSAGE)
+
+        // Close the loop → abort → no-retry chain: it must surface clearly
+        // and never be retried. (The processor stop itself is covered in
+        // repetition-guard.test.ts.)
+        const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make(vivgridFixture.providerID) })
+        expect(parsed.name).toBe("UnknownError")
+        const surfaced = typeof parsed.data === "object" && parsed.data !== null && "message" in parsed.data
+          ? parsed.data.message
+          : undefined
+        expect(surfaced).toContain(RepetitionGuard.REPETITION_MESSAGE)
+        expect(SessionRetry.retryable(parsed, vivgridFixture.providerID)).toBeUndefined()
+      }),
+    {
+      config: () => ({
+        enabled_providers: [vivgridFixture.providerID],
+        provider: {
+          [vivgridFixture.providerID]: {
+            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+          },
+        },
+      }),
+    },
+  )
+
+  it.instance(
+    "repetition guard thresholds reach the stream through runtime flags",
+    () =>
+      Effect.gen(function* () {
+        // Same looping response, but both repetition rules disabled via
+        // flags: it must drain cleanly, proving the env override flows from
+        // RuntimeFlags into the guard on the stream.
+        const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
+        const request = waitRequest(
+          "/chat/completions",
+          new Response(createChatStream(`${"The file I need is packages/core/src/fs-util.ts. Let me read it:"}\n`.repeat(30)), {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        )
+
+        const resolved = yield* Provider.use.getModel(
+          ProviderV2.ID.make(vivgridFixture.providerID),
+          ModelV2.ID.make(fixture.model.id),
+        )
+        const sessionID = SessionID.make("session-test-repetition-disabled")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+
+        yield* drainWith(llmLayerWithExecutor({ flags: { repetitionLineRepeats: 0, repetitionUnitRepeats: 0 } }), {
+          user: {
+            id: MessageID.make("msg_user-repetition-disabled"),
+            sessionID,
+            role: "user",
+            time: { created: Date.now() },
+            agent: agent.name,
+            model: { providerID: ProviderV2.ID.make(vivgridFixture.providerID), modelID: resolved.id },
+          } satisfies SessionV1.User,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Hello" }],
+          tools: {},
+        })
+
+        yield* Effect.promise(() => request)
+      }),
+    {
+      config: () => ({
+        enabled_providers: [vivgridFixture.providerID],
+        provider: {
+          [vivgridFixture.providerID]: {
+            options: { apiKey: "test-key", baseURL: `${state.server!.url.origin}/v1` },
+          },
+        },
+      }),
+    },
   )
 
   it.instance(

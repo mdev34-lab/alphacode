@@ -7,6 +7,13 @@ const positiveInteger = (name: string) =>
     Config.map((value) => (Number.isInteger(value) && value > 0 ? value : undefined)),
     Config.orElse(() => Config.succeed(undefined)),
   )
+// 0 is meaningful for the repetition guard (it disables a rule), so unlike
+// positiveInteger the whole non-negative range is accepted.
+const nonNegativeInteger = (name: string) =>
+  Config.number(name).pipe(
+    Config.map((value) => (Number.isInteger(value) && value >= 0 ? value : undefined)),
+    Config.orElse(() => Config.succeed(undefined)),
+  )
 const experimental = bool("OPENCODE_EXPERIMENTAL")
 const enabledByExperimental = (name: string) =>
   Config.all({ experimental, enabled: Config.boolean(name).pipe(Config.option) }).pipe(
@@ -54,6 +61,13 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   // of a host-process segfault. Unset by default: the session layer derives
   // the cap from maxOutputTokens (see GenerationLimit.resolveMaxChars).
   generationCharMax: positiveInteger("OPENCODE_EXPERIMENTAL_GENERATION_CHAR_MAX"),
+  // Repetition guard thresholds (issue #94): consecutive identical text
+  // lines, and consecutive repetitions of one 50+ character fragment, that
+  // trip the guard and abort a looping stream. Unset by default: the session
+  // layer uses the module defaults (see RepetitionGuard.resolveThresholds);
+  // 0 disables the corresponding rule.
+  repetitionLineRepeats: nonNegativeInteger("OPENCODE_EXPERIMENTAL_REPETITION_LINES"),
+  repetitionUnitRepeats: nonNegativeInteger("OPENCODE_EXPERIMENTAL_REPETITION_UNITS"),
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),
   experimentalWebSockets: bool("OPENCODE_EXPERIMENTAL_WEBSOCKETS"),
