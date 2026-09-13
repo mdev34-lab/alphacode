@@ -675,4 +675,5 @@ export const ShellTool = Tool.define(
         }
       })
   }),
+  { mutates: true },
 )

@@ -24,7 +24,7 @@ describe("ProjectOverview.summarize", () => {
 
     const block = ProjectOverview.summarize({ directory: tmp.path })
     expect(block).toBeDefined()
-    expect(block).toContain("TypeScript monorepo (bun, 2 workspace packages)")
+    expect(block).toContain("TypeScript monorepo (bun), 2 workspace packages")
     expect(block).toContain('build="tsup"')
     expect(block).toContain('test="vitest"')
     expect(block).toContain('lint="oxlint"')

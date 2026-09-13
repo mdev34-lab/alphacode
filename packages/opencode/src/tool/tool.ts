@@ -17,6 +17,13 @@ interface Metadata {
 export type ToolMetadata = {
   /** The tool writes files and therefore starts a review cycle. */
   readonly writesFiles?: boolean
+  /**
+   * The tool can change state outside the conversation (files, repository,
+   * or external systems). Read-only delegations deny every tool with this
+   * trait, so a new mutating tool is covered by declaring it here instead
+   * of updating a denylist.
+   */
+  readonly mutates?: boolean
 }
 
 // TODO: remove this hack

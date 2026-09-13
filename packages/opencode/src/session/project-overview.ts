@@ -66,7 +66,7 @@ function describeStack(root: string): string | undefined {
     const workspaces = workspaceGlobs(pkg)
     if (workspaces.length === 0) return `${language} project${packageManager(root) ? ` (${packageManager(root)})` : ""}`
     const count = countPackages(root, workspaces)
-    return `${language} monorepo${packageManager(root) ? ` (${packageManager(root)}` : ""}, ${count} workspace packages)`
+    return `${language} monorepo${packageManager(root) ? ` (${packageManager(root)})` : ""}, ${count} workspace packages`
   }
   if (existsSync(path.join(root, "pyproject.toml"))) return `Python project${lockMarker(root, ["uv.lock", "poetry.lock", "Pipfile.lock"]) ? ` (${lockMarker(root, ["uv.lock", "poetry.lock", "Pipfile.lock"])})` : ""}`
   if (existsSync(path.join(root, "Cargo.toml"))) return "Rust project"

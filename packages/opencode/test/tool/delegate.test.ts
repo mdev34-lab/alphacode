@@ -16,7 +16,8 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { commitRules, deriveDelegationResult, type DelegationResult } from "../../src/tool/delegate"
+import { commitRules } from "../../src/tool/delegate"
+import { deriveDelegationResult, type DelegationResult } from "../../src/tool/delegate-result"
 import { DelegateTool } from "../../src/tool/delegate"
 import type { TaskPromptOps } from "../../src/tool/task"
 import type * as Tool from "../../src/tool/tool"
@@ -165,6 +166,9 @@ function stubOps(
   }
 }
 
+/** Permission keys the runtime provides for tools declaring `mutates`. */
+const MUTATING_KEYS = ["bash", "edit", "task", "delegate"]
+
 const context = (input: {
   sessionID: SessionID
   messageID: MessageID
@@ -175,7 +179,7 @@ const context = (input: {
   messageID: input.messageID,
   agent: input.agent ?? "work",
   abort: new AbortController().signal,
-  extra: input.extra ?? {},
+  extra: { mutatingPermissionKeys: MUTATING_KEYS, ...input.extra },
   messages: [],
   metadata: () => Effect.void,
   ask: () => Effect.void,
@@ -234,10 +238,10 @@ describe("tool.delegate", () => {
       const child = yield* sessions.get(result.metadata.sessionId as SessionID)
       const denies = (permission: string, pattern = "*") =>
         child.permission?.some((rule) => rule.permission === permission && rule.pattern === pattern && rule.action === "deny")
+      // Denies are derived from the tools declaring `mutates`; the three
+      // file tools share the "edit" permission key, so one key covers them.
       expect(denies("bash")).toBe(true)
       expect(denies("edit")).toBe(true)
-      expect(denies("write")).toBe(true)
-      expect(denies("apply_patch")).toBe(true)
       // A read-only child must not be able to hand write access to another
       // session through a subagent tool.
       expect(denies("task")).toBe(true)
@@ -246,6 +250,31 @@ describe("tool.delegate", () => {
       expect(denies("bash", "git commit *")).toBe(true)
       expect(denies("bash", "git * commit *")).toBe(true)
       expect(denies("bash", "*git commit*")).toBe(true)
+      expect(denies("bash", "*git * commit*")).toBe(true)
+    }),
+  )
+
+  it.instance("denies any tool whose metadata declares it mutates", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTool()
+
+      const result = yield* def.execute(
+        { agent: "code", task: "Inspect the build", constraints: { readOnly: true } },
+        context({
+          sessionID: chat.id,
+          messageID: assistant.id,
+          extra: {
+            promptOps: stubOps(),
+            // Simulates a new tool declaring `mutates: true` on its definition.
+            mutatingPermissionKeys: [...MUTATING_KEYS, "custom_mutator"],
+          },
+        }),
+      )
+
+      const child = yield* sessions.get(result.metadata.sessionId as SessionID)
+      expect(child.permission?.some((rule) => rule.permission === "custom_mutator" && rule.action === "deny")).toBe(true)
     }),
   )
 
@@ -441,7 +470,6 @@ describe("tool.delegate", () => {
 
   it.instance("reports a violation when HEAD moves despite a commit ban", () =>
     Effect.gen(function* () {
-      const sessions = yield* Session.Service
       const instance = yield* InstanceState.context
       const { chat, assistant } = yield* seed()
       // The child "runs" a commit the way a model would smuggle one past the
@@ -477,7 +505,6 @@ describe("tool.delegate", () => {
 
   it.instance("does not flag a HEAD baseline when commits are allowed", () =>
     Effect.gen(function* () {
-      const sessions = yield* Session.Service
       const instance = yield* InstanceState.context
       const { chat, assistant } = yield* seed()
       const promptOps: TaskPromptOps = {
@@ -624,7 +651,7 @@ describe("commitRules", () => {
   it.effect("denies git commit by default and only allows it when explicitly permitted", () =>
     Effect.sync(() => {
       const patterns = commitRules(undefined).map((rule) => rule.pattern)
-      expect(patterns).toEqual(["git commit *", "git * commit *", "*git commit*"])
+      expect(patterns).toEqual(["git commit *", "git * commit *", "*git commit*", "*git * commit*"])
       expect(commitRules({ allowCommit: false })).toEqual(commitRules(undefined))
       expect(commitRules({ allowCommit: true })).toEqual([])
     }),
@@ -641,11 +668,15 @@ describe("commitRules", () => {
       expect(denied("git -C . commit")).toBe(true)
       expect(denied("git -c user.name=x commit -m y")).toBe(true)
       expect(denied("sh -c \"git commit\"")).toBe(true)
+      expect(denied("sh -c \"git -C . commit\"")).toBe(true)
       expect(denied("FOO=1 git commit -m x")).toBe(true)
       expect(denied("git add .")).toBe(false)
       expect(denied("git push")).toBe(false)
       expect(denied("git log --oneline")).toBe(false)
-      expect(denied("git config commit.gpgsign false")).toBe(false)
+      // The wrapped option-form catch-all also denies `git config
+      // commit.*`; it mutates commit-related repository state, so that
+      // false positive is acceptable.
+      expect(denied("git config commit.gpgsign false")).toBe(true)
       // The catch-all also denies `git commit-graph write`; it mutates
       // repository state, so that false positive is acceptable.
       expect(denied("git commit-graph write")).toBe(true)

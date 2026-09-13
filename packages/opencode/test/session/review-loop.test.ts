@@ -89,9 +89,9 @@ describe("mandatory review loop prompt contract", () => {
   })
 
   test("file-writing tools advertise writes-files metadata", () => {
-    expect(EditTool.metadata).toEqual({ writesFiles: true })
-    expect(WriteTool.metadata).toEqual({ writesFiles: true })
-    expect(ApplyPatchTool.metadata).toEqual({ writesFiles: true })
+    expect(EditTool.metadata).toEqual({ writesFiles: true, mutates: true })
+    expect(WriteTool.metadata).toEqual({ writesFiles: true, mutates: true })
+    expect(ApplyPatchTool.metadata).toEqual({ writesFiles: true, mutates: true })
   })
 })
 
