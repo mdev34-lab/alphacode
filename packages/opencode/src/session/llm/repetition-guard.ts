@@ -20,8 +20,12 @@ export const MIN_UNIT_CHARS = 50
 // the generation-length cap (issue #89), which bounds retention.
 const TAIL_CHARS = 8192
 const CHECK_EVERY_CHARS = 256
-// Opening characters of a line, kept for the error message only: identity
-// is a full-line hash and fence decisions use the streaming prefix below.
+// Character comparisons one checkpoint may spend on the periodicity scan:
+// a hard bound for adversarial text. Real loops (measured up to the 4 KB
+// ceiling) need far fewer; a loop whose confirmation would need more is
+// left to the generation-length cap, like units beyond the ceiling.
+const MAX_CHECK_COMPARISONS = 16 * TAIL_CHARS
+// Error-message preview length for a repeated line.
 const PREVIEW_CHARS = 80
 
 // Markdown fence markers open and close code blocks on their own line.
@@ -58,6 +62,10 @@ type GuardOptions = {
   readonly thresholds: Thresholds
 }
 
+function preview(text: string) {
+  return text.length <= PREVIEW_CHARS ? text : `${text.slice(0, PREVIEW_CHARS)}…`
+}
+
 // Length of the unit whose verbatim repetition ends `tail` — `repeats -
 // 1` complete consecutive copies visible plus MIN_UNIT_CHARS of the
 // repeats-th — or undefined. Lengths are tried shortest first with one
@@ -68,18 +76,20 @@ type GuardOptions = {
 // text again cannot be confirmed at a shorter cut; if it carries no
 // alphanumeric the loop is contentless art and the scan stops for this
 // checkpoint (longer confirmations are multiples of the same period).
+// Each checkpoint spends at most MAX_CHECK_COMPARISONS comparisons, so
+// adversarial text cannot make the scan unbounded.
 function repeatedUnitLength(tail: string, repeats: number): number | undefined {
   const maxUnit = Math.floor((tail.length - MIN_UNIT_CHARS) / (repeats - 1))
+  let budget = MAX_CHECK_COMPARISONS
   for (let len = MIN_UNIT_CHARS; len <= maxUnit; len++) {
     const span = Math.min((repeats - 1) * len + MIN_UNIT_CHARS, tail.length - len)
-    let periodic = true
-    for (let i = 0; i < span; i++) {
-      if (tail.charCodeAt(tail.length - 1 - i) !== tail.charCodeAt(tail.length - 1 - i - len)) {
-        periodic = false
-        break
-      }
-    }
-    if (!periodic) continue
+    let i = 0
+    while (i < span && tail.charCodeAt(tail.length - 1 - i) === tail.charCodeAt(tail.length - 1 - i - len)) i++
+    budget -= i + 1
+    // Out of budget: this checkpoint gives up. A persistent loop is
+    // re-examined at the next checkpoint as more of it streams.
+    if (budget < 0) return undefined
+    if (i < span) continue
     if (ALPHANUMERIC.test(tail.slice(-len))) return len
     return undefined
   }
@@ -105,15 +115,10 @@ export function guard<E, R>(
     const lineRule = options.thresholds.lineRepeats >= 2 ? options.thresholds.lineRepeats : undefined
     const unitRule = options.thresholds.unitRepeats >= 2 ? options.thresholds.unitRepeats : undefined
 
-    let runHash: number | undefined
-    let runLen = 0
+    let previousLine: string | undefined
     let runCount = 0
     let fenced = false
-    let lineOpening = ""
-    let lineLen = 0
-    let lineHash = 0x811c9dc5 | 0
-    let lineAlnum = false
-    let lineBlank = true
+    let lineParts: string[] = []
     let tail: string[] = []
     let sinceCheck = 0
     // Fence state of the line under construction: "pending" can still
@@ -123,7 +128,7 @@ export function guard<E, R>(
     let held = ""
 
     const resetRun = () => {
-      runHash = undefined
+      previousLine = undefined
       runCount = 0
     }
     const resetUnit = () => {
@@ -131,11 +136,7 @@ export function guard<E, R>(
       sinceCheck = 0
     }
     const resetLine = () => {
-      lineOpening = ""
-      lineLen = 0
-      lineHash = 0x811c9dc5 | 0
-      lineAlnum = false
-      lineBlank = true
+      lineParts = []
       lineFence = "pending"
       held = ""
     }
@@ -165,11 +166,7 @@ export function guard<E, R>(
     const onLineComplete = (): string | undefined => {
       const isFence = lineFence === "fence"
       const late = lineFence === "pending" ? held : ""
-      const len = lineLen
-      const hash = lineHash
-      const alnum = lineAlnum
-      const blank = lineBlank
-      const opening = lineOpening
+      const line = lineParts.join("")
       resetLine()
       if (isFence) {
         // A fence boundary starts a fresh tail in both directions.
@@ -184,18 +181,16 @@ export function guard<E, R>(
         resetRun()
         return undefined
       }
-      if (lineRule !== undefined && !blank) {
-        // Identity is the full line's hash plus length, so lines sharing a
-        // long opening but differing later are not identical.
-        if (hash === runHash && len === runLen) runCount += 1
+      if (lineRule !== undefined && NON_WHITESPACE.test(line)) {
+        // Identity is exact: the whole previous significant line.
+        if (line === previousLine) runCount += 1
         else {
-          runHash = hash
-          runLen = len
+          previousLine = line
           runCount = 1
         }
-        if (runCount >= lineRule && len >= MIN_LINE_CHARS && alnum)
+        if (runCount >= lineRule && line.length >= MIN_LINE_CHARS && ALPHANUMERIC.test(line))
           return (
-            `the model streamed the same line ("${opening}") ${runCount} times in a row without reaching a tool call. ` +
+            `the model streamed the same line ("${preview(line)}") ${runCount} times in a row without reaching a tool call. ` +
             `Aborted the stream instead of paying for more of the same; retry or rephrase the prompt. ` +
             `(Override with OPENCODE_EXPERIMENTAL_REPETITION_LINES.)`
           )
@@ -215,11 +210,7 @@ export function guard<E, R>(
           if (detail) return detail
         }
         const piece = pieces[i]
-        lineLen += piece.length
-        for (let c = 0; c < piece.length; c++) lineHash = Math.imul(lineHash ^ piece.charCodeAt(c), 16777619)
-        if (!lineAlnum && ALPHANUMERIC.test(piece)) lineAlnum = true
-        if (lineBlank && NON_WHITESPACE.test(piece)) lineBlank = false
-        if (lineOpening.length < PREVIEW_CHARS) lineOpening = (lineOpening + piece).slice(0, PREVIEW_CHARS)
+        lineParts.push(piece)
         if (lineFence === "pending") {
           const candidate = held + piece
           if (FENCE.test(candidate)) {
