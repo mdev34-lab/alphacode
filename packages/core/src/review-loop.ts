@@ -74,15 +74,20 @@ function verdictFromText(text: string) {
  * Read the last explicit assessment from a review report.
  *
  * Reports delivered through the report envelope carry their assessment in the
- * machine-readable `<alphacode-review>` block, which is canonical. Legacy prose
- * reports (older transcripts) fall back to a tolerant text scan: headings,
- * emphasis, bullets, and the labels "Assessment", "Verdict", and "Ready to
- * proceed" are all accepted. A positive-sounding paragraph without an explicit
- * assessment is not an approval.
+ * machine-readable `<alphacode-review>` block, which is canonical. A detected
+ * but invalid envelope — malformed content, truncated tags, or an unsupported
+ * schema version — is a delivery failure: it never falls through to the prose
+ * scan, or a broken report could mint a verdict the delivery layer already
+ * rejected. Only output with no envelope at all (legacy transcripts) falls
+ * back to a tolerant text scan: headings, emphasis, bullets, and the labels
+ * "Assessment", "Verdict", and "Ready to proceed" are all accepted. A
+ * positive-sounding paragraph without an explicit assessment is not an
+ * approval.
  */
 export function parseReviewVerdict(output: string): Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined {
   const delivery = ReviewReport.extract([output])
   if (delivery.ok) return delivery.report.assessment
+  if (delivery.failure.reason !== "missing") return undefined
 
   const lines = output.split(/\r?\n/)
   for (let index = lines.length - 1; index >= 0; index--) {

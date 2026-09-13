@@ -12,6 +12,10 @@ import { Option, Schema } from "effect"
  *
  * Delivery extracts this envelope from the complete child output instead of
  * trusting the last text part, which a trailing empty text part can erase.
+ * When several complete envelopes appear, the last one is canonical by
+ * protocol: duplicated structured output is tolerated rather than turned into
+ * another delivery failure, and render() normalizes the persisted result back
+ * to a single canonical envelope.
  */
 
 export const TAG = "alphacode-review"
@@ -65,10 +69,13 @@ const SCHEMA_HINT =
  * Extract the canonical review report from the complete child output.
  *
  * Chunks are every text part plus the finish summary, in order, so a trailing
- * empty text part cannot erase a report delivered earlier. The last complete
- * envelope is canonical; the remaining text is returned as the human-readable
- * analysis. A review that completes without a parseable version-1 envelope is a
- * delivery failure, never an empty successful result.
+ * empty text part cannot erase a report delivered earlier. When several
+ * complete envelopes are present, the last one wins by protocol — models
+ * occasionally duplicate a structured block, and accepting the final complete
+ * copy is more robust than failing the delivery. The remaining text, including
+ * any superseded envelope copies, is returned as the human-readable analysis.
+ * A review that completes without a parseable version-1 envelope is a delivery
+ * failure, never an empty successful result.
  */
 export function extract(chunks: readonly (string | undefined)[]): Delivery {
   const text = chunks.filter((chunk): chunk is string => typeof chunk === "string").join("\n")

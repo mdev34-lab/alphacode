@@ -117,11 +117,13 @@ describe("review report extraction", () => {
     if (!unversioned.ok) expect(unversioned.failure.reason).toBe("malformed")
   })
 
-  test("the last complete envelope wins when several are present", () => {
+  test("duplicated envelopes: the last complete one is canonical by protocol", () => {
     const delivery = ReviewReport.extract([envelope({}, { ...report, assessment: "approved" }), envelope()])
     expect(delivery.ok).toBe(true)
     if (!delivery.ok) return
     expect(delivery.report.assessment).toBe("needs-fixes")
+    // Superseded envelope copies remain part of the human-readable analysis.
+    expect(delivery.analysis).toContain('"approved"')
   })
 
   test("tolerates extra properties a model adds to the report", () => {
@@ -160,16 +162,26 @@ describe("review report rendering", () => {
 
 describe("verdict parsing with the report envelope", () => {
   test("the envelope assessment is canonical over contradicting prose", () => {
-    const contradictory = ReviewReport.extract([
-      "Assessment: Approved\n\nFollow-up issues remain.\n\n" +
-        envelope({}, { ...report, assessment: "approved", findings: [] }),
-    ])
-    expect(contradictory.ok).toBe(true)
     expect(
       parseReviewVerdict(
         `Assessment: Needs fixes\n\n${envelope({}, { ...report, assessment: "approved", findings: [] })}`,
       ),
     ).toBe("approved")
+  })
+
+  test("a detected-but-invalid envelope never falls back to prose parsing", () => {
+    // Malformed JSON in the envelope + contradicting prose assessment.
+    expect(
+      parseReviewVerdict(`Assessment: Approved\n\n<alphacode-review>{ not json </alphacode-review>`),
+    ).toBeUndefined()
+    // Unsupported schema version + contradicting prose assessment.
+    expect(parseReviewVerdict(`Assessment: Approved\n\n${envelope({ version: 2 })}`)).toBeUndefined()
+    // Opening tag without a closing tag + contradicting prose assessment.
+    expect(parseReviewVerdict(`Assessment: Approved\n\n<alphacode-review>\n{"version": 1}\n`)).toBeUndefined()
+    // Wrong envelope shape + contradicting prose assessment.
+    expect(
+      parseReviewVerdict(`Assessment: Approved\n\n${envelope({}, { version: 1, revision: "x", assessment: "maybe" })}`),
+    ).toBeUndefined()
   })
 
   test("prose reports without an envelope keep the tolerant fallback", () => {

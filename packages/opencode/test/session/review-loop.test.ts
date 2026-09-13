@@ -123,6 +123,10 @@ describe("review loop prompt contract", () => {
     expect(prompt).toContain('"assessment"')
     expect(prompt).toContain('"findings"')
     expect(prompt).toContain("zero findings is a valid report")
+    // Multiple envelopes are tolerated by protocol: the last complete one is
+    // canonical. The prompt keeps "exactly one" as the instruction while
+    // documenting the runtime's last-wins behavior.
+    expect(prompt).toContain("last complete envelope")
     // The envelope must not be demonstrated inside a fence, or the model may
     // emit an unparseable fenced copy.
     expect(prompt).not.toMatch(/```[\s\S]*<alphacode-review>/)
@@ -200,6 +204,20 @@ describe("runtime review gate", () => {
 
     expect(state.verdict).toBe("approved")
     expect(finishGateError(state)).toBeUndefined()
+  })
+
+  test("a detected-but-invalid envelope is not rescued as a prose verdict", () => {
+    // The output carries a broken envelope plus a contradicting prose
+    // assessment: the delivery failed, so no verdict may be minted from the
+    // surrounding prose and the finish gate must ask for a fresh review.
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      reviewMessage(`Assessment: Approved\n\n<alphacode-review>{ not json </alphacode-review>`),
+    ])
+
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
   })
 
   test("allows no-tool turns to finish without review", () => {

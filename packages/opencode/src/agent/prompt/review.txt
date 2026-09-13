@@ -123,7 +123,7 @@ Your markdown report is the human-readable analysis. After it, end your final me
 
 Envelope rules:
 
-- Exactly one envelope, and it must be the last content of your final message.
+- Exactly one envelope, and it must be the last content of your final message. If a duplicate ever slips in, the runtime treats the last complete envelope as the canonical report and keeps the rest as analysis.
 - `version` is always `1`; any other version is rejected and the review is treated as undelivered.
 - `revision` echoes the unit boundary you reviewed — the base and head SHAs you were given as `<base>..<head>`, or `uncommitted` — so the caller knows which revision the verdict covers.
 - `assessment` is `approved` or `needs-fixes` and must match your Assessment line.
