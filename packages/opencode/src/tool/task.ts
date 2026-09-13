@@ -365,4 +365,5 @@ export const TaskTool = Tool.define(
         run(params, ctx).pipe(Effect.orDie),
     }
   }),
+  { mutates: true },
 )

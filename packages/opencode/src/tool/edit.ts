@@ -212,7 +212,7 @@ export const EditTool = Tool.define(
         }),
     }
   }),
-  { writesFiles: true },
+  { writesFiles: true, mutates: true },
 )
 
 export type Replacer = (content: string, find: string) => Generator<string, void, unknown>

@@ -501,6 +501,19 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     })
   })
 
+  // Apply the launch-inferred agent to a fresh session, but only when the
+  // user neither requested an agent (`--agent`/positional) nor configured
+  // one (`default_agent`). Resumed sessions keep their own agent.
+  let inferredAgentApplied = false
+  createEffect(() => {
+    if (inferredAgentApplied || args.agent || !args.inferredAgent) return
+    if (args.sessionID || args.continue) return
+    if ((sync.data.config as { default_agent?: string } | undefined)?.default_agent) return
+    if (!sync.data.agent?.length) return
+    inferredAgentApplied = true
+    local.agent.set(args.inferredAgent)
+  })
+
   let continued = false
   createEffect(() => {
     // When using -c, session list is loaded in blocking phase, so we can navigate at "partial"

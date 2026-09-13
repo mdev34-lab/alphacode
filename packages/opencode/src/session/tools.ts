@@ -67,12 +67,23 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const entries: ToolCatalog.Entry[] = []
   const hidden = (entry: ToolCatalog.Entry) => entry.deferred && !discovered.has(entry.id)
 
+  // Permission keys for every tool that declares the `mutates` trait; read-only
+  // delegations deny this set so the sandbox derives from tool metadata.
+  const mutatingPermissionKeys = (yield* registry.all())
+    .filter((tool) => tool.metadata?.mutates === true)
+    .map((tool) => Permission.permissionKey(tool.id))
+
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
-    extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps: input.promptOps },
+    extra: {
+      model: input.model,
+      bypassAgentCheck: input.bypassAgentCheck,
+      promptOps: input.promptOps,
+      mutatingPermissionKeys,
+    },
     agent: input.agent.name,
     messages: input.messages,
     waitForOtherTools: input.processor.waitForOtherTools(options.toolCallId),

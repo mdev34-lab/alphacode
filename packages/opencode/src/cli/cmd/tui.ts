@@ -1,4 +1,6 @@
 import { cmd } from "@/cli/cmd/cmd"
+import { AgentSelection } from "@opencode-ai/core/agent-selection"
+import { existsSync } from "fs"
 import { Rpc } from "@/util/rpc"
 import { type rpc } from "../tui/worker"
 import { createTuiWorker, type WorkerExit } from "../tui/worker-process"
@@ -77,7 +79,7 @@ export const TuiThreadCommand = cmd({
     withNetworkOptions(yargs)
       .positional("project", {
         type: "string",
-        describe: "path to start alphacode in",
+        describe: "path to start alphacode in, or an agent name (code, work) to force that agent",
       })
       .option("model", {
         type: "string",
@@ -163,6 +165,19 @@ export const TuiThreadCommand = cmd({
     }
     const noReplay = args.replay === false || args.noReplay === true
 
+    // A positional that names an agent (and no such path exists) forces that
+    // agent; otherwise it is a project path. `--agent` still wins over both.
+    const positional = AgentSelection.resolvePositional(args.project, (p) => existsSync(p))
+    const launchDirectory = resolveThreadDirectory(positional.path)
+    const agent = args.agent ?? positional.agent
+    const inferredAgent =
+      agent === undefined ? AgentSelection.inferAgent({ gitRoot: AgentSelection.findGitRoot(launchDirectory) }) : undefined
+    if (agent === AgentSelection.CODE && !AgentSelection.findGitRoot(launchDirectory)) {
+      UI.error(AgentSelection.CODE_REFUSAL)
+      process.exitCode = 1
+      return
+    }
+
     if (args.mini) {
       const network = ["--port", "--hostname", "--mdns", "--no-mdns", "--mdns-domain", "--cors"].find((option) =>
         process.argv.some((arg) => arg === option || arg.startsWith(option + "=")),
@@ -175,12 +190,12 @@ export const TuiThreadCommand = cmd({
 
       const { runMini } = await import("./run")
       await runMini({
-        directory: resolveThreadDirectory(args.project),
+        directory: launchDirectory,
         continue: args.continue,
         session: args.session,
         fork: args.fork,
         model: args.model,
-        agent: args.agent,
+        agent,
         prompt: args.prompt,
         replay: noReplay ? false : undefined,
         replayLimit: args.replayLimit,
@@ -209,7 +224,7 @@ export const TuiThreadCommand = cmd({
         return
       }
 
-      const next = resolveThreadDirectory(args.project)
+      const next = launchDirectory
       const file = await target()
       try {
         process.chdir(next)
@@ -334,7 +349,8 @@ export const TuiThreadCommand = cmd({
             args: {
               continue: args.continue,
               sessionID: args.session,
-              agent: args.agent,
+              agent,
+              inferredAgent,
               model: args.model,
               prompt,
               fork: args.fork,

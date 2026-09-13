@@ -10,6 +10,7 @@ import { Auth } from "../auth"
 import { ProviderTransform } from "@/provider/transform"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_CODE from "./prompt/code.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
@@ -158,6 +159,23 @@ const layer = Layer.effect(
             // Rendered by clients without design tokens (TUI); token-based
             // surfaces resolve `--icon-agent-work-base` to the same value.
             color: AgentSchema.DEFAULT_COLOR,
+          },
+          code: {
+            name: "code",
+            description:
+              "Software-engineering agent for Git repositories. Orient with the project overview, use LSP, Git, and test/build/lint discovery, and keep changes minimal and verified. Use for code changes, debugging, refactors, and repository work; it can delegate non-code work to Work.",
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+                plan_enter: "allow",
+              }),
+              user,
+            ),
+            mode: "all",
+            native: true,
+            prompt: PROMPT_CODE,
           },
           plan: {
             name: "plan",

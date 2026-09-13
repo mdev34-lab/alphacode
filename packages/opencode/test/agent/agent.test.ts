@@ -771,12 +771,12 @@ it.instance(
 )
 
 it.instance(
-  "defaultAgent returns plan when work is disabled and default_agent not set",
+  "defaultAgent returns code when work is disabled and default_agent not set",
   () =>
     Effect.gen(function* () {
       const agent = yield* load((svc) => svc.defaultAgent())
-      // work is disabled, so it should return plan (next primary agent)
-      expect(agent).toBe("plan")
+      // work is disabled, so it should return code (next primary agent)
+      expect(agent).toBe("code")
     }),
   {
     config: {
@@ -794,6 +794,7 @@ it.instance(
     config: {
       agent: {
         work: { disable: true },
+        code: { disable: true },
         plan: { disable: true },
       },
     },
@@ -852,7 +853,7 @@ it.instance(
     Effect.gen(function* () {
       const names = (yield* load((svc) => svc.list())).map((a) => a.name)
       expect(names).not.toContain("work")
-      expect(yield* load((svc) => svc.defaultAgent())).toBe("plan")
+      expect(yield* load((svc) => svc.defaultAgent())).toBe("code")
     }),
   {
     config: {

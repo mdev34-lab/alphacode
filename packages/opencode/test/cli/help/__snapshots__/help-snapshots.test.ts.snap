@@ -255,7 +255,7 @@ Commands:
   alphacode db                  database tools
 
 Positionals:
-  project  path to start alphacode in                                                       [string]
+  project  path to start alphacode in, or an agent name (code, work) to force that agent    [string]
 
 Options:
   -h, --help             show help                                                         [boolean]
