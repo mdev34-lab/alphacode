@@ -2,9 +2,9 @@ Delegate a bounded task to another agent and receive a machine-readable result.
 
 Delegation is a first-class primitive, not a prompt: the child runs in an isolated session with its own agent, working directory, permission ruleset, and model. The child's full transcript stays in the child session (context firewall) — you only receive:
 
-{ "status": "completed|error|timeout|cancelled", "summary": "...", "changedFiles": ["..."], "tests": [{"command": "...", "status": "passed|failed", "exitCode": 0}], "warnings": ["..."] }
+{ "status": "completed|error|timeout|cancelled", "summary": "...", "observedFiles": ["..."], "tests": [{"command": "...", "status": "passed|failed", "exitCode": 0}], "warnings": ["..."] }
 
-Use delegation to cross the Work/Code boundary:
+Use delegation to cross the Work/Code boundary — that is the only relationship, and only the other side is a valid target (not another primary agent, a subagent, or a hidden agent):
 - From Work: delegate software-engineering tasks (code changes, debugging, refactors) to "code" inside a Git repository.
 - From Code: delegate non-code work (document processing, general filesystem tasks) to "work".
 
@@ -12,6 +12,7 @@ Guidelines:
 - Give the task a clear contract: goal, acceptance criteria, and constraints. The `constraints` fields (readOnly, allowCommit) become hard permission rules for the child, not requests.
 - `readOnly: true` also hides the subagent tools (task/delegate) and MCP tools from the child, so it cannot hand its write access to another session.
 - Commits are denied unless you set `allowCommit: true`. The rules cover the common `git commit` forms; if the repository HEAD still moves, the result carries a violation warning and you should treat it as unverified.
-- `cwd` must stay inside the current workspace; the child operates there, and relative `changedFiles` are resolved against it.
+- `cwd` must stay inside the current workspace; the child operates there, and relative `observedFiles` are resolved against it.
+- `observedFiles` are the files the child's file-editing tools (write/edit/apply_patch) touched, resolved against the child's cwd. It is an observation of those tool calls, not an exhaustive workspace diff: mutations via the shell (`rm`, `mv`, `sed -i`, `git checkout --`) or MCP tools will not appear, so do not treat an empty list as "nothing changed".
 - Delegation is synchronous: you get the result before continuing. Nested delegation is bounded by `subagent_depth`.
 - Do not delegate to the agent you are, and do not use delegation to parallelize work that a single agent can do.

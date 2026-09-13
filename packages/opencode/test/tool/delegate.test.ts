@@ -208,7 +208,7 @@ describe("tool.delegate", () => {
       const reported = JSON.parse(result.output) as DelegationResult
       expect(reported.status).toBe("completed")
       expect(reported.summary).toBe("Fixed the thing")
-      expect(reported.changedFiles).toEqual(["/repo/src/a.txt", "/repo/src/b.txt"])
+      expect(reported.observedFiles).toEqual(["/repo/src/a.txt", "/repo/src/b.txt"])
       expect(reported.tests).toEqual([
         { command: "bun test", status: "passed", exitCode: 0 },
         { command: "npm test", status: "failed", exitCode: 1 },
@@ -624,7 +624,7 @@ describe("deriveDelegationResult", () => {
     }),
   )
 
-  it.effect("resolves relative changed files against the child's working directory", () =>
+  it.effect("resolves relative observed files against the child's working directory", () =>
     Effect.sync(() => {
       const result = deriveDelegationResult({
         messages: [
@@ -636,7 +636,7 @@ describe("deriveDelegationResult", () => {
         status: "completed",
         cwd: "/repo/packages/foo",
       })
-      expect(result.changedFiles).toEqual(["/repo/packages/foo/src/index.ts"])
+      expect(result.observedFiles).toEqual(["/repo/packages/foo/src/index.ts"])
     }),
   )
 
@@ -730,6 +730,18 @@ describe("delegationTargetError", () => {
 
   test("refuses self-delegation", () => {
     expect(delegationTargetError("code", agentInfo("code", "all"))).toContain("same agent")
+    expect(delegationTargetError("work", agentInfo("work", "primary"))).toContain("same agent")
+  })
+
+  test("refuses another primary agent — the boundary is only work <-> code", () => {
+    expect(delegationTargetError("work", agentInfo("plan", "primary"))).toContain('not "plan"')
+    expect(delegationTargetError("work", agentInfo("foo", "primary"))).toContain('not "foo"')
+    expect(delegationTargetError("code", agentInfo("foo", "primary"))).toContain('not "foo"')
+  })
+
+  test("refuses delegation from an agent outside the Work/Code boundary", () => {
+    expect(delegationTargetError("foo", agentInfo("work", "primary"))).toContain("cannot delegate")
+    expect(delegationTargetError("plan", agentInfo("code", "all"))).toContain("cannot delegate")
   })
 
   test("refuses subagent-only agents", () => {

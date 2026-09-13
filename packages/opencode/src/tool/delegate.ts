@@ -5,6 +5,7 @@ import { Session } from "@/session/session"
 import { MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
+import { CODE, WORK } from "@opencode-ai/core/agent-selection"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { TaskPromptOps } from "./task"
 import { Config } from "@/config/config"
@@ -161,11 +162,13 @@ export function commitRules(constraints: Constraints | undefined): PermissionV1.
 }
 
 /**
- * The delegation relationship, enforced where delegation is validated. A
- * session delegates to a different primary agent — the Work/Code boundary
- * crossing (Work → Code for code work, Code → Work for non-code work). It may
- * not delegate to itself, to a subagent-only agent (those run inside a turn
- * via the task tool), or to a hidden agent.
+ * The Work/Code delegation relationship, enforced where delegation is
+ * validated. Delegation crosses the Work/Code boundary — and only that
+ * boundary. There are exactly two valid edges: Work → Code (code work) and
+ * Code → Work (non-code work). Everything else is refused: delegating to
+ * another primary agent (plan, a custom agent) would turn a boundary crossing
+ * into generic primary-agent orchestration; a subagent (those run via the task
+ * tool) and a hidden agent are not delegation targets either.
  *
  * This is the agent topology. It is deliberately independent of
  * `subagent_depth`, which is a generic nesting limit answering "how many
@@ -173,8 +176,14 @@ export function commitRules(constraints: Constraints | undefined): PermissionV1.
  * to which. Returns an error message when the delegation is not allowed.
  */
 export function delegationTargetError(from: string, target: Agent.Info): string | undefined {
+  const crosses = (from === WORK && target.name === CODE) || (from === CODE && target.name === WORK)
+  if (crosses) return undefined
+
   if (target.name === from) {
-    return `Cannot delegate to the same agent ("${from}"). Delegate to a different agent such as "code" or "work".`
+    return `Cannot delegate to the same agent ("${from}"). Delegation crosses the Work/Code boundary: from "work" delegate to "code", or from "code" delegate to "work".`
+  }
+  if (from !== WORK && from !== CODE) {
+    return `Delegation crosses the Work/Code boundary, so it starts from "work" or "code"; the "${from}" agent cannot delegate.`
   }
   if (target.mode === "subagent") {
     return `Agent ${target.name} is a subagent and cannot be a delegation target; subagents run inside a turn via the task tool.`
@@ -182,7 +191,8 @@ export function delegationTargetError(from: string, target: Agent.Info): string 
   if (target.hidden) {
     return `Agent ${target.name} is hidden and cannot be delegated to`
   }
-  return undefined
+  const expected = from === WORK ? CODE : WORK
+  return `Delegation crosses the Work/Code boundary: from "${from}", delegate to "${expected}", not "${target.name}".`
 }
 
 /** Resolves the repository HEAD at `cwd`, or undefined when there is no repository. */
@@ -225,9 +235,9 @@ export const DelegateTool = Tool.define(
       const target = yield* agent.get(params.agent)
       if (!target) return yield* Effect.fail(new Error(`Unknown agent: ${params.agent} is not a valid agent`))
 
-      // The delegation relationship (agent topology): a different primary
-      // agent — never the current agent, a subagent-only agent, or a hidden
-      // agent. This is independent of nesting depth.
+      // The Work/Code relationship: a delegation crosses the Work/Code
+      // boundary (work → code, code → work) and nothing else. Independent of
+      // nesting depth.
       const targetError = delegationTargetError(ctx.agent, target)
       if (targetError) return yield* Effect.fail(new Error(targetError))
 

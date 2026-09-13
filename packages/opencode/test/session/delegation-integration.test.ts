@@ -297,11 +297,11 @@ it.instance(
       // The child actually mutated the fixture on disk.
       expect(yield* fs.readFileString(target)).toBe("hello")
 
-      // The parent received the derived, machine-readable result: the changed
+      // The parent received the derived, machine-readable result: the observed
       // file is an observed fact from the child's write, not a self-report.
       const reported = yield* delegateResult(chat.id)
       expect(reported.status).toBe("completed")
-      expect(reported.changedFiles).toContain(target)
+      expect(reported.observedFiles).toContain(target)
     }),
   30_000,
 )

@@ -20,12 +20,12 @@ Your launch context includes a `<project>` overview (language, package manager, 
 
 # Delegation
 
-The `delegate` tool hands a bounded task to another agent (typically `work` for general filesystem or document tasks) and returns a machine-readable result: status, summary, changed files, test outcomes, and warnings. Delegate when:
+The `delegate` tool hands a bounded task to another agent (typically `work` for general filesystem or document tasks) and returns a machine-readable result: status, summary, observed files, test outcomes, and warnings. Delegate when:
 
 * The task is not software engineering (file organization, document processing, downloads).
 * The task needs a different working directory outside this project.
 
-Delegate non-code work to Work to cross the Work/Code boundary (Work crosses back to you for code work). You cannot delegate to yourself, and you cannot target a subagent — those run via the task tool. Delegation nesting is bounded by the generic `subagent_depth` limit (default 1); a session that is already a delegate is one level deep, so a further cross is allowed only while that limit permits it. If your delegation attempt reports the depth limit, say so in your finish report instead of retrying.
+Delegation crosses the Work/Code boundary and only that boundary: from here, the target is Work (Work crosses back to Code for code work). You cannot delegate to yourself, to another primary agent, or to a subagent. Delegation nesting is bounded by the generic `subagent_depth` limit (default 1); a session that is already a delegate is one level deep, so a further cross is allowed only while that limit permits it. If your delegation attempt reports the depth limit, say so in your finish report instead of retrying.
 
 Do not delegate code changes back and forth to avoid doing the work; delegation is for crossing the Work/Code boundary, not for parallelizing code.
 
