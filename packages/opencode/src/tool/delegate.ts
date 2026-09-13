@@ -16,10 +16,12 @@ import { deriveDelegationResult, type DelegationResult } from "./delegate-result
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { PositiveInt } from "@opencode-ai/core/schema"
+import { ToolFailure } from "@opencode-ai/llm"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { errorMessage } from "@/util/error"
 import path from "path"
 
 export interface Constraints {
@@ -261,7 +263,6 @@ export const DelegateTool = Tool.define(
 
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
-        Effect.orDie,
       )
       if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
       const model = params.model ?? target.model ?? { modelID: msg.info.modelID, providerID: msg.info.providerID }
@@ -360,7 +361,12 @@ export const DelegateTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) => run(params, ctx).pipe(Effect.orDie),
+      // The delegation gate surfaces every failure as a typed, recoverable
+      // ToolFailure (model-visible) rather than a defect, matching the finish
+      // gate's contract. Interruptions (user abort) are untouched and still
+      // propagate as cancellations.
+      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+        run(params, ctx).pipe(Effect.mapError((error) => new ToolFailure({ message: errorMessage(error) }))),
     }
   }),
   { mutates: true },

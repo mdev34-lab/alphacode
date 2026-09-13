@@ -19,6 +19,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { commitRules } from "../../src/tool/delegate"
 import { deriveDelegationResult, type DelegationResult } from "../../src/tool/delegate-result"
 import { DelegateTool } from "../../src/tool/delegate"
+import { ToolFailure } from "@opencode-ai/llm"
 import type { TaskPromptOps } from "../../src/tool/task"
 import type * as Tool from "../../src/tool/tool"
 import { Truncate } from "@/tool/truncate"
@@ -361,6 +362,24 @@ describe("tool.delegate", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       expect(asks).toHaveLength(0)
       expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("surfaces gate failures as typed ToolFailure, not defects", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTool()
+      // Effect.catch only observes the typed error channel; a defect would
+      // escape and fail this test, so a successful catch proves the failure
+      // is recoverable (model-visible) rather than a crash.
+      const outcome = yield* def
+        .execute(
+          { agent: "nope", task: "task" },
+          context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
+        )
+        .pipe(Effect.catch((error) => Effect.succeed(error)))
+      expect(outcome).toBeInstanceOf(ToolFailure)
+      if (outcome instanceof ToolFailure) expect(outcome.message).toContain("nope")
     }),
   )
 
