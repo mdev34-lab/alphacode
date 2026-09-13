@@ -18,21 +18,37 @@ export const MIN_UNIT_CHARS = 50
 // unfenced region. Segments are retained by reference while streaming and
 // assembled into one string only at a checkpoint (every CHECK_EVERY_CHARS
 // characters), so streaming does O(1) work per delta and assembly amortizes
-// to a few bytes copied per character. Units longer than a third of the
-// tail cannot be confirmed and are left to the generation cap (issue #89).
-const TAIL_CHARS = 2048
+// to a few bytes copied per character. A unit only confirms when the tail
+// shows unitRepeats - 1 complete copies plus MIN_UNIT_CHARS of the next, so
+// the largest confirmable unit is (TAIL_CHARS - MIN_UNIT_CHARS) / 2 — about
+// 4 KB at the defaults. Units longer than that are left to the
+// generation-length cap (issue #89); confirming arbitrarily long units would
+// need arbitrarily long retention, which is exactly what the cap bounds.
+const TAIL_CHARS = 8192
 const CHECK_EVERY_CHARS = 256
 // Suffix used to locate the previous copy of the repeating unit: long
 // enough that chance matches in prose are rare, short enough to occur at
 // every period of a short loop.
 const PROBE_CHARS = 16
-// Stored identity of a line: its first LINE_KEY_CHARS characters plus its
-// full length.
+// Previous occurrences of the probe tried as candidate unit lengths per
+// checkpoint. Bounds the walk over finer probe phases (a shared line
+// suffix) and adversarial text; a persistent loop retries every checkpoint.
+const MAX_CANDIDATES = 256
+// Characters of a candidate unit inspected for content. Separator art
+// (dashes, rules, brace walls) carries no alphanumeric anywhere; real text
+// carries it in any window this large.
+const ALNUM_SAMPLE_CHARS = 256
+// Stored opening of a line, for fence detection and message previews. Line
+// identity itself is a full-line FNV-1a hash plus the length, so lines that
+// share this opening but differ later are not conflated.
 const LINE_KEY_CHARS = 200
 const PREVIEW_CHARS = 80
 
 // Markdown fence markers open and close code blocks on their own line.
 const FENCE = /^\s*(```|~~~)/
+// A line prefix that could still become a fence line: leading whitespace
+// and at most two marker characters. Anything else settles the question.
+const FENCE_PENDING = /^\s*([`~]{0,2})?$/
 // Separator art, table rules, and brace walls repeat without carrying
 // content; a loop worth aborting says something.
 const ALPHANUMERIC = /[a-z0-9]/i
@@ -67,28 +83,66 @@ function preview(text: string) {
   return text.length <= PREVIEW_CHARS ? text : `${text.slice(0, PREVIEW_CHARS)}…`
 }
 
-// Length of the unit whose verbatim repetition ends `tail`, with `repeats`
-// consecutive copies intact, or undefined. The length is located, not
-// searched for: in a repeating stream every occurrence of the final
-// PROBE_CHARS characters lands on a multiple of the minimal period, so one
-// native backward scan finds the nearest previous copy and one three-way
-// comparison confirms it. Worst case per checkpoint is one scan over the
-// tail plus one comparison of `repeats` unit lengths.
+// Length of the unit whose verbatim repetition ends `tail`, with
+// `repeats - 1` complete consecutive copies visible plus MIN_UNIT_CHARS of
+// the repeats-th, or undefined. The length is located, not searched for: in
+// a repeating stream the trailing PROBE_CHARS characters recur at every
+// copy of the unit, so the previous occurrences of that suffix — nearest
+// first — are the candidate unit lengths, and one aligned comparison
+// confirms or refutes each. When the unit repeats the probe's phase more
+// finely (a line suffix shared by every row, say) the true length is simply
+// a few more candidates back, each rejected at its first mismatch, so at
+// most MAX_CANDIDATES occurrences are tried per checkpoint and a persistent
+// loop re-offers them every checkpoint until one confirms.
 function repeatedUnitLength(tail: string, repeats: number): number | undefined {
   if (tail.length < PROBE_CHARS + MIN_UNIT_CHARS) return undefined
   const probe = tail.slice(-PROBE_CHARS)
+  const maxUnit = Math.floor((tail.length - MIN_UNIT_CHARS) / (repeats - 1))
   // The closest occurrence at least one minimum unit back; anything nearer
   // is part of the final copy, not a repetition boundary.
-  const hit = tail.lastIndexOf(probe, tail.length - PROBE_CHARS - MIN_UNIT_CHARS)
-  if (hit < 0) return undefined
-  const len = tail.length - PROBE_CHARS - hit
-  if (len * repeats > tail.length) return undefined
-  const unit = tail.slice(-len)
-  if (!ALPHANUMERIC.test(unit)) return undefined
-  for (let r = 2; r <= repeats; r++) {
-    if (tail.slice(-r * len, -(r - 1) * len) !== unit) return undefined
+  let bound = tail.length - PROBE_CHARS - MIN_UNIT_CHARS
+  for (let tried = 0; tried < MAX_CANDIDATES; tried++) {
+    const hit = tail.lastIndexOf(probe, bound)
+    if (hit < 0) return undefined
+    const len = tail.length - PROBE_CHARS - hit
+    // Candidates only grow longer from here; past maxUnit the required
+    // copies cannot fit the tail, so those loops are left to the cap.
+    if (len > maxUnit) return undefined
+    const sample = len > ALNUM_SAMPLE_CHARS ? tail.slice(-len, -len + ALNUM_SAMPLE_CHARS) : tail.slice(-len)
+    if (!ALPHANUMERIC.test(sample)) {
+      bound = hit - 1
+      continue
+    }
+    if (repeats < 3) {
+      // A two-repetition threshold is inherently weak evidence: the probe's
+      // previous hit plus a MIN_UNIT_CHARS window repeating one period
+      // earlier is all there is to see.
+      if (tail.slice(-len - MIN_UNIT_CHARS, -len) !== tail.slice(-MIN_UNIT_CHARS)) {
+        bound = hit - 1
+        continue
+      }
+      return len
+    }
+    const unit = tail.slice(-len)
+    let confirmed = true
+    for (let r = 2; r < repeats; r++) {
+      if (tail.slice(-r * len, -(r - 1) * len) !== unit) {
+        confirmed = false
+        break
+      }
+    }
+    // The repeats-th copy is underway: the MIN_UNIT_CHARS ending one period
+    // before the tail end repeat one period earlier still.
+    if (
+      confirmed &&
+      tail.slice(-(repeats - 1) * len - MIN_UNIT_CHARS, -(repeats - 1) * len) !==
+        tail.slice(-len - MIN_UNIT_CHARS, -len)
+    )
+      confirmed = false
+    if (confirmed) return len
+    bound = hit - 1
   }
-  return len
+  return undefined
 }
 
 // Detects a model stuck regenerating the same text without ever reaching a
@@ -97,9 +151,16 @@ function repeatedUnitLength(tail: string, repeats: number): number | undefined {
 // scoped to a single text part so state never leaks across a tool-call
 // boundary, and both suppressed inside fenced code blocks: a fixture or
 // table legitimately repeats rows, so fenced output stays bounded by the
-// generation-length cap instead. Fenced bytes are never fed to the fragment
-// tail and every fence boundary resets it, so fenced repetition cannot leak
-// across a fence.
+// generation-length cap instead.
+//
+// Fenced suppression holds at streaming granularity: a line only becomes a
+// fence when its opening characters say so, so each line's leading
+// characters are held back from the fragment tail until they settle the
+// question (leading whitespace and one or two marker characters can still
+// become a fence; anything else cannot). Fence bytes therefore never reach
+// the tail even before the fence's terminating newline arrives, and every
+// fence boundary resets the tail, so fenced repetition cannot leak across
+// it in either direction.
 export function guard<E, R>(
   self: Stream.Stream<LLMEvent, E, R>,
   options: GuardOptions,
@@ -110,20 +171,27 @@ export function guard<E, R>(
     const lineRule = options.thresholds.lineRepeats >= 2 ? options.thresholds.lineRepeats : undefined
     const unitRule = options.thresholds.unitRepeats >= 2 ? options.thresholds.unitRepeats : undefined
 
-    let runKey: string | undefined
+    let runHash: number | undefined
     let runLen = 0
     let runCount = 0
     let fenced = false
     let lineParts: string[] = []
     let lineStored = 0
     let lineLen = 0
+    let lineHash = 0x811c9dc5 | 0
     let lineAlnum = false
     let lineBlank = true
     let tail: string[] = []
     let sinceCheck = 0
+    // Fence state of the line under construction, decided by its opening
+    // characters: "pending" can still become a fence line (its undecidable
+    // prefix is held back from the tail), "fence" is one and feeds nothing,
+    // "plain" feeds everything.
+    let lineFence: "pending" | "fence" | "plain" = "pending"
+    let held = ""
 
     const resetRun = () => {
-      runKey = undefined
+      runHash = undefined
       runCount = 0
     }
     const resetUnit = () => {
@@ -134,8 +202,11 @@ export function guard<E, R>(
       lineParts = []
       lineStored = 0
       lineLen = 0
+      lineHash = 0x811c9dc5 | 0
       lineAlnum = false
       lineBlank = true
+      lineFence = "pending"
+      held = ""
     }
 
     // Retains one unfenced segment and, every CHECK_EVERY_CHARS characters,
@@ -159,18 +230,23 @@ export function guard<E, R>(
     }
 
     // Consumes the completed line: toggles fences, feeds the line separator
-    // to the fragment tail, and walks the identical-line run. Blank lines
-    // are transparent: a loop that separates its repetitions with paragraph
+    // (plus anything held back while the fence question was open) to the
+    // fragment tail, and walks the identical-line run. Blank lines are
+    // transparent: a loop that separates its repetitions with paragraph
     // breaks still walks the run up one repetition at a time.
     const onLineComplete = (): string | undefined => {
       const key = lineParts.join("").slice(0, LINE_KEY_CHARS)
       const len = lineLen
+      const hash = lineHash
       const alnum = lineAlnum
       const blank = lineBlank
+      const late = held
       resetLine()
       if (FENCE.test(key)) {
         fenced = !fenced
         resetRun()
+        // A fence boundary starts a fresh fragment tail in both directions,
+        // so fenced repetition cannot leak across it.
         resetUnit()
         return undefined
       }
@@ -182,9 +258,12 @@ export function guard<E, R>(
         return undefined
       }
       if (lineRule !== undefined && !blank) {
-        if (key === runKey && len === runLen) runCount += 1
+        // Identity is the full line's rolling hash plus length: the stored
+        // key is only a prefix, so lines that share a long opening but
+        // differ later must not count as identical.
+        if (hash === runHash && len === runLen) runCount += 1
         else {
-          runKey = key
+          runHash = hash
           runLen = len
           runCount = 1
         }
@@ -195,7 +274,7 @@ export function guard<E, R>(
             `(Override with OPENCODE_EXPERIMENTAL_REPETITION_LINES.)`
           )
       }
-      return feed("\n")
+      return feed(late + "\n")
     }
 
     // Streams one text delta through both rules. Completed lines toggle the
@@ -211,16 +290,33 @@ export function guard<E, R>(
         }
         const piece = pieces[i]
         lineLen += piece.length
+        for (let c = 0; c < piece.length; c++) lineHash = Math.imul(lineHash ^ piece.charCodeAt(c), 16777619)
         if (!lineAlnum && ALPHANUMERIC.test(piece)) lineAlnum = true
         if (lineBlank && NON_WHITESPACE.test(piece)) lineBlank = false
         if (lineStored < LINE_KEY_CHARS) {
           lineParts.push(piece)
           lineStored += piece.length
         }
-        if (!fenced) {
-          const detail = feed(piece)
-          if (detail) return detail
+        if (fenced || lineFence === "fence") continue
+        if (lineFence === "pending") {
+          const candidate = held + piece
+          if (FENCE.test(candidate)) {
+            // This line is a fence: its bytes (including any info string)
+            // never reach the fragment tail, newline or not.
+            held = ""
+            lineFence = "fence"
+          } else if (FENCE_PENDING.test(candidate)) {
+            held = candidate
+          } else {
+            held = ""
+            lineFence = "plain"
+            const detail = feed(candidate)
+            if (detail) return detail
+          }
+          continue
         }
+        const detail = feed(piece)
+        if (detail) return detail
       }
       return undefined
     }

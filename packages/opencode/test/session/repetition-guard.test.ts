@@ -240,10 +240,10 @@ describe("RepetitionGuard.guard", () => {
 
   it.effect("passes a long varied stream through window eviction", () =>
     Effect.gen(function* () {
-      // 150 distinct 84-character lines: 12.6k characters, well past the
-      // 8k fragment window, forcing many ring-buffer evictions and scans.
+      // 400 distinct 84-character lines: 33.6k characters, several times
+      // the 8k fragment tail, forcing repeated tail trims and scans.
       // Varied content must pass through untouched.
-      const lines = Array.from({ length: 150 }, (_, i) =>
+      const lines = Array.from({ length: 400 }, (_, i) =>
         text(`Entry ${String(i).padStart(4, "0")}: the quick brown fox jumps over the lazy dog again ${i}\n`),
       )
       const input = [
@@ -290,22 +290,105 @@ describe("RepetitionGuard.guard", () => {
     }),
   )
 
-  it.effect("leaves very long unit loops to the generation cap", () =>
+  it.effect("detects a multi-line unit loop near the tail ceiling", () =>
     Effect.gen(function* () {
-      // A ~940-character unit: three copies exceed the 2048-character tail,
-      // so the fragment rule cannot confirm it and the generation cap
-      // remains the backstop. Four lines keep the line rule below its
-      // threshold too.
-      const unit = `${"A deliberately longer block of fixed summary wording that repeats verbatim each and every single time it is emitted. ".repeat(9)}#`
+      // A ~4000-character unit of distinct lines (so the line rule stays
+      // silent), repeated verbatim. Two complete copies plus 50 characters
+      // of the third is 8042 characters, just inside the 8192-character
+      // tail, so the fragment rule must confirm it.
+      const unit = Array.from(
+        { length: 74 },
+        (_, i) => `Row ${String(i).padStart(4, "0")}: fixed narrative sentence that never varies.\n`,
+      ).join("")
+      const source = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
+        Stream.fromIterable(Array.from({ length: 3 }, () => text(unit))),
+      )
+      const error = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runDrain, Effect.flip)
+      expect(error).toBeInstanceOf(RepetitionGuard.RepetitionDetectedError)
+    }),
+  )
+
+  it.effect("leaves unit loops beyond the tail ceiling to the generation cap", () =>
+    Effect.gen(function* () {
+      // A ~4400-character unit: two complete copies plus 50 characters of
+      // the third is 8906 characters, past the 8192-character tail, so the
+      // fragment rule cannot confirm it and the generation cap remains the
+      // backstop. Distinct lines keep the line rule below its threshold.
+      const unit = Array.from(
+        { length: 82 },
+        (_, i) => `Row ${String(i).padStart(4, "0")}: fixed narrative sentence that never varies.\n`,
+      ).join("")
       const source = Stream.concat(
         Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
         Stream.concat(
-          Stream.fromIterable(Array.from({ length: 4 }, () => text(`${unit}\n`))),
+          Stream.fromIterable(Array.from({ length: 3 }, () => text(unit))),
           Stream.make(LLMEvent.textEnd({ id: "text-1" }), LLMEvent.finish({ reason: "stop" })),
         ),
       )
       const collected = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runCollect)
-      expect(collected.length).toBe(8)
+      expect(collected.length).toBe(7)
+    }),
+  )
+
+  it.effect("does not feed an unclosed fence opener to fragment detection", () =>
+    Effect.gen(function* () {
+      // A fence line whose newline never arrives. The opener must be
+      // recognized from its opening characters alone and nothing after it
+      // may reach the fragment tail — the 600-character run would otherwise
+      // confirm as a repeated unit and abort a stream that is still inside
+      // an open code block.
+      const source = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" }), text("```")),
+        Stream.concat(
+          Stream.fromIterable(Array.from({ length: 6 }, () => text("A".repeat(100)))),
+          Stream.make(LLMEvent.textEnd({ id: "text-1" }), LLMEvent.finish({ reason: "stop" })),
+        ),
+      )
+      const collected = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runCollect)
+      expect(collected.length).toBe(11)
+    }),
+  )
+
+  it.effect("recognizes a fence opener split across deltas", () =>
+    Effect.gen(function* () {
+      // The marker arrives as `` then `js, then the newline: the held-back
+      // prefix must resolve to a fence (with its info string) and suppress
+      // the block, exactly as an unsplit opener would.
+      const rows = Array.from({ length: 20 }, () => text(`${FIXTURE_ROW}\n`))
+      const input = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        text("``"),
+        text("`js\n"),
+        ...rows,
+        text("```\n"),
+        text("After the block, ordinary prose continues with varied wording.\n"),
+        LLMEvent.textEnd({ id: "text-1" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]
+      const collected = yield* RepetitionGuard.guard(Stream.fromIterable(input), defaults()).pipe(Stream.runCollect)
+      expect(Array.from(collected)).toStrictEqual(input)
+    }),
+  )
+
+  it.effect("does not conflate lines that share a long opening", () =>
+    Effect.gen(function* () {
+      // Eight lines with the same 200-character opening, the same length,
+      // but different tails. The stored key is only a prefix, so identity
+      // must come from the full line: these are not repetitions.
+      const opening =
+        "The quick brown fox jumps over a lazy dog while packed wizards revolve quietly above jaded oxen, humming sparks of vexed craft dimming under pale moonlight that graced every numbered "
+      const tails = ["alpha", "bravo", "china", "delta", "echo-", "foxtro", "golf--", "hotel-"]
+      const input = [
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        ...tails.map((tail) => text(`${opening}${tail}\n`)),
+        LLMEvent.textEnd({ id: "text-1" }),
+        LLMEvent.finish({ reason: "stop" }),
+      ]
+      const collected = yield* RepetitionGuard.guard(Stream.fromIterable(input), defaults()).pipe(Stream.runCollect)
+      expect(Array.from(collected)).toStrictEqual(input)
     }),
   )
 
