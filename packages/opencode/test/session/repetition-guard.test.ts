@@ -278,8 +278,8 @@ describe("RepetitionGuard.guard", () => {
 
   it.effect("detects a long verbatim unit loop", () =>
     Effect.gen(function* () {
-      // A ~580-character unit with no newlines, repeated. The tail is 2048
-      // characters, so three copies (just under 1.8k) still fit.
+      // A ~580-character unit with no newlines, repeated: two complete
+      // copies plus 50 characters fit the 8 KB tail with room to spare.
       const unit = `${"This block of fixed summary wording repeats verbatim each time. ".repeat(9)}#`
       const source = Stream.concat(
         Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
@@ -306,6 +306,35 @@ describe("RepetitionGuard.guard", () => {
       )
       const error = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runDrain, Effect.flip)
       expect(error).toBeInstanceOf(RepetitionGuard.RepetitionDetectedError)
+    }),
+  )
+
+  it.effect("detects a unit loop whose unit contains its own ending", () =>
+    Effect.gen(function* () {
+      // A 300-character unit whose trailing marker also appears three
+      // times inside it. The guard must confirm the loop at the true
+      // 300-character period, not report a shorter coincidental one (or
+      // miss the loop behind a nearer repetition).
+      const marker = "Zq3-UnitProbe-77"
+      expect(marker.length).toBe(16)
+      const fill = (seed: string, n: number) => seed.repeat(Math.ceil(n / seed.length)).slice(0, n)
+      const unit = [
+        marker,
+        fill("alpha filler copy one ", 64),
+        marker,
+        fill("bravo filler copy two ", 64),
+        marker,
+        fill("charlie filler copy three ", 108),
+        marker,
+      ].join("")
+      expect(unit.length).toBe(300)
+      const source = Stream.concat(
+        Stream.make(LLMEvent.stepStart({ index: 0 }), LLMEvent.textStart({ id: "text-1" })),
+        Stream.fromIterable(Array.from({ length: 3 }, () => text(unit))),
+      )
+      const error = yield* RepetitionGuard.guard(source, defaults()).pipe(Stream.runDrain, Effect.flip)
+      expect(error).toBeInstanceOf(RepetitionGuard.RepetitionDetectedError)
+      expect(error.detail).toContain("300-character fragment")
     }),
   )
 
