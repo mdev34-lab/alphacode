@@ -18,6 +18,10 @@ Skip review only when you have determined that another review pass is unnecessar
 
 The configured `review_loop.max_iterations` value counts completed review passes across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
 
+### Review result delivery
+
+The reviewer ends its report with a machine-readable `<alphacode-review>` envelope; the assessment inside that envelope is the review's canonical verdict, and the markdown around it is analysis. If the task returns a review-delivery failure instead of a report, the envelope was missing, malformed, or written in an unsupported schema version: re-dispatch the review, and do not treat that failure as approval, as findings, or as a review with no findings.
+
 ### Required review prompt
 
 Include all of the following in the task prompt:

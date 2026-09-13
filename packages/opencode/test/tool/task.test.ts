@@ -3,7 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Deferred, Effect, Exit, Fiber } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -134,6 +134,49 @@ function reply(input: SessionPrompt.PromptInput, text: string): SessionV1.WithPa
         text,
       },
     ],
+  }
+}
+
+function replyParts(input: SessionPrompt.PromptInput, texts: string[]): SessionV1.WithParts {
+  const replied = reply(input, texts[0] ?? "")
+  return {
+    ...replied,
+    parts: texts.map((text) => ({
+      id: PartID.ascending(),
+      messageID: replied.info.id,
+      sessionID: input.sessionID,
+      type: "text" as const,
+      text,
+    })),
+  }
+}
+
+const REVIEW_REPORT = {
+  version: 1,
+  revision: "uncommitted",
+  assessment: "needs-fixes",
+  summary: "The loop skips the first cache entry.",
+  findings: [
+    {
+      severity: "important",
+      title: "Off-by-one skips the first entry",
+      file: "src/cache.ts",
+      line: 42,
+      detail: "Start at 0.",
+    },
+  ],
+}
+
+const reviewEnvelope = (report: Record<string, unknown> = REVIEW_REPORT) =>
+  ["<alphacode-review>", JSON.stringify(report, null, 2), "</alphacode-review>"].join("\n")
+
+const REVIEW_ANALYSIS = "### Assessment\n\n**Ready to proceed?** Needs fixes"
+
+function reviewOps(chunks: string[]): TaskPromptOps {
+  return {
+    cancel: () => Effect.void,
+    resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+    prompt: (input) => Effect.sync(() => replyParts(input, chunks)),
   }
 }
 
@@ -538,144 +581,301 @@ describe("tool.task", () => {
     },
   )
 
-  it.instance(
-    "runs background tasks without requiring an experimental flag",
-    () =>
-      Effect.gen(function* () {
-        const jobs = yield* BackgroundJob.Service
-        const { chat, assistant } = yield* seed()
-        const tool = yield* TaskTool
-        const def = yield* tool.init()
+  it.instance("runs background tasks without requiring an experimental flag", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
 
-        const result = yield* def.execute(
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: {
+            promptOps: {
+              ...stubOps(),
+              prompt: () => Effect.never,
+            } satisfies TaskPromptOps,
+          },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.metadata.background).toBe(true)
+      expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
+    }),
+  )
+
+  const runReview = (promptOps: TaskPromptOps) =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      return yield* def.execute(
+        {
+          description: "review cache fix",
+          prompt: "review the cache fix",
+          subagent_type: "review",
+          background: false,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+    })
+
+  it.instance("delivers the review report envelope as the canonical result", () =>
+    Effect.gen(function* () {
+      const result = yield* runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`]))
+
+      expect(result.output).toContain(REVIEW_ANALYSIS)
+      expect(result.output).toContain("<alphacode-review>")
+      expect(result.output).toContain('"needs-fixes"')
+      // Exactly one canonical envelope is persisted.
+      expect(result.output.match(/<alphacode-review>/g)).toHaveLength(1)
+      // The report is associated with the reviewed revision and the child
+      // session so the parent knows which work unit was reviewed.
+      expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
+      expect(result.metadata.review.revision).toBe("uncommitted")
+      expect(result.metadata.review.sessionId).toBe(result.metadata.sessionId)
+    }),
+  )
+
+  it.instance("a trailing empty text part does not erase the review report", () =>
+    Effect.gen(function* () {
+      const result = yield* runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`, "", "   \n"]))
+
+      expect(result.output).toContain("<alphacode-review>")
+      expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
+      expect(result.output).toContain(REVIEW_ANALYSIS)
+    }),
+  )
+
+  it.instance("a review report before the final text part is still delivered", () =>
+    Effect.gen(function* () {
+      const result = yield* runReview(reviewOps([reviewEnvelope(), "Closing observations after the report."]))
+
+      expect(result.output).toContain("Closing observations after the report.")
+      expect(result.output).toContain("<alphacode-review>")
+      expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
+    }),
+  )
+
+  it.instance("a missing review report envelope fails delivery explicitly", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.exit(runReview(reviewOps([REVIEW_ANALYSIS, ""])))
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const error = Cause.pretty(exit.cause)
+      expect(error).toContain("Review delivery failed")
+      expect(error).toContain("no <alphacode-review> report envelope was found")
+      // The human-readable analysis is preserved in the failure, bounded.
+      expect(error).toContain(REVIEW_ANALYSIS)
+    }),
+  )
+
+  it.instance("a malformed review report envelope fails delivery explicitly", () =>
+    Effect.gen(function* () {
+      const malformed = ["<alphacode-review>", "{ not json", "</alphacode-review>"].join("\n")
+      const exit = yield* Effect.exit(runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${malformed}`])))
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const error = Cause.pretty(exit.cause)
+      expect(error).toContain("Review delivery failed")
+      expect(error).toContain("the envelope content is not a JSON object")
+    }),
+  )
+
+  it.instance("an unknown review report schema version fails delivery explicitly", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.exit(
+        runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope({ ...REVIEW_REPORT, version: 2 })}`])),
+      )
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const error = Cause.pretty(exit.cause)
+      expect(error).toContain("Review delivery failed")
+      expect(error).toContain("unknown report schema version 2")
+    }),
+  )
+
+  it.instance("a zero-finding review delivers a valid report", () =>
+    Effect.gen(function* () {
+      const clean = { ...REVIEW_REPORT, assessment: "approved", summary: "Nothing to report.", findings: [] }
+      const result = yield* runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope(clean)}`]))
+
+      expect(result.output).toContain('"approved"')
+      expect(result.metadata.review.report).toEqual(clean)
+      expect(result.metadata.review.report.findings).toEqual([])
+    }),
+  )
+
+  it.instance("a background review with no report envelope surfaces an explicit delivery failure", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const injected = defer<SessionPrompt.PromptInput>()
+
+      const promptOps: TaskPromptOps = {
+        ...reviewOps([REVIEW_ANALYSIS]),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.sync(() => {
+                injected.resolve(input)
+                return reply(input, "notified")
+              })
+            : Effect.sync(() => replyParts(input, [REVIEW_ANALYSIS])),
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "review cache fix",
+          prompt: "review the cache fix",
+          subagent_type: "review",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      expect(waited.info?.status).toBe("error")
+      expect(waited.info?.error).toContain("Review delivery failed")
+      const notification = yield* Effect.promise(() => injected.promise)
+      if (notification.parts[0]?.type === "text") {
+        expect(notification.parts[0].text).toContain("<task_error>")
+        expect(notification.parts[0].text).toContain("Review delivery failed")
+      }
+    }),
+  )
+
+  it.instance("default task invocations run asynchronously without blocking the parent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: {
+            // The child never finishes; the parent must still return.
+            promptOps: {
+              ...stubOps(),
+              prompt: () => Effect.never,
+            } satisfies TaskPromptOps,
+          },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.metadata.background).toBe(true)
+      expect(result.metadata.sessionId).toBeDefined()
+      expect(result.output).toContain(`state="running"`)
+      expect(result.output).toContain("You will be notified automatically")
+      expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
+    }),
+  )
+
+  it.instance("explicit foreground execution (background=false) waits for the child result", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const started = defer<SessionID>()
+      const done = defer<void>()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) =>
+          Effect.promise(async () => {
+            started.resolve(input.sessionID)
+            await done.promise
+            return reply(input, "foreground done")
+          }),
+      }
+
+      const fiber = yield* def
+        .execute(
           {
             description: "inspect bug",
             prompt: "look into the cache key path",
             subagent_type: "general",
-            background: true,
+            background: false,
           },
           {
             sessionID: chat.id,
             messageID: assistant.id,
             agent: "work",
             abort: new AbortController().signal,
-            extra: {
-              promptOps: {
-                ...stubOps(),
-                prompt: () => Effect.never,
-              } satisfies TaskPromptOps,
-            },
+            extra: { promptOps },
             messages: [],
             metadata: () => Effect.void,
             ask: () => Effect.void,
           },
         )
+        .pipe(Effect.forkChild)
 
-        expect(result.metadata.background).toBe(true)
-        expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
-      }),
-  )
+      // While the child is still running the job must be foreground and the
+      // parent must still be blocked; background-only jobs immediately set
+      // metadata.background=true.
+      const sessionID = yield* Effect.promise(() => started.promise)
+      const job = yield* jobs.get(sessionID)
+      expect(job?.status).toBe("running")
+      expect(job?.metadata?.background).toBeUndefined()
 
-  it.instance(
-    "default task invocations run asynchronously without blocking the parent",
-    () =>
-      Effect.gen(function* () {
-        const jobs = yield* BackgroundJob.Service
-        const { chat, assistant } = yield* seed()
-        const tool = yield* TaskTool
-        const def = yield* tool.init()
-
-        const result = yield* def.execute(
-          {
-            description: "inspect bug",
-            prompt: "look into the cache key path",
-            subagent_type: "general",
-          },
-          {
-            sessionID: chat.id,
-            messageID: assistant.id,
-            agent: "work",
-            abort: new AbortController().signal,
-            extra: {
-              // The child never finishes; the parent must still return.
-              promptOps: {
-                ...stubOps(),
-                prompt: () => Effect.never,
-              } satisfies TaskPromptOps,
-            },
-            messages: [],
-            metadata: () => Effect.void,
-            ask: () => Effect.void,
-          },
-        )
-
-        expect(result.metadata.background).toBe(true)
-        expect(result.metadata.sessionId).toBeDefined()
-        expect(result.output).toContain(`state="running"`)
-        expect(result.output).toContain("You will be notified automatically")
-        expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
-      }),
-  )
-
-  it.instance(
-    "explicit foreground execution (background=false) waits for the child result",
-    () =>
-      Effect.gen(function* () {
-        const jobs = yield* BackgroundJob.Service
-        const { chat, assistant } = yield* seed()
-        const tool = yield* TaskTool
-        const def = yield* tool.init()
-        const started = defer<SessionID>()
-        const done = defer<void>()
-        const promptOps: TaskPromptOps = {
-          ...stubOps(),
-          prompt: (input) =>
-            Effect.promise(async () => {
-              started.resolve(input.sessionID)
-              await done.promise
-              return reply(input, "foreground done")
-            }),
-        }
-
-        const fiber = yield* def
-          .execute(
-            {
-              description: "inspect bug",
-              prompt: "look into the cache key path",
-              subagent_type: "general",
-              background: false,
-            },
-            {
-              sessionID: chat.id,
-              messageID: assistant.id,
-              agent: "work",
-              abort: new AbortController().signal,
-              extra: { promptOps },
-              messages: [],
-              metadata: () => Effect.void,
-              ask: () => Effect.void,
-            },
-          )
-          .pipe(Effect.forkChild)
-
-        // While the child is still running the job must be foreground and the
-        // parent must still be blocked; background-only jobs immediately set
-        // metadata.background=true.
-        const sessionID = yield* Effect.promise(() => started.promise)
-        const job = yield* jobs.get(sessionID)
-        expect(job?.status).toBe("running")
-        expect(job?.metadata?.background).toBeUndefined()
-
-        done.resolve()
-        const exit = yield* Fiber.await(fiber)
-        expect(Exit.isSuccess(exit)).toBe(true)
-        if (Exit.isSuccess(exit)) {
-          expect(exit.value.metadata.background).toBeUndefined()
-          expect(exit.value.output).toContain(`state="completed"`)
-          expect(exit.value.output).toContain("foreground done")
-        }
-        expect((yield* jobs.get(sessionID))?.status).toBe("completed")
-      }),
+      done.resolve()
+      const exit = yield* Fiber.await(fiber)
+      expect(Exit.isSuccess(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) {
+        expect(exit.value.metadata.background).toBeUndefined()
+        expect(exit.value.output).toContain(`state="completed"`)
+        expect(exit.value.output).toContain("foreground done")
+      }
+      expect((yield* jobs.get(sessionID))?.status).toBe("completed")
+    }),
   )
 
   it.instance("multiple background tasks run concurrently", () =>

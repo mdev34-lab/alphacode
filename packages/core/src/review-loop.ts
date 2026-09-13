@@ -1,3 +1,5 @@
+import { ReviewReport } from "./review-report"
+
 export const REVIEW_LOOP_METADATA = "reviewLoop" as const
 
 export type ReviewVerdict = "approved" | "needs-fixes" | "pending" | "none" | "cap"
@@ -71,12 +73,22 @@ function verdictFromText(text: string) {
 /**
  * Read the last explicit assessment from a review report.
  *
- * Reports are written by a model, so formatting is deliberately tolerant: headings,
- * emphasis, bullets, and the labels "Assessment", "Verdict", and "Ready to proceed"
- * are all accepted. A positive-sounding paragraph without an explicit assessment is
- * not an approval.
+ * Reports delivered through the report envelope carry their assessment in the
+ * machine-readable `<alphacode-review>` block, which is canonical. A detected
+ * but invalid envelope — malformed content, truncated tags, or an unsupported
+ * schema version — is a delivery failure: it never falls through to the prose
+ * scan, or a broken report could mint a verdict the delivery layer already
+ * rejected. Only output with no envelope at all (legacy transcripts) falls
+ * back to a tolerant text scan: headings, emphasis, bullets, and the labels
+ * "Assessment", "Verdict", and "Ready to proceed" are all accepted. A
+ * positive-sounding paragraph without an explicit assessment is not an
+ * approval.
  */
 export function parseReviewVerdict(output: string): Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined {
+  const delivery = ReviewReport.extract([output])
+  if (delivery.ok) return delivery.report.assessment
+  if (delivery.failure.reason !== "missing") return undefined
+
   const lines = output.split(/\r?\n/)
   for (let index = lines.length - 1; index >= 0; index--) {
     const line = cleanAssessmentLine(lines[index] ?? "")
@@ -133,6 +145,21 @@ function finishReviewMetadata(part: ReviewHistoryPart) {
   return isRecord(metadata?.review) ? metadata.review : undefined
 }
 
+/**
+ * The task tool attaches the delivered review report to the task result
+ * metadata. Prefer it over the output text: a long review's output can be
+ * truncated in the parent's history, which could cut the envelope or the
+ * prose assessment while the report itself survives in metadata.
+ */
+function reviewReportVerdict(part: ReviewHistoryPart) {
+  if (part.type !== "tool" || part.tool !== "task") return undefined
+  const metadata = isRecord(part.state?.metadata) ? part.state.metadata : undefined
+  const review = isRecord(metadata?.review) ? metadata.review : undefined
+  const report = isRecord(review?.report) ? review.report : undefined
+  if (report?.version !== 1) return undefined
+  return report.assessment === "approved" || report.assessment === "needs-fixes" ? report.assessment : undefined
+}
+
 function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefined {
   if (part.state?.status !== "completed") return undefined
   const termination = finishReviewMetadata(part)?.termination
@@ -183,7 +210,8 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       }
 
       reviews++
-      latest = parseReviewVerdict(typeof part.state.output === "string" ? part.state.output : "")
+      latest =
+        reviewReportVerdict(part) ?? parseReviewVerdict(typeof part.state.output === "string" ? part.state.output : "")
       workSinceReview = false
       reviewInProgress = false
       nudged = false

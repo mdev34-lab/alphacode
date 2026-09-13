@@ -260,7 +260,23 @@ const noPolicyMatch = (hit: { body: unknown }) => {
 const reviewMatch = (hit: { body: unknown }) => bodyString(hit).includes("Senior Code Reviewer")
 
 // The reviewer's report, distinctive enough to trace into the parent's next
-// model request.
+// model request. It ends with the machine-readable report envelope the task
+// tool extracts as the canonical review result.
+const REVIEW_REPORT = {
+  version: 1,
+  revision: "uncommitted",
+  assessment: "needs-fixes",
+  summary: "The cache lookup skips the first entry, so cached reads miss.",
+  findings: [
+    {
+      severity: "important",
+      title: "Off-by-one skips the first cache entry",
+      file: "src/cache.ts",
+      line: 42,
+      detail: "The loop must start at 0.",
+    },
+  ],
+}
 const REPORT = [
   "### Spec Compliance",
   "- ❌ Issues found: cache key drops the tenant prefix (src/cache.ts:42)",
@@ -270,6 +286,10 @@ const REPORT = [
   "",
   "### Assessment",
   "**Ready to proceed?** Needs fixes",
+  "",
+  "<alphacode-review>",
+  JSON.stringify(REVIEW_REPORT, null, 2),
+  "</alphacode-review>",
 ].join("\n")
 
 const TASK_PROMPT = [

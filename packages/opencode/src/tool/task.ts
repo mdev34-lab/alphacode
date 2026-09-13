@@ -1,6 +1,7 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { ReviewReport } from "@opencode-ai/core/review-report"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
@@ -201,6 +202,36 @@ export const TaskTool = Tool.define(
           agent: next.name,
           parts,
         })
+
+        // The review subagent delivers its canonical result through a tagged
+        // report envelope. Extract it from the complete child output — every
+        // text part plus the finish summary — because the last text part alone
+        // is not a reliable delivery boundary: a trailing empty text part can
+        // erase an earlier report, and a missing or malformed envelope must
+        // surface as an explicit delivery failure, never as an empty result.
+        if (next.name === "review") {
+          const finish = result.parts.findLast(
+            (item): item is SessionV1.ToolPart =>
+              item.type === "tool" && item.tool === "finish" && item.state.status === "completed",
+          )
+          const summary = finish?.state.status === "completed" ? finish.state.input.result : undefined
+          const delivery = ReviewReport.extract([
+            ...result.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])),
+            typeof summary === "string" ? summary : undefined,
+          ])
+          if (!delivery.ok)
+            return yield* Effect.fail(
+              new Error(
+                ReviewReport.failureMessage({
+                  sessionID: nextSession.id,
+                  failure: delivery.failure,
+                  analysis: delivery.analysis,
+                }),
+              ),
+            )
+          return ReviewReport.render(delivery)
+        }
+
         const text = result.parts.findLast((item) => item.type === "text")?.text
         if (text !== undefined) return text
         // Subagents end their turn with the finish tool; its result argument is
@@ -226,9 +257,7 @@ export const TaskTool = Tool.define(
           .messages({ sessionID: ctx.sessionID, limit: 50 })
           .pipe(Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])))
         const parentAgent =
-          currentParent.agent ??
-          parentMessages.find((message) => message.info.role === "user")?.info.agent ??
-          ctx.agent
+          currentParent.agent ?? parentMessages.find((message) => message.info.role === "user")?.info.agent ?? ctx.agent
         yield* ops
           .prompt({
             sessionID: ctx.sessionID,
@@ -338,11 +367,21 @@ export const TaskTool = Tool.define(
             if (result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
-            return {
+            // Re-associate the delivered review report with the result metadata
+            // so consumers know which revision was reviewed without re-parsing
+            // the output. The output already carries the canonical envelope.
+            const review = next.name === "review" ? ReviewReport.extract([result?.output ?? ""]) : undefined
+            const completed: Tool.ExecuteResult = {
               title: params.description,
-              metadata,
+              metadata: {
+                ...metadata,
+                ...(review?.ok
+                  ? { review: { report: review.report, sessionId: nextSession.id, revision: review.report.revision } }
+                  : {}),
+              },
               output: renderOutput({ sessionID: nextSession.id, state: "completed", text: result?.output ?? "" }),
             }
+            return completed
           }),
         (_, exit) =>
           Effect.gen(function* () {

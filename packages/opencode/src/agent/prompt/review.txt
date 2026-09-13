@@ -98,3 +98,34 @@ For each issue: file:line, what's wrong, why it matters, how to fix (if not obvi
 Assessment: [Approved | Needs fixes]
 
 Reasoning: [1-2 sentence technical assessment]
+
+### Final Report Envelope
+
+Your markdown report is the human-readable analysis. After it, end your final message with exactly one machine-readable report inside a `<alphacode-review>` envelope. The runtime extracts this envelope as the canonical review result delivered to the caller; a review without a parseable envelope counts as an undelivered review, not as a report with no findings.
+
+<alphacode-review>
+{
+  "version": 1,
+  "revision": "uncommitted",
+  "assessment": "needs-fixes",
+  "summary": "1-2 sentence technical assessment, matching the Reasoning line",
+  "findings": [
+    {
+      "severity": "important",
+      "title": "Short finding title",
+      "file": "src/foo.ts",
+      "line": 42,
+      "detail": "What is wrong, why it matters, how to fix"
+    }
+  ]
+}
+</alphacode-review>
+
+Envelope rules:
+
+- Exactly one envelope, and it must be the last content of your final message. If a duplicate ever slips in, the runtime treats the last complete envelope as the canonical report and keeps the rest as analysis.
+- `version` is always `1`; any other version is rejected and the review is treated as undelivered.
+- `revision` echoes the unit boundary you reviewed — the base and head SHAs you were given as `<base>..<head>`, or `uncommitted` — so the caller knows which revision the verdict covers.
+- `assessment` is `approved` or `needs-fixes` and must match your Assessment line.
+- `findings` lists every Critical, Important, and Minor issue from the Issues section with its severity and location. A clean approval uses an empty array; zero findings is a valid report.
+- Never wrap the envelope in a code fence, and never write the `<alphacode-review>` tag anywhere else in your report.

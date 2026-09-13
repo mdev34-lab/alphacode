@@ -11,9 +11,11 @@ import { WriteTool } from "../../src/tool/write"
 
 const promptDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/session/prompt")
 const toolDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/tool")
+const agentPromptDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../src/agent/prompt")
 
 const readPrompt = (name: string) => readFile(path.join(promptDirectory, name), "utf8")
 const readTool = (name: string) => readFile(path.join(toolDirectory, name), "utf8")
+const readAgentPrompt = (name: string) => readFile(path.join(agentPromptDirectory, name), "utf8")
 
 function userMessage() {
   return { info: { role: "user" }, parts: [] } as unknown as SessionV1.WithParts
@@ -26,7 +28,14 @@ function syntheticNudge() {
   } as unknown as SessionV1.WithParts
 }
 
-function reviewMessage(output: string, options?: { status?: "completed" | "running"; background?: boolean }) {
+function reviewMessage(
+  output: string,
+  options?: {
+    status?: "completed" | "running"
+    background?: boolean
+    metadata?: Record<string, unknown>
+  },
+) {
   return {
     info: { role: "assistant" },
     parts: [
@@ -37,6 +46,7 @@ function reviewMessage(output: string, options?: { status?: "completed" | "runni
           status: options?.status ?? "completed",
           input: { subagent_type: "review", background: options?.background ?? false },
           output,
+          ...(options?.metadata ? { metadata: options.metadata } : {}),
         },
       },
     ],
@@ -105,6 +115,41 @@ describe("review loop prompt contract", () => {
     expect(nudge).toContain("review-cap")
   })
 
+  test("the reviewer must end with one machine-readable report envelope", async () => {
+    const prompt = await readAgentPrompt("review.txt")
+
+    expect(prompt).toContain("<alphacode-review>")
+    expect(prompt).toContain('"version": 1')
+    expect(prompt).toContain('"assessment"')
+    expect(prompt).toContain('"findings"')
+    expect(prompt).toContain("zero findings is a valid report")
+    // Multiple envelopes are tolerated by protocol: the last complete one is
+    // canonical. The prompt keeps "exactly one" as the instruction while
+    // documenting the runtime's last-wins behavior.
+    expect(prompt).toContain("last complete envelope")
+    // The envelope must not be demonstrated inside a fence, or the model may
+    // emit an unparseable fenced copy.
+    expect(prompt).not.toMatch(/```[\s\S]*<alphacode-review>/)
+  })
+
+  test("the review loop documents envelope delivery and the re-dispatch path", async () => {
+    const prompt = await readPrompt("review-loop.txt")
+
+    expect(prompt).toContain("<alphacode-review>")
+    expect(prompt).toContain("review-delivery failure")
+    expect(prompt).toContain("re-dispatch the review")
+  })
+
+  test("the task tool extracts the report from the complete child output", async () => {
+    const task = await readTool("task.ts")
+
+    // The review branch must extract the envelope from the whole response and
+    // fail delivery explicitly, instead of returning the last text part.
+    expect(task).toContain('next.name === "review"')
+    expect(task).toContain("ReviewReport.extract")
+    expect(task).toContain("ReviewReport.failureMessage")
+  })
+
   test("finish evaluates persisted history and fails the tool call when the gate blocks", async () => {
     const finish = await readTool("finish.ts")
 
@@ -133,6 +178,46 @@ describe("runtime review gate", () => {
     expect(parseReviewVerdict("Assessment: [Approved | Needs fixes]")).toBeUndefined()
     expect(parseReviewVerdict("Assessment: Approved (no Needs fixes remain)")).toBe("approved")
     expect(parseReviewVerdict("The implementation looks good, but no final assessment was emitted.")).toBeUndefined()
+  })
+
+  test("the report envelope in the task output is the canonical verdict", () => {
+    const envelope = [
+      "<alphacode-review>",
+      JSON.stringify({ version: 1, revision: "uncommitted", assessment: "approved", summary: "clean", findings: [] }),
+      "</alphacode-review>",
+    ].join("\n")
+    expect(parseReviewVerdict(`Assessment: Needs fixes\n\n${envelope}`)).toBe("approved")
+  })
+
+  test("the metadata report survives output truncation", () => {
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      reviewMessage("### Assessment\n\n**Ready to pro", {
+        metadata: {
+          review: {
+            report: { version: 1, revision: "uncommitted", assessment: "approved", summary: "clean", findings: [] },
+          },
+        },
+      }),
+    ])
+
+    expect(state.verdict).toBe("approved")
+    expect(finishGateError(state)).toBeUndefined()
+  })
+
+  test("a detected-but-invalid envelope is not rescued as a prose verdict", () => {
+    // The output carries a broken envelope plus a contradicting prose
+    // assessment: the delivery failed, so no verdict may be minted from the
+    // surrounding prose and the finish gate must ask for a fresh review.
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      reviewMessage(`Assessment: Approved\n\n<alphacode-review>{ not json </alphacode-review>`),
+    ])
+
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
   })
 
   test("allows no-tool turns to finish without review", () => {
