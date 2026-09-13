@@ -36,6 +36,29 @@ export type ActivityGroups = {
   groupOf: Map<string, string>
 }
 
+// Wrapper objects handed to the transcript must keep a stable identity across
+// recomputes. The activity memo rebuilds the group maps on every streaming
+// update, and Solid's keyed `<For>` remounts a row whenever its item object
+// changes identity — which would reset local row state on every streamed
+// delta: a manually expanded nested reasoning block collapses back to its
+// header, and nested markdown/code bodies rebuild from scratch. Store parts
+// mutate in place and keep their object identity for the lifetime of the
+// transcript, so caching the wrapper on the part keeps row identity stable
+// the same way the top-level part list already is.
+const groupPartItems = new WeakMap<ToolPart | ReasoningPart, ActivityGroupPart>()
+
+function groupPart<T extends ToolPart | ReasoningPart>(message: AssistantMessage, part: T) {
+  const cached = groupPartItems.get(part)
+  if (cached) {
+    // Follow a replaced message info object without swapping the wrapper.
+    if (cached.message !== message) cached.message = message
+    return cached as { message: AssistantMessage; part: T }
+  }
+  const next = { message, part }
+  groupPartItems.set(part, next)
+  return next
+}
+
 export type ActivityRow = {
   message: Message
   parts: readonly Part[]
@@ -70,7 +93,7 @@ export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGro
         continue
       }
       if (part.type === "reasoning") {
-        const item = { message: row.message, part }
+        const item = groupPart(row.message, part)
         if (!current) {
           pending.push(item)
           continue
@@ -97,7 +120,7 @@ export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGro
         for (const item of pending) groupOf.set(item.part.id, current.id)
         pending.length = 0
       }
-      const item = { message: row.message, part }
+      const item = groupPart(row.message, part)
       current.items.push(item)
       current.parts.push(item)
       groupOf.set(part.id, current.id)

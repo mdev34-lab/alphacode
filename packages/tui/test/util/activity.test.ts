@@ -722,3 +722,43 @@ describe("activity expanded overrides", () => {
     }
   })
 })
+
+describe("computeActivityGroups wrapper identity", () => {
+  // Parts are reused across both recomputes, like store parts that the sync
+  // layer mutates in place while streaming.
+  const message = assistant("m1", 1)
+  const parts = [reasoning("m1", "prt_1", "Thinking."), tool("m1", "prt_2"), tool("m1", "prt_3")]
+  const rows = (info: AssistantMessage = message): ActivityRow[] => [{ message: info, parts }]
+
+  const partOf = (groups: ReturnType<typeof computeActivityGroups>, id: string) => {
+    const group = groups.byID.values().next().value!
+    expect(groups.groupOf.get(id)).toBe(group.id)
+    return group.parts.find((part) => part.part.id === id)!
+  }
+
+  test("reuses the same wrapper object for a part across recomputes", () => {
+    // The transcript renders group parts inside a keyed <For>; fresh wrapper
+    // objects on every recompute would remount every nested row and reset its
+    // local state (e.g. a manually expanded reasoning block) on each stream
+    // update. Parts keep their object identity while the store mutates them in
+    // place, so the wrappers must too.
+    const first = computeActivityGroups(rows())
+    const second = computeActivityGroups(rows())
+
+    for (const part of parts) {
+      expect(partOf(second, part.id)).toBe(partOf(first, part.id))
+    }
+  })
+
+  test("follows a replaced message info object on the cached wrapper", () => {
+    const first = computeActivityGroups(rows())
+    const replaced = assistant("m1", 2)
+    const second = computeActivityGroups(rows(replaced))
+
+    for (const part of parts) {
+      const item = partOf(second, part.id)
+      expect(item.message).toBe(replaced)
+      expect(item).toBe(partOf(first, part.id))
+    }
+  })
+})
