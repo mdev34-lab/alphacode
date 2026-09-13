@@ -160,6 +160,31 @@ export function commitRules(constraints: Constraints | undefined): PermissionV1.
   ]
 }
 
+/**
+ * The delegation relationship, enforced where delegation is validated. A
+ * session delegates to a different primary agent — the Work/Code boundary
+ * crossing (Work → Code for code work, Code → Work for non-code work). It may
+ * not delegate to itself, to a subagent-only agent (those run inside a turn
+ * via the task tool), or to a hidden agent.
+ *
+ * This is the agent topology. It is deliberately independent of
+ * `subagent_depth`, which is a generic nesting limit answering "how many
+ * delegate levels may exist" and says nothing about which agents may delegate
+ * to which. Returns an error message when the delegation is not allowed.
+ */
+export function delegationTargetError(from: string, target: Agent.Info): string | undefined {
+  if (target.name === from) {
+    return `Cannot delegate to the same agent ("${from}"). Delegate to a different agent such as "code" or "work".`
+  }
+  if (target.mode === "subagent") {
+    return `Agent ${target.name} is a subagent and cannot be a delegation target; subagents run inside a turn via the task tool.`
+  }
+  if (target.hidden) {
+    return `Agent ${target.name} is hidden and cannot be delegated to`
+  }
+  return undefined
+}
+
 /** Resolves the repository HEAD at `cwd`, or undefined when there is no repository. */
 function gitHead(cwd: string): Effect.Effect<string | undefined> {
   return Effect.tryPromise({
@@ -195,8 +220,21 @@ export const DelegateTool = Tool.define(
       const cfg = yield* config.get()
       const instance = yield* InstanceState.context
 
-      // Bounded nesting: a delegation counts as one subagent level, so the
-      // same subagent_depth that bounds task tool subagents bounds it here.
+      // Validate the deterministic inputs before asking for permission, so a
+      // bad agent name or cwd fails fast instead of prompting the user first.
+      const target = yield* agent.get(params.agent)
+      if (!target) return yield* Effect.fail(new Error(`Unknown agent: ${params.agent} is not a valid agent`))
+
+      // The delegation relationship (agent topology): a different primary
+      // agent — never the current agent, a subagent-only agent, or a hidden
+      // agent. This is independent of nesting depth.
+      const targetError = delegationTargetError(ctx.agent, target)
+      if (targetError) return yield* Effect.fail(new Error(targetError))
+
+      // Bounded nesting: a generic depth limit. A delegation counts as one
+      // subagent level, so the same subagent_depth that bounds task tool
+      // subagents bounds it here. It answers "how many delegate levels may
+      // exist"; it does not encode which agents may delegate to which.
       let current = yield* sessions.get(ctx.sessionID)
       let depth = 0
       while (current.parentID) {
@@ -210,18 +248,6 @@ export const DelegateTool = Tool.define(
           ),
         )
       }
-
-      if (params.agent === ctx.agent) {
-        return yield* Effect.fail(
-          new Error(`Cannot delegate to the same agent ("${params.agent}"). Delegate to a different agent such as "code" or "work".`),
-        )
-      }
-
-      // Validate the deterministic inputs before asking for permission, so a
-      // bad agent name or cwd fails fast instead of prompting the user first.
-      const target = yield* agent.get(params.agent)
-      if (!target) return yield* Effect.fail(new Error(`Unknown agent: ${params.agent} is not a valid agent`))
-      if (target.hidden) return yield* Effect.fail(new Error(`Agent ${params.agent} is hidden and cannot be delegated to`))
 
       const cwd = params.cwd ? path.resolve(instance.directory, params.cwd) : instance.directory
       if (!containsPath(cwd, instance)) {

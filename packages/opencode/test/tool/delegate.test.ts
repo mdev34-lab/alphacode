@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -16,7 +16,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { commitRules } from "../../src/tool/delegate"
+import { commitRules, delegationTargetError } from "../../src/tool/delegate"
 import { deriveDelegationResult, type DelegationResult } from "../../src/tool/delegate-result"
 import { DelegateTool } from "../../src/tool/delegate"
 import { ToolFailure } from "@opencode-ai/llm"
@@ -336,6 +336,22 @@ describe("tool.delegate", () => {
         .execute(
           { agent: "code", task: "loop" },
           context({ sessionID: chat.id, messageID: assistant.id, agent: "code", extra: { promptOps: stubOps() } }),
+        )
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(yield* sessions.children(chat.id)).toHaveLength(0)
+    }),
+  )
+
+  it.instance("refuses to delegate to a subagent-only agent", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* initTool()
+      const exit = yield* def
+        .execute(
+          { agent: "review", task: "review the change" },
+          context({ sessionID: chat.id, messageID: assistant.id, extra: { promptOps: stubOps() } }),
         )
         .pipe(Effect.exit)
       expect(Exit.isFailure(exit)).toBe(true)
@@ -701,4 +717,26 @@ describe("commitRules", () => {
       expect(denied("git commit-graph write")).toBe(true)
     }),
   )
+})
+
+describe("delegationTargetError", () => {
+  const agentInfo = (name: string, mode: "subagent" | "primary" | "all", hidden = false) =>
+    ({ name, mode, hidden, permission: [] }) as unknown as Agent.Info
+
+  test("allows the Work/Code boundary crossing in both directions", () => {
+    expect(delegationTargetError("work", agentInfo("code", "all"))).toBeUndefined()
+    expect(delegationTargetError("code", agentInfo("work", "primary"))).toBeUndefined()
+  })
+
+  test("refuses self-delegation", () => {
+    expect(delegationTargetError("code", agentInfo("code", "all"))).toContain("same agent")
+  })
+
+  test("refuses subagent-only agents", () => {
+    expect(delegationTargetError("work", agentInfo("review", "subagent"))).toContain("subagent")
+  })
+
+  test("refuses hidden agents", () => {
+    expect(delegationTargetError("work", agentInfo("compaction", "primary", true))).toContain("hidden")
+  })
 })

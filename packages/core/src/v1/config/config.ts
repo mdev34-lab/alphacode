@@ -83,7 +83,7 @@ export const Info = Schema.Struct({
   }),
   subagent_depth: Schema.optional(NonNegativeInt).annotate({
     description:
-      "Maximum subagent nesting depth for the task and delegate tools. Defaults to 1, which prevents subagents from launching subagents. A value of 2 allows a Work -> Code -> Work delegation round trip.",
+      "Maximum subagent nesting depth for the task and delegate tools. Defaults to 1, which prevents a subagent from launching its own subagents. This is a generic nesting limit (how many delegate levels may exist); it does not control which agents may delegate to which.",
   }),
   review_loop: Schema.optional(
     Schema.Struct({

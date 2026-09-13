@@ -75,9 +75,5 @@ describe("AgentSelection", () => {
     test("selects work outside Git workspaces", () => {
       expect(AgentSelection.inferAgent({ gitRoot: undefined })).toBe("work")
     })
-
-    test("defers to a configured default agent", () => {
-      expect(AgentSelection.inferAgent({ gitRoot: "/repo", configuredDefault: "planner" })).toBeUndefined()
-    })
   })
 })

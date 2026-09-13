@@ -55,12 +55,12 @@ export function findGitRoot(directory: string): string | undefined {
 }
 
 /**
- * Infers the launch agent from the working directory. An explicitly
- * configured default agent always wins, so inference only fills the gap
- * where no agent was requested or configured. Git workspaces get Code,
- * everything else gets Work.
+ * Infers the launch agent from the working directory: Git workspaces get
+ * Code, everything else gets Work. This is pure inference — it takes only the
+ * Git observation and always returns an agent. Precedence is the caller's job
+ * (an explicit `--agent`/positional, then a configured default, then this
+ * inference); inference never decides precedence.
  */
-export function inferAgent(input: { gitRoot?: string; configuredDefault?: string }): LaunchAgent | undefined {
-  if (input.configuredDefault) return undefined
+export function inferAgent(input: { gitRoot?: string }): LaunchAgent {
   return input.gitRoot ? CODE : WORK
 }
