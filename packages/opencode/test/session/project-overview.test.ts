@@ -75,6 +75,22 @@ describe("ProjectOverview.summarize", () => {
 
   test("returns undefined when no software project is found", async () => {
     await using tmp = await tmpdir()
-    expect(ProjectOverview.summarize({ directory: tmp.path })).toBeUndefined()
+    const deep = path.join(tmp.path, "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m")
+    await fs.mkdir(deep, { recursive: true })
+    expect(ProjectOverview.summarize({ directory: deep })).toBeUndefined()
+  })
+
+  test("reports the workspace package count cap with a plus sign", async () => {
+    await using tmp = await tmpdir()
+    await fs.writeFile(
+      path.join(tmp.path, "package.json"),
+      JSON.stringify({ name: "root", workspaces: ["packages/*"] }),
+    )
+    for (let i = 0; i < 501; i++) {
+      await fs.mkdir(path.join(tmp.path, "packages", `p${i}`), { recursive: true })
+      await fs.writeFile(path.join(tmp.path, "packages", `p${i}`, "package.json"), JSON.stringify({ name: `p${i}` }))
+    }
+    const block = ProjectOverview.summarize({ directory: tmp.path })
+    expect(block).toContain("500+ workspace packages")
   })
 })

@@ -65,8 +65,9 @@ function describeStack(root: string): string | undefined {
     const language = isTypeScript(root, pkg) ? "TypeScript" : "JavaScript"
     const workspaces = workspaceGlobs(pkg)
     if (workspaces.length === 0) return `${language} project${packageManager(root) ? ` (${packageManager(root)})` : ""}`
-    const count = countPackages(root, workspaces)
-    return `${language} monorepo${packageManager(root) ? ` (${packageManager(root)})` : ""}, ${count} workspace packages`
+    const { count, capped } = countPackages(root, workspaces)
+    const suffix = capped ? "+" : ""
+    return `${language} monorepo${packageManager(root) ? ` (${packageManager(root)})` : ""}, ${count}${suffix} workspace packages`
   }
   if (existsSync(path.join(root, "pyproject.toml"))) return `Python project${lockMarker(root, ["uv.lock", "poetry.lock", "Pipfile.lock"]) ? ` (${lockMarker(root, ["uv.lock", "poetry.lock", "Pipfile.lock"])})` : ""}`
   if (existsSync(path.join(root, "Cargo.toml"))) return "Rust project"
@@ -108,15 +109,15 @@ function workspaceGlobs(pkg: PackageJson): string[] {
   return workspaces.packages ?? []
 }
 
-function countPackages(root: string, globs: string[]): number {
+function countPackages(root: string, globs: string[]): { count: number; capped: boolean } {
   const seen = new Set<string>()
   for (const glob of globs) {
     for (const match of Glob.scanSync(`${glob}/package.json`, { cwd: root })) {
       seen.add(path.resolve(root, match))
-      if (seen.size >= MAX_WORKSPACE_PACKAGES) return MAX_WORKSPACE_PACKAGES
+      if (seen.size >= MAX_WORKSPACE_PACKAGES) return { count: MAX_WORKSPACE_PACKAGES, capped: true }
     }
   }
-  return seen.size
+  return { count: seen.size, capped: false }
 }
 
 function packageManager(root: string): string | undefined {

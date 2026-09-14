@@ -94,6 +94,8 @@ function renderContract(input: { agent: string; task: string; cwd: string; const
     constraintLines.push(
       "- Read-only: do not create, modify, or delete files, do not run shell commands, and do not launch subagents or MCP tools.",
     )
+  if (input.constraints?.allowCommit === true)
+    constraintLines.push("- Commits are allowed: you may run `git commit` when the task requires it.")
   if (input.constraints?.allowCommit !== true) constraintLines.push("- Commits are forbidden: do not run `git commit`.")
   return [
     `You are the \`${input.agent}\` agent running as an isolated delegate of another agent.`,
