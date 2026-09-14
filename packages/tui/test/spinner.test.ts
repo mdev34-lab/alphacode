@@ -9,9 +9,9 @@ const headColumn = (frame: string) => frame.lastIndexOf("■")
 test("createFrames sweeps forward and wraps by default", () => {
   const frames = createFrames({ style: "blocks", color: "#ffffff" })
 
-  // One frame per column: a forward wrap has no hold or reverse frames.
-  expect(frames).toHaveLength(8)
-  expect(frames.map(headColumn)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+  // Preserve the original 54-frame cadence while never reversing direction.
+  expect(frames).toHaveLength(54)
+  expect(frames.map(headColumn)).toEqual(Array.from({ length: 54 }, (_, frame) => Math.floor((frame * 8) / 54)))
 })
 
 test("createFrames bidirectional reverses and holds at each end", () => {
@@ -44,15 +44,18 @@ test("createFrames bidirectional reverses and holds at each end", () => {
   expect(frames.slice(width + holdEnd + (width - 1)).every((frame) => frame.indexOf("■") === 0)).toBe(true)
 })
 
-test("createColors keeps the scanner head at frame % width across cycles", () => {
+test("createColors keeps the scanner head at frame % cycle length across cycles", () => {
   const colors = createColors({ color: "#ffffff" })
+  const frames = createFrames({ style: "blocks", color: "#ffffff" })
   const width = 8
-  const lead = colors(0, 0, width, width)
+  const cycleLength = frames.length
+  const lead = colors(0, 0, cycleLength, width)
 
-  // Drive frameIndex past one full cycle so the `frameIndex % totalChars` wrap
-  // inside getScannerState is exercised (not just the first sweep).
-  for (let frame = 0; frame < width * 3; frame++) {
-    expect(colors(frame, frame % width, width, width)).toEqual(lead)
+  // Drive frameIndex through three complete 54-frame cycles and ask for the
+  // color at the actual head position of each corresponding frame.
+  for (let frame = 0; frame < cycleLength * 3; frame++) {
+    const head = headColumn(frames[frame % cycleLength])
+    expect(colors(frame, head, cycleLength, width)).toEqual(lead)
   }
 })
 
@@ -70,4 +73,12 @@ test("frames and colors agree on the scanner head", () => {
     const head = frames[frame % frames.length].lastIndexOf("■")
     expect(colors(frame, head, frames.length, width)).toEqual(lead)
   }
+})
+
+test("forward-only loading indicator preserves the original 2.16s cadence", () => {
+  // The original scanner had 54 frames at the existing 40ms consumer interval:
+  // 8 forward + 9 hold + 7 reverse + 30 hold = 2160ms. The forward-only loop
+  // now keeps the same 54-frame cadence while removing the reverse/hold phases.
+  const interval = 40
+  expect(createFrames().length * interval).toBe(2160)
 })
