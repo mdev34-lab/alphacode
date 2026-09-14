@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 const workerSource = readFileSync(fileURLToPath(new URL("../../../src/cli/tui/worker.ts", import.meta.url)), "utf8")
+const tuiCommandSource = readFileSync(fileURLToPath(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)), "utf8")
 
-test("TUI worker does not trigger upstream OpenCode update checks", () => {
+test("TUI does not trigger upstream OpenCode update checks", () => {
   expect(workerSource).not.toContain('import { upgrade } from "@/cli/upgrade"')
   expect(workerSource).not.toContain("checkUpgrade")
+  expect(tuiCommandSource).not.toContain("checkUpgrade")
 })
