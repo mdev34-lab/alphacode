@@ -37,10 +37,9 @@ export const FinishTool = Tool.define(
           // call fails as recoverable model feedback and the run continues
           // instead of completing without a verdict.
           if (ctx.agent === "review") {
+            const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
             const delivery = ReviewReport.extract([
-              ...messages.flatMap((message) =>
-                message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])),
-              ),
+              ...(currentMessage?.parts ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])),
               params.result,
             ])
             if (!delivery.ok) {
