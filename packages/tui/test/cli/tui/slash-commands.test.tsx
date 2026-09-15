@@ -72,6 +72,11 @@ async function mountSlashHarness(): Promise<Harness> {
         version: "0.0.0-test",
         directory,
         time: { created: 0, updated: 0 },
+        // A share url and revert keep /unshare and /redo enabled so the
+        // inventory below covers the full registered surface, not just the
+        // commands that happen to be enabled on a fresh session.
+        share: { url: "https://test.share/ses_slash_commands" },
+        revert: { messageID: "msg_reverted" },
       })
     }
     if (["message", "todo", "diff"].some((suffix) => url.pathname === `/session/${SESSION_ID}/${suffix}`)) {
