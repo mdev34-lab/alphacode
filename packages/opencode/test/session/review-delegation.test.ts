@@ -253,15 +253,12 @@ const policyMatch = (hit: { body: unknown }) => {
 }
 
 const noPolicyMatch = (hit: { body: unknown }) => {
-  const body = bodyString(hit.body)
+  const body = bodyString(hit)
   return body.includes("You are opencode") && !body.includes("## Review Loop")
 }
 
 const reviewMatch = (hit: { body: unknown }) => bodyString(hit).includes("Senior Code Reviewer")
 
-// The reviewer's report, distinctive enough to trace into the parent's next
-// model request. It ends with the machine-readable report envelope the task
-// tool extracts as the canonical review result.
 const REVIEW_REPORT = {
   version: 1,
   revision: "uncommitted",
@@ -299,17 +296,8 @@ const TASK_PROMPT = [
   "Diff: @@ -41,7 +41,7 @@ for (let i = 1; i <= entries.length; i++) {",
 ].join("\n")
 
-// A deterministic instruction-follower: it hands completed work to the review
-// subagent exactly when its request tells it to, and otherwise falls back to
-// the pre-fix behavior of reviewing its own diff. Scripting the decision this
-// way is what makes the causal claim testable offline: the SAME script must
-// delegate in one arm below and not in the other, with the presence of the
-// delegation policy as the only difference. Together the two arms verify the
-// chain instruction-in-request → tool call → dispatch → verdict → consumption.
 const scriptPolicyFollowingModel = Effect.gen(function* () {
   const llm = yield* TestLLMServer
-  // Policy present: after finishing the unit, hand it to the reviewer
-  // synchronously with the evidence the read-only reviewer needs.
   yield* llm.pushMatch(
     policyMatch,
     reply().tool("task", {
@@ -319,32 +307,20 @@ const scriptPolicyFollowingModel = Effect.gen(function* () {
       prompt: TASK_PROMPT,
     }),
   )
-  // The first reviewer response reaches the real finish tool with prose only.
-  // The gate must reject it as recoverable model feedback and keep the review
-  // session alive for the model to retry.
   yield* llm.pushMatch(
     reviewMatch,
     reply().text(REPORT).tool("finish", { result: "Needs fixes: one Important finding" }),
   )
-  // Retry after the recoverable finish failure. This response supplies the
-  // required envelope through the real finish call, so the review can complete.
   yield* llm.pushMatch(
     reviewMatch,
     reply().tool("finish", { result: REPORT }),
   )
-  // Policy present, verdict received: consume it and fix the finding.
   yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
-  // Policy absent (control arm): self-review, the old behavior.
   yield* llm.pushMatch(noPolicyMatch, reply().text("I re-read the diff and the tests pass — the fix looks correct."))
 })
 
 type CompletedToolPart = SessionV1.ToolPart & { state: SessionV1.ToolStateCompleted }
 
-// Prompt-surface coverage only: the delegation policy text must reach the
-// model on every turn of the default primary agent, and the task tool must
-// describe the review handoff and list the review agent as proactive. This
-// pins the instruction surface; the two policy-follower arms below are what
-// connect it to behavior.
 it.instance(
   "default primary request surfaces the review delegation policy and the task tool describes the handoff",
   () =>
@@ -365,30 +341,15 @@ it.instance(
       const parent = hits.find(policyMatch)
       expect(parent).toBeDefined()
       const body = bodyString(parent ?? { body: {} })
-
-      // The trigger: units of work that changed files, the verification stage,
-      // and explicit user review requests.
       expect(body).toContain("unit of work that changed files")
       expect(body).toContain("the recommended next step is review, not completion")
       expect(body).toContain("explicitly asks for a code review")
-
-      // Review is a nudge, not a gate: the agent keeps the ability to finish.
       expect(body).toContain("Review is guidance, not an enforcement gate")
       expect(body).toContain("call `finish` again to explicitly skip review")
-
-      // The carve-out: trivial turns with no file changes must not be reviewed.
       expect(body).toContain("does not apply to turns with no file changes")
-
-      // The handoff is synchronous so the verdict lands before completion is
-      // claimed.
       expect(body).toContain("background: false")
-
-      // Findings must be consumed, including reports that arrive late.
       expect(body).toContain("instruction to act, not an acknowledgment")
       expect(body).toContain("correct the record")
-
-      // The task tool teaches the review handoff and lists the review agent in
-      // its roster with proactive-use wording.
       expect(body).toContain("Review handoffs")
       expect(body).toContain("- review: Read-only code reviewer")
       expect(body).toContain("Use this proactively, without being asked")
@@ -399,8 +360,6 @@ it.instance(
   15_000,
 )
 
-// Provider prompts must route explicit review requests to the review subagent
-// instead of telling the model to review the code itself.
 it.effect("gpt provider prompt routes review requests through the review subagent", () =>
   Effect.sync(function* () {
     const model = {
@@ -414,13 +373,6 @@ it.effect("gpt provider prompt routes review requests through the review subagen
   }),
 )
 
-// Behavioral arm (policy present): the default primary agent's requests carry
-// the delegation policy, so the scripted policy-follower dispatches `review`,
-// the reviewer runs with its own read-only prompt (and no review loop of its
-// own — no recursion), and its findings land in the parent's next model
-// request next to the instructions for acting on them. If the policy stops
-// being injected, the script's no-policy branch fires instead and this test
-// fails — the delegation is decided by the request contents, not hardcoded.
 it.instance(
   "policy-following model delegates review and consumes the findings (default primary)",
   () =>
@@ -443,25 +395,17 @@ it.instance(
       const reviewHits = hits.filter(reviewMatch)
       expect(reviewHits).toHaveLength(2)
 
-      // The reviewer ran with its own prompt — and no review loop of its own,
-      // so reviews cannot recurse.
       const reviewBody = bodyString(reviewHits[0])
       expect(reviewBody).toContain("Senior Code Reviewer")
       expect(reviewBody).not.toContain("## Review Loop")
       expect(reviewBody).toContain("uncommitted working tree")
 
-      // The reviewer keeps its read-only toolset but still gets the finish
-      // tool: without it a deny-by-default subagent can never end its turn,
-      // and the dispatch wedges in finish nudges instead of returning a
-      // verdict.
       const reviewTools = toolNames(reviewHits[0])
       expect(reviewTools).toContain("finish")
       expect(reviewTools).toContain("read")
       expect(reviewTools).not.toContain("bash")
       expect(reviewTools).not.toContain("task")
 
-      // The script's delegation branch fired: a synchronous review-agent
-      // child session exists for this parent.
       const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
       const taskPart = msgs
         .flatMap((msg) => msg.parts)
@@ -476,26 +420,20 @@ it.instance(
       expect(child.agent).toBe("review")
       expect(child.parentID).toBe(chat.id)
 
-      // The real Review runner must record the rejected first finish and then
-      // the successful retry. Without the finish gate, this sequence would
-      // incorrectly appear as two successful completions and the regression
-      // would not exercise recoverable tool feedback.
+      // This is the real Review runner path: the first finish call must be
+      // rejected as recoverable tool feedback, and the same child session must
+      // then complete through the retry.
       const childMessages = yield* MessageV2.filterCompactedEffect(child.id)
       const finishParts = childMessages
         .flatMap((msg) => msg.parts)
-        .filter(
-          (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish",
-        )
+        .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish")
       expect(finishParts).toHaveLength(2)
       expect(finishParts.map((part) => part.state.status)).toEqual(["error", "completed"])
-      expect(finishParts[0]?.state.status).toBe("error")
       if (finishParts[0]?.state.status === "error") {
         expect(finishParts[0].state.error).toContain("review result")
       }
       expect(finishParts[1]?.state.status).toBe("completed")
 
-      // The findings were consumed: the parent's follow-up request contains
-      // the report and the instructions to act on it.
       expect(policyHits).toHaveLength(2)
       const followUp = bodyString(policyHits[1])
       expect(followUp).toContain("Needs fixes")
@@ -505,11 +443,6 @@ it.instance(
   20_000,
 )
 
-// Control arm (policy absent): same scripted model, non-default primary agent
-// — the loop only injects the delegation policy for the default primary, so
-// its requests do not carry it and the script must fall back to self-review.
-// This is the counterfactual that keeps the arm above honest: identical
-// script, the presence of the instruction is the only difference.
 it.instance(
   "same model does not delegate when the delegation policy is absent (non-default primary)",
   () =>
@@ -529,13 +462,9 @@ it.instance(
       expect(result.info.role).toBe("assistant")
 
       const hits = yield* llm.hits
-
-      // Manipulation check: this agent's request really did lack the policy.
       const noPolicyHits = hits.filter(noPolicyMatch)
       expect(noPolicyHits).toHaveLength(1)
       expect(bodyString(noPolicyHits[0])).not.toContain("## Review Loop")
-
-      // ...so the same model that delegated above did not dispatch a reviewer.
       expect(hits.filter(policyMatch)).toHaveLength(0)
       expect(hits.filter(reviewMatch)).toHaveLength(0)
       const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
@@ -551,10 +480,6 @@ it.instance(
   20_000,
 )
 
-// Trivial conversational turn: the carve-out reaches the model, nothing
-// dispatches a reviewer (the scripted reply is text-only, matching what the
-// carve-out asks for), and the turn completes normally without synthetic
-// review injections.
 it.instance(
   "trivial conversational turn completes without review delegation",
   () =>
@@ -575,13 +500,9 @@ it.instance(
       const hits = yield* llm.hits
       const parentHits = hits.filter(policyMatch)
       expect(parentHits).toHaveLength(1)
-
-      // The carve-out instruction reached the model on this trivial turn.
       const body = bodyString(parentHits[0] ?? { body: {} })
       expect(body).toContain("does not apply to turns with no file changes")
 
-      // Nothing dispatched a reviewer and no review nudge was injected: the
-      // only parts are the user's greeting and the assistant's reply.
       const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
       const parts = msgs.flatMap((msg) => msg.parts)
       expect(parts.some((part) => part.type === "tool")).toBe(false)
