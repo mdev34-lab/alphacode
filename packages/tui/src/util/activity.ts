@@ -2,18 +2,15 @@ import type { AssistantMessage, Message, Part, ReasoningPart, ToolPart } from "@
 
 const ACTIVITY_ID_PREFIX = "act-"
 
-// To-do calls are bookkeeping rather than work, and they render as a
-// top-level block of their own, so they also close the run they land in.
-const TODO_TOOLS = new Set<string>(["todowrite", "todoread"])
-
 // Orchestration/protocol tools — turn/task completion, todo-management
 // bookkeeping, and subagent delegation — represent control flow rather than
-// concrete user-facing work. They are excluded from activity counting and
-// rendering so the "Working... N tool calls" summary reflects meaningful work
-// only. Excluded calls render as their own native inline tool rows, so they
-// stay available to the transcript/session system. They do not break a run,
-// except for to-do calls (see TODO_TOOLS) which close the run they land in.
-export const NON_WORK_TOOLS = new Set<string>(["finish", ...TODO_TOOLS, "task"])
+// concrete user-facing work. They are not members of an activity group, so
+// they are excluded from activity counting and rendering: the "Working... N
+// tool calls" summary reflects meaningful work only. The transcript renders
+// every excluded call as its own native top-level row instead (see
+// computeActivityGroups), which keeps them available to the
+// transcript/session system and makes them boundaries of the run they land in.
+export const NON_WORK_TOOLS = new Set<string>(["finish", "todowrite", "todoread", "task"])
 
 export type ActivityItem = {
   message: AssistantMessage
@@ -65,16 +62,15 @@ export type ActivityRow = {
 }
 
 // A group is a maximal run of tool and reasoning parts that belong to one
-// logical task in the conversation stream. Runs break at user messages and at
-// assistant text parts because those are the parts that render as visible
-// conversation content and mark a new task/response boundary. Reasoning parts
-// (per-turn CoT) belong to the run but do not start an activity until a tool is
-// present. Invisible parts (step-start/finish, snapshots, patches, ...) do not
-// break a run. Orchestration/protocol tools (see NON_WORK_TOOLS) are skipped
-// entirely: they neither count as work nor break a run, apart from to-do calls
-// (see TODO_TOOLS) which are top-level blocks of their own and therefore close
-// the run they land in. The group id is derived from the first tool part so it
-// stays stable while the run grows at its tail during streaming.
+// logical task in the conversation stream. The invariant is that a group only
+// spans the parts it owns: user messages, assistant text parts, and
+// orchestration/protocol tool calls (see NON_WORK_TOOLS) are rendered by the
+// transcript as their own top-level rows, so any of them ends the run it lands
+// in instead of being nested inside it. Reasoning parts (per-turn CoT) belong
+// to the run but do not start an activity until a tool is present. Invisible
+// parts (step-start/step-finish, snapshots, patches, ...) neither render nor
+// break a run. The group id is derived from the first tool part so it stays
+// stable while the run grows at its tail during streaming.
 export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGroups {
   const byID = new Map<string, ActivityGroup>()
   const groupOf = new Map<string, string>()
@@ -103,17 +99,18 @@ export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGro
         continue
       }
       if (part.type !== "tool") continue
-      if (TODO_TOOLS.has(part.tool)) {
-        // A to-do call renders as its own top-level block, so it ends the
-        // current run the same way assistant text does: closing `current`
-        // finalizes the group instead of letting the work after the to-do
-        // resume it, and dropping `pending` keeps reasoning that had not found
-        // a run yet out of the group that opens afterwards.
+      if (NON_WORK_TOOLS.has(part.tool)) {
+        // Membership is the invariant: a call the group does not own renders
+        // as its own top-level row, so it ends the current run the same way
+        // assistant text does. Closing `current` finalizes the group instead
+        // of letting the work after the call resume it, and dropping `pending`
+        // keeps reasoning that had not found a run yet out of the group that
+        // opens afterwards. Adding an exception to NON_WORK_TOOLS is therefore
+        // all it takes to make it a boundary — no per-tool rule here.
         current = undefined
         pending.length = 0
         continue
       }
-      if (NON_WORK_TOOLS.has(part.tool)) continue
       if (!current) {
         current = { id: ACTIVITY_ID_PREFIX + part.id, items: [], parts: [...pending] }
         byID.set(current.id, current)

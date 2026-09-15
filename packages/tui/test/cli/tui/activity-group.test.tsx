@@ -24,6 +24,7 @@ import { LocalProvider } from "../../../src/context/local"
 import { ThemeProvider } from "../../../src/context/theme"
 import { TuiConfigProvider, useTuiConfig } from "../../../src/config"
 import { ToastProvider } from "../../../src/ui/toast"
+import { DialogProvider } from "../../../src/ui/dialog"
 import { LocationProvider } from "../../../src/context/location"
 import { OPENCODE_BASE_MODE, OpencodeKeymapProvider, registerOpencodeKeymap, useBindings } from "../../../src/keymap"
 import { ActivityGroup, AssistantMessageRow, SessionContext } from "../../../src/routes/session"
@@ -262,13 +263,15 @@ async function mountActivity(options: {
     return (
       <OpencodeKeymapProvider keymap={keymap}>
         <KeymapBindings />
-        <SessionContext.Provider value={ctxValue}>
-          <LocationProvider location={{ directory: "/tmp", workspaceID: undefined }}>
-            <scrollbox ref={(r) => (scroll = r)} height={options.height ?? 24} width={options.width ?? 100}>
-              {options.render ? options.render(storeSync) : <Transcript />}
-            </scrollbox>
-          </LocationProvider>
-        </SessionContext.Provider>
+        <DialogProvider>
+          <SessionContext.Provider value={ctxValue}>
+            <LocationProvider location={{ directory: "/tmp", workspaceID: undefined }}>
+              <scrollbox ref={(r) => (scroll = r)} height={options.height ?? 24} width={options.width ?? 100}>
+                {options.render ? options.render(storeSync) : <Transcript />}
+              </scrollbox>
+            </LocationProvider>
+          </SessionContext.Provider>
+        </DialogProvider>
       </OpencodeKeymapProvider>
     )
   }
@@ -642,8 +645,8 @@ describe("activity group TUI", () => {
     try {
       const m1 = assistant("m1", at(1))
       const t1 = running(m1.id, "bash", { command: "bun test" }, 1000)
-      const t2 = running(m1.id, "finish", { reason: "complete" }, 1100)
-      const t3 = running(m1.id, "read", { filePath: "src/a.ts" }, 1200)
+      const t2 = running(m1.id, "read", { filePath: "src/a.ts" }, 1100)
+      const t3 = running(m1.id, "finish", { reason: "complete" }, 1200)
       const t4 = running(m1.id, "todowrite", { todos: [] }, 1300)
       seed(sync, [{ message: m1, parts: [t1, t2, t3, t4] }])
       await app.waitForFrame((frame: string) => frame.includes("Working... 2 tool calls"))
@@ -654,9 +657,11 @@ describe("activity group TUI", () => {
       expect(frame).not.toContain("Working... 3 tool calls")
       expect(frame).not.toContain("Working... 4 tool calls")
       // The excluded orchestration calls stay available as their own rows
-      // even while the group is collapsed.
+      // below the block they closed, even while the group is collapsed.
       expect(frame).toContain("Completing task...")
       expect(frame).toContain("Updating todos...")
+      expect(rowOf(frame, "Working... 2 tool calls")).toBeLessThan(rowOf(frame, "Completing task..."))
+      expect(rowOf(frame, "Completing task...")).toBeLessThan(rowOf(frame, "Updating todos..."))
       // The included tools are hidden behind the collapsed group.
       expect(frame).not.toContain("bun test")
       expect(frame).not.toContain("Read src/a.ts")
@@ -670,6 +675,97 @@ describe("activity group TUI", () => {
       expect(expanded).toContain("Read src/a.ts")
       expect(expanded).toContain("Completing task...")
       expect(expanded).toContain("Updating todos...")
+      // Neither orchestration call is nested inside the block: both render
+      // below the block's own rows.
+      expect(rowOf(expanded, "Read src/a.ts")).toBeLessThan(rowOf(expanded, "Completing task..."))
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("closes the Working block at a subagent delegation and opens a new one after it", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m1.id, "grep", { pattern: "alpha" }, 1100)
+      const delegation = running(m2.id, "task", { description: "Investigate the failure", subagent_type: "code" }, 1200)
+      const t3 = running(m3.id, "bash", { command: "bun test" }, 1400)
+      const t4 = running(m3.id, "edit", { filePath: "src/b.ts" }, 1500)
+      // Without the delegation all four tool calls stream into one working run.
+      seed(sync, [
+        { message: m1, parts: [t1, t2] },
+        { message: m2, parts: [] },
+        { message: m3, parts: [t3, t4] },
+      ])
+      await app.waitForFrame((frame: string) => frame.includes("Working... 4 tool calls"))
+
+      // The delegation lands inside that run: it ends the block above it and the
+      // work after it opens a fresh block instead of resuming the old one.
+      reseedParts(sync, { [m2.id]: [delegation] })
+      await app.waitForFrame((frame: string) => countOf(frame, "Working... 2 tool calls") === 2)
+      const frame = frameOf(app)
+      expect(frame).not.toContain("Working... 3 tool calls")
+      expect(frame).not.toContain("Working... 4 tool calls")
+      expect(frame).toContain("Code Task — Investigate the failure")
+      // The subagent renders as its own top-level block between the two runs,
+      // not nested inside the block that was open around it.
+      expect(rowOf(frame, "Working... 2 tool calls")).toBeLessThan(rowOf(frame, "Code Task — Investigate the failure"))
+      expect(rowOf(frame, "Code Task — Investigate the failure")).toBeLessThan(
+        rowOfNth(frame, "Working... 2 tool calls", 2),
+      )
+      // Both blocks keep the usual collapsed behaviour.
+      expect(frame).not.toContain("Read src/a.ts")
+      expect(frame).not.toContain("bun test")
+
+      // The block closed by the delegation finalizes on its own timing: neither
+      // the delegation nor the continued work stretches it.
+      reseedParts(sync, { [m1.id]: [completed(t1, 1000, 2400), completed(t2, 1100, 2400)] })
+      await app.waitForFrame((frame: string) => frame.includes("Worked for 1.4s · 2 tool calls"))
+      const done = frameOf(app)
+      expect(done).toContain("Working... 2 tool calls")
+      expect(done).not.toContain("Worked for 1.4s · 4 tool calls")
+      expect(rowOf(done, "Worked for 1.4s · 2 tool calls")).toBeLessThan(
+        rowOf(done, "Code Task — Investigate the failure"),
+      )
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("closes the Working block at a finish call and opens a new one after it", async () => {
+    const { app, sync } = await mountActivity({ height: 30 })
+    try {
+      const m1 = assistant("m1", at(1))
+      const m2 = assistant("m2", at(2))
+      const m3 = assistant("m3", at(3))
+      const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
+      const t2 = running(m1.id, "grep", { pattern: "alpha" }, 1100)
+      const finish = running(m2.id, "finish", { result: "first pass complete" }, 1200)
+      const t3 = running(m3.id, "bash", { command: "bun test" }, 1400)
+      const t4 = running(m3.id, "edit", { filePath: "src/b.ts" }, 1500)
+      // Without the finish call all four tool calls stream into one working run.
+      seed(sync, [
+        { message: m1, parts: [t1, t2] },
+        { message: m2, parts: [] },
+        { message: m3, parts: [t3, t4] },
+      ])
+      await app.waitForFrame((frame: string) => frame.includes("Working... 4 tool calls"))
+
+      // The turn completion is a transcript row of its own, so it ends the run
+      // it lands in and the work that follows opens a fresh block.
+      reseedParts(sync, { [m2.id]: [finish] })
+      await app.waitForFrame((frame: string) => countOf(frame, "Working... 2 tool calls") === 2)
+      const frame = frameOf(app)
+      expect(frame).not.toContain("Working... 3 tool calls")
+      expect(frame).not.toContain("Working... 4 tool calls")
+      expect(frame).toContain("Completing task...")
+      expect(rowOf(frame, "Working... 2 tool calls")).toBeLessThan(rowOf(frame, "Completing task..."))
+      expect(rowOf(frame, "Completing task...")).toBeLessThan(rowOfNth(frame, "Working... 2 tool calls", 2))
+      expect(frame).not.toContain("Read src/a.ts")
+      expect(frame).not.toContain("bun test")
     } finally {
       app.renderer.destroy()
     }
