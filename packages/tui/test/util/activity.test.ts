@@ -3,6 +3,7 @@ import type { AssistantMessage, ToolPart, UserMessage } from "@opencode-ai/sdk/v
 import {
   activityHeader,
   computeActivityGroups,
+  NON_WORK_TOOLS,
   resolveActivityExpanded,
   summarizeActivity,
   toggleActivityOverride,
@@ -239,9 +240,10 @@ describe("computeActivityGroups", () => {
     const result = computeActivityGroups(rows)
     expect(result.byID.size).toBe(1)
     const group = result.byID.get("act-t1")
-    // The trailing `finish` call is orchestration: it neither counts toward
-    // the work run nor breaks it, so the group keeps just the concrete tools
-    // and their interleaved reasoning.
+    // The trailing `finish` call is orchestration: it does not count toward
+    // the work run and, being rendered outside it, closes it — nothing follows
+    // it here, so the group keeps just the concrete tools and their
+    // interleaved reasoning.
     expect(group?.items.map((item) => item.part.id)).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7"])
     expect(group?.parts.map((item) => item.part.id)).toEqual([
       "t1",
@@ -350,7 +352,7 @@ describe("computeActivityGroups", () => {
     expect(result.groupOf.size).toBe(0)
   })
 
-  test("excludes orchestration/protocol tools from a mixed run", () => {
+  test("excludes orchestration/protocol tools from a mixed run and splits at them", () => {
     const rows: ActivityRow[] = [
       {
         message: assistant("m1", 1),
@@ -365,21 +367,23 @@ describe("computeActivityGroups", () => {
       },
     ]
     const result = computeActivityGroups(rows)
-    expect(result.byID.size).toBe(1)
-    // The group id comes from the first included tool, and only the concrete
-    // operational tools (bash, read, edit) are counted.
-    expect(result.byID.get("act-t2")?.items.map((item) => item.part.id)).toEqual(["t2", "t4", "t5"])
+    // The group ids come from the first included tool of each block, and only
+    // the concrete operational tools (bash, read, edit) are counted.
+    expect([...result.byID.keys()]).toEqual(["act-t2", "act-t4"])
+    expect(result.byID.get("act-t2")?.items.map((item) => item.part.id)).toEqual(["t2"])
+    expect(result.byID.get("act-t4")?.items.map((item) => item.part.id)).toEqual(["t4", "t5"])
     // Excluded tools are not mapped to any group so the renderer keeps them
-    // visible as their own native inline rows.
+    // visible as their own native top-level rows; not owning them is exactly
+    // why they close the run they land in.
     expect(result.groupOf.get("t1")).toBeUndefined()
     expect(result.groupOf.get("t3")).toBeUndefined()
     expect(result.groupOf.get("t6")).toBeUndefined()
     expect(result.groupOf.get("t2")).toBe("act-t2")
-    expect(result.groupOf.get("t4")).toBe("act-t2")
-    expect(result.groupOf.get("t5")).toBe("act-t2")
+    expect(result.groupOf.get("t4")).toBe("act-t4")
+    expect(result.groupOf.get("t5")).toBe("act-t4")
   })
 
-  test("does not break a run across excluded tools", () => {
+  test("ends the run at a non-work call instead of absorbing it", () => {
     const rows: ActivityRow[] = [
       {
         message: assistant("m1", 1),
@@ -391,8 +395,64 @@ describe("computeActivityGroups", () => {
       },
     ]
     const result = computeActivityGroups(rows)
-    expect(result.byID.size).toBe(1)
-    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t3"])
+    // The finish row renders outside both blocks, so the work after it opens a
+    // new group rather than resuming the one above it.
+    expect([...result.byID.keys()]).toEqual(["act-t1", "act-t3"])
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1"])
+    expect(result.byID.get("act-t3")?.items.map((item) => item.part.id)).toEqual(["t3"])
+  })
+
+  test("closes the run at every non-work exception the implementation supports", () => {
+    // The boundary rule follows group membership rather than a per-tool list,
+    // so every tool in the exception set must end its run. Iterating the set
+    // keeps this honest when a new exception is registered: it is covered the
+    // moment it joins NON_WORK_TOOLS, and it can never nest inside the open
+    // Working block.
+    for (const exception of NON_WORK_TOOLS) {
+      const result = computeActivityGroups([
+        {
+          message: assistant("m1", 1),
+          parts: [
+            tool("m1", "t1", completed(0, 1), "read"),
+            tool("m1", "t2", completed(1, 2), "bash"),
+            tool("m1", "t3", completed(2, 3), exception),
+            tool("m1", "t4", completed(3, 4), "grep"),
+            tool("m1", "t5", completed(4, 5), "edit"),
+          ],
+        },
+      ])
+      expect([...result.byID.keys()]).toEqual(["act-t1", "act-t4"])
+      expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+      expect(result.byID.get("act-t4")?.items.map((item) => item.part.id)).toEqual(["t4", "t5"])
+      expect(result.groupOf.get("t3")).toBeUndefined()
+      expect(result.groupOf.get("t1")).toBe("act-t1")
+      expect(result.groupOf.get("t4")).toBe("act-t4")
+    }
+  })
+
+  test("does not pull pending reasoning across a non-work call into the next run", () => {
+    for (const exception of NON_WORK_TOOLS) {
+      const result = computeActivityGroups([
+        {
+          message: assistant("m1", 1),
+          parts: [
+            reasoning("m1", "r1", "thinking before the exception"),
+            reasoning("m1", "r2", "more thinking before the exception"),
+            tool("m1", "t1", completed(0, 1), exception),
+            reasoning("m1", "r3", "thinking after the exception"),
+            tool("m1", "t2", completed(1, 2), "bash"),
+            tool("m1", "t3", completed(2, 3), "grep"),
+          ],
+        },
+      ])
+      // Reasoning rendered in front of the exception stays out of the group
+      // that opens after it, exactly like reasoning in front of assistant text.
+      expect([...result.byID.keys()]).toEqual(["act-t2"])
+      expect(result.byID.get("act-t2")?.parts.map((item) => item.part.id)).toEqual(["r3", "t2", "t3"])
+      expect(result.groupOf.has("r1")).toBe(false)
+      expect(result.groupOf.has("r2")).toBe(false)
+      expect(result.groupOf.get("r3")).toBe("act-t2")
+    }
   })
 
   test("does not create a group for an all-excluded sequence", () => {
@@ -426,12 +486,17 @@ describe("computeActivityGroups", () => {
       },
     ]
     const result = computeActivityGroups(rows)
-    const group = result.byID.values().next().value
-    const summary = summarizeActivity(group!.items.map((item) => item.part))
-    // Only the concrete tools (t2 bash, t4 read, t5 bash) remain; the failed
-    // task tool is excluded and the failing bash is counted.
+    // The exceptions split the stream into two blocks, but neither exception
+    // joins an activity summary: only the concrete tools (t2 bash, t4 read,
+    // t5 bash) remain, and the failing bash is the only counted failure.
+    const summary = summarizeActivity(
+      [...result.byID.values()].flatMap((group) => group.items.map((item) => item.part)),
+    )
     expect(summary).toMatchObject({ count: 3, working: false, failed: 1 })
     expect(summary.durationMs).toBe(240 - 150)
+    expect(result.groupOf.has("t1")).toBe(false)
+    expect(result.groupOf.has("t3")).toBe(false)
+    expect(result.groupOf.has("t6")).toBe(false)
   })
 
   test("closes the run at a to-do call and opens a new one after it", () => {
@@ -530,7 +595,7 @@ describe("computeActivityGroups", () => {
     expect(result.groupOf.size).toBe(0)
   })
 
-  test("keeps ordinary consecutive tool calls in one run", () => {
+  test("splits the run at non-work calls between ordinary tools", () => {
     const rows: ActivityRow[] = [
       {
         message: assistant("m1", 1),
@@ -546,8 +611,12 @@ describe("computeActivityGroups", () => {
       },
     ]
     const result = computeActivityGroups(rows)
-    expect([...result.byID.keys()]).toEqual(["act-t1"])
-    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t4", "t5"])
+    // Ordinary tools only stay together with the work that shares their run:
+    // the turn-completion and delegation rows render as top-level transcript
+    // entries between the two blocks.
+    expect([...result.byID.keys()]).toEqual(["act-t1", "act-t4"])
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1"])
+    expect(result.byID.get("act-t4")?.items.map((item) => item.part.id)).toEqual(["t4", "t5"])
   })
 
   test("attaches reasoning after a to-do call to the new run", () => {

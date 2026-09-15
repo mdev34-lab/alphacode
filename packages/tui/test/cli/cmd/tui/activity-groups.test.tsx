@@ -213,4 +213,44 @@ describe("tui activity grouping over live events", () => {
       app.renderer.destroy()
     }
   })
+
+  test("closes the open run when a subagent delegation streams in", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const { app, emit, sync } = await mount(undefined, tmp.path)
+
+    try {
+      emit(messageEvent("m1", assistant("msg_m1", at(1))))
+      const t1 = runningTool("msg_m1", "read", 2)
+      emit(partEvent(t1))
+      const t2 = runningTool("msg_m1", "grep", 3)
+      emit(partEvent(t2))
+      await wait(() => groupIDs(sync).length === 1)
+      expect(groupIDs(sync)).toEqual([`act-${t1.id}`])
+
+      // The delegation lands inside the open run while everything is still in
+      // flight: it is not a member of the block, so it closes the block above
+      // it instead of nesting inside it.
+      emit(messageEvent("m2", assistant("msg_m2", at(4))))
+      const delegation = runningTool("msg_m2", "task", 5)
+      emit(partEvent(delegation))
+      await wait(() => (sync.data.part["msg_m2"] ?? []).length === 1)
+      expect(groupIDs(sync)).toEqual([`act-${t1.id}`])
+      expect(groups(sync).groupOf.get(delegation.id)).toBeUndefined()
+
+      // Work that follows opens a new block rather than resuming the closed
+      // one, so the delegation row stays between the two of them.
+      emit(messageEvent("m3", assistant("msg_m3", at(6))))
+      const t3 = runningTool("msg_m3", "bash", 7)
+      emit(partEvent(t3))
+      const t4 = runningTool("msg_m3", "edit", 8)
+      emit(partEvent(t4))
+      await wait(() => groupIDs(sync).length === 2)
+      expect(groupIDs(sync)).toEqual([`act-${t1.id}`, `act-${t3.id}`])
+      expect(groups(sync).byID.get(`act-${t1.id}`)?.items.map((item) => item.part.id)).toEqual([t1.id, t2.id])
+      expect(groups(sync).byID.get(`act-${t3.id}`)?.items.map((item) => item.part.id)).toEqual([t3.id, t4.id])
+    } finally {
+      app.renderer.destroy()
+    }
+  })
 })
