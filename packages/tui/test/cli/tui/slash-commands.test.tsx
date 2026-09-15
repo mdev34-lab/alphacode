@@ -24,7 +24,12 @@ import { RouteProvider } from "../../../src/context/route"
 import { SDKProvider } from "../../../src/context/sdk"
 import { SyncProvider } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
-import { OpencodeKeymapProvider, registerOpencodeKeymap, useCommandSlashes } from "../../../src/keymap"
+import {
+  OpencodeKeymapProvider,
+  registerOpencodeKeymap,
+  useCommandSlashes,
+  type OpenTuiKeymap,
+} from "../../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/runtime"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
@@ -35,7 +40,7 @@ import { ToastProvider } from "../../../src/ui/toast"
 
 const SESSION_ID = "ses_slash_commands"
 
-type SlashEntry = { display: string; aliases?: string[] }
+type SlashEntry = { display: string; aliases?: string[]; onSelect: () => void }
 const setups: { app: Awaited<ReturnType<typeof testRender>>; dispose: () => Promise<void> }[] = []
 
 afterEach(async () => {
@@ -69,15 +74,22 @@ async function mountSession() {
   }, events)
 
   const config = createTuiResolvedConfig({})
+  let keymapRef: OpenTuiKeymap | undefined
   let slashRef: (() => readonly SlashEntry[]) | undefined
 
   function Harness() {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
+    keymapRef = keymap
     const off = registerOpencodeKeymap(keymap, renderer, config)
     onCleanup(off)
     const slashes = useCommandSlashes()
-    slashRef = () => slashes().map((entry) => ({ display: entry.display, aliases: entry.aliases }))
+    slashRef = () =>
+      slashes().map((entry) => ({
+        display: entry.display,
+        aliases: entry.aliases,
+        onSelect: entry.onSelect,
+      }))
 
     return (
       <ClipboardProvider>
@@ -145,7 +157,7 @@ async function mountSession() {
 
   for (let pass = 0; pass < 400; pass++) {
     await app.renderOnce()
-    if (slashRef) return slashRef
+    if (keymapRef && slashRef) return { app, keymap: keymapRef, slashes: slashRef }
     await Bun.sleep(5)
   }
   throw new Error(`slash command state never initialized:\n${app.captureCharFrame()}`)
@@ -171,7 +183,7 @@ const expected = new Map([
 
 describe("built-in slash command autocomplete", () => {
   test("exposes the complete built-in surface through canonical command registration", async () => {
-    const slashes = await mountSession()
+    const { slashes } = await mountSession()
     const entries = slashes()
 
     expect(new Set(entries.map((entry) => entry.display))).toEqual(new Set(expected.keys()))
@@ -180,5 +192,20 @@ describe("built-in slash command autocomplete", () => {
       const entry = entries.find((item) => item.display === display)
       expect(entry?.aliases ?? []).toEqual(aliases)
     }
+  })
+
+  test("dispatches an alias through the canonical command implementation", async () => {
+    const { app, keymap, slashes } = await mountSession()
+    const activity = slashes().find((entry) => entry.aliases?.includes("/working"))
+    expect(activity).toBeDefined()
+
+    const before = keymap.getCommands().find((command) => command.name === "session.toggle.activity")
+    expect(before?.title).toBe("Expand tool activity")
+
+    activity?.onSelect()
+    await app.renderOnce()
+
+    const after = keymap.getCommands().find((command) => command.name === "session.toggle.activity")
+    expect(after?.title).toBe("Collapse tool activity")
   })
 })
