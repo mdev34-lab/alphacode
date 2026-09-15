@@ -150,26 +150,19 @@ async function mountSession() {
 }
 
 describe("built-in slash command registration", () => {
-  test("exposes the Working and tool-details commands through the canonical palette path", async () => {
+  test("exposes the missing built-ins through the canonical palette path", async () => {
     const keymap = await mountSession()
     const entries = keymap.getCommandEntries({
       visibility: "reachable",
       namespace: "palette",
     })
 
-    const slashes = new Map(
-      entries.flatMap((entry) => {
-        const slashName = entry.command.slashName
-        if (typeof slashName !== "string" || !slashName) return []
-        return [[slashName, entry.command]] as const
-      }),
-    )
+    const commands = entries.map((entry) => entry.command)
+    const details = commands.find((command) => command.name === "session.toggle.actions")
+    const activity = commands.find((command) => command.name === "session.toggle.activity")
 
-    expect(slashes.get("details")?.name).toBe("session.toggle.actions")
-    expect(slashes.get("working")?.name).toBe("session.toggle.activity")
-    expect(slashes.get("activity")?.name).toBe("session.toggle.activity")
-
-    const working = slashes.get("working")
-    expect(working?.slashAliases).toContain("activity")
+    expect(details?.slashName).toBe("details")
+    expect(activity?.slashName).toBe("activity")
+    expect(activity?.slashAliases).toContain("working")
   })
 })
