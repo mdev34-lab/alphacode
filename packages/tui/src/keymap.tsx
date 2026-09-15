@@ -257,6 +257,11 @@ export function useCommandShortcut(command: string): Accessor<string> {
   )
 }
 
+const BUILTIN_SLASH_METADATA: Record<string, { name?: string; aliases?: string[] }> = {
+  "session.toggle.actions": { name: "details" },
+  "session.toggle.activity": { aliases: ["working"] },
+}
+
 export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
   const keymap = useOpencodeKeymap()
   const entries = useKeymapSelector((keymap: OpenTuiKeymap) =>
@@ -269,9 +274,15 @@ export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
 
   return createMemo<CommandSlashEntry[]>(() =>
     entries().flatMap((entry) => {
-      const slashName = entry.command.slashName
+      const metadata = BUILTIN_SLASH_METADATA[entry.command.name]
+      const slashName = metadata?.name ?? entry.command.slashName
       if (typeof slashName !== "string" || !slashName) return []
-      const slashAliases = entry.command.slashAliases
+      const slashAliases = [
+        ...(Array.isArray(entry.command.slashAliases)
+          ? entry.command.slashAliases.filter((alias): alias is string => typeof alias === "string")
+          : []),
+        ...(metadata?.aliases ?? []),
+      ]
       return {
         display: `/${slashName}`,
         description:
@@ -280,9 +291,7 @@ export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
             : typeof entry.command.title === "string"
               ? entry.command.title
               : undefined,
-        aliases: Array.isArray(slashAliases)
-          ? slashAliases.filter((alias): alias is string => typeof alias === "string").map((alias) => `/${alias}`)
-          : undefined,
+        aliases: slashAliases.length > 0 ? slashAliases.map((alias) => `/${alias}`) : undefined,
         onSelect: () => keymap.dispatchCommand(entry.command.name),
       }
     }),
