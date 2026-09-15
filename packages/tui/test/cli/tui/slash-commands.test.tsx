@@ -24,7 +24,12 @@ import { RouteProvider } from "../../../src/context/route"
 import { SDKProvider } from "../../../src/context/sdk"
 import { SyncProvider } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
-import { OpencodeKeymapProvider, registerOpencodeKeymap, type OpenTuiKeymap } from "../../../src/keymap"
+import {
+  OpencodeKeymapProvider,
+  registerOpencodeKeymap,
+  useCommandSlashes,
+  type OpenTuiKeymap,
+} from "../../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/runtime"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
@@ -35,6 +40,7 @@ import { ToastProvider } from "../../../src/ui/toast"
 
 const SESSION_ID = "ses_slash_commands"
 
+type SlashEntry = { display: string; aliases?: string[] }
 const setups: { app: Awaited<ReturnType<typeof testRender>>; dispose: () => Promise<void> }[] = []
 
 afterEach(async () => {
@@ -69,6 +75,7 @@ async function mountSession() {
 
   const config = createTuiResolvedConfig({})
   let keymapRef: OpenTuiKeymap | undefined
+  let slashRef: (() => readonly SlashEntry[]) | undefined
 
   function Harness() {
     const renderer = useRenderer()
@@ -76,6 +83,8 @@ async function mountSession() {
     keymapRef = keymap
     const off = registerOpencodeKeymap(keymap, renderer, config)
     onCleanup(off)
+    const slashes = useCommandSlashes()
+    slashRef = () => slashes().map((entry) => ({ display: entry.display, aliases: entry.aliases }))
 
     return (
       <ClipboardProvider>
@@ -143,26 +152,21 @@ async function mountSession() {
 
   for (let pass = 0; pass < 400; pass++) {
     await app.renderOnce()
-    if (keymapRef) return keymapRef
+    if (keymapRef && slashRef) return { keymap: keymapRef, slashes: slashRef }
     await Bun.sleep(5)
   }
-  throw new Error(`keymap never initialized:\n${app.captureCharFrame()}`)
+  throw new Error(`slash command state never initialized:\n${app.captureCharFrame()}`)
 }
 
-describe("built-in slash command registration", () => {
-  test("exposes the missing built-ins through the canonical palette path", async () => {
-    const keymap = await mountSession()
-    const entries = keymap.getCommandEntries({
-      visibility: "reachable",
-      namespace: "palette",
-    })
+describe("built-in slash command autocomplete", () => {
+  test("exposes the missing built-ins through the canonical command path", async () => {
+    const { slashes } = await mountSession()
+    const entries = slashes()
+    const details = entries.find((entry) => entry.display === "/details")
+    const activity = entries.find((entry) => entry.display === "/activity")
 
-    const commands = entries.map((entry) => entry.command)
-    const details = commands.find((command) => command.name === "session.toggle.actions")
-    const activity = commands.find((command) => command.name === "session.toggle.activity")
-
-    expect(details?.slashName).toBe("details")
-    expect(activity?.slashName).toBe("activity")
-    expect(activity?.slashAliases).toContain("working")
+    expect(details).toBeDefined()
+    expect(activity).toBeDefined()
+    expect(activity?.aliases).toContain("/working")
   })
 })
