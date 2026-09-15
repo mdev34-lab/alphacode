@@ -10,19 +10,9 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 
-Heap.start()
-
 const onUnhandledRejection = (_error: unknown) => {}
 
 const onUncaughtException = (_error: Error) => {}
-
-process.on("unhandledRejection", onUnhandledRejection)
-process.on("uncaughtException", onUncaughtException)
-
-// Explicit launch marker from the parent (see cmd/tui.ts); the process.send
-// sniff remains as a fallback for environments that spawn the worker file
-// directly without the marker.
-const processWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || typeof process.send === "function"
 
 // Subscribe to global events and forward them via RPC
 const onGlobalEvent = (event: Parameters<typeof GlobalBus.emitEvent>[0]) => {
@@ -32,7 +22,8 @@ const onGlobalEvent = (event: Parameters<typeof GlobalBus.emitEvent>[0]) => {
     Rpc.emit("global.event", event)
   }
 }
-GlobalBus.on("event", onGlobalEvent)
+
+const processWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || typeof process.send === "function"
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 let stopRpcListener: (() => void) | undefined
@@ -89,8 +80,15 @@ export const rpc = {
   },
 }
 
-if (processWorker) {
-  stopRpcListener = Rpc.listenProcess(rpc)
-} else {
-  stopRpcListener = Rpc.listen(rpc)
+if (import.meta.main) {
+  Heap.start()
+  process.on("unhandledRejection", onUnhandledRejection)
+  process.on("uncaughtException", onUncaughtException)
+  GlobalBus.on("event", onGlobalEvent)
+
+  if (processWorker) {
+    stopRpcListener = Rpc.listenProcess(rpc)
+  } else {
+    stopRpcListener = Rpc.listen(rpc)
+  }
 }
