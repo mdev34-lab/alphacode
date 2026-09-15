@@ -306,9 +306,6 @@ const TASK_PROMPT = [
 // delegate in one arm below and not in the other, with the presence of the
 // delegation policy as the only difference. Together the two arms verify the
 // chain instruction-in-request → tool call → dispatch → verdict → consumption.
-// They do NOT prove a real model's compliance — no offline test can — only
-// that the product ships the instruction, and that the instruction, when
-// followed, carries the turn all the way through.
 const scriptPolicyFollowingModel = Effect.gen(function* () {
   const llm = yield* TestLLMServer
   // Policy present: after finishing the unit, hand it to the reviewer
@@ -322,10 +319,18 @@ const scriptPolicyFollowingModel = Effect.gen(function* () {
       prompt: TASK_PROMPT,
     }),
   )
-  // The reviewer reports findings and ends its turn through finish.
+  // The first reviewer response reaches the real finish tool with prose only.
+  // The gate must reject it as recoverable model feedback and keep the review
+  // session alive for the model to retry.
   yield* llm.pushMatch(
     reviewMatch,
     reply().text(REPORT).tool("finish", { result: "Needs fixes: one Important finding" }),
+  )
+  // Retry after the recoverable finish failure. This response supplies the
+  // required envelope through the real finish call, so the review can complete.
+  yield* llm.pushMatch(
+    reviewMatch,
+    reply().tool("finish", { result: REPORT }),
   )
   // Policy present, verdict received: consume it and fix the finding.
   yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
@@ -436,7 +441,7 @@ it.instance(
       const hits = yield* llm.hits
       const policyHits = hits.filter(policyMatch)
       const reviewHits = hits.filter(reviewMatch)
-      expect(reviewHits).toHaveLength(1)
+      expect(reviewHits).toHaveLength(2)
 
       // The reviewer ran with its own prompt — and no review loop of its own,
       // so reviews cannot recurse.
