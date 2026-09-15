@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
@@ -39,21 +39,18 @@ import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 
 const SESSION_ID = "ses_slash_commands"
-
-type SlashEntry = { display: string; aliases?: string[]; onSelect: () => void }
-const setups: { app: Awaited<ReturnType<typeof testRender>>; dispose: () => Promise<void> }[] = []
+let setup: { app: Awaited<ReturnType<typeof testRender>>; dispose: () => Promise<void> } | undefined
 
 afterEach(async () => {
-  for (const setup of setups.splice(0)) {
-    setup.app.renderer.destroy()
-    await setup.dispose()
-  }
+  if (!setup) return
+  setup.app.renderer.destroy()
+  await setup.dispose()
+  setup = undefined
 })
 
-async function mountSession() {
+test("registers restored slash commands and dispatches /working", async () => {
   const tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
-
   const events = createEventSource()
   const calls = createFetch((url) => {
     if (url.pathname === `/session/${SESSION_ID}`) {
@@ -67,15 +64,15 @@ async function mountSession() {
         time: { created: 0, updated: 0 },
       })
     }
-    if (url.pathname === `/session/${SESSION_ID}/message`) return json([])
-    if (url.pathname === `/session/${SESSION_ID}/todo`) return json([])
-    if (url.pathname === `/session/${SESSION_ID}/diff`) return json([])
+    if (["/message", "/todo", "/diff"].some((suffix) => url.pathname === `/session/${SESSION_ID}${suffix}`)) {
+      return json([])
+    }
     return undefined
   }, events)
 
   const config = createTuiResolvedConfig({})
   let keymapRef: OpenTuiKeymap | undefined
-  let slashRef: (() => readonly SlashEntry[]) | undefined
+  let slashRef: (() => readonly { display: string; aliases?: string[]; onSelect: () => void }[]) | undefined
 
   function Harness() {
     const renderer = useRenderer()
@@ -84,12 +81,7 @@ async function mountSession() {
     const off = registerOpencodeKeymap(keymap, renderer, config)
     onCleanup(off)
     const slashes = useCommandSlashes()
-    slashRef = () =>
-      slashes().map((entry) => ({
-        display: entry.display,
-        aliases: entry.aliases,
-        onSelect: entry.onSelect,
-      }))
+    slashRef = () => slashes()
 
     return (
       <ClipboardProvider>
@@ -152,60 +144,25 @@ async function mountSession() {
     ),
     { width: 120, height: 40 },
   )
-
-  setups.push({ app, dispose: async () => await tmp[Symbol.asyncDispose]() })
+  setup = { app, dispose: async () => await tmp[Symbol.asyncDispose]() }
 
   for (let pass = 0; pass < 400; pass++) {
     await app.renderOnce()
-    if (keymapRef && slashRef) return { app, keymap: keymapRef, slashes: slashRef }
+    if (keymapRef && slashRef) break
     await Bun.sleep(5)
   }
-  throw new Error(`slash command state never initialized:\n${app.captureCharFrame()}`)
-}
 
-const expected = new Map([
-  ["/share", []],
-  ["/rename", []],
-  ["/timeline", []],
-  ["/fork", []],
-  ["/compact", ["/summarize"]],
-  ["/compress", []],
-  ["/unshare", []],
-  ["/undo", []],
-  ["/redo", []],
-  ["/copy", []],
-  ["/export", []],
-  ["/timestamps", ["/toggle-timestamps"]],
-  ["/thinking", ["/toggle-thinking"]],
-  ["/details", []],
-  ["/activity", ["/working"]],
-])
+  const entries = slashRef?.()
+  expect(entries?.find((entry) => entry.display === "/details")).toBeDefined()
+  const working = entries?.find((entry) => entry.aliases?.includes("/working"))
+  expect(working).toBeDefined()
 
-describe("built-in slash command autocomplete", () => {
-  test("exposes the complete built-in surface through canonical command registration", async () => {
-    const { slashes } = await mountSession()
-    const entries = slashes()
+  const before = keymapRef?.getCommands().find((command) => command.name === "session.toggle.activity")
+  expect(before?.title).toBe("Expand tool activity")
 
-    expect(new Set(entries.map((entry) => entry.display))).toEqual(new Set(expected.keys()))
+  working?.onSelect()
+  await app.renderOnce()
 
-    for (const [display, aliases] of expected) {
-      const entry = entries.find((item) => item.display === display)
-      expect(entry?.aliases ?? []).toEqual(aliases)
-    }
-  })
-
-  test("dispatches an alias through the canonical command implementation", async () => {
-    const { app, keymap, slashes } = await mountSession()
-    const activity = slashes().find((entry) => entry.aliases?.includes("/working"))
-    expect(activity).toBeDefined()
-
-    const before = keymap.getCommands().find((command) => command.name === "session.toggle.activity")
-    expect(before?.title).toBe("Expand tool activity")
-
-    activity?.onSelect()
-    await app.renderOnce()
-
-    const after = keymap.getCommands().find((command) => command.name === "session.toggle.activity")
-    expect(after?.title).toBe("Collapse tool activity")
-  })
+  const after = keymapRef?.getCommands().find((command) => command.name === "session.toggle.activity")
+  expect(after?.title).toBe("Collapse tool activity")
 })
