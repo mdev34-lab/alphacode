@@ -25,15 +25,17 @@ process.on("uncaughtException", onUncaughtException)
 const processWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || typeof process.send === "function"
 
 // Subscribe to global events and forward them via RPC
-GlobalBus.on("event", (event) => {
+const onGlobalEvent = (event: Parameters<typeof GlobalBus.emitEvent>[0]) => {
   if (processWorker) {
     Rpc.emitProcess("global.event", event)
   } else {
     Rpc.emit("global.event", event)
   }
-})
+}
+GlobalBus.on("event", onGlobalEvent)
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
+let stopRpcListener: (() => void) | undefined
 
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
@@ -74,15 +76,21 @@ export const rpc = {
     )
   },
   async shutdown() {
+    stopRpcListener?.()
+    stopRpcListener = undefined
+    GlobalBus.off("event", onGlobalEvent)
     await InstanceRuntime.disposeAllInstances()
-    if (server) await server.stop(true)
+    if (server) {
+      await server.stop(true)
+      server = undefined
+    }
     process.off("unhandledRejection", onUnhandledRejection)
     process.off("uncaughtException", onUncaughtException)
   },
 }
 
 if (processWorker) {
-  Rpc.listenProcess(rpc)
+  stopRpcListener = Rpc.listenProcess(rpc)
 } else {
-  Rpc.listen(rpc)
+  stopRpcListener = Rpc.listen(rpc)
 }
