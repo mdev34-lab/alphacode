@@ -65,7 +65,7 @@ afterEach(async () => {
   setup = undefined
 })
 
-test("registers restored slash commands and dispatches /working", async () => {
+test("exposes the complete built-in slash surface and dispatches /working", async () => {
   const tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
   const events = createEventSource()
