@@ -10,30 +10,23 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 
-Heap.start()
-
 const onUnhandledRejection = (_error: unknown) => {}
 
 const onUncaughtException = (_error: Error) => {}
 
-process.on("unhandledRejection", onUnhandledRejection)
-process.on("uncaughtException", onUncaughtException)
-
-// Explicit launch marker from the parent (see cmd/tui.ts); the process.send
-// sniff remains as a fallback for environments that spawn the worker file
-// directly without the marker.
-const processWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || typeof process.send === "function"
-
 // Subscribe to global events and forward them via RPC
-GlobalBus.on("event", (event) => {
+const onGlobalEvent = (event: Parameters<typeof GlobalBus.emitEvent>[0]) => {
   if (processWorker) {
     Rpc.emitProcess("global.event", event)
   } else {
     Rpc.emit("global.event", event)
   }
-})
+}
+
+const processWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || typeof process.send === "function"
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
+let stopRpcListener: (() => void) | undefined
 
 export const rpc = {
   async fetch(input: { url: string; method: string; headers: Record<string, string>; body?: string }) {
@@ -74,15 +67,28 @@ export const rpc = {
     )
   },
   async shutdown() {
+    stopRpcListener?.()
+    stopRpcListener = undefined
+    GlobalBus.off("event", onGlobalEvent)
     await InstanceRuntime.disposeAllInstances()
-    if (server) await server.stop(true)
+    if (server) {
+      await server.stop(true)
+      server = undefined
+    }
     process.off("unhandledRejection", onUnhandledRejection)
     process.off("uncaughtException", onUncaughtException)
   },
 }
 
-if (processWorker) {
-  Rpc.listenProcess(rpc)
-} else {
-  Rpc.listen(rpc)
+if (import.meta.main) {
+  Heap.start()
+  process.on("unhandledRejection", onUnhandledRejection)
+  process.on("uncaughtException", onUncaughtException)
+  GlobalBus.on("event", onGlobalEvent)
+
+  if (processWorker) {
+    stopRpcListener = Rpc.listenProcess(rpc)
+  } else {
+    stopRpcListener = Rpc.listen(rpc)
+  }
 }

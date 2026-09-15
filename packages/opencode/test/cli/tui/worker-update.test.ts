@@ -1,12 +1,20 @@
 import { expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
+import { rpc } from "../../../src/cli/tui/worker"
+import { Rpc } from "../../../src/util/rpc"
 
-const workerSource = readFileSync(fileURLToPath(new URL("../../../src/cli/tui/worker.ts", import.meta.url)), "utf8")
-const tuiCommandSource = readFileSync(fileURLToPath(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)), "utf8")
+test("TUI worker no longer exposes checkUpgrade over RPC", async () => {
+  try {
+    const reply = await Rpc.handleRequest(
+      rpc,
+      JSON.stringify({ type: "rpc.request", id: 7, method: "checkUpgrade", input: { directory: process.cwd() } }),
+    )
 
-test("TUI does not trigger upstream OpenCode update checks", () => {
-  expect(workerSource).not.toContain('import { upgrade } from "@/cli/upgrade"')
-  expect(workerSource).not.toContain("checkUpgrade")
-  expect(tuiCommandSource).not.toContain("checkUpgrade")
+    expect(JSON.parse(reply ?? "")).toEqual({
+      type: "rpc.error",
+      id: 7,
+      error: "Unknown RPC method: checkUpgrade",
+    })
+  } finally {
+    await rpc.shutdown()
+  }
 })
