@@ -22,6 +22,11 @@ interface ScannerState {
   isMovingForward: boolean
 }
 
+// The old bidirectional scanner had 54 frames at the consumer's 40ms interval:
+// 8 forward + 9 hold + 7 reverse + 30 hold = 2160ms. The forward-only scanner
+// keeps that 54-frame cadence so the animation does not become 6.75x faster.
+const FORWARD_FRAME_COUNT = 54
+
 function getScannerState(
   frameIndex: number,
   totalChars: number,
@@ -91,12 +96,17 @@ function getScannerState(
       isMovingForward: false,
     }
   } else {
+    // Spread the same 54-frame cadence across the available columns. This
+    // preserves timing for the default width without baking that width into
+    // the scanner's public helper functions.
+    const cycleFrame = frameIndex % FORWARD_FRAME_COUNT
+    const activePosition = Math.min(Math.floor((cycleFrame * totalChars) / FORWARD_FRAME_COUNT), totalChars - 1)
     return {
-      activePosition: frameIndex % totalChars,
+      activePosition,
       isHolding: false,
       holdProgress: 0,
       holdTotal: 0,
-      movementProgress: frameIndex % totalChars,
+      movementProgress: activePosition,
       movementTotal: totalChars,
       isMovingForward: true,
     }
@@ -310,9 +320,9 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
     minAlpha: options.minAlpha,
   }
 
-  // Forward/backward cycle: one sweep across the width that wraps back to the
-  // start. Bidirectional adds hold frames at each end plus the return sweep.
-  const totalFrames = direction === "bidirectional" ? width + holdEnd + (width - 1) + holdStart : width
+  // Forward-only keeps the same 54-frame cadence as the original animation;
+  // the repeated positions are timing holds, not direction changes.
+  const totalFrames = direction === "bidirectional" ? width + holdEnd + (width - 1) + holdStart : FORWARD_FRAME_COUNT
 
   // Generate dynamic frames where inactive pixels are dots and active ones are blocks
   const frames = Array.from({ length: totalFrames }, (_, frameIndex) => {
