@@ -257,11 +257,6 @@ export function useCommandShortcut(command: string): Accessor<string> {
   )
 }
 
-const BUILTIN_SLASH_METADATA: Record<string, { name?: string; aliases?: string[] }> = {
-  "session.toggle.actions": { name: "details" },
-  "session.toggle.activity": { aliases: ["working"] },
-}
-
 export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
   const keymap = useOpencodeKeymap()
   const entries = useKeymapSelector((keymap: OpenTuiKeymap) =>
