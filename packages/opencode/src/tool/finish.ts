@@ -1,5 +1,6 @@
 import * as Tool from "./tool"
 import { ToolFailure } from "@opencode-ai/llm"
+import { ReviewReport } from "@opencode-ai/core/review-report"
 import DESCRIPTION from "./finish.txt"
 import { Effect, Schema } from "effect"
 import { Todo } from "../session/todo"
@@ -27,11 +28,38 @@ export const FinishTool = Tool.define(
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
           yield* ctx.waitForOtherTools ?? Effect.void
-          const cfg = yield* config.get()
-          const maxIterations = cfg.review_loop?.max_iterations ?? 5
           const messages = yield* sessions
             .messages({ sessionID: ctx.sessionID })
             .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
+          // The Review subagent completes its run through this same finish
+          // tool, so the structured review result is gated here, at the
+          // control-flow boundary: without a parseable report envelope the
+          // call fails as recoverable model feedback and the run continues
+          // instead of completing without a verdict.
+          if (ctx.agent === "review") {
+            const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
+            const delivery = ReviewReport.extract([
+              ...(currentMessage?.parts ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])),
+              params.result,
+            ])
+            if (!delivery.ok) {
+              yield* Effect.logWarning("finish declined: review result missing or unparseable", {
+                sessionID: ctx.sessionID,
+                reason: delivery.failure.reason,
+              })
+              return yield* Effect.fail(
+                new ToolFailure({
+                  message: [
+                    `Review finish rejected: ${delivery.failure.message}.`,
+                    `The review run cannot complete until finish is called with a result containing a valid <${ReviewReport.TAG}> report envelope: {"version": 1, "revision": string, "assessment": "approved" | "needs-fixes", "summary": string, "findings": [{"severity": "critical" | "important" | "minor", "title": string}]}.`,
+                    `Emit the envelope and call finish again; the review continues.`,
+                  ].join(" "),
+                }),
+              )
+            }
+          }
+          const cfg = yield* config.get()
+          const maxIterations = cfg.review_loop?.max_iterations ?? 5
           const reviewState = reviewLoopState(messages, maxIterations)
           const gateError = finishGateError(reviewState)
           if (gateError) {

@@ -306,9 +306,6 @@ const TASK_PROMPT = [
 // delegate in one arm below and not in the other, with the presence of the
 // delegation policy as the only difference. Together the two arms verify the
 // chain instruction-in-request → tool call → dispatch → verdict → consumption.
-// They do NOT prove a real model's compliance — no offline test can — only
-// that the product ships the instruction, and that the instruction, when
-// followed, carries the turn all the way through.
 const scriptPolicyFollowingModel = Effect.gen(function* () {
   const llm = yield* TestLLMServer
   // Policy present: after finishing the unit, hand it to the reviewer
@@ -322,10 +319,18 @@ const scriptPolicyFollowingModel = Effect.gen(function* () {
       prompt: TASK_PROMPT,
     }),
   )
-  // The reviewer reports findings and ends its turn through finish.
+  // The first reviewer response reaches the real finish tool with prose only.
+  // The gate must reject it as recoverable model feedback and keep the review
+  // session alive for the model to retry.
   yield* llm.pushMatch(
     reviewMatch,
     reply().text(REPORT).tool("finish", { result: "Needs fixes: one Important finding" }),
+  )
+  // Retry after the recoverable finish failure. This response supplies the
+  // required envelope through the real finish call, so the review can complete.
+  yield* llm.pushMatch(
+    reviewMatch,
+    reply().tool("finish", { result: REPORT }),
   )
   // Policy present, verdict received: consume it and fix the finding.
   yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
@@ -436,7 +441,7 @@ it.instance(
       const hits = yield* llm.hits
       const policyHits = hits.filter(policyMatch)
       const reviewHits = hits.filter(reviewMatch)
-      expect(reviewHits).toHaveLength(1)
+      expect(reviewHits).toHaveLength(2)
 
       // The reviewer ran with its own prompt — and no review loop of its own,
       // so reviews cannot recurse.
@@ -470,6 +475,23 @@ it.instance(
       const child = yield* sessions.get(SessionID.make(childID as string))
       expect(child.agent).toBe("review")
       expect(child.parentID).toBe(chat.id)
+
+      // The real Review runner must record the rejected first finish and then
+      // the successful retry. Without the finish gate, this sequence would
+      // incorrectly appear as two successful completions and the regression
+      // would not exercise recoverable tool feedback.
+      const childMessages = yield* MessageV2.filterCompactedEffect(child.id)
+      const finishParts = childMessages
+        .flatMap((msg) => msg.parts)
+        .filter(
+          (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish",
+        )
+      expect(finishParts).toHaveLength(2)
+      expect(finishParts.map((part) => part.state.status)).toEqual(["error", "completed"])
+      if (finishParts[0]?.state.status === "error") {
+        expect(finishParts[0].state.error).toContain("review result")
+      }
+      expect(finishParts[1]?.state.status).toBe("completed")
 
       // The findings were consumed: the parent's follow-up request contains
       // the report and the instructions to act on it.
