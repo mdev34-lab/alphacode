@@ -1,0 +1,22 @@
+name: fix-142-canonicalize
+on:
+  push:
+    branches: [fix/142-restore-slash-commands]
+permissions:
+  contents: write
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch canonical registrations
+        run: python3 .github/fix-142.py
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add packages/tui/src/routes/session/index.tsx packages/tui/src/keymap.tsx .github/fix-142.py .github/workflows/fix-142-canonicalize.yml
+          git commit -m "fix: restore slash metadata canonically"
+          git rm .github/fix-142.py .github/workflows/fix-142-canonicalize.yml
+          git commit -m "chore: remove one-shot fix-142 migration"
+          git push
