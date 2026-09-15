@@ -801,6 +801,9 @@ export function Session() {
       title: showDetails() ? "Hide tool details" : "Show tool details",
       value: "session.toggle.actions",
       category: "Session",
+      slash: {
+        name: "details",
+      },
       run: () => {
         setShowDetails((prev) => !prev)
         dialog.clear()
@@ -830,6 +833,7 @@ export function Session() {
       category: "Session",
       slash: {
         name: "activity",
+        aliases: ["working"],
       },
       run: () => {
         setActivityAllExpanded((prev) => !prev)

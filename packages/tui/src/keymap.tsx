@@ -274,15 +274,9 @@ export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
 
   return createMemo<CommandSlashEntry[]>(() =>
     entries().flatMap((entry) => {
-      const metadata = BUILTIN_SLASH_METADATA[entry.command.name]
-      const slashName = metadata?.name ?? entry.command.slashName
+      const slashName = entry.command.slashName
       if (typeof slashName !== "string" || !slashName) return []
-      const slashAliases = [
-        ...(Array.isArray(entry.command.slashAliases)
-          ? entry.command.slashAliases.filter((alias): alias is string => typeof alias === "string")
-          : []),
-        ...(metadata?.aliases ?? []),
-      ]
+      const slashAliases = entry.command.slashAliases
       return {
         display: `/${slashName}`,
         description:
@@ -291,7 +285,9 @@ export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
             : typeof entry.command.title === "string"
               ? entry.command.title
               : undefined,
-        aliases: slashAliases.length > 0 ? slashAliases.map((alias) => `/${alias}`) : undefined,
+        aliases: Array.isArray(slashAliases)
+          ? slashAliases.filter((alias): alias is string => typeof alias === "string").map((alias) => `/${alias}`)
+          : undefined,
         onSelect: () => keymap.dispatchCommand(entry.command.name),
       }
     }),
