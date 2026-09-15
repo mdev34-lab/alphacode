@@ -24,12 +24,7 @@ import { RouteProvider } from "../../../src/context/route"
 import { SDKProvider } from "../../../src/context/sdk"
 import { SyncProvider } from "../../../src/context/sync"
 import { ThemeProvider } from "../../../src/context/theme"
-import {
-  OpencodeKeymapProvider,
-  registerOpencodeKeymap,
-  useCommandSlashes,
-  type OpenTuiKeymap,
-} from "../../../src/keymap"
+import { OpencodeKeymapProvider, registerOpencodeKeymap, useCommandSlashes } from "../../../src/keymap"
 import { createPluginRuntime, PluginRuntimeProvider } from "../../../src/plugin/runtime"
 import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
@@ -74,13 +69,11 @@ async function mountSession() {
   }, events)
 
   const config = createTuiResolvedConfig({})
-  let keymapRef: OpenTuiKeymap | undefined
   let slashRef: (() => readonly SlashEntry[]) | undefined
 
   function Harness() {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
-    keymapRef = keymap
     const off = registerOpencodeKeymap(keymap, renderer, config)
     onCleanup(off)
     const slashes = useCommandSlashes()
@@ -152,21 +145,40 @@ async function mountSession() {
 
   for (let pass = 0; pass < 400; pass++) {
     await app.renderOnce()
-    if (keymapRef && slashRef) return { keymap: keymapRef, slashes: slashRef }
+    if (slashRef) return slashRef
     await Bun.sleep(5)
   }
   throw new Error(`slash command state never initialized:\n${app.captureCharFrame()}`)
 }
 
-describe("built-in slash command autocomplete", () => {
-  test("exposes the missing built-ins through the canonical command path", async () => {
-    const { slashes } = await mountSession()
-    const entries = slashes()
-    const details = entries.find((entry) => entry.display === "/details")
-    const activity = entries.find((entry) => entry.display === "/activity")
+const expected = new Map([
+  ["/share", []],
+  ["/rename", []],
+  ["/timeline", []],
+  ["/fork", []],
+  ["/compact", ["/summarize"]],
+  ["/compress", []],
+  ["/unshare", []],
+  ["/undo", []],
+  ["/redo", []],
+  ["/copy", []],
+  ["/export", []],
+  ["/timestamps", ["/toggle-timestamps"]],
+  ["/thinking", ["/toggle-thinking"]],
+  ["/details", []],
+  ["/activity", ["/working"]],
+])
 
-    expect(details).toBeDefined()
-    expect(activity).toBeDefined()
-    expect(activity?.aliases).toContain("/working")
+describe("built-in slash command autocomplete", () => {
+  test("exposes the complete built-in surface through canonical command registration", async () => {
+    const slashes = await mountSession()
+    const entries = slashes()
+
+    expect(new Set(entries.map((entry) => entry.display))).toEqual(new Set(expected.keys()))
+
+    for (const [display, aliases] of expected) {
+      const entry = entries.find((item) => item.display === display)
+      expect(entry?.aliases ?? []).toEqual(aliases)
+    }
   })
 })
