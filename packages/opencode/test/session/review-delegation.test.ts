@@ -253,7 +253,7 @@ const policyMatch = (hit: { body: unknown }) => {
 }
 
 const noPolicyMatch = (hit: { body: unknown }) => {
-  const body = bodyString(hit)
+  const body = bodyString(hit.body)
   return body.includes("You are opencode") && !body.includes("## Review Loop")
 }
 
@@ -475,6 +475,24 @@ it.instance(
       const child = yield* sessions.get(SessionID.make(childID as string))
       expect(child.agent).toBe("review")
       expect(child.parentID).toBe(chat.id)
+
+      // The real Review runner must record the rejected first finish and then
+      // the successful retry. Without the finish gate, this sequence would
+      // incorrectly appear as two successful completions and the regression
+      // would not exercise recoverable tool feedback.
+      const childMessages = yield* MessageV2.filterCompactedEffect(child.id)
+      const finishParts = childMessages
+        .flatMap((msg) => msg.parts)
+        .filter(
+          (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish",
+        )
+      expect(finishParts).toHaveLength(2)
+      expect(finishParts.map((part) => part.state.status)).toEqual(["error", "completed"])
+      expect(finishParts[0]?.state.status).toBe("error")
+      if (finishParts[0]?.state.status === "error") {
+        expect(finishParts[0].state.error).toContain("review result")
+      }
+      expect(finishParts[1]?.state.status).toBe("completed")
 
       // The findings were consumed: the parent's follow-up request contains
       // the report and the instructions to act on it.
