@@ -39,6 +39,23 @@ import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 
 const SESSION_ID = "ses_slash_commands"
+const expected = new Map([
+  ["/share", []],
+  ["/rename", []],
+  ["/timeline", []],
+  ["/fork", []],
+  ["/compact", ["/summarize"]],
+  ["/compress", []],
+  ["/unshare", []],
+  ["/undo", []],
+  ["/redo", []],
+  ["/copy", []],
+  ["/export", []],
+  ["/timestamps", ["/toggle-timestamps"]],
+  ["/thinking", ["/toggle-thinking"]],
+  ["/details", []],
+  ["/activity", ["/working"]],
+])
 let setup: { app: Awaited<ReturnType<typeof testRender>>; dispose: () => Promise<void> } | undefined
 
 afterEach(async () => {
@@ -153,7 +170,13 @@ test("registers restored slash commands and dispatches /working", async () => {
   }
 
   const entries = slashRef?.()
-  expect(entries?.find((entry) => entry.display === "/details")).toBeDefined()
+  expect(new Set(entries?.map((entry) => entry.display))).toEqual(new Set(expected.keys()))
+
+  for (const [display, aliases] of expected) {
+    const entry = entries?.find((item) => item.display === display)
+    expect(entry?.aliases ?? []).toEqual(aliases)
+  }
+
   const working = entries?.find((entry) => entry.aliases?.includes("/working"))
   expect(working).toBeDefined()
 
