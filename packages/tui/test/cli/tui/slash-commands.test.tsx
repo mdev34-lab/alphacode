@@ -137,7 +137,7 @@ async function mountSession() {
 
   const app = await testRender(
     () => (
-      <TestTuiContexts directory={directory} paths={{ home: "/tmp", state: tmp.path, worktree: directory }}>
+      <TestTuiContexts directory={directory} paths={{ home: tmp.path, state: tmp.path, worktree: directory }}>
         <ArgsProvider>
           <KVProvider>
             <Harness />
