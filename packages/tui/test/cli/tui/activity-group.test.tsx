@@ -585,6 +585,101 @@ describe("activity group TUI", () => {
     }
   })
 
+  test("keeps one working block across blank text artifacts, batches, and thinking", async () => {
+    const { app, sync } = await mountActivity({ height: 40 })
+    try {
+      const settledTool = (
+        messageID: string,
+        tool: string,
+        input: Record<string, unknown>,
+        start: number,
+        end: number,
+      ) => completed(toolPart(messageID, tool, input, { status: "running", input, time: { start } }), start, end)
+      const m1 = assistant("w1", at(1))
+      const m2 = assistant("w2", at(2))
+      const m3 = assistant("w3", at(3))
+      const m4 = assistant("w4", at(4))
+      const m5 = assistant("w5", at(5))
+      const m6 = assistant("w6", at(6))
+      seed(sync, [
+        {
+          message: m1,
+          parts: [
+            settledTool(m1.id, "read", { filePath: "src/a.ts" }, 1000, 1100),
+            settledTool(m1.id, "read", { filePath: "src/b.ts" }, 1000, 1200),
+          ],
+        },
+        {
+          message: m2,
+          parts: [
+            textPart(m2.id, ""),
+            settledTool(m2.id, "grep", { pattern: "alpha" }, 1300, 1400),
+            settledTool(m2.id, "grep", { pattern: "beta" }, 1300, 1500),
+          ],
+        },
+        { message: m3, parts: [reasoningPart(m3.id, "thinking A")] },
+        {
+          message: m4,
+          parts: [
+            settledTool(m4.id, "read", { filePath: "src/e.ts" }, 1600, 1700),
+            settledTool(m4.id, "read", { filePath: "src/f.ts" }, 1600, 1800),
+          ],
+        },
+        { message: m5, parts: [reasoningPart(m5.id, "thinking B")] },
+        {
+          message: m6,
+          parts: [textPart(m6.id, " \n"), settledTool(m6.id, "read", { filePath: "src/g.ts" }, 1900, 2000)],
+        },
+      ])
+      // Tool titles render platform path separators; normalize so the
+      // membership assertions below read the same everywhere.
+      const frame = () => frameOf(app).replace(/\\/g, "/")
+      // One container for the whole sequence, not one per batch.
+      await app.waitForFrame((f: string) => f.includes("7 tool calls"))
+      expect(countOf(frame(), "tool calls")).toBe(1)
+      expect(frame()).not.toContain("Read src/a.ts")
+
+      // State and render agree: every part belongs to the same group.
+      const rows = (sync.data.message[SESSION] ?? []).map((message) => ({
+        message,
+        parts: sync.data.part[message.id] ?? [],
+      }))
+      expect(computeActivityGroups(rows).byID.size).toBe(1)
+
+      // Expanding nests the whole sequence under that container...
+      app.mockInput.pressKey("o", { ctrl: true })
+      await app.waitForFrame((f: string) => f.replace(/\\/g, "/").includes("Read src/g.ts"))
+      const expanded = frame()
+      for (const title of [
+        "Read src/a.ts",
+        "Read src/b.ts",
+        'Grep "alpha"',
+        'Grep "beta"',
+        "Read src/e.ts",
+        "Read src/f.ts",
+        "Read src/g.ts",
+      ]) {
+        expect(expanded).toContain(title)
+      }
+      expect(countOf(expanded, "tool calls")).toBe(1)
+
+      // ...and a genuine text boundary still closes the activity: the tool
+      // after it stands alone instead of joining the block.
+      const m7 = assistant("w7", at(7))
+      const note = textPart(m7.id, "Summarizing now.")
+      const lone = settledTool(m7.id, "read", { filePath: "src/h.ts" }, 2100, 2200)
+      sync.set("message", SESSION, [...(sync.data.message[SESSION] ?? []), m7])
+      sync.set("part", m7.id, [note, lone])
+      await app.waitForFrame((f: string) => f.includes("Summarizing now."))
+      const after = frame()
+      expect(after).toContain("Summarizing now.")
+      expect(after).toContain("Read src/h.ts")
+      expect(countOf(after, "tool calls")).toBe(1)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
   test("keeps trailing reasoning inside the collapsed activity and reveals it when expanded", async () => {
     const { app, sync } = await mountActivity({ height: 30 })
     try {
