@@ -93,6 +93,7 @@ import { collapseDiff } from "../../util/collapse-diff"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { getRevertDiffFiles } from "../../util/revert-diff"
+import { parseBackgroundResult, type BackgroundResult } from "../../util/background-task"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
@@ -1480,6 +1481,16 @@ function UserMessage(props: {
     return texts.join("\n\n")
   })
   const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
+  // Background subagent results arrive as synthetic text parts carrying the
+  // task delivery markup. The user text above hides synthetic parts, so each
+  // delivered result gets its own history indicator instead of rendering
+  // nothing and letting the main agent resume from an unexplained gap.
+  const backgroundResults = createMemo(() =>
+    props.parts
+      .filter((part): part is TextPart => part.type === "text" && part.synthetic === true)
+      .map((part) => parseBackgroundResult(part.text))
+      .filter((result): result is BackgroundResult => result !== undefined),
+  )
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
   const queued = createMemo(() => props.pending !== undefined && props.index > props.pending)
@@ -1551,6 +1562,25 @@ function UserMessage(props: {
           </box>
         </box>
       </Show>
+      <For each={backgroundResults()}>
+        {(result) => (
+          <>
+            <box
+              marginTop={1}
+              border={["top"]}
+              title={result.state === "completed" ? " Background subagent completed " : " Background subagent failed "}
+              titleAlignment="center"
+              borderColor={theme.borderActive}
+            />
+            <text fg={theme.textMuted}>
+              <span style={{ fg: result.state === "completed" ? theme.success : theme.error }}>
+                {result.state === "completed" ? "✓" : "✗"}
+              </span>{" "}
+              {result.summary} — result delivered to the main agent
+            </text>
+          </>
+        )}
+      </For>
       <Show when={compaction()}>
         <box
           marginTop={1}
