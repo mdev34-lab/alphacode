@@ -140,6 +140,27 @@ const layer = Layer.effect(
 
         const user = Permission.fromConfig(cfg.permission ?? {})
 
+        // The plan-equivalent capability boundary shared by the plan agent and
+        // the review subagent: repository inspection plus non-destructive
+        // command execution, including bash. It is defined once so the two
+        // permission sets stay equivalent by construction instead of drifting
+        // into divergent review-specific policy.
+        const planPermissions = Permission.fromConfig({
+          question: "allow",
+          plan_exit: "allow",
+          task: {
+            general: "deny",
+          },
+          external_directory: {
+            [path.join(Global.Path.data, "plans", "*")]: "allow",
+          },
+          edit: {
+            "*": "deny",
+            [path.join(".opencode", "plans", "*.md")]: "allow",
+            [path.relative(ctx.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
+          },
+        })
+
         const agents: Record<string, Info> = {
           work: {
             name: "work",
@@ -163,25 +184,7 @@ const layer = Layer.effect(
             name: "plan",
             description: "Plan mode. Disallows all edit tools.",
             options: {},
-            permission: Permission.merge(
-              defaults,
-              Permission.fromConfig({
-                question: "allow",
-                plan_exit: "allow",
-                task: {
-                  general: "deny",
-                },
-                external_directory: {
-                  [path.join(Global.Path.data, "plans", "*")]: "allow",
-                },
-                edit: {
-                  "*": "deny",
-                  [path.join(".opencode", "plans", "*.md")]: "allow",
-                  [path.relative(ctx.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
-                },
-              }),
-              user,
-            ),
+            permission: Permission.merge(defaults, planPermissions, user),
             mode: "primary",
             native: true,
           },
@@ -230,19 +233,8 @@ const layer = Layer.effect(
           },
           review: {
             name: "review",
-            permission: Permission.merge(
-              defaults,
-              Permission.fromConfig({
-                "*": "deny",
-                read: "allow",
-                grep: "allow",
-                glob: "allow",
-                list: "allow",
-                webfetch: "allow",
-              }),
-              user,
-            ),
-            description: `Read-only code reviewer. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files (implementation, fix, refactor, or feature), before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
+            permission: Permission.merge(defaults, planPermissions, user),
+            description: `Code reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files (implementation, fix, refactor, or feature), before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
             prompt: PROMPT_REVIEW,
             options: {},
             mode: "subagent",
