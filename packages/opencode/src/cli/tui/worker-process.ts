@@ -281,20 +281,20 @@ export function createTuiWorker(target: string, options: WorkerProcessOptions = 
   // the embedded module table). Under `bun dev`/`bun run` the child is instead
   // a subprocess so crashes can be contained and restarted.
   const compiled = path.basename(process.execPath).replace(/\.exe$/, "") !== "bun"
-  if (compiled) {
-    // ALPHACODE_TUI_WORKER selects process-message RPC (`Rpc.listenProcess`);
-    // a thread worker must not receive it (there is no `process.send`).
-    return createThreadWorker(target, options)
+  const env = {
+    ...options.env,
+    // Explicit marker so worker.ts knows it is the TUI worker in BOTH modes
+    // (see worker.ts): bootstrap gating cannot use `import.meta.main`, a
+    // compiled binary's thread runs its secondary entrypoint with it false.
+    // A thread worker must also not receive the process-message RPC mode
+    // (`Rpc.listenProcess`) — there is no `process.send` in a thread, so
+    // worker.ts picks the thread transport from that absence.
+    ALPHACODE_TUI_WORKER: "1",
   }
-  return createWorkerProcess(target, {
-    ...options,
-    env: {
-      ...options.env,
-      // Explicit marker so the child knows it is the TUI worker instead of
-      // inferring it from runtime capabilities (see worker.ts).
-      ALPHACODE_TUI_WORKER: "1",
-    },
-  })
+  if (compiled) {
+    return createThreadWorker(target, { ...options, env })
+  }
+  return createWorkerProcess(target, { ...options, env })
 }
 
 export function isWorkerCrash(signal: string | number | null, code: number | null) {
