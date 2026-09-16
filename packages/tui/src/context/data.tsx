@@ -41,7 +41,7 @@ type Data = {
     message: Record<string, SessionMessage[]>
     permission: Record<string, PermissionV2Request[]>
     question: Record<string, QuestionV2Request[]>
-    /** Latest dynamic context measurement, published once per prepared provider turn. */
+    /** Latest context report, published by the runtime once per provider request. */
     context: Record<string, SessionNextContextPrepared["data"]>
   }
   project: {
@@ -170,9 +170,6 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           break
         case "session.next.context.prepared":
           setStore("session", "context", event.data.sessionID, event.data)
-          break
-        case "session.next.context.compressed":
-        case "session.next.context.compression.failed":
           break
         case "session.next.context.updated":
           message.update(event.data.sessionID, (draft) => {
@@ -451,12 +448,10 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           },
         },
         context: {
+          // Reduction keeps no queryable state: the report arrives with the request it describes,
+          // so there is nothing to refresh and no endpoint that could disagree with the runtime.
           get(sessionID: string) {
             return store.session.context[sessionID]
-          },
-          async refresh(sessionID: string) {
-            const result = await sdk.client.v2.session.contextStats({ sessionID }, { throwOnError: true })
-            setStore("session", "context", sessionID, { ...result.data.data, timestamp: Date.now(), sessionID })
           },
         },
         question: {

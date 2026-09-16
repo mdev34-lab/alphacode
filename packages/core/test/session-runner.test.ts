@@ -42,7 +42,6 @@ import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
-import { ContextManager } from "@opencode-ai/core/context/manager"
 import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import {
@@ -366,14 +365,8 @@ const setupOverflowRecovery = Effect.gen(function* () {
   return session
 })
 
-/**
- * System parts contributed by the System Context pipeline.
- *
- * The runner also adds one stable context-management instruction to every request. It is asserted
- * on its own in `context-manager.test.ts`, so these System Context assertions ignore it.
- */
-const systemBaselines = (request: LLMRequest) =>
-  request.system.map((part) => part.text).filter((text) => text !== ContextManager.GUIDANCE)
+/** System parts contributed by the agent prompt and the System Context pipeline. */
+const systemBaselines = (request: LLMRequest) => request.system.map((part) => part.text)
 
 const messageTexts = (request: LLMRequest, role: "user" | "system") =>
   request.messages.flatMap((message) =>
