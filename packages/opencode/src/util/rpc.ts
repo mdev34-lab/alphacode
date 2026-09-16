@@ -42,13 +42,20 @@ export function listen(rpc: Definition) {
     const result = await handleRequest(rpc, evt.data)
     if (result) postMessage(result)
   }
+  return () => {
+    onmessage = null
+  }
 }
 
 export function listenProcess(rpc: Definition) {
-  process.on("message", async (message: string) => {
+  const handler = async (message: string) => {
     const result = await handleRequest(rpc, message)
     if (result) process.send?.(result)
-  })
+  }
+  process.on("message", handler)
+  return () => {
+    process.off("message", handler)
+  }
 }
 
 export function emit(event: string, data: unknown) {
