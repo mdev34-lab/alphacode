@@ -180,6 +180,35 @@ function reviewOps(chunks: string[]): TaskPromptOps {
   }
 }
 
+function reviewRunOps(chunks: string[], summary = "done"): TaskPromptOps {
+  return {
+    cancel: () => Effect.void,
+    resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+    prompt: (input) =>
+      Effect.sync(() => {
+        const replied = replyParts(input, chunks)
+        const now = Date.now()
+        const finish: SessionV1.ToolPart = {
+          id: PartID.ascending(),
+          messageID: replied.info.id,
+          sessionID: input.sessionID,
+          type: "tool",
+          tool: "finish",
+          callID: "finish-call",
+          state: {
+            status: "completed",
+            input: { result: summary },
+            output: summary,
+            title: "finish",
+            metadata: {},
+            time: { start: now, end: now },
+          },
+        }
+        return { ...replied, parts: [...replied.parts, finish] }
+      }),
+  }
+}
+
 describe("tool.task", () => {
   it.instance(
     "description sorts subagents by name and is stable across calls",
@@ -644,7 +673,7 @@ describe("tool.task", () => {
 
   it.instance("delivers the review report envelope as the canonical result", () =>
     Effect.gen(function* () {
-      const result = yield* runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`]))
+      const result = yield* runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`]))
 
       expect(result.output).toContain(REVIEW_ANALYSIS)
       expect(result.output).toContain("<alphacode-review>")
@@ -661,7 +690,7 @@ describe("tool.task", () => {
 
   it.instance("a trailing empty text part does not erase the review report", () =>
     Effect.gen(function* () {
-      const result = yield* runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`, "", "   \n"]))
+      const result = yield* runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`, "", "   \n"]))
 
       expect(result.output).toContain("<alphacode-review>")
       expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
@@ -671,7 +700,7 @@ describe("tool.task", () => {
 
   it.instance("a review report before the final text part is still delivered", () =>
     Effect.gen(function* () {
-      const result = yield* runReview(reviewOps([reviewEnvelope(), "Closing observations after the report."]))
+      const result = yield* runReview(reviewRunOps([reviewEnvelope(), "Closing observations after the report."]))
 
       expect(result.output).toContain("Closing observations after the report.")
       expect(result.output).toContain("<alphacode-review>")
@@ -681,7 +710,7 @@ describe("tool.task", () => {
 
   it.instance("a missing review report envelope fails delivery explicitly", () =>
     Effect.gen(function* () {
-      const exit = yield* Effect.exit(runReview(reviewOps([REVIEW_ANALYSIS, ""])))
+      const exit = yield* Effect.exit(runReview(reviewRunOps([REVIEW_ANALYSIS, ""])))
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (!Exit.isFailure(exit)) return
@@ -693,10 +722,25 @@ describe("tool.task", () => {
     }),
   )
 
+  it.instance("a review run that ends without a completed finish call fails explicitly", () =>
+    Effect.gen(function* () {
+      // The envelope is present in the text, but no finish tool part completed:
+      // termination without a successful finish must not silently become a
+      // completed review.
+      const exit = yield* Effect.exit(runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`])))
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const error = Cause.pretty(exit.cause)
+      expect(error).toContain("Review delivery failed")
+      expect(error).toContain("ended without a completed finish call")
+    }),
+  )
+
   it.instance("a malformed review report envelope fails delivery explicitly", () =>
     Effect.gen(function* () {
       const malformed = ["<alphacode-review>", "{ not json", "</alphacode-review>"].join("\n")
-      const exit = yield* Effect.exit(runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${malformed}`])))
+      const exit = yield* Effect.exit(runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${malformed}`])))
 
       expect(Exit.isFailure(exit)).toBe(true)
       if (!Exit.isFailure(exit)) return
@@ -709,7 +753,7 @@ describe("tool.task", () => {
   it.instance("an unknown review report schema version fails delivery explicitly", () =>
     Effect.gen(function* () {
       const exit = yield* Effect.exit(
-        runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope({ ...REVIEW_REPORT, version: 2 })}`])),
+        runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope({ ...REVIEW_REPORT, version: 2 })}`])),
       )
 
       expect(Exit.isFailure(exit)).toBe(true)
@@ -723,7 +767,7 @@ describe("tool.task", () => {
   it.instance("a zero-finding review delivers a valid report", () =>
     Effect.gen(function* () {
       const clean = { ...REVIEW_REPORT, assessment: "approved", summary: "Nothing to report.", findings: [] }
-      const result = yield* runReview(reviewOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope(clean)}`]))
+      const result = yield* runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope(clean)}`]))
 
       expect(result.output).toContain('"approved"')
       expect(result.metadata.review.report).toEqual(clean)

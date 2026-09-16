@@ -4,6 +4,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { Cause, Effect, Exit } from "effect"
 import { ToolFailure } from "@opencode-ai/llm"
+import { ReviewReport } from "@opencode-ai/core/review-report"
 import { Session } from "@/session/session"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
@@ -39,14 +40,14 @@ const layer = () =>
 
 const it = testEffect(layer())
 
-const seedSession = Effect.fn("FinishTest.seedSession")(function* (title = "test") {
+const seedSession = Effect.fn("FinishTest.seedSession")(function* (title = "test", agent = "work") {
   const session = yield* Session.Service
   const chat = yield* session.create({ title })
   const user = yield* session.updateMessage({
     id: MessageID.ascending(),
     role: "user",
     sessionID: chat.id,
-    agent: "work",
+    agent,
     model: { providerID: "test" as any, modelID: "test-model" as any },
     time: { created: Date.now() },
   })
@@ -56,7 +57,7 @@ const seedSession = Effect.fn("FinishTest.seedSession")(function* (title = "test
     parentID: user.id,
     sessionID: chat.id,
     mode: "work",
-    agent: "work",
+    agent,
     cost: 0,
     path: { cwd: "/tmp", root: "/tmp" },
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
@@ -575,6 +576,139 @@ describe("todo state – granular planning and sequential execution", () => {
 
       yield* todos.update({ sessionID: chat.id, todos: [] })
       expect(yield* todos.get(chat.id)).toHaveLength(0)
+    }),
+  )
+})
+
+const REVIEW_NEEDS_FIXES = {
+  version: 1,
+  revision: "uncommitted",
+  assessment: "needs-fixes",
+  summary: "One important finding.",
+  findings: [{ severity: "important", title: "Off-by-one" }],
+}
+
+const REVIEW_APPROVED = {
+  version: 1,
+  revision: "uncommitted",
+  assessment: "approved",
+  summary: "Nothing to report.",
+  findings: [],
+}
+
+const reviewEnvelope = (report: Record<string, unknown>) =>
+  ["<alphacode-review>", JSON.stringify(report, null, 2), "</alphacode-review>"].join("\n")
+
+const reviewCtx = (sessionID: SessionID, messageID: MessageID) => ({
+  sessionID,
+  messageID,
+  agent: "review",
+  abort: new AbortController().signal,
+  messages: [],
+  metadata: () => Effect.void,
+  ask: () => Effect.void,
+})
+
+const reviewFailure = (exit: Exit.Exit<unknown, unknown>) => {
+  expect(Exit.isFailure(exit)).toBe(true)
+  if (!Exit.isFailure(exit)) return undefined
+  const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
+  expect(failure).toBeInstanceOf(ToolFailure)
+  if (!(failure instanceof ToolFailure)) return undefined
+  return failure
+}
+
+describe("tool.finish – review result gate", () => {
+  it.instance("rejects a review finish with an empty result and no envelope", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession("review", "review")
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const failure = reviewFailure(
+        yield* def.execute({ result: "" }, reviewCtx(chat.id, assistant.id)).pipe(Effect.exit),
+      )
+      expect(failure?.message).toContain("Review finish rejected")
+      expect(failure?.message).toContain("<alphacode-review>")
+    }),
+  )
+
+  it.instance("rejects a review finish with prose and no envelope", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession("review", "review")
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const failure = reviewFailure(
+        yield* def
+          .execute({ result: "Looks good to me, ship it." }, reviewCtx(chat.id, assistant.id))
+          .pipe(Effect.exit),
+      )
+      expect(failure?.message).toContain("Review finish rejected")
+      expect(failure?.message).toContain("no <alphacode-review> report envelope was found")
+    }),
+  )
+
+  it.instance("accepts a valid needs-fixes envelope and keeps the canonical result", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession("review", "review")
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        { result: `Assessment\n\n${reviewEnvelope(REVIEW_NEEDS_FIXES)}` },
+        reviewCtx(chat.id, assistant.id),
+      )
+
+      expect(result.title).toBe("Task completed")
+      const delivery = ReviewReport.extract([result.output])
+      expect(delivery.ok).toBe(true)
+      if (!delivery.ok) return
+      expect(delivery.report.assessment).toBe("needs-fixes")
+      expect(delivery.report.findings).toHaveLength(1)
+    }),
+  )
+
+  it.instance("accepts a valid approved envelope and keeps the canonical result", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession("review", "review")
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        { result: `Assessment\n\n${reviewEnvelope(REVIEW_APPROVED)}` },
+        reviewCtx(chat.id, assistant.id),
+      )
+
+      expect(result.title).toBe("Task completed")
+      const delivery = ReviewReport.extract([result.output])
+      expect(delivery.ok).toBe(true)
+      if (!delivery.ok) return
+      expect(delivery.report.assessment).toBe("approved")
+    }),
+  )
+
+  it.instance("accepts the envelope from an earlier text part with a short summary", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession("review", "review")
+      const session = yield* Session.Service
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: chat.id,
+        type: "text",
+        text: `Assessment\n\n${reviewEnvelope(REVIEW_NEEDS_FIXES)}`,
+      })
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute({ result: "done" }, reviewCtx(chat.id, assistant.id))
+
+      expect(result.title).toBe("Task completed")
+      // The orchestrator assembles the canonical result from the persisted
+      // text parts plus the finish summary, so assert through that same shape.
+      const text = `Assessment\n\n${reviewEnvelope(REVIEW_NEEDS_FIXES)}`
+      expect(ReviewReport.extract([text, result.output]).ok).toBe(true)
     }),
   )
 })

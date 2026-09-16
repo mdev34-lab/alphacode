@@ -214,7 +214,26 @@ export const TaskTool = Tool.define(
             (item): item is SessionV1.ToolPart =>
               item.type === "tool" && item.tool === "finish" && item.state.status === "completed",
           )
-          const summary = finish?.state.status === "completed" ? finish.state.input.result : undefined
+          // A review run only completes through a successful finish call: the
+          // finish tool itself rejects results without a parseable report, so
+          // reaching this point without a completed finish means the run
+          // terminated another way and must not silently become a verdict.
+          if (!finish) {
+            const analysis = result.parts
+              .flatMap((part) => (part.type === "text" ? [part.text] : []))
+              .join("\n")
+              .trim()
+            return yield* Effect.fail(
+              new Error(
+                ReviewReport.failureMessage({
+                  sessionID: nextSession.id,
+                  failure: { reason: "missing", message: "the review run ended without a completed finish call" },
+                  analysis: analysis.length > 0 ? analysis : undefined,
+                }),
+              ),
+            )
+          }
+          const summary = finish.state.input.result
           const delivery = ReviewReport.extract([
             ...result.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])),
             typeof summary === "string" ? summary : undefined,
