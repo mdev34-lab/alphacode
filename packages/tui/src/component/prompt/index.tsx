@@ -40,8 +40,9 @@ import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
+import type { FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
+import { contextUsage } from "../../util/context-usage"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
@@ -267,44 +268,29 @@ export function Prompt(props: PromptProps) {
 
   const usage = createMemo(() => {
     if (!props.sessionID) return
-    const session = sync.session.get(props.sessionID)
-    const cost = session?.cost ?? 0
+    const cost = sync.session.get(props.sessionID)?.cost ?? 0
     const spent = cost > 0 ? money.format(cost) : undefined
-    // The context compiler measures what the next provider turn actually sends, so prefer it over
-    // the raw token counters of the last assistant message once a turn has been prepared.
-    const prepared = data.session.context.get(props.sessionID)
-    if (prepared) {
-      const pct = prepared.limit ? `${Math.round(prepared.utilization * 100)}%` : undefined
-      const saved = prepared.tokensSaved > 0 ? `-${Locale.number(prepared.tokensSaved)}` : undefined
-      return {
-        context: [
-          pct ? `${Locale.number(prepared.preparedTokens)} (${pct})` : Locale.number(prepared.preparedTokens),
-          saved,
-          // Byte pressure is not context-window pressure, so it is named rather than folded into
-          // the percentage, which can read as low while the request is still too large to send.
-          prepared.payloadOverBudget ? "over payload limit" : undefined,
-        ]
-          .filter(Boolean)
-          .join(" "),
-        cost: spent,
-        urgent:
-          prepared.recommendation === "prefer" || prepared.recommendation === "mandatory" || prepared.payloadOverBudget,
-      }
-    }
-    const msg = sync.data.message[props.sessionID] ?? []
-    const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
-    if (!last) return
-
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    if (tokens <= 0) return
-
-    const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
+    const context = contextUsage({
+      report: data.session.context.get(props.sessionID),
+      messages: sync.data.message[props.sessionID] ?? [],
+      contextLimit: (providerID, modelID) =>
+        sync.data.provider.find((item) => item.id === providerID)?.models[modelID]?.limit.context,
+    })
+    if (!context) return
+    const pct = context.percent === undefined ? undefined : `${context.percent}%`
+    const reclaimed = context.reclaimed > 0 ? `-${Locale.number(context.reclaimed)}` : undefined
     return {
-      context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
+      context: [
+        pct ? `${Locale.number(context.tokens)} (${pct})` : Locale.number(context.tokens),
+        reclaimed,
+        // A request the runtime could not reduce enough is named rather than folded into the
+        // percentage, which reads as ordinary pressure while the turn is about to be compacted.
+        context.exhausted ? "context full" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" "),
       cost: spent,
-      urgent: false,
+      urgent: context.urgent,
     }
   })
 

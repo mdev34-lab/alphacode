@@ -393,7 +393,7 @@ export type TuiState = {
     status: (sessionID: string) => SessionStatus | undefined
     permission: (sessionID: string) => ReadonlyArray<PermissionRequest>
     question: (sessionID: string) => ReadonlyArray<QuestionRequest>
-    /** Latest dynamic context measurement for the session, if a turn has been prepared. */
+    /** Latest context report the runtime published for the session, if it has sent a request. */
     context: (sessionID: string) => SessionNextContextPrepared["data"] | undefined
   }
   part: (messageID: string) => ReadonlyArray<Part>

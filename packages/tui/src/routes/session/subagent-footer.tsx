@@ -1,16 +1,18 @@
 import { createMemo, createSignal, Show } from "solid-js"
 import { useRouteData } from "../../context/route"
 import { useSync } from "../../context/sync"
+import { useData } from "../../context/data"
 import { useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
-import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
+import { contextUsage } from "../../util/context-usage"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 
 export function SubagentFooter() {
   const route = useRouteData("session")
   const sync = useSync()
+  const data = useData()
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const session = createMemo(() => sync.session.get(route.sessionID))
 
@@ -31,25 +33,23 @@ export function SubagentFooter() {
   })
 
   const usage = createMemo(() => {
-    const msg = messages()
-    const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
-    if (!last) return
+    const context = contextUsage({
+      report: data.session.context.get(route.sessionID),
+      messages: messages(),
+      contextLimit: (providerID, modelID) =>
+        sync.data.provider.find((item) => item.id === providerID)?.models[modelID]?.limit.context,
+    })
+    if (!context) return
 
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    if (tokens <= 0) return
-
-    const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
     const cost = session()?.cost ?? 0
-
     const money = new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
     })
+    const pct = context.percent === undefined ? undefined : `${context.percent}%`
 
     return {
-      context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
+      context: pct ? `${Locale.number(context.tokens)} (${pct})` : Locale.number(context.tokens),
       cost: cost > 0 ? money.format(cost) : undefined,
     }
   })
