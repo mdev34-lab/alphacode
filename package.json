@@ -18,10 +18,7 @@
     "test": "echo 'do not run tests from root' && exit 1"
   },
   "workspaces": {
-    "packages": [
-      "packages/*",
-      "packages/sdk/js"
-    ],
+    "packages": ["packages/*", "packages/sdk/js"],
     "catalog": {
       "@effect/opentelemetry": "4.0.0-beta.83",
       "@effect/platform-node": "4.0.0-beta.83",
@@ -32,9 +29,9 @@
       "@octokit/rest": "22.0.0",
       "@hono/standard-validator": "0.2.0",
       "@hono/zod-validator": "0.4.2",
-      "@opentui/core": "0.4.5",
-      "@opentui/keymap": "0.4.5",
-      "@opentui/solid": "0.4.5",
+      "@opentui/core": "0.5.8",
+      "@opentui/keymap": "0.5.8",
+      "@opentui/solid": "0.5.8",
       "@tanstack/solid-virtual": "3.13.32",
       "@shikijs/stream": "4.2.0",
       "ulid": "3.0.1",
@@ -52,7 +49,7 @@
       "@solid-primitives/storage": "4.3.3",
       "@tailwindcss/vite": "4.1.11",
       "diff": "8.0.2",
-      "dompurify": "3.3.1",
+      "dompurify": "3.3.0",
       "drizzle-kit": "1.0.0-rc.2",
       "drizzle-orm": "1.0.0-rc.2",
       "effect": "4.0.0-beta.83",
@@ -71,7 +68,7 @@
       "@typescript/native-preview": "7.0.0-dev.20251207.1",
       "zod": "4.1.8",
       "remeda": "2.26.0",
-        "shiki": "4.2.0",
+      "shiki": "4.2.0",
       "solid-list": "0.3.0",
       "tailwindcss": "4.1.11",
       "vite": "7.1.4",
@@ -106,24 +103,10 @@
     "heap-snapshot-toolkit": "1.1.3",
     "typescript": "catalog:"
   },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/mdev34-lab/alphacode"
-  },
+  "repository": { "type": "git", "url": "https://github.com/mdev34-lab/alphacode" },
   "license": "MIT",
-  "prettier": {
-    "semi": false,
-    "printWidth": 120
-  },
-  "trustedDependencies": [
-    "esbuild",
-    "node-pty",
-    "protobufjs",
-    "tree-sitter",
-    "tree-sitter-bash",
-    "tree-sitter-powershell",
-    "web-tree-sitter"
-  ],
+  "prettier": { "semi": false, "printWidth": 120 },
+  "trustedDependencies": ["esbuild", "node-pty", "protobufjs", "tree-sitter", "tree-sitter-bash", "tree-sitter-powershell", "web-tree-sitter"],
   "overrides": {
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
@@ -145,6 +128,6 @@
     "@ai-sdk/google@3.0.73": "patches/@ai-sdk%2Fgoogle@3.0.73.patch",
     "effect@4.0.0-beta.83": "patches/effect@4.0.0-beta.83.patch",
     "@tanstack/virtual-core@3.17.3": "patches/@tanstack%2Fvirtual-core@3.17.3.patch",
-    "@modelcontextprotocol/sdk@1.29.0": "patches/@modelcontextprotocol%2Fsdk@1.29.0.patch"
+    "@modelcontextprotocol/sdk@1.29.0": "patches/@modelcontextprotocol/sdk@1.29.0.patch"
   }
 }
