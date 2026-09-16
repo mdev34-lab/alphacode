@@ -23,7 +23,25 @@ const onGlobalEvent = (event: Parameters<typeof GlobalBus.emitEvent>[0]) => {
   }
 }
 
-const processWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || typeof process.send === "function"
+// Whether this module talks to its parent over process IPC (spawned as a
+// child process) or over thread messaging (Bun Worker in a compiled binary,
+// which has no `process.send`).
+const processWorker = typeof process.send === "function"
+
+// Whether this module is running as the TUI worker host rather than being
+// imported as a library. Gated on the explicit launch marker (set by both
+// spawn modes in worker-process.ts) or the child-process fallback for
+// environments that spawn worker.ts directly. `import.meta.main` is NOT a
+// reliable signal: a compiled Bun binary runs every secondary entrypoint
+// (the thread worker) with `import.meta.main === false`.
+const isTuiWorker = resolveIsTuiWorker(process.env, processWorker)
+
+// Worker identity and transport selection are independent concerns (see
+// `processWorker` above). Exporting the identity decision keeps the gating
+// contract testable without touching the process transport.
+export function resolveIsTuiWorker(env: NodeJS.ProcessEnv, hasProcessSend: boolean) {
+  return env["ALPHACODE_TUI_WORKER"] === "1" || hasProcessSend
+}
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 let stopRpcListener: (() => void) | undefined
@@ -80,7 +98,7 @@ export const rpc = {
   },
 }
 
-if (import.meta.main) {
+if (isTuiWorker) {
   Heap.start()
   process.on("unhandledRejection", onUnhandledRejection)
   process.on("uncaughtException", onUncaughtException)
