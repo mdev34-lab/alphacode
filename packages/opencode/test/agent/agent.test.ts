@@ -154,27 +154,33 @@ it.instance("explore agent asks for external directories and allows whitelisted 
   }),
 )
 
-it.instance("review agent is a read-only code reviewer subagent", () =>
+it.instance("review shares the plan permission set, including bash", () =>
   Effect.gen(function* () {
+    const plan = yield* load((svc) => svc.get("plan"))
     const review = yield* load((svc) => svc.get("review"))
+    expect(plan).toBeDefined()
     expect(review).toBeDefined()
-    expect(review?.mode).toBe("subagent")
-    expect(review?.native).toBe(true)
-    expect(review?.prompt).toContain("read-only")
-    // Read-only by construction: no mutation, no shell, no delegation, no user interaction
+    if (!plan || !review) return
+    expect(review.mode).toBe("subagent")
+    expect(review.native).toBe(true)
+    expect(review.prompt).toContain("Do not edit")
+    // Equivalent effective permissions, evaluated identically: sharing the
+    // plan overlay keeps the two from drifting into divergent policy.
+    for (const tool of ["read", "grep", "glob", "list", "webfetch", "bash", "question", "todowrite"]) {
+      expect(evalPerm(review, tool)).toBe(evalPerm(plan, tool))
+    }
+    // Pinned absolutes: bash is available, edits stay denied.
+    expect(evalPerm(plan, "bash")).toBe("allow")
+    expect(evalPerm(review, "bash")).toBe("allow")
     expect(evalPerm(review, "edit")).toBe("deny")
-    expect(evalPerm(review, "write")).toBe("deny")
-    expect(evalPerm(review, "apply_patch")).toBe("deny")
-    expect(evalPerm(review, "bash")).toBe("deny")
-    expect(evalPerm(review, "task")).toBe("deny")
-    expect(evalPerm(review, "todowrite")).toBe("deny")
-    expect(evalPerm(review, "question")).toBe("deny")
-    // Can inspect code and files
-    expect(evalPerm(review, "read")).toBe("allow")
-    expect(evalPerm(review, "grep")).toBe("allow")
-    expect(evalPerm(review, "glob")).toBe("allow")
-    expect(evalPerm(review, "list")).toBe("allow")
-    expect(evalPerm(review, "webfetch")).toBe("allow")
+    expect(Permission.disabled(["bash"], review.permission)).toEqual(new Set())
+    // Tool visibility matches plan exactly, whatever the shared set hides.
+    expect(Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], review.permission)).toEqual(
+      Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], plan.permission),
+    )
+    // Denials outside the shared allowance hold for both.
+    expect(Permission.evaluate("task", "general", review.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "explore", review.permission).action).toBe("allow")
   }),
 )
 
