@@ -34,7 +34,14 @@ const processWorker = typeof process.send === "function"
 // environments that spawn worker.ts directly. `import.meta.main` is NOT a
 // reliable signal: a compiled Bun binary runs every secondary entrypoint
 // (the thread worker) with `import.meta.main === false`.
-const isTuiWorker = process.env["ALPHACODE_TUI_WORKER"] === "1" || processWorker
+const isTuiWorker = resolveIsTuiWorker(process.env, processWorker)
+
+// Worker identity and transport selection are independent concerns (see
+// `processWorker` above). Exporting the identity decision keeps the gating
+// contract testable without touching the process transport.
+export function resolveIsTuiWorker(env: NodeJS.ProcessEnv, hasProcessSend: boolean) {
+  return env["ALPHACODE_TUI_WORKER"] === "1" || hasProcessSend
+}
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 let stopRpcListener: (() => void) | undefined
