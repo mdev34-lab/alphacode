@@ -1,0 +1,33 @@
+name: Audit upstream merge conflicts
+
+on:
+  push:
+    branches:
+      - sync/upstream-app-tsx-resolution-v2
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge upstream and report conflicts
+        shell: bash
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/anomalyco/opencode.git
+          git fetch upstream dev
+          git merge --no-commit --no-ff upstream/dev >/tmp/merge.out 2>&1
+          status=$?
+          cat /tmp/merge.out
+          echo "MERGE_STATUS=$status"
+          echo "CONFLICT_FILES_BEGIN"
+          git diff --name-only --diff-filter=U || true
+          echo "CONFLICT_FILES_END"
+          if [ "$status" -ne 0 ]; then exit 1; fi
