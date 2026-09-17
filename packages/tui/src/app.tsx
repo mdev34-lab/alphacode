@@ -35,7 +35,7 @@ import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
-import { DataProvider } from "./context/data"
+import { DataProvider, useData } from "./context/data"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { PermissionProvider } from "./context/permission"
@@ -137,6 +137,7 @@ const appBindingCommands = [
   "app.toggle.diffwrap",
   "app.toggle.paste_summary",
   "app.toggle.session_directory_filter",
+  "permission.mode",
 ] as const
 
 export type TuiInput = {
@@ -356,10 +357,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   )
   yield* Effect.sync(() => {
     win32FlushInputBuffer()
-    if (result.reason !== undefined) {
+    if (result.reason !== undefined)
       process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
-      process.exitCode = 1
-    }
     if (result.epilogue) process.stdout.write(result.epilogue + "\n")
   })
 })
@@ -380,6 +379,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const sync = useSync()
+  const data = useData()
   const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
@@ -399,6 +399,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       event,
       sdk,
       sync,
+      data,
       theme: themeState,
       toast,
       renderer,
@@ -456,24 +457,24 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
+      renderer.setTerminalTitle("alphacode")
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("OpenCode")
+        renderer.setTerminalTitle("alphacode")
         return
       }
 
-      const title = session.title.length > 40 ? session.title.slice(0, 37) + "…" : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
+      const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
+      renderer.setTerminalTitle(`α | ${title}`)
       return
     }
 
     if (route.data.type === "plugin") {
-      renderer.setTerminalTitle(`OC | ${route.data.id}`)
+      renderer.setTerminalTitle(`α | ${route.data.id}`)
     }
   })
 
@@ -819,9 +820,9 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       },
       {
         name: "docs.open",
-        title: "Open docs",
+        title: "Open repository",
         run: () => {
-          open("https://opencode.ai/docs").catch(() => {})
+          open("https://github.com/mdev34-lab/alphacode").catch(() => {})
           dialog.clear()
         },
         category: "System",
@@ -948,7 +949,9 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       {
         name: "permission.mode",
         title:
-          local.permission.mode === "auto" ? "Disable auto-approve permissions" : "Enable auto-approve permissions",
+          local.permission.mode === "yolo"
+            ? "Disable YOLO mode (auto-approve all)"
+            : "Enable YOLO mode (auto-approve all)",
         category: "System",
         run: () => {
           local.permission.toggle()
@@ -1053,7 +1056,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
 
     toast.show({
       variant: "info",
-      message: `Updating to v${version}…`,
+      message: `Updating to v${version}...`,
       duration: 30000,
     })
 
@@ -1072,7 +1075,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     await DialogAlert.show(
       dialog,
       "Update Complete",
-      `Successfully updated to OpenCode v${result.data.version}. Please restart the application.`,
+      `Successfully updated to alphacode v${result.data.version}. Please restart the application.`,
     )
 
     void exit()
