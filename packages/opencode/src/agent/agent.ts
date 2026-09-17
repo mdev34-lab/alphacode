@@ -10,6 +10,7 @@ import { Auth } from "../auth"
 import { ProviderTransform } from "@/provider/transform"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_CODE from "./prompt/code.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
@@ -143,13 +144,14 @@ const layer = Layer.effect(
         const agents: Record<string, Info> = {
           work: {
             name: "work",
-            description: "The default agent. Executes tools based on configured permissions.",
+            description: "General-purpose workhorse. Runs in arbitrary folders and mixed-file workspaces.",
             options: {},
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
                 question: "allow",
                 plan_enter: "allow",
+                lsp: "deny",
               }),
               user,
             ),
@@ -158,6 +160,27 @@ const layer = Layer.effect(
             // Rendered by clients without design tokens (TUI); token-based
             // surfaces resolve `--icon-agent-work-base` to the same value.
             color: AgentSchema.DEFAULT_COLOR,
+          },
+          code: {
+            name: "code",
+            description: "Software-engineering specialist. Runs in Git/project folders with LSP and repo-aware context.",
+            prompt: PROMPT_CODE,
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+                plan_enter: "allow",
+                lsp: "allow",
+                task: {
+                  work: "deny",
+                },
+              }),
+              user,
+            ),
+            mode: "all",
+            native: true,
+            color: "#00A6FF",
           },
           plan: {
             name: "plan",

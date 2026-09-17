@@ -49,6 +49,7 @@ it.instance("returns default native agents when no config", () =>
     const agents = yield* load((svc) => svc.list())
     const names = agents.map((a) => a.name)
     expect(names).toContain("work")
+    expect(names).toContain("code")
     expect(names).toContain("plan")
     expect(names).toContain("general")
     expect(names).toContain("explore")
@@ -775,8 +776,8 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const agent = yield* load((svc) => svc.defaultAgent())
-      // work is disabled, so it should return plan (next primary agent)
-      expect(agent).toBe("plan")
+      // work is disabled, so it should return code (next primary agent alphabetically)
+      expect(agent).toBe("code")
     }),
   {
     config: {
@@ -795,6 +796,7 @@ it.instance(
       agent: {
         work: { disable: true },
         plan: { disable: true },
+        code: { disable: true },
       },
     },
   },
@@ -852,7 +854,7 @@ it.instance(
     Effect.gen(function* () {
       const names = (yield* load((svc) => svc.list())).map((a) => a.name)
       expect(names).not.toContain("work")
-      expect(yield* load((svc) => svc.defaultAgent())).toBe("plan")
+      expect(yield* load((svc) => svc.defaultAgent())).toBe("code")
     }),
   {
     config: {
