@@ -432,7 +432,13 @@ describe("review stagnation nudge contract", () => {
 })
 
 // ---------------------------------------------------------------------------
-// Loop integration: the heuristic wired into the actual session loop.
+// Loop integration: the minimal dispatch seam.
+//
+// The exhaustive behavior matrix lives in the pure `reviewStagnationState`
+// tests above. These two tests only prove the real `SessionPrompt` loop
+// consults the heuristic: a stagnated review earns the recovery nudge (and
+// the first two generic nudges prove the loop does not send it early), while
+// identical repeats from any other agent keep the generic reminder.
 // ---------------------------------------------------------------------------
 
 const summary = Layer.succeed(
@@ -546,8 +552,6 @@ function compileRoot(flagOverrides: Parameters<typeof RuntimeFlags.layer>[0]) {
 }
 
 const it = testEffect(compileRoot({ experimentalEventSystem: true }))
-const itFast = testEffect(compileRoot({ experimentalEventSystem: true, reviewStagnationRepeats: 2 }))
-const itOff = testEffect(compileRoot({ experimentalEventSystem: true, reviewStagnationRepeats: 0 }))
 
 // Finish stays enabled for `review` and `work` so the nudge paths exercised
 // here match production (agents end their turn through the finish tool).
@@ -668,8 +672,6 @@ function report(assessment: "approved" | "needs-fixes", summary: string) {
 // The issue #171 symptom: the same completed review text, reproduced
 // verbatim across generations instead of a finish call.
 const REPEAT = report("needs-fixes", "The PDF update misses edge-case tests.")
-const OTHER = report("approved", "The PDF update is clean.")
-const ANOTHER = report("needs-fixes", "The PDF update misses different edge-case tests.")
 
 const RECOVERY_MARKER = "repeated the same completed review"
 const GENERIC_MARKER = "The turn ended without a successful finish call"
@@ -735,112 +737,6 @@ it.instance(
 )
 
 it.instance(
-  "a prose-only finish after the recovery nudge is still rejected",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Stagnation gating",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      yield* llm.text(REPEAT)
-      yield* llm.text(REPEAT)
-      yield* llm.text(REPEAT)
-      yield* llm.tool("finish", { result: "Needs fixes: one Important finding." })
-      yield* llm.tool("finish", { result: REPEAT })
-
-      yield* user(chat.id, TASK_PROMPT)
-      const result = yield* prompt.loop({ sessionID: chat.id })
-      expect(result.info.role).toBe("assistant")
-
-      // The recovery nudge does not weaken the review result contract: the
-      // envelope-less finish fails as recoverable feedback, and only the
-      // envelope-carrying retry completes the review.
-      expect(yield* turnHits()).toHaveLength(5)
-      const messages = yield* sessions.messages({ sessionID: chat.id })
-      expect(syntheticTexts(messages).filter((text) => text.includes(RECOVERY_MARKER))).toHaveLength(1)
-      const finishes = finishParts(messages)
-      expect(finishes.map((part) => part.state.status)).toEqual(["error", "completed"])
-      if (finishes[0]?.state.status === "error") {
-        expect(finishes[0].state.error).toContain("no <alphacode-review> report envelope was found")
-      }
-    }),
-  20_000,
-)
-
-it.instance(
-  "tool activity between repeats prevents the recovery nudge",
-  () =>
-    Effect.gen(function* () {
-      const { dir, llm } = yield* useServerConfig
-      const fs = yield* FSUtil.Service
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Stagnation reads",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      const file = path.join(dir, "probe.txt")
-      yield* fs.writeWithDirs(file, "probe content")
-      yield* llm.text(REPEAT)
-      yield* llm.tool("read", { filePath: file })
-      yield* llm.text(REPEAT)
-      yield* llm.text(REPEAT)
-      yield* llm.tool("finish", { result: REPEAT })
-
-      yield* user(chat.id, TASK_PROMPT)
-      const result = yield* prompt.loop({ sessionID: chat.id })
-      expect(result.info.role).toBe("assistant")
-
-      // The completed read is real review work: the run on either side never
-      // reaches the threshold, so every reminder stays generic.
-      expect(yield* turnHits()).toHaveLength(5)
-      const messages = yield* sessions.messages({ sessionID: chat.id })
-      const nudges = syntheticTexts(messages)
-      expect(nudges.filter((text) => text.includes(RECOVERY_MARKER))).toHaveLength(0)
-      expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(3)
-      const reads = messages
-        .flatMap((message) => message.parts)
-        .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "read")
-      expect(reads.map((part) => part.state.status)).toEqual(["completed"])
-      expect(finishParts(messages).map((part) => part.state.status)).toEqual(["completed"])
-    }),
-  20_000,
-)
-
-it.instance(
-  "distinct review outputs never trigger the recovery nudge",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Stagnation distinct",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      yield* llm.text(REPEAT)
-      yield* llm.text(OTHER)
-      yield* llm.text(ANOTHER)
-      yield* llm.tool("finish", { result: ANOTHER })
-
-      yield* user(chat.id, TASK_PROMPT)
-      const result = yield* prompt.loop({ sessionID: chat.id })
-      expect(result.info.role).toBe("assistant")
-
-      expect(yield* turnHits()).toHaveLength(4)
-      const messages = yield* sessions.messages({ sessionID: chat.id })
-      const nudges = syntheticTexts(messages)
-      expect(nudges.filter((text) => text.includes(RECOVERY_MARKER))).toHaveLength(0)
-      expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(3)
-      expect(finishParts(messages).map((part) => part.state.status)).toEqual(["completed"])
-    }),
-  20_000,
-)
-
-it.instance(
   "repeated output from a non-review agent keeps the generic nudge",
   () =>
     Effect.gen(function* () {
@@ -862,66 +758,6 @@ it.instance(
 
       // The heuristic is scoped to the review subagent: the primary agent's
       // identical repeats keep earning the generic reminder.
-      expect(yield* turnHits()).toHaveLength(4)
-      const messages = yield* sessions.messages({ sessionID: chat.id })
-      const nudges = syntheticTexts(messages)
-      expect(nudges.filter((text) => text.includes(RECOVERY_MARKER))).toHaveLength(0)
-      expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(3)
-      expect(finishParts(messages).map((part) => part.state.status)).toEqual(["completed"])
-    }),
-  20_000,
-)
-
-itFast.instance(
-  "the repeat threshold is configurable",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Stagnation threshold",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      yield* llm.text(REPEAT)
-      yield* llm.text(REPEAT)
-      yield* llm.tool("finish", { result: REPEAT })
-
-      yield* user(chat.id, TASK_PROMPT)
-      const result = yield* prompt.loop({ sessionID: chat.id })
-      expect(result.info.role).toBe("assistant")
-
-      // With the threshold at 2, the second identical generation already
-      // earns the recovery nudge.
-      expect(yield* turnHits()).toHaveLength(3)
-      const messages = yield* sessions.messages({ sessionID: chat.id })
-      const nudges = syntheticTexts(messages)
-      expect(nudges.map((text) => text.includes(RECOVERY_MARKER))).toEqual([false, true])
-      expect(finishParts(messages).map((part) => part.state.status)).toEqual(["completed"])
-    }),
-  20_000,
-)
-
-itOff.instance(
-  "a threshold of 0 disables the recovery nudge",
-  () =>
-    Effect.gen(function* () {
-      const { llm } = yield* useServerConfig
-      const prompt = yield* SessionPrompt.Service
-      const sessions = yield* Session.Service
-      const chat = yield* sessions.create({
-        title: "Stagnation disabled",
-        permission: [{ permission: "*", pattern: "*", action: "allow" }],
-      })
-      yield* llm.text(REPEAT)
-      yield* llm.text(REPEAT)
-      yield* llm.text(REPEAT)
-      yield* llm.tool("finish", { result: REPEAT })
-
-      yield* user(chat.id, TASK_PROMPT)
-      const result = yield* prompt.loop({ sessionID: chat.id })
-      expect(result.info.role).toBe("assistant")
-
       expect(yield* turnHits()).toHaveLength(4)
       const messages = yield* sessions.messages({ sessionID: chat.id })
       const nudges = syntheticTexts(messages)
