@@ -50,6 +50,8 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { FinishTool } from "@/tool/finish"
 import PROMPT_REVIEW_LOOP from "./prompt/review-loop.txt"
 import FINISH_NUDGE from "./prompt/finish-nudge.txt"
+import REVIEW_STAGNATION_NUDGE from "./prompt/review-stagnation-nudge.txt"
+import { ReviewStagnation } from "./review-stagnation"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -1268,10 +1270,28 @@ const layer = Layer.effect(
               lastAssistant.error === undefined &&
               step < (activeAgent?.steps ?? Infinity)
             ) {
-              yield* Effect.logWarning("assistant ended without the finish tool, nudging", {
-                "session.id": sessionID,
-                messageID: lastAssistant.id,
-              })
+              // Review stagnation recovery (issue #171): a review that
+              // restates the same completed output across consecutive
+              // generations without tool activity gets the recovery nudge
+              // toward the existing finish path instead of the generic
+              // reminder again. Any other agent keeps the generic nudge.
+              const stagnated =
+                lastUser.agent === "review" &&
+                ReviewStagnation.reviewStagnationState(
+                  msgs,
+                  ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats }),
+                ).stagnated
+              if (stagnated) {
+                yield* Effect.logWarning("review repeated identical output without progress, sending recovery nudge", {
+                  "session.id": sessionID,
+                  messageID: lastAssistant.id,
+                })
+              } else {
+                yield* Effect.logWarning("assistant ended without the finish tool, nudging", {
+                  "session.id": sessionID,
+                  messageID: lastAssistant.id,
+                })
+              }
               const nudge: SessionV1.User = {
                 id: MessageID.ascending(),
                 sessionID,
@@ -1286,7 +1306,7 @@ const layer = Layer.effect(
                 messageID: nudge.id,
                 sessionID,
                 type: "text",
-                text: FINISH_NUDGE,
+                text: stagnated ? REVIEW_STAGNATION_NUDGE : FINISH_NUDGE,
                 synthetic: true,
               } satisfies SessionV1.TextPart)
               continue

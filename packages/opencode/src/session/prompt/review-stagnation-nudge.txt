@@ -1,0 +1,5 @@
+[WARNING] You have repeated the same completed review without making progress.
+
+Stop restating it and call `finish` now with the findings already established. The finish result must contain the `<alphacode-review>` report envelope, or the call will be rejected and the review will continue.
+
+(This is an automated reminder. Do not answer it conversationally.)
