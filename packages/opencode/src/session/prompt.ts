@@ -1275,16 +1275,20 @@ const layer = Layer.effect(
               // generations without tool activity gets the recovery nudge
               // toward the existing finish path instead of the generic
               // reminder again. Any other agent keeps the generic nudge.
-              const stagnated =
-                lastUser.agent === "review" &&
-                ReviewStagnation.reviewStagnationState(
-                  msgs,
-                  ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats }),
-                ).stagnated
+              const stagnation =
+                lastUser.agent === "review"
+                  ? ReviewStagnation.reviewStagnationState(
+                      msgs,
+                      ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats }),
+                    )
+                  : undefined
+              const stagnated = stagnation?.stagnated === true
               if (stagnated) {
                 yield* Effect.logWarning("review repeated identical output without progress, sending recovery nudge", {
                   "session.id": sessionID,
                   messageID: lastAssistant.id,
+                  repeats: stagnation.repeats,
+                  threshold: ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats }),
                 })
               } else {
                 yield* Effect.logWarning("assistant ended without the finish tool, nudging", {

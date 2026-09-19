@@ -19,7 +19,7 @@
 // difference (line-ending bytes and empty/structural text parts). Merely
 // similar reviews stay different, and any tool call breaks the run.
 
-export const DEFAULT_REPEATS = 3
+export const DEFAULT_REPEATS = 2
 
 export function resolveRepeats(input: { repeats?: number }): number {
   return input.repeats === undefined ? DEFAULT_REPEATS : input.repeats

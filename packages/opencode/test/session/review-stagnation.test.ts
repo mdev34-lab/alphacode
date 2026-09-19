@@ -86,9 +86,9 @@ function toolMsg(tool: string, status: string): Message {
 }
 
 describe("ReviewStagnation.resolveRepeats", () => {
-  test("defaults to three consecutive identical outputs", () => {
-    expect(ReviewStagnation.resolveRepeats({})).toBe(3)
-    expect(ReviewStagnation.DEFAULT_REPEATS).toBe(3)
+  test("defaults to two consecutive identical outputs", () => {
+    expect(ReviewStagnation.resolveRepeats({})).toBe(2)
+    expect(ReviewStagnation.DEFAULT_REPEATS).toBe(2)
   })
 
   test("overrides win and 0 is preserved for disabling", () => {
@@ -717,15 +717,15 @@ it.instance(
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")
 
-      // Three identical generations earn two generic reminders, then the
+      // Two identical generations earn one generic reminder, then the
       // recovery nudge; the nudged model finishes normally.
-      expect(yield* turnHits()).toHaveLength(4)
+      expect(yield* turnHits()).toHaveLength(3)
       const messages = yield* sessions.messages({ sessionID: chat.id })
       const nudges = syntheticTexts(messages)
-      expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(2)
+      expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(1)
       const recovery = nudges.filter((text) => text.includes(RECOVERY_MARKER))
       expect(recovery).toHaveLength(1)
-      expect(nudges.map((text) => text.includes(RECOVERY_MARKER))).toEqual([false, false, true])
+      expect(nudges.map((text) => text.includes(RECOVERY_MARKER))).toEqual([false, true])
 
       const finishes = finishParts(messages)
       expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
