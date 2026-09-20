@@ -1179,6 +1179,86 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    // Hard backstop for a review that ignored the recovery nudge (issue #176).
+    // It runs the same `finish` tool the model would have called, so the report
+    // envelope check and the review/finish gate apply unchanged, and persists
+    // the outcome as a finish part on the generation being completed — exactly
+    // what a successful model finish leaves behind, which is what the loop's
+    // finish detection and the review delivery contract downstream read.
+    // `result` is handed over already parsed and rendered by ReviewReport; this
+    // path adds no report validation of its own.
+    const completeStagnatedReview = Effect.fn("SessionPrompt.completeStagnatedReview")(function* (input: {
+      sessionID: SessionID
+      agent: string
+      messageID: MessageID
+      messages: SessionV1.WithParts[]
+      result: string
+    }) {
+      // The same initialized `finish` definition the model is offered: the
+      // registry always exposes it, independent of provider and model.
+      const def = (yield* registry.all()).find((item) => item.id === FinishTool.id)
+      if (!def) {
+        yield* Effect.logWarning("review stagnation backstop found no finish tool", { "session.id": input.sessionID })
+        return false
+      }
+      const start = Date.now()
+      const part = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: input.messageID,
+        sessionID: input.sessionID,
+        type: "tool",
+        tool: FinishTool.id,
+        callID: PartID.ascending(),
+        state: { status: "running", input: { result: input.result }, time: { start } },
+      } satisfies SessionV1.ToolPart)
+      const outcome = yield* def
+        .execute({ result: input.result }, {
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: input.agent,
+          abort: new AbortController().signal,
+          messages: input.messages,
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        } satisfies Tool.Context)
+        .pipe(
+          Effect.map((value) => ({ ok: true as const, value })),
+          Effect.catchTag("LLM.ToolFailure", (error) => Effect.succeed({ ok: false as const, error })),
+        )
+      if (!outcome.ok) {
+        // The gate refused this completion, so the review does not complete.
+        // The attempt is recorded as an errored finish part so the transcript
+        // shows why, and the caller ends the run instead of nudging again.
+        yield* Effect.logWarning("review stagnation backstop declined by the finish gate", {
+          "session.id": input.sessionID,
+          messageID: input.messageID,
+          reason: outcome.error.message,
+        })
+        yield* sessions.updatePart({
+          ...part,
+          state: {
+            status: "error",
+            input: { result: input.result },
+            error: outcome.error.message,
+            time: { start, end: Date.now() },
+          },
+        } satisfies SessionV1.ToolPart)
+        return false
+      }
+      yield* sessions.updatePart({
+        ...part,
+        state: {
+          status: "completed",
+          input: { result: input.result },
+          output: outcome.value.output,
+          title: outcome.value.title,
+          metadata: outcome.value.metadata,
+          time: { start, end: Date.now() },
+        },
+      } satisfies SessionV1.ToolPart)
+      return true
+    })
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1275,20 +1355,58 @@ const layer = Layer.effect(
               // generations without tool activity gets the recovery nudge
               // toward the existing finish path instead of the generic
               // reminder again. Any other agent keeps the generic nudge.
+              const repeats = ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats })
               const stagnation =
-                lastUser.agent === "review"
-                  ? ReviewStagnation.reviewStagnationState(
-                      msgs,
-                      ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats }),
-                    )
-                  : undefined
+                lastUser.agent === "review" ? ReviewStagnation.reviewStagnationState(msgs, repeats) : undefined
               const stagnated = stagnation?.stagnated === true
+              // Hard backstop (issue #176): the nudge above is model-dependent,
+              // so a review that ignores it can repeat until the step cap. Once
+              // the identical run survives a recovery nudge and the turn
+              // already delivered a report, the runtime completes the review
+              // from that report through the normal finish path rather than
+              // asking the model again.
+              const backstop = stagnated
+                ? ReviewStagnation.reviewStagnationBackstop({
+                    messages: msgs,
+                    repeats,
+                    recoveryNudge: REVIEW_STAGNATION_NUDGE,
+                  })
+                : undefined
+              if (backstop !== undefined && lastAssistantMsg !== undefined) {
+                yield* Effect.logWarning("review ignored the recovery nudge, completing from the established report", {
+                  "session.id": sessionID,
+                  messageID: lastAssistant.id,
+                  repeats: stagnation?.repeats,
+                  revision: backstop.report.revision,
+                  assessment: backstop.report.assessment,
+                })
+                const completed = yield* completeStagnatedReview({
+                  sessionID,
+                  agent: lastUser.agent,
+                  messageID: lastAssistantMsg.info.id,
+                  messages: msgs,
+                  result: backstop.result,
+                })
+                // The completed finish part ends the turn at the top of the
+                // loop, through the existing finish detection.
+                if (completed) continue
+                // The gate refused the established report. The backstop never
+                // bypasses it, so the review ends here — without a completed
+                // finish, which the caller surfaces as a delivery failure —
+                // instead of nudging a model that just proved it ignores the
+                // nudge.
+                yield* Effect.logWarning("review completion backstop refused, ending the review run", {
+                  "session.id": sessionID,
+                  messageID: lastAssistant.id,
+                })
+                break
+              }
               if (stagnated) {
                 yield* Effect.logWarning("review repeated identical output without progress, sending recovery nudge", {
                   "session.id": sessionID,
                   messageID: lastAssistant.id,
                   repeats: stagnation.repeats,
-                  threshold: ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats }),
+                  threshold: repeats,
                 })
               } else {
                 yield* Effect.logWarning("assistant ended without the finish tool, nudging", {

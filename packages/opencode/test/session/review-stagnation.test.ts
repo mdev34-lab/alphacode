@@ -125,8 +125,14 @@ describe("ReviewStagnation.reviewStagnationState", () => {
       want: { repeats: 1, stagnated: false },
     },
     {
-      name: "two identical outputs stay below the default threshold",
+      name: "two identical outputs cross the default threshold",
       messages: [userMsg("review this"), reviewMsg(A), nudgeMsg(), reviewMsg(A)],
+      want: { repeats: 2, stagnated: true },
+    },
+    {
+      name: "two identical outputs stay below a higher threshold",
+      messages: [userMsg("review this"), reviewMsg(A), nudgeMsg(), reviewMsg(A)],
+      repeats: 3,
       want: { repeats: 2, stagnated: false },
     },
     {
@@ -142,6 +148,7 @@ describe("ReviewStagnation.reviewStagnationState", () => {
     {
       name: "A → A → B → B does not carry A toward B",
       messages: [userMsg("review this"), reviewMsg(A), reviewMsg(A), reviewMsg(B), reviewMsg(B)],
+      repeats: 3,
       want: { repeats: 2, stagnated: false },
     },
     {
@@ -164,6 +171,7 @@ describe("ReviewStagnation.reviewStagnationState", () => {
         reviewMsg(A),
         reviewMsg(A),
       ],
+      repeats: 3,
       want: { repeats: 2, stagnated: false },
     },
     {
@@ -176,6 +184,7 @@ describe("ReviewStagnation.reviewStagnationState", () => {
         reviewMsg(A),
         reviewMsg(A),
       ],
+      repeats: 3,
       want: { repeats: 2, stagnated: false },
     },
     {
@@ -188,6 +197,7 @@ describe("ReviewStagnation.reviewStagnationState", () => {
         reviewMsg(A),
         reviewMsg(A),
       ],
+      repeats: 3,
       want: { repeats: 2, stagnated: false },
     },
     {
@@ -295,6 +305,7 @@ describe("ReviewStagnation.reviewStagnationState", () => {
     {
       name: "step markers do not break a text run",
       messages: [userMsg("review this"), reviewMsg(A, [{ type: "step-start" }, { type: "step-finish" }]), reviewMsg(A)],
+      repeats: 3,
       want: { repeats: 2, stagnated: false },
     },
     {
@@ -326,6 +337,7 @@ describe("ReviewStagnation.reviewStagnationState", () => {
     {
       name: "whitespace-only generations reset the run",
       messages: [userMsg("review this"), reviewMsg(A), reviewMsg(A), reviewMsg("  \n  "), reviewMsg(A), reviewMsg(A)],
+      repeats: 3,
       want: { repeats: 2, stagnated: false },
     },
     {
@@ -432,12 +444,160 @@ describe("review stagnation nudge contract", () => {
 })
 
 // ---------------------------------------------------------------------------
+// Hard backstop: completing a review the model will not finish itself (#176).
+// ---------------------------------------------------------------------------
+
+const recoveryNudge = await readFile(path.join(promptDirectory, "review-stagnation-nudge.txt"), "utf8")
+
+const DONE = "Review completed for the uncommitted PDF update. Verdict: Needs fixes due to missing tests."
+
+function envelope(assessment: "approved" | "needs-fixes", summary: string) {
+  return [
+    `Assessment: ${assessment === "approved" ? "Approved" : "Needs fixes"}`,
+    "",
+    "<alphacode-review>",
+    JSON.stringify({ version: 1, revision: "uncommitted", assessment, summary, findings: [] }, null, 2),
+    "</alphacode-review>",
+  ].join("\n")
+}
+
+const NEEDS_FIXES = envelope("needs-fixes", "The PDF update misses edge-case tests.")
+const APPROVED = envelope("approved", "A later pass clears the update.")
+
+describe("ReviewStagnation.reviewStagnationBackstop", () => {
+  const cases: {
+    name: string
+    messages: Message[]
+    repeats?: number
+    want?: { assessment: "approved" | "needs-fixes"; summary: string }
+  }[] = [
+    {
+      name: "completes from the report the turn already established",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        nudgeMsg(),
+        reviewMsg(DONE),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(DONE),
+        reviewMsg(DONE),
+      ],
+      want: { assessment: "needs-fixes", summary: "The PDF update misses edge-case tests." },
+    },
+    {
+      name: "the repeated output itself may be the report",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        nudgeMsg(),
+        reviewMsg(NEEDS_FIXES),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(NEEDS_FIXES),
+      ],
+      want: { assessment: "needs-fixes", summary: "The PDF update misses edge-case tests." },
+    },
+    {
+      name: "the last report the turn established wins",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        reviewMsg(APPROVED),
+        reviewMsg(DONE),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(DONE),
+      ],
+      want: { assessment: "approved", summary: "A later pass clears the update." },
+    },
+    {
+      name: "no report means no backstop, however long the run",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(DONE),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(DONE),
+        reviewMsg(DONE),
+        reviewMsg(DONE),
+      ],
+    },
+    {
+      name: "a recovery nudge before the run began proves nothing",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        nudgeMsg(recoveryNudge),
+        toolMsg("read", "completed"),
+        reviewMsg(DONE),
+        reviewMsg(DONE),
+      ],
+    },
+    {
+      name: "a run shorter than the threshold never completes a review",
+      messages: [userMsg("review this"), reviewMsg(NEEDS_FIXES), nudgeMsg(recoveryNudge), reviewMsg(DONE)],
+    },
+    {
+      name: "a real user message that repeats the nudge wording is not the nudge",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        userMsg(recoveryNudge),
+        reviewMsg(DONE),
+        reviewMsg(DONE),
+      ],
+    },
+    {
+      name: "a completed finish ends the turn",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(DONE),
+        toolMsg("finish", "completed"),
+        reviewMsg(DONE),
+        reviewMsg(DONE),
+      ],
+    },
+    {
+      name: "a threshold of 1 disables the backstop",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        reviewMsg(DONE),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(DONE),
+      ],
+      repeats: 1,
+    },
+  ]
+
+  for (const c of cases) {
+    test(c.name, () => {
+      const backstop = ReviewStagnation.reviewStagnationBackstop({
+        messages: c.messages,
+        repeats: c.repeats,
+        recoveryNudge,
+      })
+      if (!c.want) {
+        expect(backstop).toBeUndefined()
+        return
+      }
+      expect(backstop?.report.revision).toBe("uncommitted")
+      expect(backstop?.report.assessment).toBe(c.want.assessment)
+      // The completion reuses the established report verbatim: its summary,
+      // its findings, and one canonical envelope.
+      expect(backstop?.result).toContain(c.want.summary)
+      expect(backstop?.result).toContain("<alphacode-review>")
+    })
+  }
+})
+
+// ---------------------------------------------------------------------------
 // Loop integration: the minimal dispatch seam.
 //
-// The exhaustive behavior matrix lives in the pure `reviewStagnationState`
-// tests above. These two tests only prove the real `SessionPrompt` loop
-// consults the heuristic: a stagnated review earns the recovery nudge (and
-// the first two generic nudges prove the loop does not send it early), while
+// The exhaustive behavior matrices live in the pure tests above. These tests
+// only prove the real `SessionPrompt` loop consults them: a stagnated review
+// earns the recovery nudge and can still finish normally, a review that
+// ignores the nudge is completed from the report it already delivered, a
+// stagnated review without a report keeps the existing finish gate, and
 // identical repeats from any other agent keep the generic reminder.
 // ---------------------------------------------------------------------------
 
@@ -710,7 +870,6 @@ it.instance(
       })
       yield* llm.text(REPEAT)
       yield* llm.text(REPEAT)
-      yield* llm.text(REPEAT)
       yield* llm.tool("finish", { result: REPEAT })
 
       yield* user(chat.id, TASK_PROMPT)
@@ -731,6 +890,103 @@ it.instance(
       expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
       if (finishes[0]?.state.status === "completed") {
         expect(finishes[0].state.output).toContain("<alphacode-review>")
+        // The model's own finish, not the stagnation backstop.
+        expect(finishes[0].state.input.result).toBe(REPEAT)
+      }
+    }),
+  20_000,
+)
+
+it.instance(
+  "a review that ignores the recovery nudge completes from its established report",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Backstop",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      // The failure mode from #176: the reviewer delivered its report first,
+      // then restated the same short completion message forever, so the
+      // recovery nudge kept being sent and the turn never terminated. The
+      // queue holds more repetitions than the runtime may consume, so
+      // terminating early is the only way the loop can stop.
+      yield* llm.text(REPEAT)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+
+      yield* user(chat.id, TASK_PROMPT)
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+
+      // Four generations: the report, one nudge, then two restatements that
+      // earn the single recovery nudge and the backstop.
+      expect(yield* turnHits()).toHaveLength(4)
+      expect(yield* llm.pending).toBe(2)
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      // Exactly one recovery nudge, sent after the two restatements: the
+      // loop never nudges again.
+      const nudges = syntheticTexts(messages)
+      expect(nudges.map((text) => text.includes(RECOVERY_MARKER))).toEqual([false, false, true])
+
+      // The completion is a normal finish: completed, delivered on the
+      // message the loop returns, carrying the report the reviewer had
+      // already delivered — not the repeated completion message.
+      const finishes = finishParts(messages)
+      expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
+      expect(finishParts([result])).toHaveLength(1)
+      if (finishes[0]?.state.status === "completed") {
+        expect(finishes[0].state.output).toContain("<alphacode-review>")
+        expect(finishes[0].state.output).toContain("Edge cases untested")
+        expect(finishes[0].state.input.result).toContain("<alphacode-review>")
+      }
+    }),
+  20_000,
+)
+
+it.instance(
+  "stagnation without an established report keeps the existing finish gate",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Backstop gate",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      // No generation ever carries a report envelope, so there is nothing to
+      // complete from: the runtime must keep nudging and let the model finish,
+      // which it eventually does.
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.tool("finish", { result: REPEAT })
+
+      yield* user(chat.id, TASK_PROMPT)
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+
+      // All five scripted replies were consumed: stagnation alone never
+      // completed the review.
+      expect(yield* turnHits()).toHaveLength(5)
+      expect(yield* llm.pending).toBe(0)
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const nudges = syntheticTexts(messages)
+      expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(1)
+      expect(nudges.filter((text) => text.includes(RECOVERY_MARKER))).toHaveLength(3)
+
+      // The only finish is the model's, with the result it passed.
+      const finishes = finishParts(messages)
+      expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
+      if (finishes[0]?.state.status === "completed") {
+        expect(finishes[0].state.input.result).toBe(REPEAT)
       }
     }),
   20_000,
