@@ -84,8 +84,14 @@ export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGro
     }
     for (const part of row.parts) {
       if (part.type === "text") {
-        current = undefined
-        pending.length = 0
+        // The stream creates an empty text part as a placeholder on assistant
+        // turns that are going to continue with tools or reasoning. It is not
+        // assistant output and must not close the logical work run. Only
+        // rendered text is a semantic transcript boundary.
+        if (part.text !== "") {
+          current = undefined
+          pending.length = 0
+        }
         continue
       }
       if (part.type === "reasoning") {

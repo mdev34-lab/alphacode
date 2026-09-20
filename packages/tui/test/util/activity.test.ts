@@ -214,13 +214,14 @@ describe("computeActivityGroups", () => {
     expect(result.groupOf.has("r1")).toBe(false)
   })
 
-  test("keeps one group across multiple model turns with CoT interleaved with tool calls", () => {
+  test("keeps one group across stream placeholders and interleaved reasoning", () => {
     const rows: ActivityRow[] = [
-      { message: assistant("m1", 1), parts: [tool("m1", "t1", completed(0, 1))] },
-      { message: assistant("m2", 2), parts: [tool("m2", "t2", completed(1, 2))] },
+      { message: assistant("m1", 1), parts: [text("m1", "placeholder-1", ""), tool("m1", "t1", completed(0, 1))] },
+      { message: assistant("m2", 2), parts: [text("m2", "placeholder-2", ""), tool("m2", "t2", completed(1, 2))] },
       {
         message: assistant("m3", 3),
         parts: [
+          text("m3", "placeholder-3", ""),
           reasoning("m3", "r1", "thinking about the trace"),
           tool("m3", "t3", completed(2, 3)),
           tool("m3", "t4", completed(2, 4)),
@@ -229,13 +230,14 @@ describe("computeActivityGroups", () => {
       {
         message: assistant("m4", 4),
         parts: [
+          text("m4", "placeholder-4", ""),
           reasoning("m4", "r2", "thinking again"),
           tool("m4", "t5", completed(4, 5)),
           tool("m4", "t6", completed(4, 6)),
         ],
       },
-      { message: assistant("m5", 5), parts: [tool("m5", "t7", completed(6, 7))] },
-      { message: assistant("m6", 6), parts: [tool("m6", "t8", completed(7, 8), "finish")] },
+      { message: assistant("m5", 5), parts: [text("m5", "placeholder-5", ""), tool("m5", "t7", completed(6, 7))] },
+      { message: assistant("m6", 6), parts: [text("m6", "placeholder-6", ""), tool("m6", "t8", completed(7, 8), "finish")] },
     ]
     const result = computeActivityGroups(rows)
     expect(result.byID.size).toBe(1)

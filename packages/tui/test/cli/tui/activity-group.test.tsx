@@ -571,9 +571,9 @@ describe("activity group TUI", () => {
       const t2 = running(m2.id, "grep", { pattern: "todo" }, 1100)
       const t3 = running(m3.id, "bash", { command: "ls" }, 1200)
       seed(sync, [
-        { message: m1, parts: [t1] },
-        { message: m2, parts: [reasoningPart(m2.id, "thinking"), t2] },
-        { message: m3, parts: [reasoningPart(m3.id, "thinking again"), t3] },
+        { message: m1, parts: [textPart(m1.id, ""), t1] },
+        { message: m2, parts: [textPart(m2.id, ""), reasoningPart(m2.id, "thinking"), t2] },
+        { message: m3, parts: [textPart(m3.id, ""), reasoningPart(m3.id, "thinking again"), t3] },
       ])
       const frame = () => frameOf(app)
       await app.waitForFrame((f) => f.match(/Working... 3 tool calls/g)?.length === 1)
