@@ -137,8 +137,8 @@ type ReviewRun = {
   readonly repeats: number | undefined
   /** Index of the first generation in that run, -1 when there is none. */
   readonly start: number
-  /** Index of the recovery nudge sent during this turn, -1 when none was sent. */
-  readonly recoveryAt: number
+  /** True when a recovery nudge was sent into this exact run. */
+  readonly nudged: boolean
 }
 
 // Walk the current user turn and measure the trailing run of literally
@@ -149,15 +149,21 @@ type ReviewRun = {
 // progress breaks the run, as does a failed generation, an empty one, or a
 // new real user message. Summary assistants are harness-generated compaction
 // output, not review generations.
+//
+// The recovery nudge belongs to the run, not to the turn: `nudged` is set only
+// for a nudge sent while a run is in progress and every reset clears it, so a
+// nudge the model answered with progress is spent on the run it interrupted.
+// The run that follows has to earn its own nudge, and can never inherit one.
 function reviewRun(current: readonly ReviewStagnationMessage[], recovery?: string): ReviewRun {
   let text: string | undefined
   let repeats = 0
   let start = -1
-  let recoveryAt = -1
+  let nudged = false
   const reset = () => {
     text = undefined
     repeats = 0
     start = -1
+    nudged = false
   }
 
   for (const [index, message] of current.entries()) {
@@ -166,7 +172,7 @@ function reviewRun(current: readonly ReviewStagnationMessage[], recovery?: strin
       // Defensive: the slice starts after the last real user message, so a
       // real one here only happens if the caller passed a wider window.
       if (isSyntheticUser(message)) {
-        if (recovery !== undefined && carriesRecoveryNudge(message, recovery)) recoveryAt = index
+        if (text !== undefined && recovery !== undefined && carriesRecoveryNudge(message, recovery)) nudged = true
         continue
       }
       reset()
@@ -178,7 +184,7 @@ function reviewRun(current: readonly ReviewStagnationMessage[], recovery?: strin
       reset()
       continue
     }
-    if (hasCompletedFinish(message)) return { repeats: undefined, start: -1, recoveryAt }
+    if (hasCompletedFinish(message)) return { repeats: undefined, start: -1, nudged }
     if (hasToolActivity(message)) {
       reset()
       continue
@@ -190,13 +196,16 @@ function reviewRun(current: readonly ReviewStagnationMessage[], recovery?: strin
     }
     if (text !== undefined && output === text) repeats += 1
     else {
+      // A different generation starts a new run, so the run that was in
+      // progress is over — and any nudge it earned is spent with it.
+      reset()
       text = output
       repeats = 1
       start = index
     }
   }
 
-  return { repeats, start, recoveryAt }
+  return { repeats, start, nudged }
 }
 
 function thresholdOf(repeats: number) {
@@ -255,9 +264,11 @@ function establishedReviewReport(messages: readonly ReviewStagnationMessage[]): 
  * The deterministic backstop that ends the recovery loop (issue #176).
  *
  * Returns the established review result once the model has ignored the
- * recovery nudge: the identical run reached the threshold, a recovery nudge
- * was sent during that same run — a nudge from an earlier run, before a tool
- * call broke it, proves nothing — and the model repeated the output anyway.
+ * recovery nudge: the identical run reached the threshold, the model was
+ * nudged *inside that same run* — `nudged` is set by such a nudge alone and
+ * cleared whenever the run resets, so progress made after an earlier nudge
+ * cannot be spent on the run that follows it — and the model repeated the
+ * output anyway.
  *
  * Returns undefined in every other case, including a turn that never
  * delivered a parseable report. Detecting stagnation is not by itself a
@@ -276,7 +287,7 @@ export function reviewStagnationBackstop(input: {
   if (threshold === undefined) return undefined
   const run = reviewRun(currentTurn(input.messages), input.recoveryNudge)
   if (run.repeats === undefined || run.repeats < threshold) return undefined
-  if (run.start < 0 || run.recoveryAt < run.start) return undefined
+  if (run.start < 0 || !run.nudged) return undefined
   const delivery = establishedReviewReport(input.messages)
   if (!delivery.ok) return undefined
   return { report: delivery.report, result: ReviewReport.render(delivery) }

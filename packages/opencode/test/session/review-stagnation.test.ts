@@ -520,7 +520,10 @@ describe("ReviewStagnation.reviewStagnationBackstop", () => {
       ],
     },
     {
-      name: "a recovery nudge before the run began proves nothing",
+      // The nudge belongs to the run it was sent into. The model answered it
+      // with a tool call, so the identical run that follows is a fresh one and
+      // cannot inherit it: progress after a nudge spends that nudge.
+      name: "progress after a recovery nudge spends it for the next run",
       messages: [
         userMsg("review this"),
         reviewMsg(NEEDS_FIXES),
@@ -529,6 +532,35 @@ describe("ReviewStagnation.reviewStagnationBackstop", () => {
         reviewMsg(DONE),
         reviewMsg(DONE),
       ],
+    },
+    {
+      // "Other progress" spends a nudge the same way: a different generation
+      // ends the run it was sent into, so the identical run that follows is a
+      // fresh one and owns its own nudge.
+      name: "a different generation starts a run that owns its own nudge",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(APPROVED),
+        reviewMsg(APPROVED),
+      ],
+    },
+    {
+      // The other half of the boundary: the same turn completes as soon as the
+      // fresh run is nudged itself.
+      name: "a fresh run completes once it earns its own recovery nudge",
+      messages: [
+        userMsg("review this"),
+        reviewMsg(NEEDS_FIXES),
+        nudgeMsg(recoveryNudge),
+        toolMsg("read", "completed"),
+        reviewMsg(DONE),
+        reviewMsg(DONE),
+        nudgeMsg(recoveryNudge),
+        reviewMsg(DONE),
+      ],
+      want: { assessment: "needs-fixes", summary: "The PDF update misses edge-case tests." },
     },
     {
       name: "a run shorter than the threshold never completes a review",
@@ -942,6 +974,58 @@ it.instance(
       expect(finishParts([result])).toHaveLength(1)
       if (finishes[0]?.state.status === "completed") {
         expect(finishes[0].state.output).toContain("<alphacode-review>")
+        expect(finishes[0].state.output).toContain("Edge cases untested")
+        expect(finishes[0].state.input.result).toContain("<alphacode-review>")
+      }
+    }),
+  20_000,
+)
+
+it.instance(
+  "a recovery nudge the reviewer answers with progress completes nothing by itself",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Backstop reset",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      // The report, its restatement — which earns the recovery nudge — and then
+      // genuine progress: the reviewer runs a tool instead of restating. The
+      // run that repeats afterwards is a fresh one, so the spent nudge must not
+      // complete the review for it. Its own recovery nudge does, after the
+      // second restatement of that run; the extra reply stays queued so only
+      // early termination can end the turn.
+      yield* llm.text(REPEAT)
+      yield* llm.text(REPEAT)
+      yield* llm.tool("glob", { pattern: "**/*.json" })
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+      yield* llm.text(DONE)
+
+      yield* user(chat.id, TASK_PROMPT)
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+
+      // Six generations, not five: the fresh run was not completed by the
+      // nudge the reviewer had already answered with a tool call.
+      expect(yield* turnHits()).toHaveLength(6)
+      expect(yield* llm.pending).toBe(1)
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      // A recovery nudge after the first restatement, then the tool call earns
+      // no reminder, then a fresh recovery nudge once the new run repeats.
+      const nudges = syntheticTexts(messages)
+      expect(nudges.map((text) => text.includes(RECOVERY_MARKER))).toEqual([false, true, false, true])
+
+      // The completion is the backstop's normal finish, carrying the report
+      // the turn already established rather than the repeated message.
+      const finishes = finishParts(messages)
+      expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
+      expect(finishParts([result])).toHaveLength(1)
+      if (finishes[0]?.state.status === "completed") {
         expect(finishes[0].state.output).toContain("Edge cases untested")
         expect(finishes[0].state.input.result).toContain("<alphacode-review>")
       }
