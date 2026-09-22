@@ -129,6 +129,7 @@ export const Plugin = define({
             { action: "question", resource: "*", effect: "allow" },
             { action: "plan_enter", resource: "*", effect: "allow" },
             { action: "lsp", resource: "*", effect: "deny" },
+            { action: "task", resource: "work", effect: "deny" },
           ]),
         )
       })

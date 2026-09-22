@@ -124,6 +124,9 @@ export const TaskTool = Tool.define(
       if (!next) {
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
+      if (next.mode === "primary") {
+        return yield* Effect.fail(new Error(`Agent type ${params.subagent_type} is a primary agent and cannot be delegated to`))
+      }
 
       const session = params.task_id
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))

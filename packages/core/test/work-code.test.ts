@@ -72,6 +72,16 @@ describe("Work/Code agent split (core)", () => {
     }),
   )
 
+  agentIt.effect("work cannot delegate to itself", () =>
+    Effect.gen(function* () {
+      const agent = yield* AgentV2.Service
+      yield* loadAgents(agent)
+      const work = yield* agent.get(AgentV2.ID.make("work"))
+      expect(work).toBeDefined()
+      expect(evaluate("task", "work", work!.permissions)).toBe("deny")
+    }),
+  )
+
   agentIt.effect("code cannot delegate to work", () =>
     Effect.gen(function* () {
       const agent = yield* AgentV2.Service
