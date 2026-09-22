@@ -776,8 +776,8 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const agent = yield* load((svc) => svc.defaultAgent())
-      // work is disabled, so it should return code (next primary agent alphabetically)
-      expect(agent).toBe("code")
+      // work is disabled, so it should return plan (next primary agent)
+      expect(agent).toBe("plan")
     }),
   {
     config: {
@@ -854,7 +854,7 @@ it.instance(
     Effect.gen(function* () {
       const names = (yield* load((svc) => svc.list())).map((a) => a.name)
       expect(names).not.toContain("work")
-      expect(yield* load((svc) => svc.defaultAgent())).toBe("code")
+      expect(yield* load((svc) => svc.defaultAgent())).toBe("plan")
     }),
   {
     config: {
