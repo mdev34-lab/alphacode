@@ -165,6 +165,12 @@ describe("isPasteAsFile", () => {
     expect(isPasteAsFile(text)).toBe(true)
   })
 
+  test("local file paths are not treated as pasted file content", () => {
+    expect(isPasteAsFile("./src/index.ts")).toBe(false)
+    expect(isPasteAsFile("C:\\work\\project\\README.md")).toBe(false)
+    expect(isPasteAsFile("/tmp/assets/logo.svg")).toBe(false)
+  })
+
   test("empty text is not a file", () => {
     expect(isPasteAsFile("")).toBe(false)
   })
