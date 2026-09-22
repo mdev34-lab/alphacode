@@ -6,6 +6,7 @@ import {
   isLargePaste,
   isPasteAsFile,
   pastedFilePart,
+  pastedFilepath,
   pastedFilePlaceholder,
 } from "../../src/prompt/paste"
 
@@ -167,5 +168,19 @@ describe("isPasteAsFile", () => {
 
   test("empty text is not a file", () => {
     expect(isPasteAsFile("")).toBe(false)
+  })
+})
+
+describe("pastedFilepath", () => {
+  test("does not resolve a local path for ordinary terminal paste", () => {
+    expect(pastedFilepath("/tmp/screenshot.png", "linux", false)).toBeUndefined()
+  })
+
+  test("resolves a local path only for explicit attachment paste", () => {
+    expect(pastedFilepath("/tmp/screenshot.png", "linux", true)).toBe("/tmp/screenshot.png")
+  })
+
+  test("resolves file URLs for explicit attachment paste", () => {
+    expect(pastedFilepath("file:///tmp/screenshot.png", "linux", true)).toBe("/tmp/screenshot.png")
   })
 })

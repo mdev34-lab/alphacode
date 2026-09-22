@@ -1,3 +1,5 @@
+import { fileURLToPath } from "url"
+
 /**
  * Client-side "Paste to File" for the prompt composer.
  *
@@ -81,4 +83,21 @@ export function pastedFilePart(input: {
       },
     },
   }
+}
+
+/**
+ * Resolve a pasted local attachment path only when the caller explicitly opts into
+ * filesystem-backed paste handling. Ordinary terminal bracketed paste must keep
+ * the pasted path as text.
+ */
+export function pastedFilepath(value: string, platform: string, allowLocalAttachment: boolean): string | undefined {
+  if (!allowLocalAttachment) return
+  const raw = value.replace(/^['"]+|['"]+$/g, "")
+  if (raw.startsWith("file://")) {
+    try {
+      return fileURLToPath(raw)
+    } catch {}
+  }
+  if (platform === "win32") return raw
+  return raw.replace(/\\(.)/g, "$1")
 }
