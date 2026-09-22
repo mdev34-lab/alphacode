@@ -69,6 +69,8 @@ describe("Work/Code agent split", () => {
       expect(code).toBeDefined()
       expect(code?.name).toBe("code")
       expect(code?.mode).toBe("all")
+      expect(code?.prompt).toContain("You cannot delegate tasks to Work")
+      expect(code?.prompt).not.toContain("delegate general filesystem or document tasks to Work")
     }),
   )
 
