@@ -94,6 +94,22 @@ describe("Work/Code agent split", () => {
     }),
   )
 
+  it.instance("work cannot delegate to itself or other primary agents", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const work = yield* agent.get("work")
+      expect(work).toBeDefined()
+      expect(Permission.evaluate("task", "work", work!.permission).action).toBe("deny")
+      expect(Permission.evaluate("task", "plan", work!.permission).action).toBe("allow")
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({ ...ref, agent: work! })
+      const taskTool = tools.find((t) => t.id === "task")
+      expect(taskTool).toBeDefined()
+      expect(taskTool?.description).not.toContain("- work:")
+      expect(taskTool?.description).not.toContain("- plan:")
+    }),
+  )
+
   it.instance("code cannot delegate to work", () =>
     Effect.gen(function* () {
       const agent = yield* Agent.Service
@@ -111,6 +127,7 @@ describe("Work/Code agent split", () => {
       const taskTool = tools.find((t) => t.id === "task")
       expect(taskTool).toBeDefined()
       expect(taskTool?.description).not.toContain("- work:")
+      expect(taskTool?.description).not.toContain("- plan:")
     }),
   )
 

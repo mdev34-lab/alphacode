@@ -403,9 +403,14 @@ const layer = Layer.effect(
             if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
             return agent
           }
-          const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)
-          if (!visible) throw new Error("no primary visible agent found")
-          return visible
+          const visible = Object.values(agents).filter((a) => a.mode !== "subagent" && a.hidden !== true)
+          const work = visible.find((a) => a.name === "work")
+          if (work) return work
+          const plan = visible.find((a) => a.name === "plan")
+          if (plan) return plan
+          const fallback = visible[0]
+          if (!fallback) throw new Error("no primary visible agent found")
+          return fallback
         })
 
         const defaultAgent = Effect.fnUntraced(function* () {
