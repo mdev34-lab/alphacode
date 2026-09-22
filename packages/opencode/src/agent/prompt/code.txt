@@ -12,4 +12,4 @@ Boundaries:
 
 Delegation:
 - You cannot delegate tasks to Work. Work can delegate software-engineering tasks to Code using the task tool.
-- You cannot delegate to yourself or to other primary agents. Delegation nesting is bounded by subagent_depth.
+- Keep delegation nesting within the configured subagent_depth limit.
