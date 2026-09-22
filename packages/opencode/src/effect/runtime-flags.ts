@@ -68,6 +68,11 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   // 0 disables the corresponding rule.
   repetitionLineRepeats: nonNegativeInteger("OPENCODE_EXPERIMENTAL_REPETITION_LINES"),
   repetitionUnitRepeats: nonNegativeInteger("OPENCODE_EXPERIMENTAL_REPETITION_UNITS"),
+  // Review stagnation recovery (issue #171): consecutive identical Review
+  // outputs without tool activity that trigger the recovery nudge toward
+  // `finish`. Unset by default: the session layer uses the module default
+  // (see ReviewStagnation.resolveRepeats); values below 2 disable the nudge.
+  reviewStagnationRepeats: nonNegativeInteger("OPENCODE_EXPERIMENTAL_REVIEW_STAGNATION_REPEATS"),
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),
   experimentalWebSockets: bool("OPENCODE_EXPERIMENTAL_WEBSOCKETS"),
