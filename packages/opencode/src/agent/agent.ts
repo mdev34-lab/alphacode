@@ -174,6 +174,7 @@ const layer = Layer.effect(
                 lsp: "allow",
                 task: {
                   work: "deny",
+                  code: "deny",
                 },
               }),
               user,
