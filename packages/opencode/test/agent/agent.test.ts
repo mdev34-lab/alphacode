@@ -83,6 +83,16 @@ it.instance("plan agent denies edits except .opencode/plans/*", () =>
   }),
 )
 
+it.instance("code agent cannot delegate to work or itself", () =>
+  Effect.gen(function* () {
+    const code = yield* load((svc) => svc.get("code"))
+    expect(code).toBeDefined()
+    expect(Permission.evaluate("task", "work", code!.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "code", code!.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "plan", code!.permission).action).toBe("allow")
+  }),
+)
+
 it.instance("plan agent denies the general subagent by default", () =>
   Effect.gen(function* () {
     const plan = yield* load((svc) => svc.get("plan"))
