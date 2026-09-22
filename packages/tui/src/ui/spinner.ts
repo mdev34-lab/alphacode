@@ -96,17 +96,18 @@ function getScannerState(
       isMovingForward: false,
     }
   } else {
-    // Spread the same 54-frame cadence across the available columns. This
-    // preserves timing for the default width without baking that width into
-    // the scanner's public helper functions.
-    const cycleFrame = frameIndex % FORWARD_FRAME_COUNT
-    const activePosition = Math.min(Math.floor((cycleFrame * totalChars) / FORWARD_FRAME_COUNT), totalChars - 1)
+    // Move through every column at the normal frame interval, then hold at the
+    // end of the sweep until the next cycle. This keeps the compensating delay
+    // at the loop boundary instead of stretching the movement itself.
+    const cycleLength = Math.max(totalChars, FORWARD_FRAME_COUNT)
+    const cycleFrame = frameIndex % cycleLength
+    const activePosition = Math.min(cycleFrame, totalChars - 1)
     return {
       activePosition,
       isHolding: false,
       holdProgress: 0,
       holdTotal: 0,
-      movementProgress: activePosition,
+      movementProgress: Math.min(cycleFrame, totalChars - 1),
       movementTotal: totalChars,
       isMovingForward: true,
     }
@@ -320,9 +321,10 @@ export function createFrames(options: KnightRiderOptions = {}): string[] {
     minAlpha: options.minAlpha,
   }
 
-  // Forward-only keeps the same 54-frame cadence as the original animation;
-  // the repeated positions are timing holds, not direction changes.
-  const totalFrames = direction === "bidirectional" ? width + holdEnd + (width - 1) + holdStart : FORWARD_FRAME_COUNT
+  // Forward-only keeps the original 40ms movement interval and puts the
+  // compensating delay after the final position. For the default width of 8,
+  // this gives 8 movement frames + 46 boundary-delay frames = 2160ms.
+  const totalFrames = direction === "bidirectional" ? width + holdEnd + (width - 1) + holdStart : Math.max(width, FORWARD_FRAME_COUNT)
 
   // Generate dynamic frames where inactive pixels are dots and active ones are blocks
   const frames = Array.from({ length: totalFrames }, (_, frameIndex) => {
