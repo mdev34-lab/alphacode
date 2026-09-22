@@ -9,6 +9,10 @@ import { Config } from "@/config/config"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 
 export const Parameters = Schema.Struct({
+  reason: Schema.Literal("success", "subagent_wait", "failure").annotate({
+    description:
+      "Why the agent is terminating: success when the task is complete, subagent_wait when progress depends on another subagent, or failure when the task could not be completed.",
+  }),
   result: Schema.String.annotate({
     description:
       "The final result of the task: a concise summary of what was accomplished, presented to the user as the task outcome.",
@@ -31,11 +35,6 @@ export const FinishTool = Tool.define(
           const messages = yield* sessions
             .messages({ sessionID: ctx.sessionID })
             .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
-          // The Review subagent completes its run through this same finish
-          // tool, so the structured review result is gated here, at the
-          // control-flow boundary: without a parseable report envelope the
-          // call fails as recoverable model feedback and the run continues
-          // instead of completing without a verdict.
           if (ctx.agent === "review") {
             const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
             const delivery = ReviewReport.extract([
@@ -76,8 +75,6 @@ export const FinishTool = Tool.define(
               maxIterations: reviewState.maxIterations,
               workSinceReview: reviewState.workSinceReview,
             })
-            // Persist the nudge on the failed part so the next finish call for the
-            // same work is recognised as an explicit skip instead of being declined again.
             yield* ctx.metadata({
               title: "Review suggested",
               metadata: {
@@ -134,6 +131,7 @@ export const FinishTool = Tool.define(
             title: "Task completed",
             output: params.result,
             metadata: {
+              reason: params.reason,
               review: {
                 verdict: reviewState.verdict,
                 reviews: reviewState.reviews,
