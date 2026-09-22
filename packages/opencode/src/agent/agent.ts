@@ -180,7 +180,7 @@ const layer = Layer.effect(
             ),
             mode: "all",
             native: true,
-            color: "#00A6FF",
+            color: "#00FF41",
           },
           plan: {
             name: "plan",
