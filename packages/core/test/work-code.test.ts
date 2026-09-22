@@ -82,6 +82,7 @@ describe("Work/Code agent split (core)", () => {
     }),
   )
 
+  // The real LSP tool is owned by opencode; Core only owns the agent policy.
   agentIt.effect("code has LSP permission and Work does not", () =>
     Effect.gen(function* () {
       const agent = yield* AgentV2.Service
