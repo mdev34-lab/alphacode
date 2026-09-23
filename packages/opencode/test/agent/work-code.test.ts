@@ -102,7 +102,11 @@ describe("Work/Code agent split", () => {
       expect(Permission.evaluate("task", "work", work!.permission).action).toBe("deny")
       expect(Permission.evaluate("task", "plan", work!.permission).action).toBe("allow")
       const registry = yield* ToolRegistry.Service
-      const tools = yield* registry.tools({ ...ref, agent: work! })
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.make("test"),
+        modelID: ModelV2.ID.make("test-model"),
+        agent: work!,
+      })
       const taskTool = tools.find((t) => t.id === "task")
       expect(taskTool).toBeDefined()
       expect(taskTool?.description).not.toContain("- work:")
