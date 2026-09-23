@@ -9,7 +9,7 @@ import { Config } from "@/config/config"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 
 export const Parameters = Schema.Struct({
-  reason: Schema.Literal("success", "subagent_wait", "failure").annotate({
+  reason: Schema.Union([Schema.Literal("success"), Schema.Literal("subagent_wait"), Schema.Literal("failure")]).annotate({
     description:
       "Why the agent is ending this turn: success when the task is complete, subagent_wait when progress depends on another subagent, or failure when the task could not be completed.",
   }),
@@ -35,6 +35,11 @@ export const FinishTool = Tool.define(
           const messages = yield* sessions
             .messages({ sessionID: ctx.sessionID })
             .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
+          // The Review subagent completes its run through this same finish
+          // tool, so the structured review result is gated here, at the
+          // control-flow boundary: without a parseable report envelope the
+          // call fails as recoverable model feedback and the run continues
+          // instead of completing without a verdict.
           if (ctx.agent === "review") {
             const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
             const delivery = ReviewReport.extract([
@@ -75,6 +80,8 @@ export const FinishTool = Tool.define(
               maxIterations: reviewState.maxIterations,
               workSinceReview: reviewState.workSinceReview,
             })
+            // Persist the nudge on the failed part so the next finish call for the
+            // same work is recognised as an explicit skip instead of being declined again.
             yield* ctx.metadata({
               title: "Review suggested",
               metadata: {
