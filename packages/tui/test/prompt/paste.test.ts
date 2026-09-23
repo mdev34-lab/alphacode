@@ -5,6 +5,7 @@ import {
   LARGE_PASTE_FILE_BYTES,
   isLargePaste,
   isPasteAsFile,
+  processPastedText,
   pastedFilePart,
   pastedFilePlaceholder,
 } from "../../src/prompt/paste"
@@ -165,10 +166,22 @@ describe("isPasteAsFile", () => {
     expect(isPasteAsFile(text)).toBe(true)
   })
 
-  test("local file paths are not treated as pasted file content", () => {
-    expect(isPasteAsFile("./src/index.ts")).toBe(false)
-    expect(isPasteAsFile("C:\\work\\project\\README.md")).toBe(false)
-    expect(isPasteAsFile("/tmp/assets/logo.svg")).toBe(false)
+  test("local file paths stay literal through the paste input path", () => {
+    const inserted: string[] = []
+    const files: string[] = []
+    const summaries: string[] = []
+
+    const result = processPastedText("/tmp/assets/logo.svg", {
+      summaryEnabled: true,
+      pasteAsFile: (text) => files.push(text),
+      pasteSummary: (text) => summaries.push(text),
+      insertText: (text) => inserted.push(text),
+    })
+
+    expect(result).toBe("text")
+    expect(inserted).toEqual(["/tmp/assets/logo.svg"])
+    expect(files).toEqual([])
+    expect(summaries).toEqual([])
   })
 
   test("empty text is not a file", () => {

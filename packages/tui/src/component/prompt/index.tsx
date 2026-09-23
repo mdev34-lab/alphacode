@@ -33,7 +33,7 @@ import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
-import { isPasteAsFile, pastedFilePart, pastedFilePlaceholder } from "../../prompt/paste"
+import { isPasteAsFile, pastedFilePart, pastedFilePlaceholder, processPastedText } from "../../prompt/paste"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
@@ -1231,21 +1231,13 @@ export function Prompt(props: PromptProps) {
   }
 
   async function pasteInputText(text: string) {
-    const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    const pastedContent = normalizedText.trim()
     const summaryEnabled = kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
-    if (summaryEnabled && isPasteAsFile(pastedContent)) {
-      pasteLargeText(pastedContent)
-      return
-    }
-
-    const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-    if ((lineCount >= 3 || pastedContent.length > 150) && summaryEnabled) {
-      pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
-      return
-    }
-
-    input.insertText(normalizedText)
+    processPastedText(text, {
+      summaryEnabled,
+      pasteAsFile: pasteLargeText,
+      pasteSummary: pasteText,
+      insertText: (value) => input.insertText(value),
+    })
 
     setTimeout(() => {
       if (!input || input.isDestroyed) return
@@ -1253,7 +1245,6 @@ export function Prompt(props: PromptProps) {
       renderer.requestRender()
     }, 0)
   }
-
   async function pasteAttachment(file: { filename?: string; filepath?: string; content: string; mime: string }) {
     const currentOffset = input.cursorOffset
     const extmarkStart = currentOffset
