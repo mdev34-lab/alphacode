@@ -1804,7 +1804,7 @@ it.instance(
         parts: [{ type: "text", text: "hello" }],
       })
       yield* llm.text("working on it")
-      yield* llm.tool("finish", { result: "all done" })
+      yield* llm.tool("finish", { reason: "success", result: "all done" })
 
       const result = yield* prompt.loop({ sessionID: session.id })
 
@@ -1846,7 +1846,7 @@ noLLMServer.instance(
         tool: "finish",
         state: {
           status: "completed",
-          input: { result: "done" },
+          input: { reason: "success", result: "done" },
           output: "done",
           title: "Task completed",
           metadata: {},
@@ -1896,7 +1896,7 @@ it.instance(
         tool: "finish",
         state: {
           status: "completed",
-          input: { result: "done" },
+          input: { reason: "success", result: "done" },
           output: "done",
           title: "Task completed",
           metadata: {},
@@ -1949,7 +1949,7 @@ it.instance(
         tool: "finish",
         state: {
           status: "completed",
-          input: { result: "done" },
+          input: { reason: "success", result: "done" },
           output: "done",
           title: "Task completed",
           metadata: {},
@@ -2080,7 +2080,7 @@ it.instance(
         parts: [{ type: "text", text: "Hello." }],
       })
       yield* llm.push(
-        reply().text("Hello! How can I help you today?").tool("finish", { result: "Greeted the user." }).stop(),
+        reply().text("Hello! How can I help you today?").tool("finish", { reason: "success", result: "Greeted the user." }).stop(),
       )
 
       const result = yield* prompt.loop({ sessionID: session.id })
@@ -2122,7 +2122,7 @@ it.instance(
         noReply: true,
         parts: [{ type: "text", text: "What is the capital of France?" }],
       })
-      yield* llm.push(reply().text("Paris.").tool("finish", { result: "The capital of France is Paris." }).stop())
+      yield* llm.push(reply().text("Paris.").tool("finish", { reason: "success", result: "The capital of France is Paris." }).stop())
 
       const result = yield* prompt.loop({ sessionID: session.id })
 
@@ -2161,7 +2161,7 @@ it.instance(
       yield* llm.push(
         reply()
           .text("An agent loop repeatedly calls the model until the task reaches a terminal state.")
-          .tool("finish", { result: "Explained the agent loop." })
+          .tool("finish", { reason: "success", result: "Explained the agent loop." })
           .stop(),
       )
 
@@ -2201,7 +2201,7 @@ it.instance(
         parts: [{ type: "text", text: "Write the version to a file and confirm it." }],
       })
       yield* llm.tool("bash", { command: "printf 1 > version.txt", timeout: 5_000, workdir: path.resolve(dir) })
-      yield* llm.push(reply().text("Wrote version.txt.").tool("finish", { result: "Wrote the version file." }).stop())
+      yield* llm.push(reply().text("Wrote version.txt.").tool("finish", { reason: "success", result: "Wrote the version file." }).stop())
 
       const result = yield* prompt.loop({ sessionID: session.id })
 
@@ -2242,7 +2242,7 @@ it.instance(
         parts: [{ type: "text", text: "List the text files in this project." }],
       })
       yield* llm.tool("glob", { pattern: "**/*.txt" })
-      yield* llm.push(reply().text("Found the files.").tool("finish", { result: "Listed the text files." }).stop())
+      yield* llm.push(reply().text("Found the files.").tool("finish", { reason: "success", result: "Listed the text files." }).stop())
 
       const result = yield* prompt.loop({ sessionID: session.id })
 
@@ -2280,7 +2280,7 @@ it.instance(
       yield* llm.push(
         reply()
           .text("No such file exists, so there is nothing to delete.")
-          .tool("finish", { result: "Nothing to delete — the database file does not exist." })
+          .tool("finish", { reason: "success", result: "Nothing to delete — the database file does not exist." })
           .stop(),
       )
 
