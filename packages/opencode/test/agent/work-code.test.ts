@@ -69,7 +69,7 @@ describe("Work/Code agent split", () => {
       expect(code).toBeDefined()
       expect(code?.name).toBe("code")
       expect(code?.mode).toBe("all")
-      expect(code?.prompt).toContain("You cannot delegate tasks to Work")
+      expect(code?.prompt).toContain("You cannot delegate tasks to Work or to Code itself")
       expect(code?.prompt).not.toContain("delegate general filesystem or document tasks to Work")
     }),
   )
@@ -173,6 +173,27 @@ describe("Work/Code agent split", () => {
       const codeHasLsp = codeTools.some((t) => t.id === "lsp")
       expect(workHasLsp).toBe(false)
       expect(codeHasLsp).toBe(true)
+    }),
+  )
+
+  it.instance("permission-denied tools are hidden while finish remains available", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const plan = yield* agent.get("plan")
+      expect(plan).toBeDefined()
+
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.make("test"),
+        modelID: ModelV2.ID.make("test-model"),
+        agent: plan!,
+      })
+      const ids = tools.map((tool) => tool.id)
+
+      expect(ids).not.toContain("edit")
+      expect(ids).not.toContain("write")
+      expect(ids).not.toContain("patch")
+      expect(ids).toContain("finish")
     }),
   )
 
