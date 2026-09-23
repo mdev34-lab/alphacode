@@ -324,13 +324,13 @@ const scriptPolicyFollowingModel = Effect.gen(function* () {
   // session alive for the model to retry.
   yield* llm.pushMatch(
     reviewMatch,
-    reply().text(REPORT).tool("finish", { result: "Needs fixes: one Important finding" }),
+    reply().text(REPORT).tool("finish", { reason: "success", result: "Needs fixes: one Important finding" }),
   )
   // Retry after the recoverable finish failure. This response supplies the
   // required envelope through the real finish call, so the review can complete.
   yield* llm.pushMatch(
     reviewMatch,
-    reply().tool("finish", { result: REPORT }),
+    reply().tool("finish", { reason: "success", result: REPORT }),
   )
   // Policy present, verdict received: consume it and fix the finding.
   yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
