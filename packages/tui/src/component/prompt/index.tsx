@@ -33,7 +33,7 @@ import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
-import { isPasteAsFile, pastedFilePart, pastedFilePlaceholder, processPastedText } from "../../prompt/paste"
+import { pastedFilePart, pastedFilePlaceholder, processPastedText } from "../../prompt/paste"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
@@ -140,7 +140,6 @@ export function Prompt(props: PromptProps) {
   const args = useArgs()
   const paths = useTuiPaths()
   const location = useLocation()
-  const terminalEnvironment = useTuiTerminalEnvironment()
   const clipboard = useClipboard()
   const sdk = useSDK()
   const editor = useEditorContext()
