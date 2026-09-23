@@ -176,6 +176,26 @@ describe("Work/Code agent split", () => {
     }),
   )
 
+  it.instance("session permission denies hide matching built-in tools", () =>
+    Effect.gen(function* () {
+      const agent = yield* Agent.Service
+      const work = yield* agent.get("work")
+      expect(work).toBeDefined()
+
+      const registry = yield* ToolRegistry.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.make("test"),
+        modelID: ModelV2.ID.make("test-model"),
+        agent: work!,
+        permission: [{ permission: "bash", pattern: "*", action: "deny" }],
+      })
+      const ids = tools.map((tool) => tool.id)
+
+      expect(ids).not.toContain("shell")
+      expect(ids).toContain("finish")
+    }),
+  )
+
   it.instance("permission-denied tools are hidden while finish remains available", () =>
     Effect.gen(function* () {
       const agent = yield* Agent.Service
