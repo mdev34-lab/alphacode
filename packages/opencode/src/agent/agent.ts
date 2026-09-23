@@ -10,6 +10,7 @@ import { Auth } from "../auth"
 import { ProviderTransform } from "@/provider/transform"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_CODE from "./prompt/code.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
@@ -143,13 +144,17 @@ const layer = Layer.effect(
         const agents: Record<string, Info> = {
           work: {
             name: "work",
-            description: "The default agent. Executes tools based on configured permissions.",
+            description: "General-purpose workhorse. Runs in arbitrary folders and mixed-file workspaces.",
             options: {},
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
                 question: "allow",
                 plan_enter: "allow",
+                lsp: "deny",
+                task: {
+                  work: "deny",
+                },
               }),
               user,
             ),
@@ -158,6 +163,28 @@ const layer = Layer.effect(
             // Rendered by clients without design tokens (TUI); token-based
             // surfaces resolve `--icon-agent-work-base` to the same value.
             color: AgentSchema.DEFAULT_COLOR,
+          },
+          code: {
+            name: "code",
+            description: "Software-engineering specialist. Runs in Git/project folders with LSP and repo-aware context.",
+            prompt: PROMPT_CODE,
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+                plan_enter: "allow",
+                lsp: "allow",
+                task: {
+                  work: "deny",
+                  code: "deny",
+                },
+              }),
+              user,
+            ),
+            mode: "all",
+            native: true,
+            color: "#00A6FF",
           },
           plan: {
             name: "plan",
@@ -379,9 +406,14 @@ const layer = Layer.effect(
             if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
             return agent
           }
-          const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)
-          if (!visible) throw new Error("no primary visible agent found")
-          return visible
+          const visible = Object.values(agents).filter((a) => a.mode !== "subagent" && a.hidden !== true)
+          const work = visible.find((a) => a.name === "work")
+          if (work) return work
+          const plan = visible.find((a) => a.name === "plan")
+          if (plan) return plan
+          const fallback = visible[0]
+          if (!fallback) throw new Error("no primary visible agent found")
+          return fallback
         })
 
         const defaultAgent = Effect.fnUntraced(function* () {
