@@ -320,6 +320,9 @@ const layer = Layer.effect(
         return true
       })
 
+      // Tool visibility is the same permission boundary used at execution:
+      // a blanket deny hides the tool from the model, while Finish remains
+      // available so every agent can terminate cleanly.
       const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
       const disabled = Permission.disabled(
         filtered.map((t) => t.id),
