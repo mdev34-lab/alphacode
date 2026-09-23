@@ -782,6 +782,25 @@ it.instance(
 )
 
 it.instance(
+  "defaultAgent prefers plan when work is disabled and code remains enabled",
+  () =>
+    Effect.gen(function* () {
+      const plan = yield* load((svc) => svc.get("plan"))
+      const code = yield* load((svc) => svc.get("code"))
+      expect(plan?.mode).toBe("primary")
+      expect(code?.mode).toBe("all")
+      expect(yield* load((svc) => svc.defaultAgent())).toBe("plan")
+    }),
+  {
+    config: {
+      agent: {
+        work: { disable: true },
+      },
+    },
+  },
+)
+
+it.instance(
   "defaultAgent returns plan when work is disabled and default_agent not set",
   () =>
     Effect.gen(function* () {
