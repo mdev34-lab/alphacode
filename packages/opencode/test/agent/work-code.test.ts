@@ -191,7 +191,7 @@ describe("Work/Code agent split", () => {
       })
       const ids = tools.map((tool) => tool.id)
 
-      expect(ids).not.toContain("shell")
+      expect(ids).not.toContain("bash")
       expect(ids).toContain("finish")
     }),
   )
@@ -212,7 +212,7 @@ describe("Work/Code agent split", () => {
 
       expect(ids).not.toContain("edit")
       expect(ids).not.toContain("write")
-      expect(ids).not.toContain("patch")
+      expect(ids).not.toContain("apply_patch")
       expect(ids).toContain("finish")
     }),
   )
