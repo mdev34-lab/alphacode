@@ -468,6 +468,7 @@ describe("tool.task", () => {
       const tool = yield* TaskTool
       const def = yield* tool.init()
       for (const subagent_type of ["work", "plan"]) {
+        let asked = 0
         const exit = yield* def
           .execute(
             {
@@ -483,13 +484,16 @@ describe("tool.task", () => {
               extra: { promptOps: stubOps() },
               messages: [],
               metadata: () => Effect.void,
-              ask: () => Effect.sync(() => {
-                throw new Error("permission prompt should not run for primary targets")
-              }),
+              ask: () =>
+                Effect.sync(() => {
+                  asked++
+                  throw new Error("permission prompt should not run for primary targets")
+                }),
             },
           )
           .pipe(Effect.exit)
         expect(Exit.isFailure(exit)).toBe(true)
+        expect(asked).toBe(0)
         if (!Exit.isFailure(exit)) continue
         expect(Cause.pretty(exit.cause)).toContain(`Agent type ${subagent_type} is a primary agent`)
       }
