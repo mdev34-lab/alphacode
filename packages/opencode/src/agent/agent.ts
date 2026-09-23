@@ -152,6 +152,9 @@ const layer = Layer.effect(
                 question: "allow",
                 plan_enter: "allow",
                 lsp: "deny",
+                task: {
+                  work: "deny",
+                },
               }),
               user,
             ),
