@@ -108,7 +108,7 @@ describe("tool.finish – persisted review nudge", () => {
 
       const exit = yield* def
         .execute(
-          { result: "done" },
+          { reason: "success", result: "done" },
           {
             sessionID: chat.id,
             messageID: assistant.id,
@@ -150,7 +150,7 @@ describe("tool.finish – persisted review nudge", () => {
         callID: "finish-call-1",
         state: {
           status: "error",
-          input: { result: "done" },
+          input: { reason: "success", result: "done" },
           error: "Review nudge",
           metadata: { review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } },
           time: { start: now, end: now },
@@ -159,7 +159,7 @@ describe("tool.finish – persisted review nudge", () => {
       const tool = yield* FinishTool
       const def = yield* tool.init()
       const result = yield* def.execute(
-        { result: "done" },
+        { reason: "success", result: "done" },
         {
           sessionID: chat.id,
           messageID: assistant.id,
@@ -191,7 +191,7 @@ describe("tool.finish – persisted review nudge", () => {
       const tool = yield* FinishTool
       const def = yield* tool.init()
       const result = yield* def.execute(
-        { result: "done" },
+        { reason: "success", result: "done" },
         {
           sessionID: chat.id,
           messageID: assistant.id,
@@ -226,7 +226,7 @@ describe("tool.finish – todo closure safety net", () => {
       })
 
       const result = yield* def.execute(
-        { result: "done" },
+        { reason: "success", result: "done" },
         {
           sessionID: chat.id,
           messageID: assistant.id,
@@ -260,7 +260,7 @@ describe("tool.finish – todo closure safety net", () => {
       })
 
       yield* def.execute(
-        { result: "done" },
+        { reason: "success", result: "done" },
         {
           sessionID: chat.id,
           messageID: assistant.id,
@@ -295,7 +295,7 @@ describe("tool.finish – todo closure safety net", () => {
       })
 
       yield* def.execute(
-        { result: "done" },
+        { reason: "success", result: "done" },
         {
           sessionID: chat.id,
           messageID: assistant.id,
@@ -329,7 +329,7 @@ describe("tool.finish – todo closure safety net", () => {
       })
 
       yield* def.execute(
-        { result: "done" },
+        { reason: "success", result: "done" },
         {
           sessionID: chat.id,
           messageID: assistant.id,
@@ -365,7 +365,7 @@ describe("tool.finish – todo closure safety net", () => {
       })
 
       yield* def.execute(
-        { result: "done A" },
+        { reason: "success", result: "done A" },
         {
           sessionID: chatA.id,
           messageID: assistantA.id,
@@ -396,7 +396,7 @@ describe("tool.finish – todo closure safety net", () => {
       expect(before).toHaveLength(0)
 
       const result = yield* def.execute(
-        { result: "nothing to do" },
+        { reason: "success", result: "nothing to do" },
         {
           sessionID: chat.id,
           messageID: assistant.id,
@@ -626,7 +626,7 @@ describe("tool.finish – review result gate", () => {
       const def = yield* tool.init()
 
       const failure = reviewFailure(
-        yield* def.execute({ result: "" }, reviewCtx(chat.id, assistant.id)).pipe(Effect.exit),
+        yield* def.execute({ reason: "success", result: "" }, reviewCtx(chat.id, assistant.id)).pipe(Effect.exit),
       )
       expect(failure?.message).toContain("Review finish rejected")
       expect(failure?.message).toContain("<alphacode-review>")
@@ -641,7 +641,7 @@ describe("tool.finish – review result gate", () => {
 
       const failure = reviewFailure(
         yield* def
-          .execute({ result: "Looks good to me, ship it." }, reviewCtx(chat.id, assistant.id))
+          .execute({ reason: "success", result: "Looks good to me, ship it." }, reviewCtx(chat.id, assistant.id))
           .pipe(Effect.exit),
       )
       expect(failure?.message).toContain("Review finish rejected")
@@ -656,7 +656,7 @@ describe("tool.finish – review result gate", () => {
       const def = yield* tool.init()
 
       const result = yield* def.execute(
-        { result: `Assessment\n\n${reviewEnvelope(REVIEW_NEEDS_FIXES)}` },
+        { reason: "success", result: `Assessment\n\n${reviewEnvelope(REVIEW_NEEDS_FIXES)}` },
         reviewCtx(chat.id, assistant.id),
       )
 
@@ -676,7 +676,7 @@ describe("tool.finish – review result gate", () => {
       const def = yield* tool.init()
 
       const result = yield* def.execute(
-        { result: `Assessment\n\n${reviewEnvelope(REVIEW_APPROVED)}` },
+        { reason: "success", result: `Assessment\n\n${reviewEnvelope(REVIEW_APPROVED)}` },
         reviewCtx(chat.id, assistant.id),
       )
 
@@ -702,7 +702,7 @@ describe("tool.finish – review result gate", () => {
       const tool = yield* FinishTool
       const def = yield* tool.init()
 
-      const result = yield* def.execute({ result: "done" }, reviewCtx(chat.id, assistant.id))
+      const result = yield* def.execute({ reason: "success", result: "done" }, reviewCtx(chat.id, assistant.id))
 
       expect(result.title).toBe("Task completed")
       // The orchestrator assembles the canonical result from the persisted
