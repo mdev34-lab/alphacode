@@ -144,6 +144,7 @@ export const Plugin = define({
             { action: "plan_enter", resource: "*", effect: "allow" },
             { action: "lsp", resource: "*", effect: "allow" },
             { action: "task", resource: "work", effect: "deny" },
+            { action: "task", resource: "code", effect: "deny" },
           ]),
         )
       })
