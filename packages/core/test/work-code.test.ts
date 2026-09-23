@@ -12,18 +12,11 @@ import { PermissionV2 } from "@opencode-ai/core/permission"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 import { agentHost, host } from "./plugin/host"
-import { Wildcard } from "@opencode-ai/core/util/wildcard"
 
 const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
 
 function evaluate(action: string, resource: string, rules: PermissionV2.Ruleset) {
-  const rule =
-    rules.findLast((r) => Wildcard.match(action, r.action) && Wildcard.match(resource, r.resource)) ?? {
-      action,
-      resource: "*",
-      effect: "ask" as const,
-    }
-  return rule.effect
+  return PermissionV2.evaluate(action, resource, rules).effect
 }
 
 const agentIt = testEffect(AppNodeBuilder.build(AgentV2.node))
