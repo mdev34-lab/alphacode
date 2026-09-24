@@ -567,7 +567,7 @@ export class App extends HeyApiClient {
   /**
    * List agents
    *
-   * Get a list of all available AI agents in the alphacode system.
+   * Get a list of all available AI agents in the silvercode system.
    */
   public agents<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -597,7 +597,7 @@ export class App extends HeyApiClient {
   /**
    * List skills
    *
-   * Get a list of all available skills in the alphacode system.
+   * Get a list of all available skills in the silvercode system.
    */
   public skills<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -672,7 +672,7 @@ export class Capabilities extends HeyApiClient {
   /**
    * Get experimental capabilities
    *
-   * Get experimental features enabled on the alphacode server.
+   * Get experimental features enabled on the silvercode server.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -776,7 +776,7 @@ export class Console extends HeyApiClient {
   /**
    * Switch active Console org
    *
-   * Persist a new active Console account/org selection for the current local alphacode state.
+   * Persist a new active Console account/org selection for the current local silvercode state.
    */
   public switchOrg<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -817,7 +817,7 @@ export class Session extends HeyApiClient {
   /**
    * List sessions
    *
-   * Get a list of all alphacode sessions across projects, sorted by most recently updated. Archived sessions are excluded by default.
+   * Get a list of all silvercode sessions across projects, sorted by most recently updated. Archived sessions are excluded by default.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1292,7 +1292,7 @@ export class Config extends HeyApiClient {
   /**
    * Get global configuration
    *
-   * Retrieve the current global alphacode configuration settings and preferences.
+   * Retrieve the current global silvercode configuration settings and preferences.
    */
   public get<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).get<GlobalConfigGetResponses, GlobalConfigGetErrors, ThrowOnError>({
@@ -1304,7 +1304,7 @@ export class Config extends HeyApiClient {
   /**
    * Update global configuration
    *
-   * Update global alphacode configuration settings and preferences.
+   * Update global silvercode configuration settings and preferences.
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1330,7 +1330,7 @@ export class Global extends HeyApiClient {
   /**
    * Get health
    *
-   * Get health information about the alphacode server.
+   * Get health information about the silvercode server.
    */
   public health<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).get<GlobalHealthResponses, GlobalHealthErrors, ThrowOnError>({
@@ -1342,7 +1342,7 @@ export class Global extends HeyApiClient {
   /**
    * Get global events
    *
-   * Subscribe to global events from the alphacode system using server-sent events.
+   * Subscribe to global events from the silvercode system using server-sent events.
    */
   public event<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).sse.get<GlobalEventResponses, GlobalEventErrors, ThrowOnError>({
@@ -1354,7 +1354,7 @@ export class Global extends HeyApiClient {
   /**
    * Dispose instance
    *
-   * Clean up and dispose all alphacode instances, releasing all resources.
+   * Clean up and dispose all silvercode instances, releasing all resources.
    */
   public dispose<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).post<GlobalDisposeResponses, GlobalDisposeErrors, ThrowOnError>({
@@ -1429,7 +1429,7 @@ export class Config2 extends HeyApiClient {
   /**
    * Get configuration
    *
-   * Retrieve the current alphacode configuration settings and preferences.
+   * Retrieve the current silvercode configuration settings and preferences.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1459,7 +1459,7 @@ export class Config2 extends HeyApiClient {
   /**
    * Update configuration
    *
-   * Update alphacode configuration settings and preferences.
+   * Update silvercode configuration settings and preferences.
    */
   public update<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1937,7 +1937,7 @@ export class Instance extends HeyApiClient {
   /**
    * Dispose instance
    *
-   * Clean up and dispose the current alphacode instance, releasing all resources.
+   * Clean up and dispose the current silvercode instance, releasing all resources.
    */
   public dispose<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -1969,7 +1969,7 @@ export class Path extends HeyApiClient {
   /**
    * Get paths
    *
-   * Retrieve the current working directory and related path information for the alphacode instance.
+   * Retrieve the current working directory and related path information for the silvercode instance.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2171,7 +2171,7 @@ export class Command extends HeyApiClient {
   /**
    * List commands
    *
-   * Get a list of all available commands in the alphacode system.
+   * Get a list of all available commands in the silvercode system.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2542,7 +2542,7 @@ export class Project extends HeyApiClient {
   /**
    * List all projects
    *
-   * Get a list of projects that have been opened with alphacode.
+   * Get a list of projects that have been opened with silvercode.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2572,7 +2572,7 @@ export class Project extends HeyApiClient {
   /**
    * Get current project
    *
-   * Retrieve the currently active project that alphacode is working with.
+   * Retrieve the currently active project that silvercode is working with.
    */
   public current<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -2739,7 +2739,7 @@ export class Pty extends HeyApiClient {
   /**
    * List PTY sessions
    *
-   * Get a list of all active pseudo-terminal (PTY) sessions managed by alphacode.
+   * Get a list of all active pseudo-terminal (PTY) sessions managed by silvercode.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3374,7 +3374,7 @@ export class Session2 extends HeyApiClient {
   /**
    * List sessions
    *
-   * Get a list of all alphacode sessions, sorted by most recently updated.
+   * Get a list of all silvercode sessions, sorted by most recently updated.
    */
   public list<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3416,7 +3416,7 @@ export class Session2 extends HeyApiClient {
   /**
    * Create session
    *
-   * Create a new alphacode session for interacting with AI assistants and managing conversations.
+   * Create a new silvercode session for interacting with AI assistants and managing conversations.
    */
   public create<ThrowOnError extends boolean = false>(
     parameters?: {
@@ -3533,7 +3533,7 @@ export class Session2 extends HeyApiClient {
   /**
    * Get session
    *
-   * Retrieve detailed information about a specific alphacode session.
+   * Retrieve detailed information about a specific silvercode session.
    */
   public get<ThrowOnError extends boolean = false>(
     parameters: {
@@ -5629,7 +5629,7 @@ export class Session3 extends HeyApiClient {
   /**
    * List active sessions
    *
-   * Retrieve foreground Session drains currently owned by this alphacode process. Sessions absent from the result are inactive.
+   * Retrieve foreground Session drains currently owned by this silvercode process. Sessions absent from the result are inactive.
    */
   public active<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
     return (options?.client ?? this.client).get<V2SessionActiveResponses, V2SessionActiveErrors, ThrowOnError>({
@@ -5956,7 +5956,7 @@ export class Session3 extends HeyApiClient {
   /**
    * Interrupt session execution
    *
-   * Interrupt active execution owned by this alphacode process. Idle interruption is a no-op.
+   * Interrupt active execution owned by this silvercode process. Idle interruption is a no-op.
    */
   public interrupt<ThrowOnError extends boolean = false>(
     parameters: {
