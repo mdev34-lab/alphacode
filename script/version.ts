@@ -2,8 +2,7 @@
 
 import { appendFile } from "node:fs/promises"
 import { $ } from "bun"
-import { Script } from "@opencode-ai/script"
-import { formatNotes, toChange } from "../packages/script/src/version"
+import { formatNotes, Script, toChange } from "@opencode-ai/script"
 
 if (Script.preview) throw new Error("publish workflow only supports release builds")
 

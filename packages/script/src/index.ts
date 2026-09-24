@@ -2,7 +2,9 @@ import { $ } from "bun"
 import semver from "semver"
 import path from "path"
 import { commitCount, commitsSince, isDirty, lastTag, shortSha } from "./git"
-import { devVersion, nextVersion, type BumpInput, type Commit } from "./version"
+import { devVersion, nextVersion, parseVersion, type BumpInput, type Commit } from "./version"
+
+export { formatNotes, toChange } from "./version"
 
 const rootPkgPath = path.resolve(import.meta.dir, "../../../package.json")
 const rootPkg = await Bun.file(rootPkgPath).json()
@@ -38,6 +40,7 @@ const VERSION_OVERRIDE = (() => {
   if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error(`Invalid OPENCODE_VERSION: ${env.OPENCODE_VERSION}`)
   }
+  parseVersion(version)
   return version
 })()
 

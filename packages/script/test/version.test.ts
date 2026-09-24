@@ -224,7 +224,7 @@ describe("parseVersion", () => {
     expect(parseVersion("v1.2.3-rc.1+build.4")).toEqual({ major: 1, minor: 2, patch: 3, pre: "rc.1" })
   })
 
-  test.each(["", "1.2", "v1.02.3", "1.2.3-01", "not-a-version", "1.2.3garbage"])(
+  test.each(["", "1.2", "01.2.3", "v1.02.3", "1.2.3-01", "not-a-version", "1.2.3garbage"])(
     "rejects invalid version %s",
     (input) => expect(() => parseVersion(input)).toThrow(),
   )

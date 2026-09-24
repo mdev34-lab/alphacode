@@ -7,7 +7,11 @@ DRY=false
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=true ;;
-    *) BUMP="$a" ;;
+    auto|patch|minor|major) BUMP="$a" ;;
+    *)
+      echo "Unknown release argument '$a'; expected auto, patch, minor, major, or --dry-run." >&2
+      exit 2
+      ;;
   esac
 done
 

@@ -76,6 +76,7 @@ jobs:
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     steps:
+      # Cleanup never deletes published releases; if a published release isn't latest, mark it latest manually.
       - run: gh release edit "${{ needs.version.outputs.tag }}" --draft=false --latest
 
   cleanup:
