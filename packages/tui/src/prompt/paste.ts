@@ -48,6 +48,32 @@ export function isPasteAsFile(text: string): boolean {
   return text.length >= LARGE_PASTE_FILE_BYTES
 }
 
+export function processPastedText(
+  text: string,
+  options: {
+    summaryEnabled: boolean
+    pasteAsFile: (text: string) => void
+    pasteSummary: (text: string, placeholder: string) => void
+    insertText: (text: string) => void
+  },
+): "file" | "summary" | "text" {
+  const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+  const pastedContent = normalizedText.trim()
+
+  if (options.summaryEnabled && isPasteAsFile(pastedContent)) {
+    options.pasteAsFile(pastedContent)
+    return "file"
+  }
+
+  const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
+  if ((lineCount >= 3 || pastedContent.length > 150) && options.summaryEnabled) {
+    options.pasteSummary(pastedContent, "[Pasted ~" + lineCount + " lines]")
+    return "summary"
+  }
+
+  options.insertText(normalizedText)
+  return "text"
+}
 /** Compact composer placeholder shown where the large paste was captured. */
 export function pastedFilePlaceholder(index: number): string {
   return `[Pasted file ${index}]`
