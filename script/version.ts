@@ -1,42 +1,58 @@
 #!/usr/bin/env bun
 
-import { Script } from "@opencode-ai/script"
+import { appendFile } from "node:fs/promises"
 import { $ } from "bun"
+import { Script } from "@opencode-ai/script"
+import { formatNotes, toChange } from "../packages/script/src/version"
 
-const output = [`version=${Script.version}`]
-const sha = process.env.GITHUB_SHA ?? (await $`git rev-parse HEAD`.text()).trim()
+if (Script.preview) throw new Error("publish workflow only supports release builds")
 
-if (!Script.preview) {
-  try {
-    await $`bun script/changelog.ts --to ${sha}`.cwd(process.cwd())
-  } catch {
-    // Changelog generation is best-effort; fall back to a static note if the
-    // CLI is not yet available (e.g. first publish before the package exists
-    // on npm).
+const repo = process.env.GH_REPO ?? "mdev34-lab/alphacode"
+const sha = process.env.GITHUB_SHA ?? "HEAD"
+const bump = process.env.OPENCODE_BUMP?.trim().toLowerCase() || "auto"
+const previousTag = await Script.previousTag
+const notes = previousTag
+  ? formatNotes(
+      (await Script.commits).flatMap((commit) => {
+        const change = toChange(commit)
+        return change ? [change] : []
+      }),
+      { repo, prev: previousTag, next: `v${Script.version}` },
+    )
+  : "Initial tracked release."
+const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/alphacode-release-notes.txt`
+await Bun.write(notesFile, notes)
+
+const writeOutput = async (values: string[]) => {
+  if (!process.env.GITHUB_OUTPUT) return
+  await appendFile(process.env.GITHUB_OUTPUT, `${values.join("\n")}\n`)
+}
+
+if (process.env.DRY_RUN === "1") {
+  const summary = [
+    "## Release dry run",
+    "",
+    `- Version: v${Script.version}`,
+    `- Previous tag: ${previousTag ?? "none"}`,
+    `- Bump: ${bump}${process.env.OPENCODE_VERSION ? " (version override takes precedence)" : ""}`,
+    "",
+    notes,
+    "",
+  ].join("\n")
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, summary)
+  } else {
+    console.log(summary)
   }
-  const file = `${process.cwd()}/UPCOMING_CHANGELOG.md`
-  const body = await Bun.file(file)
-    .text()
-    .catch(() => "No notable changes")
-  const dir = process.env.RUNNER_TEMP ?? "/tmp"
-  const notesFile = `${dir}/alphacode-release-notes.txt`
-  await Bun.write(notesFile, body)
-  await $`gh release create v${Script.version} -d --target ${sha} --title "v${Script.version}" --notes-file ${notesFile}`
-  const release = await $`gh release view v${Script.version} --json tagName,databaseId`.json()
-  output.push(`release=${release.databaseId}`)
-  output.push(`tag=${release.tagName}`)
-} else if (Script.channel === "beta") {
-  await $`gh release create v${Script.version} -d --title "v${Script.version}" --repo ${process.env.GH_REPO}`
-  const release =
-    await $`gh release view v${Script.version} --json tagName,databaseId --repo ${process.env.GH_REPO}`.json()
-  output.push(`release=${release.databaseId}`)
-  output.push(`tag=${release.tagName}`)
+  await writeOutput([`version=${Script.version}`, `repo=${repo}`])
+  process.exit(0)
 }
 
-output.push(`repo=${process.env.GH_REPO}`)
-
-if (process.env.GITHUB_OUTPUT) {
-  await Bun.write(process.env.GITHUB_OUTPUT, output.join("\n"))
-}
-
-process.exit(0)
+await $`gh release create v${Script.version} -d --target ${sha} --title v${Script.version} --notes-file ${notesFile} --repo ${repo}`
+const release = await $`gh release view v${Script.version} --json tagName,databaseId --repo ${repo}`.json()
+await writeOutput([
+  `version=${Script.version}`,
+  `release=${release.databaseId}`,
+  `tag=${release.tagName}`,
+  `repo=${repo}`,
+])
