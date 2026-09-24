@@ -6,7 +6,7 @@ import { formatNotes, Script, toChange } from "@opencode-ai/script"
 
 if (Script.preview) throw new Error("publish workflow only supports release builds")
 
-const repo = process.env.GH_REPO ?? "mdev34-lab/alphacode"
+const repo = process.env.GH_REPO ?? "mdev34-lab/silvercode"
 const sha = process.env.GITHUB_SHA ?? "HEAD"
 const bump = process.env.OPENCODE_BUMP?.trim().toLowerCase() || "auto"
 const previousTag = await Script.previousTag
@@ -19,7 +19,7 @@ const notes = previousTag
       { repo, prev: previousTag, next: `v${Script.version}` },
     )
   : "Initial tracked release."
-const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/alphacode-release-notes.txt`
+const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/silvercode-release-notes.txt`
 await Bun.write(notesFile, notes)
 
 const writeOutput = async (values: string[]) => {

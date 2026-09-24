@@ -32,7 +32,7 @@ env:
 jobs:
   version:
     runs-on: ubuntu-latest
-    if: github.repository == 'mdev34-lab/alphacode'
+    if: github.repository == 'mdev34-lab/silvercode'
     steps:
       - name: Only release from dev
         if: ${{ !inputs.dry_run && github.ref != 'refs/heads/dev' }}

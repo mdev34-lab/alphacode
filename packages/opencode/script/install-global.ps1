@@ -1,12 +1,12 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-  Pull a branch, build alphacode for Windows, reinstall globally.
+  Pull a branch, build silvercode for Windows, reinstall globally.
 
 .DESCRIPTION
   1. Fetches origin/<Branch> and fast-forwards the local branch (default dev).
   2. Builds the current-platform binary only (bun run build -- --single).
-  3. Copies the fresh Windows binary to ~/.local/bin/alphacode.exe and smoke-tests it.
+  3. Copies the fresh Windows binary to ~/.local/bin/silvercode.exe and smoke-tests it.
 
 .PARAMETER Branch
   Branch to pull and build. Defaults to dev (tracked against origin).
@@ -30,7 +30,7 @@
   platform binary (e.g. after a previous run failed at the install step).
 
 .PARAMETER KillRunning
-  Stop running alphacode.exe processes from the installed destination before
+  Stop running silvercode.exe processes from the installed destination before
   installing. Off by default: the installer renames the running binary aside
   (allowed on Windows) so a live TUI session is never killed. Use only when
   the rename swap fails.
@@ -52,7 +52,7 @@ $repoRoot = Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -
 $opencodeDir = Join-Path $repoRoot "packages/opencode"
 $distDir = Join-Path $opencodeDir "dist"
 $destDir = Join-Path $HOME ".local/bin"
-$destExe = Join-Path $destDir "alphacode.exe"
+$destExe = Join-Path $destDir "silvercode.exe"
 $destOld = "$destExe.old"
 
 function Invoke-Step([string]$label, [scriptblock]$body) {
@@ -60,9 +60,9 @@ function Invoke-Step([string]$label, [scriptblock]$body) {
   & $body
 }
 
-function Get-InstalledAlphaCodeProcess([string]$path) {
+function Get-InstalledSilverCodeProcess([string]$path) {
   $fullPath = [System.IO.Path]::GetFullPath($path)
-  @(Get-Process -Name "alphacode" -ErrorAction SilentlyContinue | Where-Object {
+  @(Get-Process -Name "silvercode" -ErrorAction SilentlyContinue | Where-Object {
     try {
       $processPath = $_.Path
       $processPath -and [System.StringComparer]::OrdinalIgnoreCase.Equals(
@@ -134,14 +134,14 @@ if (-not $SkipBuild) {
   Write-Host "`n=== Skipping pull/build (-SkipBuild); using existing dist ===" -ForegroundColor Cyan
 }
 
-$platformDirs = @(Get-ChildItem -LiteralPath $distDir -Directory -Filter "alphacode-*")
+$platformDirs = @(Get-ChildItem -LiteralPath $distDir -Directory -Filter "silvercode-ai-*")
 if ($platformDirs.Count -ne 1) {
-  throw "Expected exactly one alphacode-* platform directory in $distDir, found $($platformDirs.Count). Remove stale dist output or run a fresh build."
+  throw "Expected exactly one silvercode-ai-* platform directory in $distDir, found $($platformDirs.Count). Remove stale dist output or run a fresh build."
 }
 $platformDir = $platformDirs[0]
-$candidate = Join-Path $platformDir.FullName "bin/alphacode.exe"
+$candidate = Join-Path $platformDir.FullName "bin/silvercode.exe"
 if (-not (Test-Path -LiteralPath $candidate)) {
-  $candidate = Join-Path $platformDir.FullName "bin/alphacode"
+  $candidate = Join-Path $platformDir.FullName "bin/silvercode"
 }
 if (-not (Test-Path -LiteralPath $candidate)) {
   throw "Built binary not found under $($platformDir.FullName)/bin"
@@ -162,7 +162,7 @@ Invoke-Step "Reinstall globally" {
       # Preserve the previous binary before stopping any process or overwriting
       # it, so every install path retains a rollback target.
       try {
-        Rename-Item -LiteralPath $destExe -NewName "alphacode.exe.old" -ErrorAction Stop
+        Rename-Item -LiteralPath $destExe -NewName "silvercode.exe.old" -ErrorAction Stop
         $swapped = $true
         Write-Host "Preserved previous binary before installation."
       } catch {
@@ -174,19 +174,19 @@ Invoke-Step "Reinstall globally" {
 
     if ($KillRunning) {
       for ($round = 1; $round -le 3; $round++) {
-        $running = @(Get-InstalledAlphaCodeProcess $destExe)
+        $running = @(Get-InstalledSilverCodeProcess $destExe)
         if ($running.Count -eq 0) { break }
-        Write-Host "Stopping $($running.Count) installed alphacode process(es) (round $round)..." -ForegroundColor Yellow
+        Write-Host "Stopping $($running.Count) installed silvercode process(es) (round $round)..." -ForegroundColor Yellow
         $running | Stop-Process -Force
         Start-Sleep -Seconds 2
       }
-      $leftover = @(Get-InstalledAlphaCodeProcess $destExe)
+      $leftover = @(Get-InstalledSilverCodeProcess $destExe)
       if ($leftover.Count -gt 0) {
-        throw "Could not stop installed alphacode (PIDs $($leftover.Id -join ',')). Close it manually and rerun."
+        throw "Could not stop installed silvercode (PIDs $($leftover.Id -join ',')). Close it manually and rerun."
       }
 
       if ((Test-Path -LiteralPath $destExe) -and -not $swapped) {
-        Rename-Item -LiteralPath $destExe -NewName "alphacode.exe.old" -ErrorAction Stop
+        Rename-Item -LiteralPath $destExe -NewName "silvercode.exe.old" -ErrorAction Stop
         $swapped = $true
         Write-Host "Preserved previous binary after stopping running sessions."
       }
@@ -211,7 +211,7 @@ Invoke-Step "Reinstall globally" {
 
     Write-Host "Installed: $destExe"
     $reported = (& $destExe --version).Trim()
-    Write-Host "alphacode --version => $reported"
+    Write-Host "silvercode --version => $reported"
     if ($Version -ne "" -and ($reported -notlike "*$Version*")) {
       throw "Version mismatch: expected '$Version' in '$reported'"
     }
@@ -220,7 +220,7 @@ Invoke-Step "Reinstall globally" {
     # transaction. Never leave a known-bad install or an orphaned backup.
     Remove-Item -LiteralPath $destExe -Force -ErrorAction SilentlyContinue
     if ($swapped -and (Test-Path -LiteralPath $destOld)) {
-      Rename-Item -LiteralPath $destOld -NewName "alphacode.exe" -ErrorAction SilentlyContinue
+      Rename-Item -LiteralPath $destOld -NewName "silvercode.exe" -ErrorAction SilentlyContinue
       Write-Host "Restored previous binary after install failure." -ForegroundColor Yellow
     }
     throw
@@ -233,4 +233,4 @@ if (-not $KeepDist) {
   }
 }
 
-Write-Host "`nDone. Restart any running alphacode session to pick up the new binary." -ForegroundColor Green
+Write-Host "`nDone. Restart any running silvercode session to pick up the new binary." -ForegroundColor Green
