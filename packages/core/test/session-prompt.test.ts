@@ -54,7 +54,7 @@ const it = testEffect(
 const sessionID = SessionV2.ID.make("ses_prompt_test")
 const messageID = SessionMessage.ID.create()
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-v2-prompt-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-v2-prompt-"))
 
 const setup = Effect.gen(function* () {
   const { db } = yield* Database.Service

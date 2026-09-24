@@ -518,7 +518,7 @@ describe("run entry body", () => {
     })
   })
 
-  test("registers every AlphaCode-native tool in direct-mode display rules", () => {
+  test("registers every SilverCode-native tool in direct-mode display rules", () => {
     const fallback = { output: true, final: true }
     const builtins = [
       "invalid",

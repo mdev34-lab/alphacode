@@ -4,8 +4,8 @@ import { BRAND_NAME, BRAND_PREFIX, BRAND_SUFFIX } from "../src/brand"
 // Guards the sidebar footer wordmark against drifting back to the legacy
 // "OpenCode" product name. The footer renders the two-tone inline mark from
 // these constants (see routes/session/sidebar.tsx and feature-plugins/sidebar/footer.tsx).
-test("product brand name is AlphaCode", () => {
-  expect(BRAND_NAME).toBe("AlphaCode")
+test("product brand name is SilverCode", () => {
+  expect(BRAND_NAME).toBe("SilverCode")
 })
 
 test("brand prefix and suffix compose the product name", () => {

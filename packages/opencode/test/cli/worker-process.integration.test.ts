@@ -51,7 +51,7 @@ async function waitForCount(messages: string[], text: string, count: number, wha
 
 describe("TUI worker process integration", () => {
   test("communicates over real Bun IPC and reconnects after a crash", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "alphacode-worker-"))
+    const dir = await mkdtemp(join(tmpdir(), "silvercode-worker-"))
     const target = join(dir, "worker.ts")
     await Bun.write(target, workerSource)
 
@@ -87,7 +87,7 @@ describe("TUI worker process integration", () => {
   })
 
   test("rejects a stranded RPC across a crash and serves new calls after restart", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "alphacode-worker-rpc-"))
+    const dir = await mkdtemp(join(tmpdir(), "silvercode-worker-rpc-"))
     const target = join(dir, "worker.ts")
     await Bun.write(target, rpcWorkerSource)
 

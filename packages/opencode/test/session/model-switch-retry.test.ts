@@ -2,7 +2,7 @@
  * Regression tests for stale retries continuing with the old model
  * after a real-time model switch.
  *
- * See: https://github.com/mdev34-lab/alphacode/issues/66
+ * See: https://github.com/mdev34-lab/silvercode/issues/66
  *
  * The bug: when an LLM request fails and the retry/backoff begins, if the
  * user switches to another model/provider via session.update, the retry

@@ -287,9 +287,9 @@ const REPORT = [
   "### Assessment",
   "**Ready to proceed?** Needs fixes",
   "",
-  "<alphacode-review>",
+  "<silvercode-review>",
   JSON.stringify(REVIEW_REPORT, null, 2),
-  "</alphacode-review>",
+  "</silvercode-review>",
 ].join("\n")
 
 const TASK_PROMPT = [

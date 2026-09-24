@@ -597,7 +597,7 @@ const REVIEW_APPROVED = {
 }
 
 const reviewEnvelope = (report: Record<string, unknown>) =>
-  ["<alphacode-review>", JSON.stringify(report, null, 2), "</alphacode-review>"].join("\n")
+  ["<silvercode-review>", JSON.stringify(report, null, 2), "</silvercode-review>"].join("\n")
 
 const reviewCtx = (sessionID: SessionID, messageID: MessageID) => ({
   sessionID,
@@ -629,7 +629,7 @@ describe("tool.finish – review result gate", () => {
         yield* def.execute({ result: "" }, reviewCtx(chat.id, assistant.id)).pipe(Effect.exit),
       )
       expect(failure?.message).toContain("Review finish rejected")
-      expect(failure?.message).toContain("<alphacode-review>")
+      expect(failure?.message).toContain("<silvercode-review>")
     }),
   )
 
@@ -645,7 +645,7 @@ describe("tool.finish – review result gate", () => {
           .pipe(Effect.exit),
       )
       expect(failure?.message).toContain("Review finish rejected")
-      expect(failure?.message).toContain("no <alphacode-review> report envelope was found")
+      expect(failure?.message).toContain("no <silvercode-review> report envelope was found")
     }),
   )
 
