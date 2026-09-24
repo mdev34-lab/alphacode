@@ -75,7 +75,7 @@ describe("OpencodePlugin", () => {
         {
           id: Integration.MethodID.make("device"),
           type: "oauth",
-          label: "alphacode Console account",
+          label: "silvercode Console account",
         },
         { type: "key", label: "API key (service account)" },
       ])

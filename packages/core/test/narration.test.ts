@@ -124,8 +124,8 @@ describe("GUIDANCE constant", () => {
     expect(NarrationDetector.GUIDANCE.length).toBeGreaterThan(0)
   })
 
-  test("contains the AlphaCode marker so the model can identify the harness as source", () => {
-    expect(NarrationDetector.GUIDANCE).toContain("[AlphaCode]")
+  test("contains the SilverCode marker so the model can identify the harness as source", () => {
+    expect(NarrationDetector.GUIDANCE).toContain("[SilverCode]")
   })
 
   test("advises using the appropriate tool directly", () => {

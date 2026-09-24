@@ -16,7 +16,7 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { it } from "./lib/effect"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-test-project-"))
 
 type Api =
   | {

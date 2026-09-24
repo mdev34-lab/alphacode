@@ -49,6 +49,6 @@ test("no glyph rises above the ascender line", () => {
   expect(pixels[0]!.some(Boolean)).toBe(false)
 })
 
-test("wordmark renders alphacode with an even baseline", () => {
+test("wordmark renders silvercode with an even baseline", () => {
   expect(pixels.map((row) => row.map((on) => (on ? "#" : ".")).join("")).join("\n")).toMatchSnapshot()
 })

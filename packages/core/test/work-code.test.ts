@@ -13,7 +13,7 @@ import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 import { agentHost, host } from "./plugin/host"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-test-project-"))
 
 function evaluate(action: string, resource: string, rules: PermissionV2.Ruleset) {
   return PermissionV2.evaluate(action, resource, rules).effect

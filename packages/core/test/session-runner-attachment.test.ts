@@ -13,7 +13,7 @@ import { toLLMMessages } from "@opencode-ai/core/session/runner/to-llm-message"
 
 const model = Model.make({ id: "model", provider: "provider", route: OpenAIChat.route })
 
-const dir = mkdtempSync(path.join(tmpdir(), "alphacode-att-"))
+const dir = mkdtempSync(path.join(tmpdir(), "silvercode-att-"))
 const textPath = path.join(dir, "note.txt")
 const pngPath = path.join(dir, "img.png")
 writeFileSync(textPath, "hello world")

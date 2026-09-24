@@ -32,7 +32,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { tmpdir } from "./fixture/tmpdir"
 
-const projectDir = mkdtempSync(path.join(nodeTmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(nodeTmpdir(), "silvercode-test-project-"))
 
 const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
   Effect.runPromise(
