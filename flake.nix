@@ -1,5 +1,5 @@
 {
-  description = "AlphaCode development flake";
+  description = "SilverCode development flake";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -39,7 +39,7 @@
             };
           in
           rec {
-            alphacode = final.callPackage ./nix/alphacode.nix {
+            silvercode = final.callPackage ./nix/silvercode.nix {
               inherit node_modules;
             };
           };
@@ -53,8 +53,8 @@
           };
         in
         rec {
-          default = alphacode;
-          alphacode = pkgs.callPackage ./nix/alphacode.nix {
+          default = silvercode;
+          silvercode = pkgs.callPackage ./nix/silvercode.nix {
             inherit node_modules;
           };
           # Updater derivation with fakeHash - build fails and reveals correct hash

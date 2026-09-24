@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# alphacode Korean IME Fix Installer
+# silvercode Korean IME Fix Installer
 # https://github.com/anomalyco/opencode/issues/14371
 #
-# Patches alphacode to prevent Korean (and other CJK) IME last character
+# Patches silvercode to prevent Korean (and other CJK) IME last character
 # truncation when pressing Enter in Kitty and other terminals.
 #
 # Usage:
@@ -76,7 +76,7 @@ cd "$OPENCODE_SRC"
 bun install --frozen-lockfile 2>/dev/null || bun install
 
 # ── 4. Build (current platform only) ──────────────────────────────────
-info "Building alphacode for current platform ..."
+info "Building silvercode for current platform ..."
 cd "$OPENCODE_SRC/packages/opencode"
 bun run build --single
 
@@ -90,19 +90,19 @@ ARCH=$(uname -m)
 [ "$PLATFORM" = "darwin" ] && true
 [ "$PLATFORM" = "linux" ] && true
 
-BUILT_BINARY="$OPENCODE_SRC/packages/opencode/dist/alphacode-${PLATFORM}-${ARCH}/bin/alphacode"
+BUILT_BINARY="$OPENCODE_SRC/packages/opencode/dist/silvercode-ai-${PLATFORM}-${ARCH}/bin/silvercode"
 
 if [ ! -f "$BUILT_BINARY" ]; then
-  BUILT_BINARY=$(find "$OPENCODE_SRC/packages/opencode/dist" -name "alphacode" -type f -executable 2>/dev/null | head -1)
+  BUILT_BINARY=$(find "$OPENCODE_SRC/packages/opencode/dist" -name "silvercode" -type f -executable 2>/dev/null | head -1)
 fi
 
 if [ -f "$BUILT_BINARY" ]; then
-  if [ -f "$OPENCODE_DIR/bin/alphacode" ]; then
-    cp "$OPENCODE_DIR/bin/alphacode" "$OPENCODE_DIR/bin/alphacode.bak.$(date +%Y%m%d%H%M%S)"
+  if [ -f "$OPENCODE_DIR/bin/silvercode" ]; then
+    cp "$OPENCODE_DIR/bin/silvercode" "$OPENCODE_DIR/bin/silvercode.bak.$(date +%Y%m%d%H%M%S)"
   fi
-  cp "$BUILT_BINARY" "$OPENCODE_DIR/bin/alphacode"
-  chmod +x "$OPENCODE_DIR/bin/alphacode"
-  ok "Installed to $OPENCODE_DIR/bin/alphacode"
+  cp "$BUILT_BINARY" "$OPENCODE_DIR/bin/silvercode"
+  chmod +x "$OPENCODE_DIR/bin/silvercode"
+  ok "Installed to $OPENCODE_DIR/bin/silvercode"
 else
   err "Build failed - binary not found in dist/"
   info "Try running manually:"
