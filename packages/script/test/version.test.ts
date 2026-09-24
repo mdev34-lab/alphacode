@@ -181,6 +181,7 @@ describe("formatNotes", () => {
         change("revert", { description: "restore behavior" }),
         change("perf", { description: "speed up startup" }),
         change("chore", { description: "update tooling" }),
+        change("chore", { description: "drop legacy config", breaking: true }),
       ],
       { repo: "mdev34-lab/alphacode", prev: "v0.2.0", next: "v0.3.0" },
     )
@@ -189,6 +190,7 @@ describe("formatNotes", () => {
     expect(notes.indexOf("### Features")).toBeLessThan(notes.indexOf("### Fixes"))
     expect(notes.indexOf("### Fixes")).toBeLessThan(notes.indexOf("### Performance"))
     expect(notes).toContain("- **api:** change behavior ([#184](https://github.com/mdev34-lab/alphacode/pull/184))")
+    expect(notes).toContain("- drop legacy config ([`1af5cf3`](https://github.com/mdev34-lab/alphacode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))")
     expect(notes).toContain(
       "- add feature ([`1af5cf3`](https://github.com/mdev34-lab/alphacode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))",
     )

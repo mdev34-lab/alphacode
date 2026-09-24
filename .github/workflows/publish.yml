@@ -42,7 +42,6 @@ jobs:
       - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
         with:
           fetch-depth: 0
-      - run: git fetch --force --tags
       - uses: ./.github/actions/setup-bun
       - id: version
         run: ./script/version.ts
@@ -52,7 +51,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
     outputs:
       version: ${{ steps.version.outputs.version }}
-      release: ${{ steps.version.outputs.release }}
+      release_id: ${{ steps.version.outputs.release_id }}
       tag: ${{ steps.version.outputs.tag }}
       repo: ${{ steps.version.outputs.repo }}
 
@@ -67,7 +66,7 @@ jobs:
         run: ./packages/opencode/script/build.ts
         env:
           OPENCODE_VERSION: ${{ needs.version.outputs.version }}
-          OPENCODE_RELEASE: ${{ needs.version.outputs.release }}
+          OPENCODE_RELEASE_ID: ${{ needs.version.outputs.release_id }}
       - name: Attach install script
         run: gh release upload "${{ needs.version.outputs.tag }}" ./install --clobber
 
@@ -80,8 +79,9 @@ jobs:
       - run: gh release edit "${{ needs.version.outputs.tag }}" --draft=false --latest
 
   cleanup:
+    # Wait for the entire publish path so cleanup sees build/finalize failures before evaluating the condition.
     needs: [version, build, finalize]
-    if: ${{ failure() && !inputs.dry_run && needs.version.outputs.tag != '' }}
+    if: ${{ always() && failure() && !inputs.dry_run && needs.version.outputs.tag != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Delete leftover draft (never a published release)

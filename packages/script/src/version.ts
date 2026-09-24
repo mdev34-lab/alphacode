@@ -122,7 +122,7 @@ export function devVersion(last: string | null, count: number, sha: string, dirt
 
 export function formatNotes(changes: Change[], o: { repo: string; prev?: string; next: string }): string {
   const omitted = new Set(["test", "chore", "docs", "style", "ci", "build", "refactor"])
-  const visible = changes.filter((change) => !omitted.has(change.type))
+  const visible = changes.filter((change) => change.breaking || !omitted.has(change.type))
   const line = (change: Change) => {
     const description = change.scope ? `**${change.scope}:** ${change.description}` : change.description
     const link = change.pr

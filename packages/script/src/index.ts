@@ -25,7 +25,7 @@ const env = {
   OPENCODE_CHANNEL: process.env["OPENCODE_CHANNEL"],
   OPENCODE_BUMP: process.env["OPENCODE_BUMP"],
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
-  OPENCODE_RELEASE: process.env["OPENCODE_RELEASE"],
+  OPENCODE_RELEASE_ID: process.env["OPENCODE_RELEASE_ID"],
 }
 const bumpInput = env.OPENCODE_BUMP?.trim().toLowerCase()
 const BUMP: BumpInput | undefined = (() => {
@@ -35,13 +35,14 @@ const BUMP: BumpInput | undefined = (() => {
 })()
 
 const VERSION_OVERRIDE = (() => {
-  if (!env.OPENCODE_VERSION) return undefined
-  const version = env.OPENCODE_VERSION.replace(/^v/, "")
-  if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version)) {
-    throw new Error(`Invalid OPENCODE_VERSION: ${env.OPENCODE_VERSION}`)
+  const input = env.OPENCODE_VERSION
+  if (!input) return undefined
+  try {
+    parseVersion(input)
+  } catch {
+    throw new Error(`Invalid OPENCODE_VERSION: ${input}`)
   }
-  parseVersion(version)
-  return version
+  return input.replace(/^v/, "")
 })()
 
 const CHANNEL = await (async () => {
@@ -98,7 +99,7 @@ export const Script = {
     return IS_PREVIEW
   },
   get release(): boolean {
-    return !!env.OPENCODE_RELEASE
+    return !!env.OPENCODE_RELEASE_ID
   },
   get team() {
     return team

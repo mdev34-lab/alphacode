@@ -51,7 +51,7 @@ await $`gh release create v${Script.version} -d --target ${sha} --title v${Scrip
 const release = await $`gh release view v${Script.version} --json tagName,databaseId --repo ${repo}`.json()
 await writeOutput([
   `version=${Script.version}`,
-  `release=${release.databaseId}`,
+  `release_id=${release.databaseId}`,
   `tag=${release.tagName}`,
   `repo=${repo}`,
 ])
