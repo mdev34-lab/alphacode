@@ -6,7 +6,7 @@ import { Global } from "@opencode-ai/core/global"
 import { UI } from "@/cli/ui"
 import { errorMessage } from "@/util/error"
 
-// Factory reset for the per-user state alphacode owns (config, data, state,
+// Factory reset for the per-user state silvercode owns (config, data, state,
 // cache). Project workspaces are never touched: any root that overlaps the
 // current working directory is dropped from the plan, so an XDG override
 // pointing into a project can never be wiped by running the flag there.
@@ -31,7 +31,7 @@ export interface FactoryDefaultResult {
   failed: Array<{ path: string; error: string }>
 }
 
-const DOCS_URL = "https://github.com/mdev34-lab/alphacode#readme"
+const DOCS_URL = "https://github.com/mdev34-lab/silvercode#readme"
 
 export function planFactoryDefault(input: { cwd: string; roots?: FactoryDefaultTarget[] }): FactoryDefaultPlan {
   const roots: FactoryDefaultTarget[] = input.roots ?? [
@@ -77,7 +77,7 @@ export async function runFactoryDefault(input: {
   roots?: FactoryDefaultTarget[]
 }) {
   UI.empty()
-  intro("Reset alphacode to factory defaults")
+  intro("Reset silvercode to factory defaults")
 
   const plan = planFactoryDefault({ cwd: input.cwd ?? process.cwd(), roots: input.roots })
 
@@ -91,7 +91,7 @@ export async function runFactoryDefault(input: {
   }
 
   if (present.length === 0) {
-    log.info("Nothing to remove - alphacode is already at factory defaults")
+    log.info("Nothing to remove - silvercode is already at factory defaults")
     outro("Done")
     return
   }
@@ -112,7 +112,7 @@ export async function runFactoryDefault(input: {
       return
     }
     const confirmed = await confirm({
-      message: "Remove all alphacode config, data, state, and cache? This cannot be undone.",
+      message: "Remove all silvercode config, data, state, and cache? This cannot be undone.",
       initialValue: false,
     })
     if (!confirmed || isCancel(confirmed)) {
@@ -122,7 +122,7 @@ export async function runFactoryDefault(input: {
   }
 
   const progress = spinner()
-  progress.start("Removing alphacode user-level state...")
+  progress.start("Removing silvercode user-level state...")
   const result = await applyFactoryDefault(plan)
 
   if (result.failed.length > 0) {
@@ -132,11 +132,11 @@ export async function runFactoryDefault(input: {
     }
     process.exitCode = 1
   } else {
-    progress.stop("Removed alphacode user-level state")
+    progress.stop("Removed silvercode user-level state")
   }
 
   UI.empty()
-  log.message(`alphacode rebuilds its state on next launch.\nDocs: ${DOCS_URL}`)
+  log.message(`silvercode rebuilds its state on next launch.\nDocs: ${DOCS_URL}`)
   outro("Done")
 }
 

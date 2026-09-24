@@ -1273,7 +1273,7 @@ export function Session() {
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
-          {/* AlphaCode docks the sidebar on the left; it must stay the first child of the row. */}
+          {/* SilverCode docks the sidebar on the left; it must stay the first child of the row. */}
           <Show when={sidebarVisible()}>
             <Switch>
               <Match when={wide()}>

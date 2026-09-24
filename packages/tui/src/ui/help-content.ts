@@ -55,7 +55,7 @@ export const HELP_SECTIONS: HelpSection[] = [
       { command: "/status", desc: "View system status info" },
       { command: "/debug", desc: "View debug information" },
       { command: "/editor", desc: "Compose the prompt in your external editor" },
-      { command: "/exit", desc: "Quit AlphaCode" },
+      { command: "/exit", desc: "Quit SilverCode" },
     ],
   },
 ]

@@ -2,12 +2,12 @@
  * Model catalog for the Qwen Web provider.
  *
  * The live `GET /api/models` catalog is authoritative; these helpers map it
- * onto AlphaCode's model representation. Until the first authenticated fetch
+ * onto SilverCode's model representation. Until the first authenticated fetch
  * succeeds, a small static fallback keeps the model picker usable. Live
  * results are cached on disk (TTL) so restarts stay fast and offline-safe.
  *
  * Deliberately no model-name table: Qwen can add/remove models without an
- * AlphaCode release, and the live catalog picks that up automatically.
+ * SilverCode release, and the live catalog picks that up automatically.
  */
 import fs from "fs"
 import path from "path"
@@ -84,7 +84,7 @@ function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
 
-/** Derive AlphaCode-facing capabilities from a normalized catalog record. */
+/** Derive SilverCode-facing capabilities from a normalized catalog record. */
 export function deriveCapabilities(record: QwenWebModelRecord, raw?: Record<string, unknown>): MappedCapabilities {
   const root = raw ?? {}
   const metadata = record.metadata
@@ -421,7 +421,7 @@ function knownNewestFamilyVersion(known: string[]): { major: number; minor: numb
   return newest
 }
 
-/** Provider info injected into AlphaCode's provider catalog. */
+/** Provider info injected into SilverCode's provider catalog. */
 export function providerInfo(): ProviderInfo {
   return {
     id: ProviderV2.ID.make(QWEN_WEB_PROVIDER_ID),
