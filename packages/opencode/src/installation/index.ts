@@ -17,9 +17,9 @@ export type Method = "curl" | "npm" | "yarn" | "pnpm" | "bun" | "brew" | "scoop"
 
 export type ReleaseType = "patch" | "minor" | "major"
 
-const REPO = "mdev34-lab/alphacode"
+const REPO = "mdev34-lab/silvercode"
 const REINSTALL =
-  "AlphaCode is distributed via GitHub Releases. Reinstall: curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/install | bash"
+  "SilverCode is distributed via GitHub Releases. Reinstall: curl -fsSL https://github.com/mdev34-lab/silvercode/releases/latest/download/install | bash"
 
 export const Event = InstallationEvent
 

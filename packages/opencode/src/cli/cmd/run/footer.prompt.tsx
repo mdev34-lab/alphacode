@@ -423,7 +423,7 @@ export function createPromptState(input: PromptInput): PromptState {
         display: "/continue",
         description: "resume the current session",
       } satisfies SlashOption,
-      { kind: "slash", name: "exit", display: "/exit", description: "close alphacode" } satisfies SlashOption,
+      { kind: "slash", name: "exit", display: "/exit", description: "close silvercode" } satisfies SlashOption,
     ]
     const hidden = new Set(builtins.map((item) => item.name))
     const showSkillMenu = !shell() && skillCommands().length > 0 && !hasSkillsCommand()

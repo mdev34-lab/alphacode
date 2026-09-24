@@ -121,7 +121,7 @@ export const SessionApi = HttpApi.make("session")
           OpenApi.annotations({
             identifier: "session.list",
             summary: "List sessions",
-            description: "Get a list of all alphacode sessions, sorted by most recently updated.",
+            description: "Get a list of all silvercode sessions, sorted by most recently updated.",
           }),
         ),
         HttpApiEndpoint.get("status", SessionPaths.status, {
@@ -144,7 +144,7 @@ export const SessionApi = HttpApi.make("session")
           OpenApi.annotations({
             identifier: "session.get",
             summary: "Get session",
-            description: "Retrieve detailed information about a specific alphacode session.",
+            description: "Retrieve detailed information about a specific silvercode session.",
           }),
         ),
         HttpApiEndpoint.get("children", SessionPaths.children, {
@@ -216,7 +216,7 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.create",
             summary: "Create session",
             description:
-              "Create a new alphacode session for interacting with AI assistants and managing conversations.",
+              "Create a new silvercode session for interacting with AI assistants and managing conversations.",
           }),
         ),
         HttpApiEndpoint.delete("remove", SessionPaths.remove, {

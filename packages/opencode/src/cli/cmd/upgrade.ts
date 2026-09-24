@@ -6,7 +6,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 export const UpgradeCommand = {
   command: "upgrade [target]",
-  describe: "upgrade alphacode to the latest or a specific version",
+  describe: "upgrade silvercode to the latest or a specific version",
   builder: (yargs: Argv) => {
     return yargs.positional("target", {
       describe: "version to upgrade to, for ex '0.1.48' or 'v0.1.48'",

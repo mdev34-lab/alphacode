@@ -1,7 +1,7 @@
 /**
- * AlphaCode plugin surface for the Qwen Web provider.
+ * SilverCode plugin surface for the Qwen Web provider.
  *
- * - `auth`: browser-based login. AlphaCode opens the Qwen login page in a
+ * - `auth`: browser-based login. SilverCode opens the Qwen login page in a
  *   persistent Chromium profile; the user logs in normally; the callback
  *   waits for (and persists) the authenticated session. No passwords or
  *   verification codes are ever requested or stored.
@@ -32,8 +32,8 @@ export async function QwenWebAuthPlugin(_input: PluginInput): Promise<Hooks> {
             return {
               url: "https://chat.qwen.ai/auth",
               instructions: headed
-                ? "A Chromium window opens with the Qwen login page. Log in normally in that window (password, SSO, passkey, or scan — whichever Qwen offers). AlphaCode never sees your credentials; it only detects the completed login. This window closes automatically."
-                : "No display was detected, so the login browser runs headless: if this machine already has a Qwen session saved from a previous login it will be reused automatically. Otherwise run `opencode auth login` on a machine with a display first — the saved session is stored under your AlphaCode data directory.",
+                ? "A Chromium window opens with the Qwen login page. Log in normally in that window (password, SSO, passkey, or scan — whichever Qwen offers). SilverCode never sees your credentials; it only detects the completed login. This window closes automatically."
+                : "No display was detected, so the login browser runs headless: if this machine already has a Qwen session saved from a previous login it will be reused automatically. Otherwise run `opencode auth login` on a machine with a display first — the saved session is stored under your SilverCode data directory.",
               method: "auto" as const,
               callback: async () => loginCallback(),
             }
