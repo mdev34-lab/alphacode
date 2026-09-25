@@ -16,6 +16,9 @@
     "@opencode-ai/core#test": {
       "dependsOn": ["^build"],
       "outputs": []
+    },
+    "@opencode-ai/script#test": {
+      "outputs": []
     }
   }
 }

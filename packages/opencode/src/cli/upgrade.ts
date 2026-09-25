@@ -8,8 +8,9 @@ import { GlobalBus } from "@/bus/global"
 export async function upgrade() {
   const config = await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.getGlobal()))
   if (config.autoupdate === false || Flag.OPENCODE_DISABLE_AUTOUPDATE) return
+  if (Installation.isPreview()) return
   const method = await Installation.method()
-  const latest = await Installation.latest(method).catch(() => {})
+  const latest = await Installation.latest().catch(() => {})
   if (!latest) return
 
   if (Flag.OPENCODE_ALWAYS_NOTIFY_UPDATE) {
