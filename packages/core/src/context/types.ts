@@ -7,7 +7,7 @@ import type { SessionSchema } from "../session/schema"
  * Canonical message shape the context compiler operates on.
  *
  * Context management never constructs provider-specific messages. Everything below stays in
- * AlphaCode's own representation until `toLLMMessages` lowers a prepared context for one provider
+ * SilverCode's own representation until `toLLMMessages` lowers a prepared context for one provider
  * turn.
  */
 export type ContextMessage = SessionMessage.Message

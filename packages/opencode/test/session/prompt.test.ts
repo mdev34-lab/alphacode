@@ -1027,7 +1027,7 @@ noLLMServer.instance(
       const sessions = yield* Session.Service
       const chat = yield* sessions.create({ title: "Paste to file" })
 
-      const content = "AlphaCode paste to file marker line. ".repeat(4000)
+      const content = "SilverCode paste to file marker line. ".repeat(4000)
       expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(PASTE_INLINE_MAX_BYTES)
 
       yield* prompt.prompt({

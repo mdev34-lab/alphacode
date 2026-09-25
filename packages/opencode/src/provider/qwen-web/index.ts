@@ -1,7 +1,7 @@
 /**
  * Native Qwen Web provider (`https://chat.qwen.ai/`).
  *
- * AlphaCode talks to the normal Qwen web app through the user's own
+ * SilverCode talks to the normal Qwen web app through the user's own
  * authenticated browser session: generations run on fresh ephemeral chats
  * via page-context fetch, and responses stream back incrementally through a
  * browser binding bridge. No API keys, no OAuth client secrets.
@@ -17,7 +17,7 @@
  * - `upload` — STS + OSS multimodal uploads.
  * - `catalog` — live `/api/models` mapping + fallback + cache.
  * - `sdk` — `LanguageModelV3` implementation.
- * - `plugin` — AlphaCode auth/provider plugin hooks.
+ * - `plugin` — SilverCode auth/provider plugin hooks.
  */
 export * from "@opencode-ai/webchat/adapters/qwen/constants"
 export * from "@opencode-ai/webchat/adapters/qwen/errors"

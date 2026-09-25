@@ -158,7 +158,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
           identifier: "v2.session.active",
           summary: "List active sessions",
           description:
-            "Retrieve foreground Session drains currently owned by this alphacode process. Sessions absent from the result are inactive.",
+            "Retrieve foreground Session drains currently owned by this silvercode process. Sessions absent from the result are inactive.",
         }),
       ),
     )
@@ -392,7 +392,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
           OpenApi.annotations({
             identifier: "v2.session.interrupt",
             summary: "Interrupt session execution",
-            description: "Interrupt active execution owned by this alphacode process. Idle interruption is a no-op.",
+            description: "Interrupt active execution owned by this silvercode process. Idle interruption is a no-op.",
           }),
         ),
     )

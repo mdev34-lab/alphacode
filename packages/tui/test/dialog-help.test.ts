@@ -5,7 +5,7 @@ import { HELP_SECTIONS, pad } from "../src/ui/help-content"
 // command reference (the command palette is authoritative). These tests guard
 // the curated list against leaking stale OpenCode branding and against
 // accidentally shipping malformed rows.
-test("help sections present AlphaCode branding and include /help", () => {
+test("help sections present SilverCode branding and include /help", () => {
   const commands = HELP_SECTIONS.flatMap((section) => section.commands.map((c) => c.command))
   expect(commands).toContain("/help")
 })

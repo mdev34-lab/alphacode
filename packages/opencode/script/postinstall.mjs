@@ -24,9 +24,9 @@ const archMap = {
 
 const platform = platformMap[os.platform()] ?? os.platform()
 const arch = archMap[os.arch()] ?? os.arch()
-const base = `alphacode-${platform}-${arch}`
-const sourceBinary = platform === "windows" ? "alphacode.exe" : "alphacode"
-const targetBinary = path.join(__dirname, "bin", "alphacode.exe")
+const base = `silvercode-ai-${platform}-${arch}`
+const sourceBinary = platform === "windows" ? "silvercode.exe" : "silvercode"
+const targetBinary = path.join(__dirname, "bin", "silvercode.exe")
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -127,7 +127,7 @@ function installPackage(name) {
   const version = packageJson.optionalDependencies?.[name]
   if (!version) return
 
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "alphacode-install-"))
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "silvercode-install-"))
   try {
     const result = childProcess.spawnSync(
       "npm",
@@ -175,7 +175,7 @@ function main() {
   }
 
   throw new Error(
-    `It seems your package manager failed to install the right alphacode CLI package. Try manually installing ${packageNames()
+    `It seems your package manager failed to install the right silvercode CLI package. Try manually installing ${packageNames()
       .map((name) => JSON.stringify(name))
       .join(" or ")}.`,
   )

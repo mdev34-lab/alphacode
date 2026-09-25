@@ -1,6 +1,6 @@
 # Dynamic Context Management
 
-Native context engineering for AlphaCode sessions: the provider context is compiled from canonical
+Native context engineering for SilverCode sessions: the provider context is compiled from canonical
 history on every turn instead of being mutated in place. Inspired by the Dynamic Context Plugin
 (DCP), re-implemented against the Effect-based V2 session runtime.
 
@@ -116,7 +116,7 @@ management can never make a session unusable.
    canonical history, unless the canonical history was itself already unpaired, since falling back
    cannot repair what was already broken.
 
-Editing recorded tool _results_ and stale failed tool _inputs_ is allowed — those are AlphaCode's
+Editing recorded tool _results_ and stale failed tool _inputs_ is allowed — those are SilverCode's
 own recordings, not model output — but only through the four transformations this subsystem owns:
 the duplicate marker, the purged-input marker, the payload-budget truncation, and the superseded
 todo marker. `ContextInvariants` recognizes each of them from the canonical part it replaced; any

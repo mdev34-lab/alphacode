@@ -52,7 +52,7 @@ const WAF_SIGNAL_KEYS = ["bx-ua", "bx-umidtoken", "bx-v", "version"] as const
 /** Signal keys captured from the page but only replayed if present. */
 const WAF_CAPTURE_KEYS = ["bx-ua", "bx-umidtoken"] as const
 const CLIENT_HINT_KEYS = ["user-agent", "accept-language", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"] as const
-const WAF_SPY_STORAGE_KEY = "__alphacodeQwenWafSignals"
+const WAF_SPY_STORAGE_KEY = "__silvercodeQwenWafSignals"
 const WAF_SIGNAL_HARD_WAIT_MS = 15_000
 /** Captured WAF tokens are valid for the page session; past this they may be a rotated set. */
 const WAF_PAIR_TTL_MS = 5 * 60_000

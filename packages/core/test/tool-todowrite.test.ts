@@ -20,7 +20,7 @@ import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { testEffect } from "./lib/effect"
 import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-test-project-"))
 
 const sessionID = SessionV2.ID.make("ses_todowrite_tool_test")
 const assertions: PermissionV2.AssertInput[] = []

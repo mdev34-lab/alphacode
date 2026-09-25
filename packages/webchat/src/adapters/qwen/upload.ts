@@ -287,7 +287,7 @@ export function buildFileEntry(input: {
       filename: input.filename,
       hash: null,
       id: input.fileId,
-      user_id: "alphacode-user",
+      user_id: "silvercode-user",
       meta: { name: input.filename, size: input.bytes, content_type: input.type.mime },
       update_at: now,
       lastModified: now,
@@ -327,7 +327,7 @@ async function putToOss(credentials: StsCredentials, buffer: Buffer, contentType
         code: "unsupported",
         retryable: false,
         cause: error,
-        message: "Image upload needs the `ali-oss` package. Reinstall AlphaCode dependencies and try again.",
+        message: "Image upload needs the `ali-oss` package. Reinstall SilverCode dependencies and try again.",
       })
     }
   }

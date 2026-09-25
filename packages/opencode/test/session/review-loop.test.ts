@@ -118,7 +118,7 @@ describe("review loop prompt contract", () => {
   test("the reviewer must end with one machine-readable report envelope", async () => {
     const prompt = await readAgentPrompt("review.txt")
 
-    expect(prompt).toContain("<alphacode-review>")
+    expect(prompt).toContain("<silvercode-review>")
     expect(prompt).toContain('"version": 1')
     expect(prompt).toContain('"assessment"')
     expect(prompt).toContain('"findings"')
@@ -129,13 +129,13 @@ describe("review loop prompt contract", () => {
     expect(prompt).toContain("last complete envelope")
     // The envelope must not be demonstrated inside a fence, or the model may
     // emit an unparseable fenced copy.
-    expect(prompt).not.toMatch(/```[\s\S]*<alphacode-review>/)
+    expect(prompt).not.toMatch(/```[\s\S]*<silvercode-review>/)
   })
 
   test("the review loop documents envelope delivery and the re-dispatch path", async () => {
     const prompt = await readPrompt("review-loop.txt")
 
-    expect(prompt).toContain("<alphacode-review>")
+    expect(prompt).toContain("<silvercode-review>")
     expect(prompt).toContain("review-delivery failure")
     expect(prompt).toContain("re-dispatch the review")
   })
@@ -182,9 +182,9 @@ describe("runtime review gate", () => {
 
   test("the report envelope in the task output is the canonical verdict", () => {
     const envelope = [
-      "<alphacode-review>",
+      "<silvercode-review>",
       JSON.stringify({ version: 1, revision: "uncommitted", assessment: "approved", summary: "clean", findings: [] }),
-      "</alphacode-review>",
+      "</silvercode-review>",
     ].join("\n")
     expect(parseReviewVerdict(`Assessment: Needs fixes\n\n${envelope}`)).toBe("approved")
   })
@@ -213,7 +213,7 @@ describe("runtime review gate", () => {
     const state = reviewLoopState([
       userMessage(),
       toolMessage("edit", { writesFiles: true }),
-      reviewMessage(`Assessment: Approved\n\n<alphacode-review>{ not json </alphacode-review>`),
+      reviewMessage(`Assessment: Approved\n\n<silvercode-review>{ not json </silvercode-review>`),
     ])
 
     expect(state.verdict).toBe("pending")

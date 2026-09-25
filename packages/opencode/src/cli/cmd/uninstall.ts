@@ -24,7 +24,7 @@ interface RemovalTargets {
 
 export const UninstallCommand = {
   command: "uninstall",
-  describe: "uninstall alphacode and remove all related files",
+  describe: "uninstall silvercode and remove all related files",
   builder: (yargs: Argv) =>
     yargs
       .option("keep-config", {
@@ -55,7 +55,7 @@ export const UninstallCommand = {
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()
-    prompts.intro("Uninstall alphacode")
+    prompts.intro("Uninstall silvercode")
 
     const method = await Installation.method()
     prompts.log.info(`Installation method: ${method}`)
@@ -229,7 +229,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
   }
 
   UI.empty()
-  prompts.log.success("Thank you for using alphacode!")
+  prompts.log.success("Thank you for using silvercode!")
 }
 
 async function getShellConfigFile(): Promise<string | null> {
@@ -266,7 +266,14 @@ async function getShellConfigFile(): Promise<string | null> {
     if (!exists) continue
 
     const content = await Filesystem.readText(file).catch(() => "")
-    if (content.includes("# alphacode") || content.includes("# opencode") || content.includes(".opencode/bin")) {
+    // "# alphacode" is the pre-rename marker; keep matching it so installs that
+    // predate the silvercode rename are still cleaned up.
+    if (
+      content.includes("# silvercode") ||
+      content.includes("# alphacode") ||
+      content.includes("# opencode") ||
+      content.includes(".opencode/bin")
+    ) {
       return file
     }
   }
@@ -284,7 +291,7 @@ async function cleanShellConfig(file: string) {
   for (const line of lines) {
     const trimmed = line.trim()
 
-    if (trimmed === "# alphacode" || trimmed === "# opencode") {
+    if (trimmed === "# silvercode" || trimmed === "# alphacode" || trimmed === "# opencode") {
       skip = true
       continue
     }

@@ -322,7 +322,7 @@ describe("session.message-v2.toModelMessage", () => {
   test("drops text/plain file parts from user messages but keeps synthetic preview text (large paste)", async () => {
     const messageID = "m-paste"
     const secretContent = "THIS_IS_THE_SECRET_FULL_CONTENT_THAT_MUST_NOT_REACH_THE_MODEL"
-    const previewText = "AlphaCode paste to file marker line. ... content truncated; full content saved to /data/attachments/ses/paste-abc.txt ... AlphaCode paste to file marker line."
+    const previewText = "SilverCode paste to file marker line. ... content truncated; full content saved to /data/attachments/ses/paste-abc.txt ... SilverCode paste to file marker line."
     const noteText = `[Large pasted text file: paste-1.txt (100 lines, 5000 bytes) was saved to /data/attachments/ses/paste-abc.txt. The text below is a truncated preview; read the file for the full content.]`
 
     const input: SessionV1.WithParts[] = [

@@ -2,7 +2,7 @@
  * Canonical data model for the webchat backbone.
  *
  * A webchat provider owns server-side threaded conversations (like Qwen
- * Chat's message tree). AlphaCode's model layer talks to each provider in
+ * Chat's message tree). SilverCode's model layer talks to each provider in
  * these terms instead of per-turn ephemeral chats: turns are incremental
  * ops on a persistent thread, tool calls are first-class nodes, and the
  * thread can be edited or forked without recreating a conversation from

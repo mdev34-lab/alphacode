@@ -40,7 +40,7 @@ const isTuiWorker = resolveIsTuiWorker(process.env, processWorker)
 // `processWorker` above). Exporting the identity decision keeps the gating
 // contract testable without touching the process transport.
 export function resolveIsTuiWorker(env: NodeJS.ProcessEnv, hasProcessSend: boolean) {
-  return env["ALPHACODE_TUI_WORKER"] === "1" || hasProcessSend
+  return env["SILVERCODE_TUI_WORKER"] === "1" || hasProcessSend
 }
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined

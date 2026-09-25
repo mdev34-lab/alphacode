@@ -1,4 +1,4 @@
-// Single source of truth for the alphacode ANSI wordmark.
+// Single source of truth for the silvercode ANSI wordmark.
 //
 // Every glyph is four columns wide (the "l" is a single column) and is drawn on
 // a half-block grid: one terminal cell is two vertical half cells. Row 0 holds

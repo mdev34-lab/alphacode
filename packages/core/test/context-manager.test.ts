@@ -54,7 +54,7 @@ import { eq } from "drizzle-orm"
 import { Effect, Layer, Schema, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-context-test-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-context-test-"))
 
 const requests: LLMRequest[] = []
 let turns: LLMEvent[][] = []

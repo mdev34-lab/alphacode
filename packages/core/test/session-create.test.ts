@@ -29,7 +29,7 @@ import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { testEffect } from "./lib/effect"
 import { tmpdir } from "./fixture/tmpdir"
 
-const projectDir = mkdtempSync(path.join(nodeTmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(nodeTmpdir(), "silvercode-test-project-"))
 
 const projects = Layer.succeed(
   ProjectV2.Service,

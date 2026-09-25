@@ -38,7 +38,7 @@ export const QWEN_WEB_BX_V = "2.5.37"
  * client-context headers (`user-agent`, `sec-ch-ua*`, `accept-language`).
  * The transport simply uses it as a marker; the test fake keys on it.
  */
-export const QWEN_WEB_CLIENT_CONTEXT_ARG = "__alphacodeQwenClientContext"
+export const QWEN_WEB_CLIENT_CONTEXT_ARG = "__silvercodeQwenClientContext"
 
 /** Chat type used for text conversations. */
 export const QWEN_WEB_CHAT_TYPE_TEXT = "t2t"
@@ -60,17 +60,17 @@ export const QWEN_WEB_TOOL_OPEN_NAMES = ["qw_call", "tool_call", "tool_calls"] a
 export const QWEN_WEB_TOOL_CLOSE_NAMES = ["qw_call", "tool_call", "tool_calls", "tool"] as const
 
 /** Binding name used for the page-context streaming bridge. */
-export const QWEN_WEB_STREAM_BINDING = "__alphacodeQwenStream"
+export const QWEN_WEB_STREAM_BINDING = "__silvercodeQwenStream"
 /** Page-global key holding in-flight AbortControllers, keyed by request id. */
-export const QWEN_WEB_STREAM_ABORTERS_KEY = "__alphacodeQwenStreamAborters"
+export const QWEN_WEB_STREAM_ABORTERS_KEY = "__silvercodeQwenStreamAborters"
 
 /** Marker credential stored in auth.json after a successful browser login. */
 export const QWEN_WEB_AUTH_MARKER = "qwen-web-browser-session"
 
-/** Subdirectory (under AlphaCode's data dir) holding the browser profile. */
+/** Subdirectory (under SilverCode's data dir) holding the browser profile. */
 export const QWEN_WEB_PROFILE_SUBDIR = "qwen-web/browser-profile"
 /** Lock file guarding the persistent profile across processes. */
-export const QWEN_WEB_PROFILE_LOCKFILE = "alphacode.lock"
+export const QWEN_WEB_PROFILE_LOCKFILE = "silvercode.lock"
 
 export const QWEN_WEB_ENV = {
   /** Override the web origin (tests / proxies). */

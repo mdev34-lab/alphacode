@@ -101,9 +101,9 @@ Reasoning: [1-2 sentence technical assessment]
 
 ### Final Report Envelope
 
-Your markdown report is the human-readable analysis. After it, end your final message with exactly one machine-readable report inside a `<alphacode-review>` envelope. The runtime extracts this envelope as the canonical review result delivered to the caller; a review without a parseable envelope counts as an undelivered review, not as a report with no findings.
+Your markdown report is the human-readable analysis. After it, end your final message with exactly one machine-readable report inside a `<silvercode-review>` envelope. The runtime extracts this envelope as the canonical review result delivered to the caller; a review without a parseable envelope counts as an undelivered review, not as a report with no findings.
 
-<alphacode-review>
+<silvercode-review>
 {
   "version": 1,
   "revision": "uncommitted",
@@ -119,7 +119,7 @@ Your markdown report is the human-readable analysis. After it, end your final me
     }
   ]
 }
-</alphacode-review>
+</silvercode-review>
 
 Envelope rules:
 
@@ -128,4 +128,4 @@ Envelope rules:
 - `revision` echoes the unit boundary you reviewed — the base and head SHAs you were given as `<base>..<head>`, or `uncommitted` — so the caller knows which revision the verdict covers.
 - `assessment` is `approved` or `needs-fixes` and must match your Assessment line.
 - `findings` lists every Critical, Important, and Minor issue from the Issues section with its severity and location. A clean approval uses an empty array; zero findings is a valid report.
-- Never wrap the envelope in a code fence, and never write the `<alphacode-review>` tag anywhere else in your report.
+- Never wrap the envelope in a code fence, and never write the `<silvercode-review>` tag anywhere else in your report.

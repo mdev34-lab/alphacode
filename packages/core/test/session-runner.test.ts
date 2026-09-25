@@ -63,7 +63,7 @@ import { Cause, DateTime, Deferred, Effect, Exit, Fiber, Layer, Schema, Stream }
 import { asc, eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-test-project-"))
 
 const requests: LLMRequest[] = []
 let response: LLMEvent[] = []

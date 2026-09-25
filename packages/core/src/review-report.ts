@@ -6,9 +6,9 @@ import { Option, Schema } from "effect"
  * The Review subagent delivers its canonical result through a tagged,
  * machine-readable report envelope appended after its human-readable analysis:
  *
- * <alphacode-review>
+ * <silvercode-review>
  * { "version": 1, ... }
- * </alphacode-review>
+ * </silvercode-review>
  *
  * Delivery extracts this envelope from the complete child output instead of
  * trusting the last text part, which a trailing empty text part can erase.
@@ -18,7 +18,7 @@ import { Option, Schema } from "effect"
  * to a single canonical envelope.
  */
 
-export const TAG = "alphacode-review"
+export const TAG = "silvercode-review"
 
 /** Bumped only for breaking envelope changes; older versions are rejected clearly. */
 export const VERSION = 1

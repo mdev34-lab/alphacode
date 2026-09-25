@@ -1,6 +1,6 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-exports[`wordmark renders alphacode with an even baseline 1`] = `
+exports[`wordmark renders silvercode with an even baseline 1`] = `
 ".........................................
 .....#......#......................#.....
 .###.#.####.###...###.####.####.####.####

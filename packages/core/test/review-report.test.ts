@@ -27,7 +27,7 @@ const report: ReviewReport.Info = {
 }
 
 function envelope(overrides: Record<string, unknown> = {}, body: Record<string, unknown> = report) {
-  return `<alphacode-review>\n${JSON.stringify({ ...body, ...overrides }, null, 2)}\n</alphacode-review>`
+  return `<silvercode-review>\n${JSON.stringify({ ...body, ...overrides }, null, 2)}\n</silvercode-review>`
 }
 
 const delivered = ReviewReport.extract([`### Issues\n\n- Important: swallowed error\n\n${envelope()}`])
@@ -64,11 +64,11 @@ describe("review report extraction", () => {
   })
 
   test("5. malformed report envelope is an explicit delivery failure", () => {
-    const notJson = ReviewReport.extract([`<alphacode-review>not json at all</alphacode-review>`])
+    const notJson = ReviewReport.extract([`<silvercode-review>not json at all</silvercode-review>`])
     expect(notJson.ok).toBe(false)
     if (!notJson.ok) expect(notJson.failure.reason).toBe("malformed")
 
-    const truncated = ReviewReport.extract([`<alphacode-review>\n{"version": 1}\n`])
+    const truncated = ReviewReport.extract([`<silvercode-review>\n{"version": 1}\n`])
     expect(truncated.ok).toBe(false)
     if (!truncated.ok) expect(truncated.failure.reason).toBe("malformed")
 
@@ -95,7 +95,7 @@ describe("review report extraction", () => {
     expect(delivery.analysis).toContain("Detailed analysis.")
     expect(delivery.analysis).toContain("Assessment: Needs fixes")
     expect(delivery.analysis).toContain("postscript")
-    expect(delivery.analysis).not.toContain("<alphacode-review>")
+    expect(delivery.analysis).not.toContain("<silvercode-review>")
     expect(delivery.report).toEqual(report)
   })
 
@@ -149,7 +149,7 @@ describe("review report rendering", () => {
   test("delivery failure messages are explicit and preserve a bounded analysis", () => {
     const message = ReviewReport.failureMessage({
       sessionID: "ses_review",
-      failure: { reason: "missing", message: "no <alphacode-review> report envelope was found" },
+      failure: { reason: "missing", message: "no <silvercode-review> report envelope was found" },
       analysis: "x".repeat(2000),
     })
     expect(message).toContain("Review delivery failed")
@@ -172,12 +172,12 @@ describe("verdict parsing with the report envelope", () => {
   test("a detected-but-invalid envelope never falls back to prose parsing", () => {
     // Malformed JSON in the envelope + contradicting prose assessment.
     expect(
-      parseReviewVerdict(`Assessment: Approved\n\n<alphacode-review>{ not json </alphacode-review>`),
+      parseReviewVerdict(`Assessment: Approved\n\n<silvercode-review>{ not json </silvercode-review>`),
     ).toBeUndefined()
     // Unsupported schema version + contradicting prose assessment.
     expect(parseReviewVerdict(`Assessment: Approved\n\n${envelope({ version: 2 })}`)).toBeUndefined()
     // Opening tag without a closing tag + contradicting prose assessment.
-    expect(parseReviewVerdict(`Assessment: Approved\n\n<alphacode-review>\n{"version": 1}\n`)).toBeUndefined()
+    expect(parseReviewVerdict(`Assessment: Approved\n\n<silvercode-review>\n{"version": 1}\n`)).toBeUndefined()
     // Wrong envelope shape + contradicting prose assessment.
     expect(
       parseReviewVerdict(`Assessment: Approved\n\n${envelope({}, { version: 1, revision: "x", assessment: "maybe" })}`),
