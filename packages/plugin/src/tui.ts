@@ -12,7 +12,6 @@ import type {
   PermissionRequest,
   QuestionRequest,
   Session,
-  SessionNextContextPrepared,
   SessionStatus,
   TextPart,
   Config as SdkConfig,
@@ -393,8 +392,6 @@ export type TuiState = {
     status: (sessionID: string) => SessionStatus | undefined
     permission: (sessionID: string) => ReadonlyArray<PermissionRequest>
     question: (sessionID: string) => ReadonlyArray<QuestionRequest>
-    /** Latest dynamic context measurement for the session, if a turn has been prepared. */
-    context: (sessionID: string) => SessionNextContextPrepared["data"] | undefined
   }
   part: (messageID: string) => ReadonlyArray<Part>
   lsp: () => ReadonlyArray<TuiSidebarLspItem>

@@ -24,7 +24,6 @@ import { useSDK } from "../../context/sdk"
 import { useRoute } from "../../context/route"
 import { useProject } from "../../context/project"
 import { useSync } from "../../context/sync"
-import { useData } from "../../context/data"
 import { useEvent } from "../../context/event"
 import { editorSelectionKey, useEditorContext, type EditorSelection } from "../../context/editor"
 import { normalizePromptContent, openEditor } from "../../editor"
@@ -146,7 +145,6 @@ export function Prompt(props: PromptProps) {
   const route = useRoute()
   const project = useProject()
   const sync = useSync()
-  const data = useData()
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
   const toast = useToast()
@@ -256,27 +254,6 @@ export function Prompt(props: PromptProps) {
     const session = sync.session.get(props.sessionID)
     const cost = session?.cost ?? 0
     const spent = cost > 0 ? money.format(cost) : undefined
-    // The context compiler measures what the next provider turn actually sends, so prefer it over
-    // the raw token counters of the last assistant message once a turn has been prepared.
-    const prepared = data.session.context.get(props.sessionID)
-    if (prepared) {
-      const pct = prepared.limit ? `${Math.round(prepared.utilization * 100)}%` : undefined
-      const saved = prepared.tokensSaved > 0 ? `-${Locale.number(prepared.tokensSaved)}` : undefined
-      return {
-        context: [
-          pct ? `${Locale.number(prepared.preparedTokens)} (${pct})` : Locale.number(prepared.preparedTokens),
-          saved,
-          // Byte pressure is not context-window pressure, so it is named rather than folded into
-          // the percentage, which can read as low while the request is still too large to send.
-          prepared.payloadOverBudget ? "over payload limit" : undefined,
-        ]
-          .filter(Boolean)
-          .join(" "),
-        cost: spent,
-        urgent:
-          prepared.recommendation === "prefer" || prepared.recommendation === "mandatory" || prepared.payloadOverBudget,
-      }
-    }
     const msg = sync.data.message[props.sessionID] ?? []
     const last = msg.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
     if (!last) return
