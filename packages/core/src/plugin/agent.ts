@@ -10,7 +10,9 @@ import { PermissionV2 } from "../permission"
 
 const TRUNCATION_GLOB = path.join(Global.Path.data, "tool-output", "*")
 const WORK_SYSTEM =
-  "You are an AI coding agent. Help the user accomplish software engineering tasks by inspecting the workspace, making targeted changes, and using tools according to the configured permissions."
+  "You are Work, a general-purpose workhorse. You operate in arbitrary folders and mixed-file workspaces, handling broad filesystem access, document handling, and general planning/execution without assuming the current directory is a software project."
+const CODE_SYSTEM =
+  "You are Code, a software-engineering specialist. You operate in Git and project folders, using LSP, repository maps, semantic code search, Git state, and project-aware context to accomplish software engineering tasks."
 
 const PROMPT_EXPLORE = `You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
 
@@ -119,13 +121,30 @@ export const Plugin = define({
 
     yield* ctx.agent.transform((draft) => {
       draft.update(AgentV2.defaultID, (item) => {
-        item.description = "The default agent. Executes tools based on configured permissions."
+        item.description = "General-purpose workhorse. Runs in arbitrary folders and mixed-file workspaces."
         item.system ??= WORK_SYSTEM
         item.mode = "primary"
         item.permissions.push(
           ...PermissionV2.merge(defaults, [
             { action: "question", resource: "*", effect: "allow" },
             { action: "plan_enter", resource: "*", effect: "allow" },
+            { action: "lsp", resource: "*", effect: "deny" },
+            { action: "task", resource: "work", effect: "deny" },
+          ]),
+        )
+      })
+
+      draft.update(AgentV2.ID.make("code"), (item) => {
+        item.description = "Software-engineering specialist. Runs in Git/project folders with LSP and repo-aware context."
+        item.system ??= CODE_SYSTEM
+        item.mode = "all"
+        item.permissions.push(
+          ...PermissionV2.merge(defaults, [
+            { action: "question", resource: "*", effect: "allow" },
+            { action: "plan_enter", resource: "*", effect: "allow" },
+            { action: "lsp", resource: "*", effect: "allow" },
+            { action: "task", resource: "work", effect: "deny" },
+            { action: "task", resource: "code", effect: "deny" },
           ]),
         )
       })

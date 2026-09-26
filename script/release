@@ -1,5 +1,22 @@
 #!/usr/bin/env bash
+# usage: [VERSION=0.2.0] script/release [auto|patch|minor|major] [--dry-run]
+set -euo pipefail
 
-BUMP_TYPE=${1:-patch}
+BUMP=auto
+DRY=false
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=true ;;
+    auto|patch|minor|major) BUMP="$a" ;;
+    *)
+      echo "Unknown release argument '$a'; expected auto, patch, minor, major, or --dry-run." >&2
+      exit 2
+      ;;
+  esac
+done
 
-gh workflow run publish.yml -f bump="$BUMP_TYPE"
+args=(gh workflow run publish.yml --ref dev -f "bump=$BUMP" -f "dry_run=$DRY")
+if [[ -n "${VERSION:-}" ]]; then
+  args+=(-f "version=$VERSION")
+fi
+"${args[@]}"

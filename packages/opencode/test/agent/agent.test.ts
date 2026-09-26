@@ -49,6 +49,7 @@ it.instance("returns default native agents when no config", () =>
     const agents = yield* load((svc) => svc.list())
     const names = agents.map((a) => a.name)
     expect(names).toContain("work")
+    expect(names).toContain("code")
     expect(names).toContain("plan")
     expect(names).toContain("general")
     expect(names).toContain("explore")
@@ -79,6 +80,16 @@ it.instance("plan agent denies edits except .opencode/plans/*", () =>
     expect(evalPerm(plan, "edit")).toBe("deny")
     // But specific path is allowed
     expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+  }),
+)
+
+it.instance("code agent cannot delegate to work or itself", () =>
+  Effect.gen(function* () {
+    const code = yield* load((svc) => svc.get("code"))
+    expect(code).toBeDefined()
+    expect(Permission.evaluate("task", "work", code!.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "code", code!.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "plan", code!.permission).action).toBe("allow")
   }),
 )
 
@@ -771,6 +782,25 @@ it.instance(
 )
 
 it.instance(
+  "defaultAgent prefers plan when work is disabled and code remains enabled",
+  () =>
+    Effect.gen(function* () {
+      const plan = yield* load((svc) => svc.get("plan"))
+      const code = yield* load((svc) => svc.get("code"))
+      expect(plan?.mode).toBe("primary")
+      expect(code?.mode).toBe("all")
+      expect(yield* load((svc) => svc.defaultAgent())).toBe("plan")
+    }),
+  {
+    config: {
+      agent: {
+        work: { disable: true },
+      },
+    },
+  },
+)
+
+it.instance(
   "defaultAgent returns plan when work is disabled and default_agent not set",
   () =>
     Effect.gen(function* () {
@@ -795,6 +825,7 @@ it.instance(
       agent: {
         work: { disable: true },
         plan: { disable: true },
+        code: { disable: true },
       },
     },
   },

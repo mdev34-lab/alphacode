@@ -8,7 +8,13 @@ The open source AI coding agent.
 ## Installation
 
 > [!NOTE]
-> **This is the alphacode fork** — it is not published to any package registry; the only supported install is building from source. (Looking for the published [opencode](https://github.com/anomalyco/opencode) project this fork tracks? Use its own install channels.)
+> **This is the AlphaCode fork.** It is distributed through this repository's GitHub Releases and the install script only; it is not published to npm or other package registries.
+
+```bash
+curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/install | bash
+```
+
+To build from source:
 
 ```bash
 git clone https://github.com/mdev34-lab/alphacode.git

@@ -462,6 +462,44 @@ describe("tool.task", () => {
     }),
   )
 
+  it.instance("rejects primary agent targets at the execution seam", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      for (const subagent_type of ["work", "plan"]) {
+        let asked = 0
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type,
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "work",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () =>
+                Effect.sync(() => {
+                  asked++
+                  throw new Error("permission prompt should not run for primary targets")
+                }),
+            },
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(asked).toBe(0)
+        if (!Exit.isFailure(exit)) continue
+        expect(Cause.pretty(exit.cause)).toContain(`Agent type ${subagent_type} is a primary agent`)
+      }
+    }),
+  )
+
   it.instance("prevents subagents from launching subagents by default", () =>
     Effect.gen(function* () {
       const sessions = yield* Session.Service

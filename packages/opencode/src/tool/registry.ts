@@ -320,10 +320,23 @@ const layer = Layer.effect(
         return true
       })
 
-      const codeModeDescription = filtered.some((tool) => tool.id === "execute")
+      // Tool visibility is the same permission boundary used at execution:
+      // a blanket deny hides the tool from the model, while Finish remains
+      // available so every agent can terminate cleanly.
+      const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
+      const disabled = Permission.disabled(
+        filtered.map((t) => t.id),
+        ruleset,
+      )
+      const permissionFiltered = filtered.filter((tool) => {
+        if (tool.id === FinishTool.id) return true
+        return !disabled.has(tool.id)
+      })
+
+      const codeModeDescription = permissionFiltered.some((tool) => tool.id === "execute")
         ? yield* describeCodeMode(input)
         : undefined
-      const visible = filtered.filter((tool) => tool.id !== "execute" || codeModeDescription)
+      const visible = permissionFiltered.filter((tool) => tool.id !== "execute" || codeModeDescription)
 
       return yield* Effect.forEach(
         visible,

@@ -13,7 +13,6 @@ import type { CommandContext } from "@opentui/keymap"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
 import { registerOpencodeSpinner } from "../register-spinner"
 import path from "path"
-import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { tint, useTheme, selectedForeground } from "../../context/theme"
@@ -34,7 +33,7 @@ import { promptOffsetWidth } from "../../prompt/display"
 import { createStore, produce, unwrap } from "solid-js/store"
 import { usePromptHistory, type PromptInfo } from "../../prompt/history"
 import { computePromptTraits } from "../../prompt/traits"
-import { isPasteAsFile, pastedFilePart, pastedFilePlaceholder } from "../../prompt/paste"
+import { pastedFilePart, pastedFilePlaceholder, processPastedText } from "../../prompt/paste"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
@@ -58,7 +57,6 @@ import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, u
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
-import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
 
 registerOpencodeSpinner()
@@ -76,17 +74,6 @@ export type PromptProps = {
     normal?: string[]
     shell?: string[]
   }
-}
-
-function pastedFilepath(value: string, platform: string) {
-  const raw = value.replace(/^['"]+|['"]+$/g, "")
-  if (raw.startsWith("file://")) {
-    try {
-      return fileURLToPath(raw)
-    } catch {}
-  }
-  if (platform === "win32") return raw
-  return raw.replace(/\\(.)/g, "$1")
 }
 
 export type PromptRef = {
@@ -153,7 +140,6 @@ export function Prompt(props: PromptProps) {
   const args = useArgs()
   const paths = useTuiPaths()
   const location = useLocation()
-  const terminalEnvironment = useTuiTerminalEnvironment()
   const clipboard = useClipboard()
   const sdk = useSDK()
   const editor = useEditorContext()
@@ -1244,41 +1230,13 @@ export function Prompt(props: PromptProps) {
   }
 
   async function pasteInputText(text: string) {
-    const normalizedText = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
-    const pastedContent = normalizedText.trim()
-    const filepath = pastedFilepath(pastedContent, terminalEnvironment.platform)
-    const isUrl = /^(https?):\/\//.test(filepath)
-    if (!isUrl) {
-      const attachment = await readLocalAttachment(filepath)
-      const filename = path.basename(filepath)
-      if (attachment?.type === "text") {
-        pasteText(attachment.content, `[SVG: ${filename ?? "image"}]`)
-        return
-      }
-      if (attachment?.type === "binary") {
-        await pasteAttachment({
-          filename,
-          filepath,
-          mime: attachment.mime,
-          content: Buffer.from(attachment.content).toString("base64"),
-        })
-        return
-      }
-    }
-
     const summaryEnabled = kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary)
-    if (summaryEnabled && isPasteAsFile(pastedContent)) {
-      pasteLargeText(pastedContent)
-      return
-    }
-
-    const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
-    if ((lineCount >= 3 || pastedContent.length > 150) && summaryEnabled) {
-      pasteText(pastedContent, `[Pasted ~${lineCount} lines]`)
-      return
-    }
-
-    input.insertText(normalizedText)
+    processPastedText(text, {
+      summaryEnabled,
+      pasteAsFile: pasteLargeText,
+      pasteSummary: pasteText,
+      insertText: (value) => input.insertText(value),
+    })
 
     setTimeout(() => {
       if (!input || input.isDestroyed) return
@@ -1286,7 +1244,6 @@ export function Prompt(props: PromptProps) {
       renderer.requestRender()
     }, 0)
   }
-
   async function pasteAttachment(file: { filename?: string; filepath?: string; content: string; mime: string }) {
     const currentOffset = input.cursorOffset
     const extmarkStart = currentOffset

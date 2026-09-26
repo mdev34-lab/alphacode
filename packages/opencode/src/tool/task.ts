@@ -108,6 +108,17 @@ export const TaskTool = Tool.define(
         )
       }
 
+      const next = yield* agent.get(params.subagent_type)
+      if (!next) {
+        return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
+      }
+      // Primary agents are session entry points, never delegation targets.
+      // Reject them before permission prompts so an impossible delegation
+      // cannot block on user interaction.
+      if (next.mode === "primary") {
+        return yield* Effect.fail(new Error(`Agent type ${params.subagent_type} is a primary agent and cannot be delegated to`))
+      }
+
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: id,
@@ -118,11 +129,6 @@ export const TaskTool = Tool.define(
             subagent_type: params.subagent_type,
           },
         })
-      }
-
-      const next = yield* agent.get(params.subagent_type)
-      if (!next) {
-        return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
 
       const session = params.task_id
