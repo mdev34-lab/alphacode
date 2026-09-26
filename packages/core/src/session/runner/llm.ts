@@ -11,8 +11,6 @@ import {
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Schema, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
-import { ContextInvariants } from "../../context/invariants"
-import { ContextManager } from "../../context/manager"
 import { Database } from "../../database/database"
 import { EventV2 } from "../../event"
 import { FSUtil } from "../../fs-util"
@@ -30,6 +28,7 @@ import { ToolRegistry } from "../../tool/registry"
 import { ToolOutputStore } from "../../tool-output-store"
 import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
+import { SessionContextReduction } from "../context-reduction"
 import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
@@ -38,7 +37,7 @@ import { SessionStore } from "../store"
 import { type RunError, Service } from "./index"
 import { SessionRunnerModel } from "./model"
 import { createLLMEventPublisher } from "./publish-llm-event"
-import { toLLMMessages } from "./to-llm-message"
+import { toLLMMessages, transmittable } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
@@ -109,10 +108,13 @@ const layer = Layer.effect(
     const skillGuidance = yield* SkillGuidance.Service
     const referenceGuidance = yield* ReferenceGuidance.Service
     const config = yield* Config.Service
-    const contextManager = yield* ContextManager.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
-    const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
+    const documents = yield* config.entries()
+    const compaction = SessionCompaction.make({ events, llm, config: documents })
+    // The runner owns dynamic context reduction: it is the only place that knows the canonical
+    // history, the request envelope and the model, and reduction keeps no state of its own.
+    const contextPolicy = SessionContextReduction.policy(documents)
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
@@ -200,8 +202,6 @@ const layer = Layer.effect(
       | { readonly _tag: "ContinueAfterCompaction"; readonly step: number }
       // Overflow compaction completed; rebuild once through the path without overflow recovery.
       | { readonly _tag: "ContinueAfterOverflowCompaction"; readonly step: number }
-      // Gate compression completed; rebuild once through the path that escalates, not compresses.
-      | { readonly _tag: "ContinueAfterCompression"; readonly step: number }
 
     class TurnTransitionError extends Error {
       constructor(readonly transition: TurnTransition) {
@@ -212,8 +212,6 @@ const layer = Layer.effect(
     const continueAfterCompaction = (step: number) => new TurnTransitionError({ _tag: "ContinueAfterCompaction", step })
     const continueAfterOverflowCompaction = (step: number) =>
       new TurnTransitionError({ _tag: "ContinueAfterOverflowCompaction", step })
-    const continueAfterCompression = (step: number) =>
-      new TurnTransitionError({ _tag: "ContinueAfterCompression", step })
 
     const loadSystemContext = (agent: AgentV2.Selection) =>
       Effect.all([systemContext.load(), skillGuidance.load(agent), referenceGuidance.load()], {
@@ -225,8 +223,6 @@ const layer = Layer.effect(
       promotion: SessionInput.Delivery | undefined,
       step: number,
       recoverOverflow?: typeof compaction.compactAfterOverflow,
-      // The post-compression retry sets this false: the gate compresses at most once per turn.
-      compressOnOverflow = true,
     ) {
       const session = yield* getSession(sessionID)
       if (session.location.directory !== location.directory || session.location.workspaceID !== location.workspaceID)
@@ -254,50 +250,43 @@ const layer = Layer.effect(
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
-      // Everything the request carries besides the projected history is built once, here, and then
-      // handed to both the compiler and the request. Budgeting a different representation than the
+      // Everything the request carries besides the conversation is built once, here, and then
+      // handed to both the reduction and the request. Budgeting a different representation than the
       // one that is sent — a bare string where the provider gets an assistant message, say — makes
       // the reported utilization quietly wrong.
       const toolDefinitions = toolMaterialization?.definitions ?? []
-      const systemPrompt = [agent.info?.system, contextManager.guidance(toolDefinitions), system.baseline]
+      const systemPrompt = [agent.info?.system, system.baseline]
         .filter((part): part is string => part !== undefined && part.length > 0)
         .map(SystemPart.make)
       const trailingMessages = isLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []
-      // One canonical context pipeline: canonical history in, prepared provider context out. The
-      // request below never sees the reduction decisions, only their result.
-      const prepared = yield* contextManager.prepare({
-        sessionID: session.id,
+      // One context pipeline: canonical history in, the projection this request sends out. The
+      // request below never sees the reduction decisions, only their result, and the history in the
+      // database is never any of its business.
+      const reduction = SessionContextReduction.reduce({
         messages: context,
-        purpose: "agent-turn",
         model,
+        policy: contextPolicy,
         toolPolicies: toolMaterialization?.policies,
         envelope: { system: systemPrompt, tools: toolDefinitions, extra: trailingMessages },
-        automatic: true,
       })
       const lower = (messages: readonly (typeof context)[number][]) =>
         toLLMMessages(messages, model).pipe(Effect.provideService(FSUtil.Service, fsys))
-      // Mandatory final invariant, on the lowered messages rather than the canonical ones: every
-      // provider rejects a tool call that is not answered next, and only the lowering shows where
-      // the calls and results actually land. A reduction that breaks the pairing loses to the
-      // canonical history; if the canonical history is unpaired too, nothing here can repair it and
-      // the turn fails below instead of sending a conversation that is known to be malformed.
-      const reducedMessages = yield* lower(prepared.messages)
-      const unpaired = ContextInvariants.pairing(reducedMessages)
-      const transmission = ContextInvariants.transmittable(
-        reducedMessages,
-        unpaired,
-        unpaired.length === 0 ? undefined : yield* lower(context),
-      )
-      if (unpaired.length > 0)
-        yield* Effect.logWarning("context.prepare.pairing", {
+      // The last gate before transmission, on the lowered messages rather than the canonical ones:
+      // every provider rejects a tool call that is not answered next, and only the lowering shows
+      // where the calls and results actually land. A reduction that breaks the pairing loses to
+      // canonical history; when canonical history is unpaired too, nothing here can repair it and
+      // the turn fails below instead of sending a conversation known to be malformed.
+      const transmission = yield* transmittable(lower(reduction.messages), lower(context))
+      if (transmission.violations.length > 0)
+        yield* Effect.logWarning("context.reduce.pairing", {
           sessionID: session.id,
-          violations: unpaired,
+          violations: transmission.violations,
           recovered: transmission.recovered,
           sendable: transmission.messages !== undefined,
         })
       // Nothing sendable exists, but the request is still built so the failure below reports the
       // same shape as any other refused turn.
-      const loweredMessages = transmission.messages ?? reducedMessages
+      const loweredMessages = transmission.messages ?? []
       const request = LLM.request({
         model,
         http: {
@@ -313,12 +302,10 @@ const layer = Layer.effect(
         tools: toolDefinitions,
         toolChoice: isLastStep ? "none" : undefined,
       })
-      if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request })) {
-        // Native compaction rewrites the projected history, so every compression boundary that
-        // pointed into it is now stale.
-        yield* contextManager.invalidate(session.id)
+      // Compaction is the escalation reduction cannot perform: it summarizes history durably, so it
+      // only runs once the deterministic rungs have already given everything they may give.
+      if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
         return yield* Effect.die(continueAfterCompaction(currentStep))
-      }
       const startSnapshot = yield* snapshots.capture()
       const publisher = createLLMEventPublisher(events, {
         sessionID: session.id,
@@ -333,11 +320,6 @@ const layer = Layer.effect(
       const withPublication = Semaphore.makeUnsafe(1).withPermit
       const publish = (event: LLMEvent, outputPaths: ReadonlyArray<string> = []) =>
         withPublication(publisher.publish(event, outputPaths))
-      // The configured payload ceiling is a hard limit, so it is enforced on the serialized request
-      // rather than on the estimate that drove the reduction. Native compaction is the last lever
-      // left once compression has already run; if it cannot help, the turn fails here instead of
-      // sending a request that is known to be too large, or one whose size is unknown because the
-      // provider body could not be built.
       if (transmission.messages === undefined) {
         // Both the reduced and the canonical conversation would send a tool call that nothing
         // answers. Every provider rejects that, so the turn fails here with the reason rather than
@@ -350,39 +332,14 @@ const layer = Layer.effect(
         yield* withPublication(publisher.flush())
         return { needsContinuation: false, step: currentStep }
       }
-      const size = yield* contextManager.payload(request, session.id)
-      if (!size.within) {
-        // The wire refuted the estimate. Dynamic compression is the cheaper lever, so it gets
-        // exactly one attempt before native compaction is even considered — but only when the
-        // turn's summarization slot is still whole. It is not when the preparation above already
-        // ran automatic compression (a second would double the summarization latency the turn
-        // already paid, success or failure), when an attempt was suppressed by the failure
-        // backoff (paying one now would defeat the backoff), when this attempt is itself the
-        // recovery, or when the body could not be measured at all — a structural lowering
-        // failure is not something a smaller context repairs.
-        if (recoverOverflow && compressOnOverflow && !prepared.summarizationSpent && size.measured) {
-          const attempted = yield* contextManager.compress({
-            sessionID: session.id,
-            reason: "auto",
-            model,
-            http: request.http,
-          })
-          if (!("failure" in attempted)) return yield* Effect.die(continueAfterCompression(currentStep))
-        }
-        if (recoverOverflow && (yield* recoverOverflow({ sessionID: session.id, entries, model, request }))) {
-          yield* contextManager.invalidate(session.id)
-          return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
-        }
-        yield* publish(
-          LLMEvent.providerError({
-            message: size.measured
-              ? `The request is ${size.bytes} bytes and exceeds the configured context payload budget of ${size.limit} bytes. Compression and compaction could not reduce it further; start a new session or raise context.payload_bytes.`
-              : `The request could not be encoded into a ${model.provider} request body, so its size cannot be checked against the configured context payload budget of ${size.limit} bytes. Refusing to send an unmeasurable request.`,
-          }),
-        )
-        yield* withPublication(publisher.flush())
-        return { needsContinuation: false, step: currentStep }
-      }
+      // The one authoritative context measurement, published for the request that is actually about
+      // to be sent: clients render it instead of deriving utilization from token counters of their
+      // own. A reduction the pairing gate rejected is reported as the canonical request it became.
+      yield* events.publish(SessionEvent.Context.Prepared, {
+        sessionID: session.id,
+        timestamp: yield* DateTime.now,
+        ...(transmission.recovered ? reduction.fallbackReport : reduction.report),
+      })
       let overflowFailure: ProviderErrorEvent | undefined
       const providerStream = llm.stream(request).pipe(
         Stream.runForEach((event) =>
@@ -439,10 +396,8 @@ const layer = Layer.effect(
             !publisher.hasAssistantStarted() &&
             isContextOverflowFailure(overflowFailure ?? failure) &&
             (yield* restore(recoverOverflow({ sessionID: session.id, entries, model, request })))
-          ) {
-            yield* contextManager.invalidate(session.id)
+          )
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
-          }
           if (overflowFailure) yield* publish(overflowFailure)
           const llmFailure = failure instanceof LLMError ? failure : undefined
           if (llmFailure && !publisher.hasProviderError()) {
@@ -523,24 +478,6 @@ const layer = Layer.effect(
       )
     })
 
-    // The retry after a gate compression: native compaction stays armed in case the summary was
-    // not enough, but the gate itself must not compress again — one summarization per turn.
-    const runAfterCompression: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
-      return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow, false).pipe(
-        Effect.catchDefect(
-          Effect.fnUntraced(function* (defect) {
-            if (!(defect instanceof TurnTransitionError)) return yield* Effect.die(defect)
-            yield* Effect.yieldNow
-            if (defect.transition._tag === "ContinueAfterOverflowCompaction")
-              return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
-            if (defect.transition._tag === "ContinueAfterCompression")
-              return yield* Effect.die("A turn cannot take two gate compressions")
-            return yield* runAfterCompression(sessionID, undefined, defect.transition.step)
-          }),
-        ),
-      )
-    })
-
     const runTurn: RunTurn = Effect.fnUntraced(function* (sessionID, promotion, step) {
       return yield* runTurnAttempt(sessionID, promotion, step, compaction.compactAfterOverflow).pipe(
         Effect.catchDefect(
@@ -549,8 +486,6 @@ const layer = Layer.effect(
             yield* Effect.yieldNow
             if (defect.transition._tag === "ContinueAfterOverflowCompaction")
               return yield* runAfterOverflowCompaction(sessionID, undefined, defect.transition.step)
-            if (defect.transition._tag === "ContinueAfterCompression")
-              return yield* runAfterCompression(sessionID, undefined, defect.transition.step)
             return yield* runTurn(sessionID, undefined, defect.transition.step)
           }),
         ),
@@ -607,6 +542,5 @@ export const node = makeLocationNode({
     Config.node,
     Snapshot.node,
     Database.node,
-    ContextManager.node,
   ],
 })

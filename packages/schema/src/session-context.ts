@@ -2,79 +2,38 @@ export * as SessionContext from "./session-context"
 
 import { Schema } from "effect"
 import { NonNegativeInt, optional } from "./schema"
-import { SessionMessage } from "./session-message"
-
-/** How urgently the context compiler wants the conversation to shrink. */
-export const Recommendation = Schema.Literals(["none", "normal", "nudge", "prefer", "mandatory"])
-export type Recommendation = typeof Recommendation.Type
-
-export const Stats = Schema.Struct({
-  rawTokens: NonNegativeInt,
-  preparedTokens: NonNegativeInt,
-  /** Tokens spent on the system prompt, tool definitions and other non-history request material. */
-  overheadTokens: NonNegativeInt,
-  tokensSaved: NonNegativeInt,
-  compressionCount: NonNegativeInt,
-  compressedMessages: NonNegativeInt,
-  deduplicatedMessages: NonNegativeInt,
-  purgedErrors: NonNegativeInt,
-  utilization: Schema.Finite,
-  limit: NonNegativeInt.pipe(optional),
-  recommendation: Recommendation,
-  /**
-   * The serialized request is expected to exceed `context.payload_bytes`.
-   *
-   * Deliberately separate from `recommendation`, which describes context-window pressure only: a
-   * session can be at 12% of its token window and still be over the byte ceiling.
-   */
-  payloadOverBudget: Schema.Boolean,
-}).annotate({ identifier: "SessionContext.Stats" })
-export interface Stats extends Schema.Schema.Type<typeof Stats> {}
-
-/** One compressed conversation range, as persisted for the session. */
-export const Block = Schema.Struct({
-  id: Schema.String,
-  startMessageID: SessionMessage.ID,
-  endMessageID: SessionMessage.ID,
-  focus: Schema.String.pipe(optional),
-  sourceMessageCount: NonNegativeInt,
-  sourceTokenCount: NonNegativeInt,
-  summaryTokenCount: NonNegativeInt,
-  nested: Schema.Array(Schema.String),
-}).annotate({ identifier: "SessionContext.Block" })
-export interface Block extends Schema.Schema.Type<typeof Block> {}
-
-export const Compressed = Schema.Struct({
-  status: Schema.Literal("compressed"),
-  block: Block,
-  /** Protected messages inside the requested range that were kept verbatim instead of summarized. */
-  excludedMessages: NonNegativeInt,
-  stats: Stats,
-}).annotate({ identifier: "SessionContext.Compressed" })
 
 /**
- * Why a compress request did not summarize anything.
+ * What dynamic context reduction did to one provider request.
  *
- * One literal per `ContextManager.CompressFailure` in core — the public contract stays as typed as
- * the internal state machine, so clients can switch on the reason instead of parsing strings.
+ * - `untouched`: the request fits the usable window, so canonical history was sent as is.
+ * - `reduced`: the request was over the reduction threshold and the deterministic rungs brought it
+ *   back under.
+ * - `exhausted`: every rung ran and the request is still over, because only protected content is
+ *   left to send. The runtime escalates to compaction instead of reducing further.
  */
-export const SkipReason = Schema.Literals([
-  "disabled",
-  "no-model",
-  "empty-range",
-  "invalid-range",
-  "protected-range",
-  "summary-unavailable",
-  "timeout",
-])
-export type SkipReason = typeof SkipReason.Type
-
-export const Skipped = Schema.Struct({
-  status: Schema.Literal("skipped"),
-  /** Machine-readable cause, for example `protected-range` or `summary-unavailable`. */
-  reason: SkipReason,
-  stats: Stats,
-}).annotate({ identifier: "SessionContext.Skipped" })
-
-export const Outcome = Schema.Union([Compressed, Skipped]).annotate({ identifier: "SessionContext.Outcome" })
+export const Outcome = Schema.Literals(["untouched", "reduced", "exhausted"])
 export type Outcome = typeof Outcome.Type
+
+/**
+ * The authoritative measurement of the context one provider request carries.
+ *
+ * Published by the session runner once per request, for the messages that request actually sends.
+ * Every consumer — TUI indicator, sidebar, plugins — renders this report; none of them derives its
+ * own utilization, budget band or reclamation figure, so a client cannot disagree with the runtime
+ * about what was sent.
+ */
+export const Report = Schema.Struct({
+  /** Tokens the request carries: the sent history plus the prompt envelope. */
+  tokens: NonNegativeInt,
+  /** The envelope share of `tokens`: system prompt, tool definitions and request extras. */
+  overheadTokens: NonNegativeInt,
+  /** Tokens reduction removed from canonical history; zero unless the outcome is `reduced`. */
+  reclaimedTokens: NonNegativeInt,
+  /** Usable context window `utilization` is measured against, when the model declares one. */
+  limit: NonNegativeInt.pipe(optional),
+  /** Fraction of the usable window the request occupies. */
+  utilization: Schema.Finite,
+  outcome: Outcome,
+}).annotate({ identifier: "SessionContext.Report" })
+export interface Report extends Schema.Schema.Type<typeof Report> {}

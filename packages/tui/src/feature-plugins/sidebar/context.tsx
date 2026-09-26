@@ -1,7 +1,7 @@
-import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo, Show } from "solid-js"
+import { contextUsage } from "../../util/context-usage"
 
 const id = "internal:sidebar-context"
 
@@ -12,57 +12,33 @@ const money = new Intl.NumberFormat("en-US", {
 
 function View(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
-  const msg = createMemo(() => props.api.state.session.messages(props.session_id))
-  const session = createMemo(() => props.api.state.session.get(props.session_id))
-  const cost = createMemo(() => session()?.cost ?? 0)
-
-  const prepared = createMemo(() => props.api.state.session.context(props.session_id))
-
-  const state = createMemo(() => {
-    // Once the context compiler has prepared a turn it knows exactly what is being sent.
-    const compiled = prepared()
-    if (compiled)
-      return {
-        tokens: compiled.preparedTokens,
-        percent: compiled.limit ? Math.round(compiled.utilization * 100) : null,
-      }
-
-    const last = msg().findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
-    if (!last) {
-      return {
-        tokens: 0,
-        percent: null,
-      }
-    }
-
-    const tokens =
-      last.tokens.input + last.tokens.output + last.tokens.reasoning + last.tokens.cache.read + last.tokens.cache.write
-    const model = props.api.state.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
-    return {
-      tokens,
-      percent: model?.limit.context ? Math.round((tokens / model.limit.context) * 100) : null,
-    }
-  })
+  const cost = createMemo(() => props.api.state.session.get(props.session_id)?.cost ?? 0)
+  // One derivation, shared with the prompt indicator: the runtime's own report when it has prepared
+  // a request, the provider's accounting for the last assistant turn until it has.
+  const usage = createMemo(() =>
+    contextUsage({
+      report: props.api.state.session.context(props.session_id),
+      messages: props.api.state.session.messages(props.session_id),
+      contextLimit: (providerID, modelID) =>
+        props.api.state.provider.find((item) => item.id === providerID)?.models[modelID]?.limit.context,
+    }),
+  )
 
   return (
     <box>
       <text fg={theme().text}>
         <b>Context</b>
       </text>
-      <text fg={theme().textMuted}>{state().tokens.toLocaleString()} tokens</text>
-      <text fg={theme().textMuted}>{state().percent ?? 0}% used</text>
-      <Show when={prepared()?.overheadTokens}>
+      <text fg={theme().textMuted}>{(usage()?.tokens ?? 0).toLocaleString()} tokens</text>
+      <text fg={theme().textMuted}>{usage()?.percent ?? 0}% used</text>
+      <Show when={usage()?.overhead}>
         {(overhead) => <text fg={theme().textMuted}>{overhead().toLocaleString()} tokens of prompt overhead</text>}
       </Show>
-      <Show when={prepared()?.tokensSaved}>
-        {(saved) => <text fg={theme().textMuted}>{saved().toLocaleString()} tokens reclaimed</text>}
+      <Show when={usage()?.reclaimed}>
+        {(reclaimed) => <text fg={theme().textMuted}>{reclaimed().toLocaleString()} tokens reclaimed</text>}
       </Show>
-      <Show when={prepared()?.compressionCount}>
-        {(count) => (
-          <text fg={theme().textMuted}>
-            {count()} compressed section{count() > 1 ? "s" : ""}
-          </text>
-        )}
+      <Show when={usage()?.exhausted}>
+        <text fg={theme().textMuted}>reduction exhausted</text>
       </Show>
       <text fg={theme().textMuted}>{money.format(cost())} spent</text>
     </box>

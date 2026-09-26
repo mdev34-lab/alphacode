@@ -1,5 +1,15 @@
 # V2 Schema Changelog
 
+## 2026-09-16: Replace Dynamic Context Management With Context Reduction
+
+- Remove `POST /api/session/:sessionID/compress` and `GET /api/session/:sessionID/context/stats`, the `SessionCompressPayload` payload, and the generated Promise, Effect, and legacy JavaScript client methods for both.
+- Replace `SessionContext.Stats`, `Block`, `Compressed`, `Skipped`, `SkipReason`, `Recommendation`, and the `Compressed | Skipped` `Outcome` union with a single `SessionContext.Report`: `tokens`, `overheadTokens`, `reclaimedTokens`, optional `limit`, `utilization`, and `outcome` (`untouched`, `reduced`, `exhausted`).
+- Replace the five live `session.next.context.preparing`, `.compressing`, `.compressed`, `.compression.failed`, and `.prepared` events with one live `session.next.context.prepared` event carrying that report, published once per provider request for the request it describes. No durable event or durable-event version changes.
+- Replace the `context.dynamic_compression`, `context.deduplication`, `context.purge_errors`, and `context.payload_bytes` configuration with `context.reduction` (`enabled`, `threshold`, `error_turns`); `context.protection` keeps its existing keys.
+- Remove the `compress` tool from the built-in tool surface and the `session_compress` TUI keybind and slash command.
+- Drop the `session_context_block` table in a forward migration: reduction is derived per request from canonical history, so there is no DCP state left to store, recover, or decode.
+- Preserve canonical V1 `session`, `message`, and `part` rows, every durable Session event, and native compaction. Consumers that rendered context figures read the report from the event stream instead of polling an endpoint; no compatibility layer is provided for the removed surface.
+
 ## 2026-06-26: Add Finite Session History
 
 - Add `GET /api/session/:sessionID/history` and generated Promise, Effect, and legacy JavaScript client methods.
