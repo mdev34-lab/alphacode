@@ -32,6 +32,7 @@ import {
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import type { AssistantMessage, Message, OpencodeClient, SessionMessageResponse } from "@opencode-ai/sdk/v2"
+import { isSyntheticTextPart } from "@/session/message"
 import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import * as ACPError from "./error"
 import { buildConfigOptions, parseModelSelection } from "./config-option"
@@ -677,7 +678,12 @@ function makeUsageService(sdk: OpencodeClient) {
 function replayMessages(subscription: ACPEvent.Subscription | undefined, messages: SessionMessageResponse[]) {
   if (!subscription) return Effect.void
   return Effect.promise(async () => {
-    for (const message of messages) {
+    for (let message of messages) {
+      // Synthetic parts carry AlphaCode-generated summaries and compression placeholders. They are
+      // internal context, not conversation, and must never reach an external ACP client.
+      if (message.parts?.some(isSyntheticTextPart)) {
+        message = { ...message, parts: message.parts.filter((part) => !isSyntheticTextPart(part)) }
+      }
       await subscription.replayMessage(message).catch(() => {})
     }
   })
