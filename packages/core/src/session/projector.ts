@@ -1,6 +1,6 @@
 export * as SessionProjector from "./projector"
 
-import { and, desc, eq, gt, or, sql } from "drizzle-orm"
+import { and, desc, eq, gt, inArray, or, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
@@ -391,6 +391,32 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionEvent.Reasoning.Ended, (event) => run(db, event))
     // yield* events.project(SessionEvent.Retried, (event) => run(db, event))
     yield* events.project(SessionEvent.Compaction.Ended, (event) => run(db, event))
+    yield* events.project(SessionEvent.Compress.Committed, (event) =>
+      Effect.gen(function* () {
+        if (event.data.prunedMessageIDs.length > 0)
+          yield* db
+            .delete(SessionMessageTable)
+            .where(
+              and(
+                eq(SessionMessageTable.session_id, event.data.sessionID),
+                inArray(SessionMessageTable.id, [...event.data.prunedMessageIDs]),
+              ),
+            )
+            .run()
+            .pipe(Effect.orDie)
+        yield* insertMessage(
+          db,
+          event,
+          SessionMessage.Synthetic.make({
+            id: event.data.messageID,
+            type: "synthetic",
+            sessionID: event.data.sessionID,
+            text: event.data.text,
+            time: { created: event.data.timestamp },
+          }),
+        )
+      }),
+    )
     yield* events.project(SessionEvent.RevertEvent.Staged, (event) =>
       db
         .update(SessionTable)

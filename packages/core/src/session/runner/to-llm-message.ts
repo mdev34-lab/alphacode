@@ -30,7 +30,9 @@ const contentFor = Effect.fn("toLLMMessages.contentFor")(function* (file: FileAt
   const filePath = file.path
   if (filePath === undefined)
     return [{ type: "text" as const, text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
-  const bytes = yield* FSUtil.Service.pipe(Effect.flatMap((fs) => fs.readFile(filePath).pipe(Effect.orElseSucceed(() => undefined))))
+  const bytes = yield* FSUtil.Service.pipe(
+    Effect.flatMap((fs) => fs.readFile(filePath).pipe(Effect.orElseSucceed(() => undefined))),
+  )
   if (bytes === undefined)
     return [{ type: "text" as const, text: `[attachment ${file.name ?? file.uri}: source unavailable]` }]
   const base64 = Buffer.from(bytes as Uint8Array).toString("base64")
@@ -145,10 +147,7 @@ const assistant = (message: SessionMessage.Assistant, model: Model) => {
   ]
 }
 
-const toLLMMessage = Effect.fn("toLLMMessages.toLLMMessage")(function* (
-  message: SessionMessage.Message,
-  model: Model,
-) {
+const toLLMMessage = Effect.fn("toLLMMessages.toLLMMessage")(function* (message: SessionMessage.Message, model: Model) {
   switch (message.type) {
     case "agent-switched":
     case "model-switched":
@@ -209,3 +208,67 @@ export const toLLMMessages = (messages: readonly SessionMessage.Message[], model
   Effect.forEach(messages, (message) => toLLMMessage(message, model), { concurrency: 1 }).pipe(
     Effect.map((parts) => parts.flat()),
   )
+
+/**
+ * Tool-call pairing on a lowered conversation, the last check before transmission.
+ *
+ * Every provider rejects a conversation where a tool call is not answered, or where a result answers
+ * nothing, and each one expresses that differently — `tool_calls` and `tool` messages, `tool_use`
+ * and `tool_result` blocks, `functionCall` and `functionResponse` parts. The property underneath is
+ * the same, so it is checked once here, on the provider-independent lowering, instead of being left
+ * as an incidental consequence of how canonical messages happen to be shaped.
+ *
+ * Calls the provider executed itself carry their result inside the assistant message, so they are
+ * paired in place.
+ */
+export const pairing = (messages: readonly Message[]) => {
+  const violations: string[] = []
+  let pending: string[] = []
+  for (const message of messages) {
+    const parts = typeof message.content === "string" ? [] : message.content
+    const results = parts.flatMap((part) => (part.type === "tool-result" && !part.providerExecuted ? [part.id] : []))
+    for (const [position, id] of results.entries()) {
+      if (pending[position] === id) continue
+      violations.push(`tool result ${id} does not answer the preceding tool call`)
+    }
+    if (results.length > 0) {
+      if (results.length > pending.length) violations.push("more tool results than the preceding message requested")
+      pending = pending.slice(results.length)
+    }
+    const calls = parts.flatMap((part) => (part.type === "tool-call" && !part.providerExecuted ? [part.id] : []))
+    if (calls.length === 0) {
+      if (pending.length > 0 && results.length === 0)
+        violations.push(`tool call ${pending[0]} is separated from its result`)
+      continue
+    }
+    if (pending.length > 0) violations.push(`tool call ${pending[0]} was never answered`)
+    pending = calls
+  }
+  if (pending.length > 0) violations.push(`tool call ${pending[0]} was never answered`)
+  return violations
+}
+
+/**
+ * Decide which lowered conversation may be sent.
+ *
+ * Three outcomes, explicit because this is the last gate before a provider request: a paired
+ * reduction is sent as is; a reduction that broke pairing loses to canonical history; and when
+ * canonical history is unpaired too — a call an interruption never settled — nothing here can repair
+ * it, so nothing is sent and the caller fails the turn with the reason instead of moving the failure
+ * into the provider's error handler with a worse message.
+ *
+ * Both lists arrive as effects so the canonical lowering, needed only when a reduction is rejected,
+ * is not paid for on every turn.
+ */
+export const transmittable = (
+  reduced: Effect.Effect<readonly Message[]>,
+  canonical: Effect.Effect<readonly Message[]>,
+) =>
+  Effect.gen(function* () {
+    const messages = yield* reduced
+    const violations = pairing(messages)
+    if (violations.length === 0) return { messages, recovered: false, violations }
+    const fallback = yield* canonical
+    if (pairing(fallback).length === 0) return { messages: fallback, recovered: true, violations }
+    return { messages: undefined, recovered: false, violations }
+  })

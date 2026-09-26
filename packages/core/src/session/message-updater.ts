@@ -390,12 +390,12 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
       "session.next.revert.staged": () => Effect.void,
       "session.next.revert.cleared": () => Effect.void,
       "session.next.revert.committed": () => Effect.void,
-      // Context management reports what the next provider request will contain. It never changes
-      // the canonical projection.
-      "session.next.context.preparing": () => Effect.void,
-      "session.next.context.compressing": () => Effect.void,
-      "session.next.context.compressed": () => Effect.void,
-      "session.next.context.compression.failed": () => Effect.void,
+      // Agent-driven compression prunes canonical history and appends its summary. Like a revert
+      // commit, the projector applies it directly to storage instead of routing through the
+      // append-only adapter.
+      "session.next.compress.committed": () => Effect.void,
+      // Context reduction reports what the next provider request carries. It never changes the
+      // canonical projection.
       "session.next.context.prepared": () => Effect.void,
     })
   })

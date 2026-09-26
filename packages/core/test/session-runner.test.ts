@@ -42,7 +42,6 @@ import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ApplicationTools } from "@opencode-ai/core/tool/application-tools"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
-import { ContextManager } from "@opencode-ai/core/context/manager"
 import { ConfigCompaction } from "@opencode-ai/core/config/compaction"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import {
@@ -56,6 +55,7 @@ import { SystemContext } from "@opencode-ai/core/system-context"
 import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
+import { SessionContextPressure } from "@opencode-ai/core/session/context-pressure"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Location } from "@opencode-ai/core/location"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -214,6 +214,10 @@ const skillGuidance = Layer.mock(SkillGuidance.Service, {
     ),
 })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+const contextPressure = Layer.mock(SessionContextPressure.Service, {
+  record: () => Effect.void,
+  load: () => Effect.succeed(SystemContext.empty),
+})
 const config = Layer.succeed(
   Config.Service,
   Config.Service.of({
@@ -239,6 +243,7 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
   [SkillGuidance.node, skillGuidance],
   [ReferenceGuidance.node, referenceGuidance],
+  [SessionContextPressure.node, contextPressure],
   [PermissionV2.node, permission],
   [Config.node, config],
 ])
@@ -274,6 +279,7 @@ const it = testEffect(
       SystemContextRegistry.node,
       SkillGuidance.node,
       ReferenceGuidance.node,
+      SessionContextPressure.node,
       Config.node,
       Snapshot.node,
       SessionRunnerLLM.node,
@@ -288,6 +294,7 @@ const it = testEffect(
       [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
       [SkillGuidance.node, skillGuidance],
       [ReferenceGuidance.node, referenceGuidance],
+      [SessionContextPressure.node, contextPressure],
       [Snapshot.node, Snapshot.noopLayer],
       [SessionExecution.node, execution],
       [Config.node, config],
@@ -366,14 +373,8 @@ const setupOverflowRecovery = Effect.gen(function* () {
   return session
 })
 
-/**
- * System parts contributed by the System Context pipeline.
- *
- * The runner also adds one stable context-management instruction to every request. It is asserted
- * on its own in `context-manager.test.ts`, so these System Context assertions ignore it.
- */
-const systemBaselines = (request: LLMRequest) =>
-  request.system.map((part) => part.text).filter((text) => text !== ContextManager.GUIDANCE)
+/** System parts contributed by the agent prompt and the System Context pipeline. */
+const systemBaselines = (request: LLMRequest) => request.system.map((part) => part.text)
 
 const messageTexts = (request: LLMRequest, role: "user" | "system") =>
   request.messages.flatMap((message) =>

@@ -493,110 +493,6 @@ export type SessionsCompactInput = { readonly sessionID: { readonly sessionID: s
 
 export type SessionsCompactOutput = void
 
-export type SessionsCompressInput = {
-  readonly sessionID: { readonly sessionID: string }["sessionID"]
-  readonly startMessageID?: {
-    readonly startMessageID?: string | undefined
-    readonly endMessageID?: string | undefined
-    readonly focus?: string | undefined
-    readonly keepRecentTurns?: number | undefined
-  }["startMessageID"]
-  readonly endMessageID?: {
-    readonly startMessageID?: string | undefined
-    readonly endMessageID?: string | undefined
-    readonly focus?: string | undefined
-    readonly keepRecentTurns?: number | undefined
-  }["endMessageID"]
-  readonly focus?: {
-    readonly startMessageID?: string | undefined
-    readonly endMessageID?: string | undefined
-    readonly focus?: string | undefined
-    readonly keepRecentTurns?: number | undefined
-  }["focus"]
-  readonly keepRecentTurns?: {
-    readonly startMessageID?: string | undefined
-    readonly endMessageID?: string | undefined
-    readonly focus?: string | undefined
-    readonly keepRecentTurns?: number | undefined
-  }["keepRecentTurns"]
-}
-
-export type SessionsCompressOutput = {
-  readonly data:
-    | {
-        readonly status: "compressed"
-        readonly block: {
-          readonly id: string
-          readonly startMessageID: string
-          readonly endMessageID: string
-          readonly focus?: string
-          readonly sourceMessageCount: number
-          readonly sourceTokenCount: number
-          readonly summaryTokenCount: number
-          readonly nested: ReadonlyArray<string>
-        }
-        readonly excludedMessages: number
-        readonly stats: {
-          readonly rawTokens: number
-          readonly preparedTokens: number
-          readonly overheadTokens: number
-          readonly tokensSaved: number
-          readonly compressionCount: number
-          readonly compressedMessages: number
-          readonly deduplicatedMessages: number
-          readonly purgedErrors: number
-          readonly utilization: number
-          readonly limit?: number
-          readonly recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
-          readonly payloadOverBudget: boolean
-        }
-      }
-    | {
-        readonly status: "skipped"
-        readonly reason:
-          | "disabled"
-          | "no-model"
-          | "empty-range"
-          | "invalid-range"
-          | "protected-range"
-          | "summary-unavailable"
-          | "timeout"
-        readonly stats: {
-          readonly rawTokens: number
-          readonly preparedTokens: number
-          readonly overheadTokens: number
-          readonly tokensSaved: number
-          readonly compressionCount: number
-          readonly compressedMessages: number
-          readonly deduplicatedMessages: number
-          readonly purgedErrors: number
-          readonly utilization: number
-          readonly limit?: number
-          readonly recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
-          readonly payloadOverBudget: boolean
-        }
-      }
-}["data"]
-
-export type SessionsContextStatsInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
-
-export type SessionsContextStatsOutput = {
-  readonly data: {
-    readonly rawTokens: number
-    readonly preparedTokens: number
-    readonly overheadTokens: number
-    readonly tokensSaved: number
-    readonly compressionCount: number
-    readonly compressedMessages: number
-    readonly deduplicatedMessages: number
-    readonly purgedErrors: number
-    readonly utilization: number
-    readonly limit?: number
-    readonly recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
-    readonly payloadOverBudget: boolean
-  }
-}["data"]
-
 export type SessionsWaitInput = { readonly sessionID: { readonly sessionID: string }["sessionID"] }
 
 export type SessionsWaitOutput = void
@@ -1218,6 +1114,23 @@ export type SessionsHistoryOutput = {
     | {
         readonly id: string
         readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.compress.committed"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly messageID: string
+          readonly text: string
+          readonly prunedMessageIDs: ReadonlyArray<string>
+          readonly startMessageID: string
+          readonly endMessageID: string
+          readonly sourceMessageCount: number
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
         readonly type: "session.next.revert.staged"
         readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
         readonly location?: { readonly directory: string; readonly workspaceID?: string }
@@ -1677,6 +1590,23 @@ export type SessionsEventsOutput =
         readonly reason: "auto" | "manual"
         readonly text: string
         readonly recent: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.compress.committed"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly messageID: string
+        readonly text: string
+        readonly prunedMessageIDs: ReadonlyArray<string>
+        readonly startMessageID: string
+        readonly endMessageID: string
+        readonly sourceMessageCount: number
       }
     }
   | {

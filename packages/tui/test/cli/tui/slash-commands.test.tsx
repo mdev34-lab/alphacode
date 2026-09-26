@@ -177,7 +177,6 @@ const expectedSlashes = [
   ["/timeline"],
   ["/fork"],
   ["/compact", "/summarize"],
-  ["/compress"],
   ["/unshare"],
   ["/undo"],
   ["/redo"],

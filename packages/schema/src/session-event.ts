@@ -12,6 +12,7 @@ import { SessionID } from "./session-id"
 import { Location } from "./location"
 import { SessionMessage } from "./session-message"
 import { Revert } from "./revert"
+import { SessionContext } from "./session-context"
 
 export { FileAttachment }
 
@@ -432,78 +433,16 @@ export namespace Compaction {
 }
 
 /**
- * Dynamic context management telemetry.
+ * Dynamic context reduction telemetry.
  *
- * These events are advisory: they report what the context compiler did for the next provider
- * request. They are deliberately not durable, because the canonical session history and the
- * separately persisted compression blocks already describe the recoverable state.
+ * One advisory event per provider request, carrying the runtime's own measurement of what that
+ * request sends. It is not durable because there is no durable reduction state to recover: the
+ * canonical session history is authoritative and the next request re-derives its context from it.
  */
 export namespace Context {
-  export const Preparing = Event.define({
-    type: "session.next.context.preparing",
-    schema: {
-      ...Base,
-      messageCount: NonNegativeInt,
-      rawTokens: NonNegativeInt,
-      limit: NonNegativeInt.pipe(optional),
-    },
-  })
-  export type Preparing = typeof Preparing.Type
-
-  export const Compressing = Event.define({
-    type: "session.next.context.compressing",
-    schema: {
-      ...Base,
-      reason: Schema.Literals(["model", "manual", "auto"]),
-      startMessageID: SessionMessage.ID,
-      endMessageID: SessionMessage.ID,
-      messageCount: NonNegativeInt,
-    },
-  })
-  export type Compressing = typeof Compressing.Type
-
-  export const Compressed = Event.define({
-    type: "session.next.context.compressed",
-    schema: {
-      ...Base,
-      blockID: Schema.String,
-      startMessageID: SessionMessage.ID,
-      endMessageID: SessionMessage.ID,
-      reason: Schema.Literals(["model", "manual", "auto"]),
-      sourceMessageCount: NonNegativeInt,
-      sourceTokenCount: NonNegativeInt,
-      summaryTokenCount: NonNegativeInt,
-    },
-  })
-  export type Compressed = typeof Compressed.Type
-
-  export const CompressionFailed = Event.define({
-    type: "session.next.context.compression.failed",
-    schema: {
-      ...Base,
-      reason: Schema.String,
-    },
-  })
-  export type CompressionFailed = typeof CompressionFailed.Type
-
   export const Prepared = Event.define({
     type: "session.next.context.prepared",
-    schema: {
-      ...Base,
-      rawTokens: NonNegativeInt,
-      preparedTokens: NonNegativeInt,
-      overheadTokens: NonNegativeInt,
-      tokensSaved: NonNegativeInt,
-      compressionCount: NonNegativeInt,
-      compressedMessages: NonNegativeInt,
-      deduplicatedMessages: NonNegativeInt,
-      purgedErrors: NonNegativeInt,
-      utilization: Schema.Finite,
-      limit: NonNegativeInt.pipe(optional),
-      recommendation: Schema.Literals(["none", "normal", "nudge", "prefer", "mandatory"]),
-      /** The serialized request is expected to exceed the configured payload byte ceiling. */
-      payloadOverBudget: Schema.Boolean,
-    },
+    schema: { ...Base, ...SessionContext.Report.fields },
   })
   export type Prepared = typeof Prepared.Type
 }
@@ -520,6 +459,31 @@ export namespace RevertEvent {
     ...options,
     schema: { ...Base, messageID: SessionMessage.ID },
   })
+}
+
+/**
+ * Agent-driven compression of canonical history.
+ *
+ * Unlike reduction (a per-request projection that never writes), a `compress` tool call durably
+ * replaces a finished range with a summary: the selected messages are pruned from canonical
+ * history and one synthetic summary message takes their place. The summary survives turns and
+ * restarts because it is canonical history, not derived state.
+ */
+export namespace Compress {
+  export const Committed = Event.define({
+    type: "session.next.compress.committed",
+    ...options,
+    schema: {
+      ...Base,
+      messageID: SessionMessage.ID,
+      text: Schema.String,
+      prunedMessageIDs: Schema.Array(SessionMessage.ID),
+      startMessageID: SessionMessage.ID,
+      endMessageID: SessionMessage.ID,
+      sourceMessageCount: NonNegativeInt,
+    },
+  })
+  export type Committed = typeof Committed.Type
 }
 
 export const DurableDefinitions = Event.inventory(
@@ -548,6 +512,7 @@ export const DurableDefinitions = Event.inventory(
   Retried,
   Compaction.Started,
   Compaction.Ended,
+  Compress.Committed,
   RevertEvent.Staged,
   RevertEvent.Cleared,
   RevertEvent.Committed,
@@ -583,11 +548,8 @@ export const Definitions = Event.inventory(
   Compaction.Started,
   Compaction.Delta,
   Compaction.Ended,
-  Context.Preparing,
-  Context.Compressing,
-  Context.Compressed,
-  Context.CompressionFailed,
   Context.Prepared,
+  Compress.Committed,
   RevertEvent.Staged,
   RevertEvent.Cleared,
   RevertEvent.Committed,

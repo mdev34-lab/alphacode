@@ -35,6 +35,7 @@ import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry
 import { SystemContext } from "@opencode-ai/core/system-context"
 import { SkillGuidance } from "@opencode-ai/core/skill/guidance"
 import { ReferenceGuidance } from "@opencode-ai/core/reference/guidance"
+import { SessionContextPressure } from "@opencode-ai/core/session/context-pressure"
 import { describe, expect } from "bun:test"
 import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
@@ -75,6 +76,10 @@ const models = SessionRunnerModel.layerWith(() => Effect.succeed(model))
 const systemContext = AppNodeBuilder.build(SystemContextRegistry.node)
 const skillGuidance = Layer.mock(SkillGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
 const referenceGuidance = Layer.mock(ReferenceGuidance.Service, { load: () => Effect.succeed(SystemContext.empty) })
+const contextPressure = Layer.mock(SessionContextPressure.Service, {
+  record: () => Effect.void,
+  load: () => Effect.succeed(SystemContext.empty),
+})
 const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))
 const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
@@ -84,6 +89,7 @@ const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
   [SkillGuidance.node, skillGuidance],
   [ReferenceGuidance.node, referenceGuidance],
+  [SessionContextPressure.node, contextPressure],
   [Config.node, config],
   [PermissionV2.node, permission],
   [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
@@ -116,6 +122,7 @@ const it = testEffect(
       SystemContextRegistry.node,
       SkillGuidance.node,
       ReferenceGuidance.node,
+      SessionContextPressure.node,
       Config.node,
       Snapshot.node,
       SessionRunnerLLM.node,
@@ -130,6 +137,7 @@ const it = testEffect(
       [Location.node, Location.boundNode({ directory: AbsolutePath.make(projectDir) })],
       [SkillGuidance.node, skillGuidance],
       [ReferenceGuidance.node, referenceGuidance],
+      [SessionContextPressure.node, contextPressure],
       [Config.node, config],
       [Snapshot.node, Snapshot.noopLayer],
       [SessionExecution.node, execution],

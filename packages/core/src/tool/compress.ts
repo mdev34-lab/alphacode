@@ -1,11 +1,18 @@
 export * as CompressTool from "./compress"
 
-import { ToolFailure } from "@opencode-ai/llm"
+import { LLMClient, ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
-import { ContextManager } from "../context/manager"
+import { AgentV2 } from "../agent"
+import { Config } from "../config"
+import { Database } from "../database/database"
 import { makeLocationNode } from "../effect/app-node"
+import { llmClient } from "../effect/app-node-platform"
+import { EventV2 } from "../event"
 import { NonNegativeInt } from "../schema"
+import { SessionCompress } from "../session/compress"
 import { SessionMessage } from "../session/message"
+import { SessionRunnerModel } from "../session/runner/model"
+import { SessionStore } from "../session/store"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -47,10 +54,10 @@ const DESCRIPTION = [
   "Use this when an earlier part of the task is finished and no longer needs to be present verbatim:",
   "long exploratory reads, superseded tool output, or a subtask that is done and verified.",
   "",
-  "The summary replaces those messages in the context sent to the model on later turns. The session",
-  "history itself is never modified, and recent turns, the active plan, and the current todo state are",
-  "always kept verbatim. Compressing an already compressed range folds the earlier summary into the new",
-  "one instead of discarding it.",
+  "The summary is written into the session history and the summarized messages are pruned, so the",
+  "compression survives turns and restarts. Recent turns, protected tools, and runtime state always",
+  "stay verbatim. Compressing a range that already contains a summary folds the earlier summary",
+  "into the new one instead of discarding it.",
   "",
   "Describe what matters in `focus` so the summary keeps it. Compression costs one model call, so",
   "compress a substantial finished section rather than a couple of messages.",
@@ -59,7 +66,14 @@ const DESCRIPTION = [
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
-    const context = yield* ContextManager.Service
+    const registry = yield* ToolRegistry.Service
+    const agents = yield* AgentV2.Service
+    const db = (yield* Database.Service).db
+    const events = yield* EventV2.Service
+    const llm = yield* LLMClient.Service
+    const models = yield* SessionRunnerModel.Service
+    const store = yield* SessionStore.Service
+    const config = yield* Config.Service
 
     yield* tools
       .register({
@@ -72,25 +86,35 @@ const layer = Layer.effectDiscard(
           toModelOutput: ({ output }) => [{ type: "text", text: output.detail }],
           execute: (input, ctx) =>
             Effect.gen(function* () {
-              const result = yield* context.compress({
-                sessionID: ctx.sessionID,
-                reason: "model",
-                focus: input.focus,
-                keepRecentTurns: input.keep_recent_turns,
-                startMessageID:
-                  input.start_message_id === undefined ? undefined : SessionMessage.ID.make(input.start_message_id),
-                endMessageID:
-                  input.end_message_id === undefined ? undefined : SessionMessage.ID.make(input.end_message_id),
-              })
-              if ("failure" in result)
+              const agent = yield* agents.select(ctx.agent).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+              const materialized = yield* registry.materialize(agent?.info?.permissions)
+              const result = yield* SessionCompress.compress(
+                {
+                  db,
+                  events,
+                  llm,
+                  models,
+                  store,
+                  config: yield* config.entries(),
+                },
+                {
+                  sessionID: ctx.sessionID,
+                  focus: input.focus,
+                  keepRecentTurns: input.keep_recent_turns,
+                  startMessageID:
+                    input.start_message_id === undefined ? undefined : SessionMessage.ID.make(input.start_message_id),
+                  endMessageID:
+                    input.end_message_id === undefined ? undefined : SessionMessage.ID.make(input.end_message_id),
+                  toolPolicies: materialized.policies,
+                },
+              )
+              if (result._tag === "failure")
                 return {
                   compressed: false,
                   detail: explain(result.failure),
                   messages: 0,
                   tokens_saved: 0,
                 }
-              // Report the range that was actually summarized: protected messages inside the
-              // requested range stay verbatim, so the block can be narrower than what was asked for.
               const kept =
                 result.excludedMessages === 0
                   ? ""
@@ -98,12 +122,12 @@ const layer = Layer.effectDiscard(
               return {
                 compressed: true,
                 detail:
-                  `Compressed ${result.block.sourceMessageCount} messages (${result.block.startMessageID} to ${result.block.endMessageID}) into a ${result.block.summaryTokenCount} token summary.` +
+                  `Compressed ${result.sourceMessageCount} messages (${result.startMessageID} to ${result.endMessageID}) into a durable summary.` +
                   kept,
-                messages: result.block.sourceMessageCount,
+                messages: result.sourceMessageCount,
                 tokens_saved: result.tokensSaved,
-                start_message_id: result.block.startMessageID,
-                end_message_id: result.block.endMessageID,
+                start_message_id: result.startMessageID,
+                end_message_id: result.endMessageID,
                 protected_messages_kept: result.excludedMessages,
               }
             }).pipe(Effect.mapError(() => new ToolFailure({ message: "Unable to compress the conversation" }))),
@@ -113,8 +137,7 @@ const layer = Layer.effectDiscard(
   }),
 )
 
-const explain = (failure: ContextManager.CompressFailure) => {
-  if (failure === "disabled") return "Dynamic compression is disabled for this session."
+const explain = (failure: SessionCompress.Failure) => {
   if (failure === "no-model") return "No model is available to produce a summary right now."
   if (failure === "invalid-range") return "That message range does not exist in this session."
   if (failure === "protected-range") return "That range overlaps recent turns, which stay verbatim."
@@ -127,5 +150,5 @@ const explain = (failure: ContextManager.CompressFailure) => {
 export const node = makeLocationNode({
   name: "tool/compress",
   layer,
-  deps: [ToolRegistry.node, ContextManager.node],
+  deps: [ToolRegistry.node, AgentV2.node, Database.node, EventV2.node, llmClient, SessionRunnerModel.node, SessionStore.node, Config.node],
 })
