@@ -63,14 +63,19 @@ export type ActivityRow = {
 
 // A group is a maximal run of tool and reasoning parts that belong to one
 // logical task in the conversation stream. The invariant is that a group only
-// spans the parts it owns: user messages, assistant text parts, and
+// spans the parts it owns: user messages, visible assistant text, and
 // orchestration/protocol tool calls (see NON_WORK_TOOLS) are rendered by the
 // transcript as their own top-level rows, so any of them ends the run it lands
-// in instead of being nested inside it. Reasoning parts (per-turn CoT) belong
-// to the run but do not start an activity until a tool is present. Invisible
-// parts (step-start/step-finish, snapshots, patches, ...) neither render nor
-// break a run. The group id is derived from the first tool part so it stays
-// stable while the run grows at its tail during streaming.
+// in instead of being nested inside it. A text part ends the run only when it
+// renders visible content: providers routinely persist empty text parts around
+// tool-only steps (a text block opened with no deltas), and those parts render
+// nothing, so treating every text part as a boundary fragments one logical
+// work sequence into arbitrary blocks depending on stream batching. Grouping
+// follows exactly what the transcript shows. Reasoning parts (per-turn CoT)
+// belong to the run but do not start an activity until a tool is present.
+// Invisible parts (step-start/step-finish, snapshots, patches, ...) neither
+// render nor break a run. The group id is derived from the first tool part so
+// it stays stable while the run grows at its tail during streaming.
 export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGroups {
   const byID = new Map<string, ActivityGroup>()
   const groupOf = new Map<string, string>()
@@ -83,15 +88,12 @@ export function computeActivityGroups(rows: readonly ActivityRow[]): ActivityGro
       continue
     }
     for (const part of row.parts) {
-      if (part.type === "text") {
-        // The stream creates an empty text part as a placeholder on assistant
-        // turns that are going to continue with tools or reasoning. It is not
-        // assistant output and must not close the logical work run. Only
-        // rendered text is a semantic transcript boundary.
-        if (part.text !== "") {
-          current = undefined
-          pending.length = 0
-        }
+      // Mirror the transcript's own visibility rule: an assistant text row
+      // renders only non-blank text, so a blank text part is not a semantic
+      // boundary and falls through to the invisible-part skip below.
+      if (part.type === "text" && part.text.trim() !== "") {
+        current = undefined
+        pending.length = 0
         continue
       }
       if (part.type === "reasoning") {
