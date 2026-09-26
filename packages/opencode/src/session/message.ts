@@ -45,8 +45,13 @@ export type ToolInvocation = Schema.Schema.Type<typeof ToolInvocation>
 export const TextPart = Schema.Struct({
   type: Schema.Literal("text"),
   text: Schema.String,
+  synthetic: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "TextPart" })
 export type TextPart = Schema.Schema.Type<typeof TextPart>
+
+export function isSyntheticTextPart<T extends { type: string; synthetic?: boolean }>(part: T): part is T & { type: "text"; synthetic: true } {
+  return part.type === "text" && part.synthetic === true
+}
 
 export const ReasoningPart = Schema.Struct({
   type: Schema.Literal("reasoning"),

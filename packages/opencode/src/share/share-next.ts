@@ -11,6 +11,7 @@ import { Provider } from "@/provider/provider"
 
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
+import { isSyntheticTextPart } from "@/session/message"
 import type { SessionID } from "@/session/schema"
 import { Database } from "@opencode-ai/core/database/database"
 import { eq } from "drizzle-orm"
@@ -297,7 +298,7 @@ const layer = Layer.effect(
             item.parts
               // Synthetic parts carry AlphaCode-generated summaries and compression placeholders. They
               // are internal context, not conversation, and must never reach a shared transcript.
-              .filter((part) => !(part.type === "text" && part.synthetic))
+              .filter((part) => !isSyntheticTextPart(part))
               .map((part) => ({ type: "part" as const, data: part })),
           ),
         { type: "session_diff", data: diffs },
