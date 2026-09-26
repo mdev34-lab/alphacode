@@ -134,7 +134,6 @@ const sessionBindingCommands = [
   "session.timeline",
   "session.fork",
   "session.compact",
-  "session.compress",
   "session.unshare",
   "session.undo",
   "session.redo",
@@ -629,36 +628,6 @@ export function Session() {
           providerID: selectedModel.providerID,
         })
         dialog.clear()
-      },
-    },
-    {
-      title: "Compress context",
-      value: "session.compress",
-      category: "Session",
-      slash: {
-        name: "compress",
-      },
-      run: async () => {
-        dialog.clear()
-        const response = await sdk.client.v2.session
-          .compress({ sessionID: route.sessionID, sessionCompressPayload: {} }, { throwOnError: true })
-          .catch(() => undefined)
-        const outcome = response?.data.data
-        if (!outcome) {
-          toast.show({ variant: "error", message: "Failed to compress the session context", duration: 4000 })
-          return
-        }
-        if (outcome.status === "skipped") {
-          toast.show({ variant: "warning", message: `Nothing compressed: ${outcome.reason}`, duration: 4000 })
-          return
-        }
-        toast.show({
-          variant: "success",
-          message: `Compressed ${outcome.block.sourceMessageCount} messages, saving ~${
-            outcome.block.sourceTokenCount - outcome.block.summaryTokenCount
-          } tokens`,
-          duration: 4000,
-        })
       },
     },
     {

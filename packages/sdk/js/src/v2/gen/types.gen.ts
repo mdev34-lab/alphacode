@@ -45,11 +45,6 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
-  | EventSessionNextContextPreparing
-  | EventSessionNextContextCompressing
-  | EventSessionNextContextCompressed
-  | EventSessionNextContextCompressionFailed
-  | EventSessionNextContextPrepared
   | EventSessionNextRevertStaged
   | EventSessionNextRevertCleared
   | EventSessionNextRevertCommitted
@@ -1169,73 +1164,6 @@ export type GlobalEvent = {
           reason: "auto" | "manual"
           text: string
           recent: string
-        }
-      }
-    | {
-        id: string
-        type: "session.next.context.preparing"
-        properties: {
-          timestamp: number
-          sessionID: string
-          messageCount: number
-          rawTokens: number
-          limit?: number
-        }
-      }
-    | {
-        id: string
-        type: "session.next.context.compressing"
-        properties: {
-          timestamp: number
-          sessionID: string
-          reason: "model" | "manual" | "auto"
-          startMessageID: string
-          endMessageID: string
-          messageCount: number
-        }
-      }
-    | {
-        id: string
-        type: "session.next.context.compressed"
-        properties: {
-          timestamp: number
-          sessionID: string
-          blockID: string
-          startMessageID: string
-          endMessageID: string
-          reason: "model" | "manual" | "auto"
-          sourceMessageCount: number
-          sourceTokenCount: number
-          summaryTokenCount: number
-        }
-      }
-    | {
-        id: string
-        type: "session.next.context.compression.failed"
-        properties: {
-          timestamp: number
-          sessionID: string
-          reason: string
-        }
-      }
-    | {
-        id: string
-        type: "session.next.context.prepared"
-        properties: {
-          timestamp: number
-          sessionID: string
-          rawTokens: number
-          preparedTokens: number
-          overheadTokens: number
-          tokensSaved: number
-          compressionCount: number
-          compressedMessages: number
-          deduplicatedMessages: number
-          purgedErrors: number
-          utilization: number
-          limit?: number
-          recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
-          payloadOverBudget: boolean
         }
       }
     | {
@@ -2811,13 +2739,6 @@ export type ServiceUnavailableError = {
   service?: string
 }
 
-export type SessionCompressPayload = {
-  startMessageID?: string
-  endMessageID?: string
-  focus?: string
-  keepRecentTurns?: number
-}
-
 export type MessageNotFoundError = {
   _tag: "MessageNotFoundError"
   sessionID: string
@@ -2988,11 +2909,6 @@ export type V2Event =
   | SessionNextCompactionStarted
   | SessionNextCompactionDelta
   | SessionNextCompactionEnded
-  | SessionNextContextPreparing
-  | SessionNextContextCompressing
-  | SessionNextContextCompressed
-  | SessionNextContextCompressionFailed
-  | SessionNextContextPrepared
   | SessionNextRevertStaged
   | SessionNextRevertCleared
   | SessionNextRevertCommitted
@@ -4049,54 +3965,6 @@ export type SessionInputAdmitted = {
   timeCreated: number
   promotedSeq?: number
 }
-
-export type SessionContextBlock = {
-  id: string
-  startMessageID: string
-  endMessageID: string
-  focus?: string
-  sourceMessageCount: number
-  sourceTokenCount: number
-  summaryTokenCount: number
-  nested: Array<string>
-}
-
-export type SessionContextStats = {
-  rawTokens: number
-  preparedTokens: number
-  overheadTokens: number
-  tokensSaved: number
-  compressionCount: number
-  compressedMessages: number
-  deduplicatedMessages: number
-  purgedErrors: number
-  utilization: number
-  limit?: number
-  recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
-  payloadOverBudget: boolean
-}
-
-export type SessionContextCompressed = {
-  status: "compressed"
-  block: SessionContextBlock
-  excludedMessages: number
-  stats: SessionContextStats
-}
-
-export type SessionContextSkipped = {
-  status: "skipped"
-  reason:
-    | "disabled"
-    | "no-model"
-    | "empty-range"
-    | "invalid-range"
-    | "protected-range"
-    | "summary-unavailable"
-    | "timeout"
-  stats: SessionContextStats
-}
-
-export type SessionContextOutcome = SessionContextCompressed | SessionContextSkipped
 
 export type SessionMessageAgentSwitched = {
   id: string
@@ -5463,123 +5331,6 @@ export type SessionNextCompactionDelta = {
   }
 }
 
-export type SessionNextContextPreparing = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.next.context.preparing"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    timestamp: number
-    sessionID: string
-    messageCount: number
-    rawTokens: number
-    limit?: number
-  }
-}
-
-export type SessionNextContextCompressing = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.next.context.compressing"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    timestamp: number
-    sessionID: string
-    reason: "model" | "manual" | "auto"
-    startMessageID: string
-    endMessageID: string
-    messageCount: number
-  }
-}
-
-export type SessionNextContextCompressed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.next.context.compressed"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    timestamp: number
-    sessionID: string
-    blockID: string
-    startMessageID: string
-    endMessageID: string
-    reason: "model" | "manual" | "auto"
-    sourceMessageCount: number
-    sourceTokenCount: number
-    summaryTokenCount: number
-  }
-}
-
-export type SessionNextContextCompressionFailed = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.next.context.compression.failed"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    timestamp: number
-    sessionID: string
-    reason: string
-  }
-}
-
-export type SessionNextContextPrepared = {
-  id: string
-  metadata?: {
-    [key: string]: unknown
-  }
-  type: "session.next.context.prepared"
-  durable?: {
-    aggregateID: string
-    seq: number
-    version: number
-  }
-  location?: LocationRef
-  data: {
-    timestamp: number
-    sessionID: string
-    rawTokens: number
-    preparedTokens: number
-    overheadTokens: number
-    tokensSaved: number
-    compressionCount: number
-    compressedMessages: number
-    deduplicatedMessages: number
-    purgedErrors: number
-    utilization: number
-    limit?: number
-    recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
-    payloadOverBudget: boolean
-  }
-}
-
 export type MessagePartDelta = {
   id: string
   metadata?: {
@@ -6911,78 +6662,6 @@ export type EventSessionNextCompactionEnded = {
     reason: "auto" | "manual"
     text: string
     recent: string
-  }
-}
-
-export type EventSessionNextContextPreparing = {
-  id: string
-  type: "session.next.context.preparing"
-  properties: {
-    timestamp: number
-    sessionID: string
-    messageCount: number
-    rawTokens: number
-    limit?: number
-  }
-}
-
-export type EventSessionNextContextCompressing = {
-  id: string
-  type: "session.next.context.compressing"
-  properties: {
-    timestamp: number
-    sessionID: string
-    reason: "model" | "manual" | "auto"
-    startMessageID: string
-    endMessageID: string
-    messageCount: number
-  }
-}
-
-export type EventSessionNextContextCompressed = {
-  id: string
-  type: "session.next.context.compressed"
-  properties: {
-    timestamp: number
-    sessionID: string
-    blockID: string
-    startMessageID: string
-    endMessageID: string
-    reason: "model" | "manual" | "auto"
-    sourceMessageCount: number
-    sourceTokenCount: number
-    summaryTokenCount: number
-  }
-}
-
-export type EventSessionNextContextCompressionFailed = {
-  id: string
-  type: "session.next.context.compression.failed"
-  properties: {
-    timestamp: number
-    sessionID: string
-    reason: string
-  }
-}
-
-export type EventSessionNextContextPrepared = {
-  id: string
-  type: "session.next.context.prepared"
-  properties: {
-    timestamp: number
-    sessionID: string
-    rawTokens: number
-    preparedTokens: number
-    overheadTokens: number
-    tokensSaved: number
-    compressionCount: number
-    compressedMessages: number
-    deduplicatedMessages: number
-    purgedErrors: number
-    utilization: number
-    limit?: number
-    recommendation: "none" | "normal" | "nudge" | "prefer" | "mandatory"
-    payloadOverBudget: boolean
   }
 }
 
@@ -12096,88 +11775,6 @@ export type V2SessionCompactResponses = {
 }
 
 export type V2SessionCompactResponse = V2SessionCompactResponses[keyof V2SessionCompactResponses]
-
-export type V2SessionCompressData = {
-  body: SessionCompressPayload
-  path: {
-    sessionID: string
-  }
-  query?: never
-  url: "/api/session/{sessionID}/compress"
-}
-
-export type V2SessionCompressErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-  /**
-   * SessionNotFoundError
-   */
-  404: SessionNotFoundError
-  /**
-   * ServiceUnavailableError
-   */
-  503: ServiceUnavailableError
-}
-
-export type V2SessionCompressError = V2SessionCompressErrors[keyof V2SessionCompressErrors]
-
-export type V2SessionCompressResponses = {
-  /**
-   * Success
-   */
-  200: {
-    data: SessionContextOutcome
-  }
-}
-
-export type V2SessionCompressResponse = V2SessionCompressResponses[keyof V2SessionCompressResponses]
-
-export type V2SessionContextStatsData = {
-  body?: never
-  path: {
-    sessionID: string
-  }
-  query?: never
-  url: "/api/session/{sessionID}/context/stats"
-}
-
-export type V2SessionContextStatsErrors = {
-  /**
-   * InvalidRequestError
-   */
-  400: InvalidRequestError
-  /**
-   * UnauthorizedError
-   */
-  401: UnauthorizedError
-  /**
-   * SessionNotFoundError
-   */
-  404: SessionNotFoundError
-  /**
-   * ServiceUnavailableError
-   */
-  503: ServiceUnavailableError
-}
-
-export type V2SessionContextStatsError = V2SessionContextStatsErrors[keyof V2SessionContextStatsErrors]
-
-export type V2SessionContextStatsResponses = {
-  /**
-   * Success
-   */
-  200: {
-    data: SessionContextStats
-  }
-}
-
-export type V2SessionContextStatsResponse = V2SessionContextStatsResponses[keyof V2SessionContextStatsResponses]
 
 export type V2SessionWaitData = {
   body?: never
