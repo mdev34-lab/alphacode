@@ -314,6 +314,74 @@ describe("computeActivityGroups", () => {
     expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
   })
 
+  test("does not split a group at blank text parts", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [
+          tool("m1", "t1", completed(0, 1)),
+          text("m1", "x0", ""),
+          text("m1", "x1", "  \n "),
+          tool("m1", "t2", completed(1, 2)),
+        ],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(1)
+    expect(result.byID.get("act-t1")?.items.map((item) => item.part.id)).toEqual(["t1", "t2"])
+  })
+
+  test("keeps one working activity across batches, blank text, and thinking", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [tool("m1", "t1", completed(0, 1)), tool("m1", "t2", completed(0, 2))],
+      },
+      {
+        message: assistant("m2", 2),
+        parts: [text("m2", "x0", ""), tool("m2", "t3", completed(2, 3)), tool("m2", "t4", completed(2, 4))],
+      },
+      { message: assistant("m3", 3), parts: [reasoning("m3", "r1", "thinking A")] },
+      {
+        message: assistant("m4", 4),
+        parts: [tool("m4", "t5", completed(4, 5)), tool("m4", "t6", completed(4, 6))],
+      },
+      { message: assistant("m5", 5), parts: [reasoning("m5", "r2", "thinking B")] },
+      {
+        message: assistant("m6", 6),
+        parts: [text("m6", "x1", " \n"), tool("m6", "t7", completed(6, 7))],
+      },
+    ]
+    const result = computeActivityGroups(rows)
+    expect(result.byID.size).toBe(1)
+    const group = result.byID.get("act-t1")
+    expect(group?.items.map((item) => item.part.id)).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7"])
+    expect(group?.parts.map((item) => item.part.id)).toEqual(["t1", "t2", "t3", "t4", "r1", "t5", "t6", "r2", "t7"])
+    for (const id of ["t1", "t2", "t3", "t4", "r1", "t5", "t6", "r2", "t7"]) {
+      expect(result.groupOf.get(id)).toBe("act-t1")
+    }
+  })
+
+  test("visibility toggles change expansion, not grouping membership", () => {
+    const rows: ActivityRow[] = [
+      {
+        message: assistant("m1", 1),
+        parts: [tool("m1", "t1", completed(0, 1)), tool("m1", "t2", completed(1, 2))],
+      },
+    ]
+    // Re-evaluating the same transcript state (as a visibility toggle does)
+    // yields identical membership; only the expansion resolution varies.
+    const membership = [...computeActivityGroups(rows).groupOf.entries()]
+    expect([...computeActivityGroups(rows).groupOf.entries()]).toEqual(membership)
+    expect(resolveActivityExpanded(undefined, false)).toBe(false)
+    expect(resolveActivityExpanded(undefined, true)).toBe(true)
+    const group = computeActivityGroups(rows).byID.get("act-t1")
+    expect(group).toBeDefined()
+    const summary = summarizeActivity((group?.items ?? []).map((item) => item.part))
+    expect(activityHeader(summary, { expanded: false, duration: undefined }).marker).toBe("▸")
+    expect(activityHeader(summary, { expanded: true, duration: undefined }).marker).toBe("▾")
+  })
+
   test("keeps the group id stable while the run grows at its tail", () => {
     const t1 = tool("m1", "t1", completed(0, 1))
     const t2 = tool("m2", "t2", completed(1, 2))

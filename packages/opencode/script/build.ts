@@ -175,6 +175,9 @@ for (const item of targets) {
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()
+      if (versionOutput.trim() !== Script.version) {
+        throw new Error(`Version mismatch: expected ${Script.version}, got ${versionOutput.trim()}`)
+      }
       console.log(`Smoke test passed: ${versionOutput.trim()}`)
     } catch (e) {
       console.error(`Smoke test failed for ${name}:`, e)

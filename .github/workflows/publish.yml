@@ -1,5 +1,5 @@
 name: publish
-run-name: "${{ format('release {0}', inputs.bump) }}"
+run-name: "${{ inputs.dry_run && 'dry-run ' || '' }}release ${{ inputs.version || inputs.bump }}"
 
 on:
   push:
@@ -12,24 +12,31 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Bump major, minor, or patch"
-        required: false
+        description: "auto = derive from conventional commits since last tag"
         type: choice
-        options:
-          - major
-          - minor
-          - patch
+        default: auto
+        options: [auto, patch, minor, major]
       version:
-        description: "Override version (optional)"
+        description: "Override version, e.g. 0.2.0 (required for the first release)"
         required: false
         type: string
+      dry_run:
+        description: "Compute version + notes only; create nothing"
+        type: boolean
+        default: false
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.version || inputs.bump }}
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
   id-token: write
   contents: write
   packages: write
+
+env:
+  GH_REPO: ${{ github.repository }}
+  GH_TOKEN: ${{ github.token }}
 
 jobs:
   version:
@@ -51,6 +58,7 @@ jobs:
           OPENCODE_VERSION: ${{ inputs.version }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GH_REPO: ${{ (github.ref_name == 'beta' && 'mdev34-lab/silvercode-beta') || github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
     outputs:
       version: ${{ steps.version.outputs.version }}
       release: ${{ steps.version.outputs.release }}
