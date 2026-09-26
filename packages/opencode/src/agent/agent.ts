@@ -14,6 +14,8 @@ import PROMPT_CODE from "./prompt/code.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
+import PROMPT_WORK_REVIEW from "./prompt/work-review.txt"
+import PROMPT_CODE_REVIEW from "./prompt/code-review.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
@@ -271,6 +273,46 @@ const layer = Layer.effect(
             ),
             description: `Read-only code reviewer. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files (implementation, fix, refactor, or feature), before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
             prompt: PROMPT_REVIEW,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          "work-review": {
+            name: "work-review",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                read: "allow",
+                grep: "allow",
+                glob: "allow",
+                list: "allow",
+                webfetch: "allow",
+              }),
+              user,
+            ),
+            description: `Read-only work reviewer. Verifies completed work against its requirements for general workspace tasks: file operations, configuration, documents, and mixed non-repository work. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively after completing any unit of work that changed files in a general workspace context. Not for conversational turns that changed no files.`,
+            prompt: PROMPT_WORK_REVIEW,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          "code-review": {
+            name: "code-review",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                read: "allow",
+                grep: "allow",
+                glob: "allow",
+                list: "allow",
+                webfetch: "allow",
+              }),
+              user,
+            ),
+            description: `Read-only code reviewer. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, types, integration, regressions, and project conventions. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively after completing any unit of work that changed files in a software repository context. Not for conversational turns that changed no files.`,
+            prompt: PROMPT_CODE_REVIEW,
             options: {},
             mode: "subagent",
             native: true,

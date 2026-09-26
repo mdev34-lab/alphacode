@@ -1356,8 +1356,9 @@ const layer = Layer.effect(
               // toward the existing finish path instead of the generic
               // reminder again. Any other agent keeps the generic nudge.
               const repeats = ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats })
+              const isReviewAgent = lastUser.agent === "review" || lastUser.agent === "work-review" || lastUser.agent === "code-review"
               const stagnation =
-                lastUser.agent === "review" ? ReviewStagnation.reviewStagnationState(msgs, repeats) : undefined
+                isReviewAgent ? ReviewStagnation.reviewStagnationState(msgs, repeats) : undefined
               const stagnated = stagnation?.stagnated === true
               // Hard backstop (issue #176): the nudge above is model-dependent,
               // so a review that ignores it can repeat until the step cap. Once

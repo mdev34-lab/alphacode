@@ -108,25 +108,37 @@ export const TaskTool = Tool.define(
         )
       }
 
-      const next = yield* agent.get(params.subagent_type)
+      // Map generic "review" to runtime-specific review agent
+      let subagentType = params.subagent_type
+      if (subagentType === "review") {
+        const parentAgent = parent.agent
+        if (parentAgent === "work") {
+          subagentType = "work-review"
+        } else if (parentAgent === "code") {
+          subagentType = "code-review"
+        }
+        // For other agents (plan, general, explore, etc.), fall back to generic "review"
+      }
+
+      const next = yield* agent.get(subagentType)
       if (!next) {
-        return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
+        return yield* Effect.fail(new Error(`Unknown agent type: ${subagentType} is not a valid agent type`))
       }
       // Primary agents are session entry points, never delegation targets.
       // Reject them before permission prompts so an impossible delegation
       // cannot block on user interaction.
       if (next.mode === "primary") {
-        return yield* Effect.fail(new Error(`Agent type ${params.subagent_type} is a primary agent and cannot be delegated to`))
+        return yield* Effect.fail(new Error(`Agent type ${subagentType} is a primary agent and cannot be delegated to`))
       }
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: id,
-          patterns: [params.subagent_type],
+          patterns: [subagentType],
           always: ["*"],
           metadata: {
             description: params.description,
-            subagent_type: params.subagent_type,
+            subagent_type: subagentType,
           },
         })
       }
@@ -209,13 +221,15 @@ export const TaskTool = Tool.define(
           parts,
         })
 
-        // The review subagent delivers its canonical result through a tagged
-        // report envelope. Extract it from the complete child output — every
-        // text part plus the finish summary — because the last text part alone
-        // is not a reliable delivery boundary: a trailing empty text part can
-        // erase an earlier report, and a missing or malformed envelope must
-        // surface as an explicit delivery failure, never as an empty result.
-        if (next.name === "review") {
+        // The review subagent (generic, work-review, or code-review) delivers its
+        // canonical result through a tagged report envelope. Extract it from the
+        // complete child output — every text part plus the finish summary — because
+        // the last text part alone is not a reliable delivery boundary: a trailing
+        // empty text part can erase an earlier report, and a missing or malformed
+        // envelope must surface as an explicit delivery failure, never as an empty
+        // result.
+        const isReviewAgent = next.name === "review" || next.name === "work-review" || next.name === "code-review"
+        if (isReviewAgent) {
           const finish = result.parts.findLast(
             (item): item is SessionV1.ToolPart =>
               item.type === "tool" && item.tool === "finish" && item.state.status === "completed",
@@ -395,7 +409,8 @@ export const TaskTool = Tool.define(
             // Re-associate the delivered review report with the result metadata
             // so consumers know which revision was reviewed without re-parsing
             // the output. The output already carries the canonical envelope.
-            const review = next.name === "review" ? ReviewReport.extract([result?.output ?? ""]) : undefined
+            const isReviewAgent = next.name === "review" || next.name === "work-review" || next.name === "code-review"
+            const review = isReviewAgent ? ReviewReport.extract([result?.output ?? ""]) : undefined
             const completed: Tool.ExecuteResult = {
               title: params.description,
               metadata: {

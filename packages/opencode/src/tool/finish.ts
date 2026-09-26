@@ -31,12 +31,13 @@ export const FinishTool = Tool.define(
           const messages = yield* sessions
             .messages({ sessionID: ctx.sessionID })
             .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
-          // The Review subagent completes its run through this same finish
-          // tool, so the structured review result is gated here, at the
-          // control-flow boundary: without a parseable report envelope the
-          // call fails as recoverable model feedback and the run continues
-          // instead of completing without a verdict.
-          if (ctx.agent === "review") {
+          // The Review subagent (generic, work-review, or code-review) completes its
+          // run through this same finish tool, so the structured review result is
+          // gated here, at the control-flow boundary: without a parseable report
+          // envelope the call fails as recoverable model feedback and the run
+          // continues instead of completing without a verdict.
+          const isReviewAgent = ctx.agent === "review" || ctx.agent === "work-review" || ctx.agent === "code-review"
+          if (isReviewAgent) {
             const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
             const delivery = ReviewReport.extract([
               ...(currentMessage?.parts ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])),
