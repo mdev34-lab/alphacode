@@ -555,9 +555,23 @@ describe("ShareNext internal context markers", () => {
   )
 })
 
-// The share protocol is upsert-only: nothing synced for a message can be un-sent. So the live
-// `MessageV2.Event.Updated` watcher must not announce a message that only ever carries internal
-// context, or the public transcript keeps a permanent empty bubble.
+// The share protocol is upsert-only: nothing synced for a message can be un-sent. Auto-compaction
+// therefore leaves a `role: "user"` message whose only part is the internal continue marker, and
+// dropping that part leaves the message record behind with an empty part list.
+//
+// That artifact is deliberately accepted rather than prevented. A consumer renders a message from
+// its parts, so an empty part list renders nothing: the TUI wraps the whole user bubble in
+// `<Show when={text()}>` (`packages/tui/src/routes/session/index.tsx:1474`) and a zero-part message
+// yields `text() === ""`, which suppresses the box along with its `marginTop`, so it contributes no
+// gap either. The TUI already receives these marker-only messages today and already collapses them
+// by the independent route of `text()` excluding `synthetic` parts. ACP is per-part
+// (`src/acp/event.ts:112`) and emits no update at all for an empty list. The cold `full()` path
+// produces the same state via `stripInternalContextParts`.
+//
+// Announcing a message immediately therefore costs nothing a reader can see, and it is the only
+// design that cannot strand a message: every `MessageV2.Event.Updated` syncs, so the terminal
+// update of every message reaches the share regardless of whether a part ever follows it or whether
+// `full()` ran in between.
 describe("ShareNext live user messages", () => {
   const ENTERPRISE = { config: { enterprise: { url: "https://legacy-share.example.com" } } }
 
@@ -566,6 +580,11 @@ describe("ShareNext live user messages", () => {
     const client = HttpClient.make((req) => {
       if (req.url.endsWith("/sync") && req.body._tag === "Uint8Array") {
         bodies.push(JSON.parse(new TextDecoder().decode(req.body.body)))
+      }
+      if (req.method === "POST" && req.url.endsWith("/share")) {
+        return Effect.succeed(
+          json(req, { id: "shr_live", url: "https://legacy-share.example.com/share/live", secret: "sec_live" }),
+        )
       }
       return Effect.succeed(json(req, { ok: true }))
     })
@@ -655,7 +674,10 @@ describe("ShareNext live user messages", () => {
       .filter((item) => item.type === type)
       .map((item) => item.data as { id: string; type: string; text?: string; messageID?: string; sessionID?: string })
 
-  it.live("never announces a live user message that only carries the continuation marker", () =>
+  // A message whose every part is internal still has its record announced, and the internal part
+  // itself never reaches the share. The record is inert (see the block comment), and keeping it is
+  // what lets a later `Updated` for the same message sync instead of being stranded.
+  it.live("drops the continuation marker part of a marker-only message and keeps no part for it", () =>
     provideTmpdirInstance(() => {
       const { bodies, client } = collect()
       return Effect.gen(function* () {
@@ -667,8 +689,8 @@ describe("ShareNext live user messages", () => {
         const markerMessage = MessageID.ascending()
         yield* publish(userInfo(info.id, markerMessage), [markerText(PartID.ascending())])
 
-        // A real message afterwards proves the live pipeline is running, so "absent" below is a
-        // filter result and not a dead watcher.
+        // A real message afterwards proves the live pipeline is running, so the assertions below
+        // are filter results and not a dead watcher.
         const realMessage = MessageID.ascending()
         yield* publish(assistantInfo(info.id, realMessage), [userText(PartID.ascending(), "here is the answer")])
 
@@ -679,8 +701,40 @@ describe("ShareNext live user messages", () => {
         )
         yield* Effect.sleep(50)
 
-        expect(synced(bodies, "message").map((message) => message.id)).not.toContain(markerMessage)
         expect(synced(bodies, "part").map((part) => part.text)).toEqual(["here is the answer"])
+        expect(synced(bodies, "part").some((part) => part.messageID === markerMessage)).toBe(false)
+        expect(synced(bodies, "message").map((message) => message.id)).toContain(markerMessage)
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  // The artifact is only acceptable because no part survives. A later `Updated` for the same
+  // message must still reach the share: with upsert-only delivery there is no second chance, and a
+  // message that announced a part and then went quiet would keep its stale state forever.
+  it.live("reaches the share when a marker-only message is updated after its only part was dropped", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "marker update" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const message = MessageID.ascending()
+        yield* publish(userInfo(info.id, message), [markerText(PartID.ascending())])
+        yield* update(info.id, { ...userInfo(info.id, message), agent: "plan" } as { id: string })
+
+        yield* pollWithTimeout(
+          Effect.sync(() =>
+            synced(bodies, "message").some((item) => (item as unknown as { agent: string }).agent === "plan")
+              ? true
+              : undefined,
+          ),
+          "timed out waiting for the post-marker update to reach the share",
+          "5 seconds",
+        )
+
+        expect(synced(bodies, "part").some((part) => part.messageID === message)).toBe(false)
       }).pipe(Effect.provide(userLayer(client)))
     }, ENTERPRISE),
   )
@@ -839,6 +893,155 @@ describe("ShareNext live user messages", () => {
         // Two models in the same flush window must not collapse into one: `queue` dedupes by key.
         const models = synced(bodies, "model").flatMap((model) => model as unknown as { id: string }[])
         expect(models.map((model) => model.id).sort()).toEqual(["model-a", "model-b"])
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  // `full()` re-reads and re-announces the whole session. It used to prune announcement state as a
+  // side effect, which is what stranded a message whose part had already announced it: the pruned
+  // entry made the next `Updated` look like a first sighting. Nothing is pruned now, so a terminal
+  // update that lands after `full()` syncs like any other.
+  it.live("reaches the share when a terminal update lands after full() re-synced the session", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "full then terminal" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const message = MessageID.ascending()
+        const started = userInfo(info.id, message)
+        yield* publish(started, [userText(PartID.ascending(), "what did the build say?")])
+
+        yield* (yield* ShareNext.Service).create(info.id)
+        yield* pollWithTimeout(
+          Effect.sync(() => (bodies.length > 0 ? true : undefined)),
+          "timed out waiting for the full sync",
+          "5 seconds",
+        )
+
+        yield* update(info.id, { ...started, agent: "plan" } as { id: string })
+        yield* pollWithTimeout(
+          Effect.sync(() =>
+            synced(bodies, "message").some((item) => (item as unknown as { agent: string }).agent === "plan")
+              ? true
+              : undefined,
+          ),
+          "timed out waiting for the terminal update that follows full()",
+          "5 seconds",
+        )
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  // The inverse interleaving: a message announced, then `full()` runs, then its parts arrive. A
+  // part is announced on arrival regardless of what `full()` did in between.
+  it.live("forwards a live part that arrives after full() re-synced the session", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "full then part" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const message = MessageID.ascending()
+        // The marker arrives first, as it does for a real auto-compacted turn.
+        yield* publish(userInfo(info.id, message), [markerText(PartID.ascending())])
+
+        yield* (yield* ShareNext.Service).create(info.id)
+        yield* pollWithTimeout(
+          Effect.sync(() => (bodies.length > 0 ? true : undefined)),
+          "timed out waiting for the full sync",
+          "5 seconds",
+        )
+
+        const events = yield* EventV2Bridge.Service
+        yield* events.publish(MessageV2.Event.PartUpdated, {
+          sessionID: info.id,
+          time: Date.now(),
+          part: { ...userText(PartID.ascending(), "carry on"), sessionID: info.id, messageID: message } as never,
+        })
+
+        yield* pollWithTimeout(
+          Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
+          "timed out waiting for the post-full part",
+          "5 seconds",
+        )
+        yield* Effect.sleep(50)
+
+        expect(synced(bodies, "part").map((part) => part.text)).toEqual(["carry on"])
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  // Tearing a share down must not leave announcement state behind that a later share of the same
+  // session could trip over, and must stop delivery immediately.
+  it.live("stops delivering live updates after remove(), including for a message still in flight", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "teardown" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        yield* publish(userInfo(info.id, MessageID.ascending()), [userText(PartID.ascending(), "before teardown")])
+        yield* pollWithTimeout(
+          Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
+          "timed out waiting for the pre-teardown sync",
+          "5 seconds",
+        )
+
+        yield* (yield* ShareNext.Service).remove(info.id)
+        yield* Effect.sleep(50)
+        const after = bodies.length
+
+        yield* publish(userInfo(info.id, MessageID.ascending()), [userText(PartID.ascending(), "after teardown")])
+        // `sync` debounces by a second, so anything wrongly queued would only reach the transport
+        // after that. Waiting less than the debounce would pass even with the bug present, so this
+        // waits past it to make the negative assertion below mean something.
+        yield* Effect.sleep(1500)
+
+        expect(bodies).toHaveLength(after)
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  // Nothing is held per message, so there is no map to bound and no way for one message's timing to
+  // delay or reorder another. Every message and every part arrives, correctly paired, regardless of
+  // how many are in flight at once.
+  it.live("announces every one of many in-flight messages independently", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "many" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const count = 12
+        const ids: string[] = []
+        for (let i = 0; i < count; i++) {
+          const message = MessageID.ascending()
+          ids.push(message)
+          yield* publish(userInfo(info.id, message), [userText(PartID.ascending(), `message ${i}`)])
+        }
+
+        yield* pollWithTimeout(
+          Effect.sync(() => (synced(bodies, "part").length >= count ? true : undefined)),
+          "timed out waiting for every part to reach the share",
+          "5 seconds",
+        )
+        yield* Effect.sleep(100)
+
+        const announced = new Set(synced(bodies, "message").map((message) => message.id))
+        expect(ids.every((id) => announced.has(id))).toBe(true)
+        // Each part is paired with the message it was published under, and none is lost.
+        expect(synced(bodies, "part").map((part) => [part.messageID, part.text])).toEqual(
+          ids.map((id, i) => [id, `message ${i}`]),
+        )
       }).pipe(Effect.provide(userLayer(client)))
     }, ENTERPRISE),
   )

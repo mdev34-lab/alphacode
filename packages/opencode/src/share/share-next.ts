@@ -47,16 +47,7 @@ type State = {
   queue: Map<SessionID, Map<string, Data>>
   scope: Scope.Closeable
   shared: Map<SessionID, Share | null>
-  /**
-   * Live announcement state for `role: "user"` messages, which are the only ones deferred. A
-   * missing `info` means the message was already announced, so later updates sync straight
-   * through; that marker is what keeps a repeated `MessageV2.Event.Updated` for the same message
-   * from re-parking an announced message, which would strand it until its next part.
-   */
-  pending: Map<string, Deferred>
 }
-
-type Deferred = { sessionID: SessionID; info?: SDK.Message }
 
 type Data =
   | {
@@ -122,31 +113,6 @@ function key(item: Data) {
   }
 }
 
-/**
- * Upper bound on the live announcement map. A user message is deferred only between its
- * `MessageV2.Event.Updated` and the first part of that same turn, so the number of live
- * deferrals is the number of in-flight prompts, not the length of the session. The bound is a
- * backstop against a leak, and `prunePending` on `full()`/`remove()` reclaims the rest.
- */
-const maxPending = 64
-
-function prunePending(state: State, sessionID: SessionID) {
-  for (const [id, deferred] of state.pending) {
-    if (deferred.sessionID === sessionID) state.pending.delete(id)
-  }
-}
-
-function boundPending(state: State) {
-  // `Map` iterates in insertion order and re-setting an existing key keeps its position, so the
-  // oldest entry is the one that has waited longest for a part and the least likely to still get
-  // one. Evicting it cannot strand a message that is about to be announced.
-  while (state.pending.size > maxPending) {
-    const oldest = state.pending.keys().next()
-    if (oldest.done) return
-    state.pending.delete(oldest.value)
-  }
-}
-
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -186,7 +152,7 @@ const layer = Layer.effect(
 
     const state: InstanceState.InstanceState<State> = yield* InstanceState.make<State>(
       Effect.fn("ShareNext.state")(function* (_ctx) {
-        const cache: State = { queue: new Map(), scope: yield* Scope.make(), shared: new Map(), pending: new Map() }
+        const cache: State = { queue: new Map(), scope: yield* Scope.make(), shared: new Map() }
 
         yield* Effect.addFinalizer(() =>
           Scope.close(cache.scope, Exit.void).pipe(
@@ -194,7 +160,6 @@ const layer = Layer.effect(
               Effect.sync(() => {
                 cache.queue.clear()
                 cache.shared.clear()
-                cache.pending.clear()
               }),
             ),
           ),
@@ -224,31 +189,18 @@ const layer = Layer.effect(
         yield* watch(MessageV2.Event.Updated, (data) =>
           Effect.gen(function* () {
             const info = data.info
-            const deferred = cache.pending.get(info.id)
+            yield* sync(info.sessionID, [{ type: "message", data: structuredClone(info) as SDK.Message }])
 
-            // Assistant messages are never deferred. They always carry real content, and their
-            // terminal update (cost, tokens, finish reason, completion time, error) is the last
-            // event of the message with no part after it, so deferring it would strand that final
-            // state in a public transcript forever.
-            if (info.role !== "user")
-              return yield* sync(info.sessionID, [{ type: "message", data: structuredClone(info) as SDK.Message }])
-
-            // A message seen before: refresh it while still deferred, and sync it once announced.
-            if (deferred) {
-              if (!deferred.info)
-                yield* sync(info.sessionID, [{ type: "message", data: structuredClone(info) as SDK.Message }])
-              else deferred.info = structuredClone(info) as SDK.Message
-              return
-            }
-
-            // First sighting. `Data` is upsert-only, so nothing synced here can be un-sent, and
-            // auto-compaction creates a `role: "user"` message whose only part is the internal
-            // continue marker. Announcing that message and then dropping its part in the filter
-            // below leaves a permanent empty bubble. Park it instead; the first part that
-            // survives filtering announces it together with itself.
-            if (!(yield* getCached(info.sessionID))) return
-            cache.pending.set(info.id, { sessionID: info.sessionID, info: structuredClone(info) as SDK.Message })
-            boundPending(cache)
+            // The model a reader needs in order to label a user turn is a property of the message,
+            // not of any of its parts, so it is announced here instead of being coupled to a part
+            // surviving the filter in the `PartUpdated` watcher. `key` is per model id, so the
+            // several updates a single message produces upsert one record instead of piling up.
+            if (info.role !== "user") return
+            const model = yield* provider.getModel(
+              ProviderV2.ID.make(info.model.providerID),
+              ModelV2.ID.make(info.model.modelID),
+            )
+            yield* sync(info.sessionID, [{ type: "model", data: [model] }])
           }),
         )
         yield* watch(MessageV2.Event.PartUpdated, (data) =>
@@ -258,22 +210,17 @@ const layer = Layer.effect(
             // is deliberately scoped to compaction bookkeeping: injected reminders and other
             // context that the engine adds to a message the user actually wrote are part of the
             // transcript a reader expects, and filtering them is out of scope here.
+            //
+            // The message record is announced by the watcher above without waiting for a part, so
+            // auto-compaction leaves behind a `role: "user"` message whose only part was dropped
+            // here. That is deliberate and harmless: a consumer that renders a message from its
+            // parts renders nothing for an empty part list, which is exactly what `full()` already
+            // produces for the same message via `stripInternalContextParts`. Deferring the
+            // announcement to hide that record does not make the transcript more correct, and
+            // `Data` is upsert-only, so a message that never received a surviving part could never
+            // be retracted after the fact.
             if (isInternalContextPart(data.part)) return
-            const deferred = cache.pending.get(data.part.messageID)
-            if (!deferred?.info)
-              return yield* sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }])
-            const message = deferred.info
-            deferred.info = undefined
-            yield* sync(data.part.sessionID, [
-              { type: "message", data: message },
-              { type: "part", data: structuredClone(data.part) as SDK.Part },
-            ])
-            if (message.role !== "user") return
-            const model = yield* provider.getModel(
-              ProviderV2.ID.make(message.model.providerID),
-              ModelV2.ID.make(message.model.modelID),
-            )
-            yield* sync(data.part.sessionID, [{ type: "model", data: [model] }])
+            yield* sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }])
           }),
         )
         yield* watch(Session.Event.Diff, (data) =>
@@ -355,12 +302,6 @@ const layer = Layer.effect(
 
     const full = Effect.fn("ShareNext.full")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("full sync", { sessionID: sessionID })
-      // Prune before reading, not after. Reading first left the window where a park lands
-      // between the read and the prune and is dropped by a snapshot that already contains the
-      // message; pruning first makes the snapshot below authoritative for everything that
-      // existed at read time, and anything parked after it belongs to a newer message whose own
-      // first part still announces it.
-      prunePending(yield* InstanceState.get(state), sessionID)
       const info = yield* session.get(sessionID)
       const diffs = yield* session.diff(sessionID)
       const messages = yield* session.messages({ sessionID })
@@ -446,7 +387,6 @@ const layer = Layer.effect(
       yield* db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).run().pipe(Effect.orDie)
       s.shared.delete(sessionID)
       s.queue.delete(sessionID)
-      prunePending(s, sessionID)
     })
 
     return Service.of({ init, url, request, create, remove })
