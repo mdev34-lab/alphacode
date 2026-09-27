@@ -16,6 +16,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
+import type { Reason } from "../../src/tool/finish"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
@@ -207,6 +208,44 @@ function reviewRunOps(chunks: string[], summary = "done"): TaskPromptOps {
         return { ...replied, parts: [...replied.parts, finish] }
       }),
   }
+}
+
+/**
+ * Scripts a child run that ends through a completed finish call declaring
+ * `reason`, which is the only place the parent-facing termination is read from.
+ */
+function finishRunOps(reason: Reason, text: string, summary = text): TaskPromptOps {
+  return {
+    cancel: () => Effect.void,
+    resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+    prompt: (input) =>
+      Effect.sync(() => {
+        const replied = reply(input, text)
+        const now = Date.now()
+        const finish: SessionV1.ToolPart = {
+          id: PartID.ascending(),
+          messageID: replied.info.id,
+          sessionID: input.sessionID,
+          type: "tool",
+          tool: "finish",
+          callID: "finish-call",
+          state: {
+            status: "completed",
+            input: { reason, result: summary },
+            output: summary,
+            title: "finish",
+            metadata: {},
+            time: { start: now, end: now },
+          },
+        }
+        return { ...replied, parts: [...replied.parts, finish] }
+      }),
+  }
+}
+
+/** The termination element the parent reads out of a `<task>` envelope. */
+function terminationOf(envelope: string) {
+  return envelope.match(/<termination reason="[a-z_]+">.*<\/termination>/)?.[0]
 }
 
 describe("tool.task", () => {
@@ -1482,6 +1521,65 @@ describe("tool.task", () => {
 
       expect((yield* jobs.get(child.id))?.status).toBe("cancelled")
       expect((yield* jobs.get(grandchild.id))?.status).toBe("cancelled")
+    }),
+  )
+
+  it.instance("a waiting subagent delivers the same termination in the background and the foreground", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      for (const reason of ["subagent_wait", "failure", "success"] as const) {
+        const { chat, assistant } = yield* seed(`Parity ${reason}`)
+        const injected = defer<SessionPrompt.PromptInput>()
+        const child = finishRunOps(reason, "child done")
+        const context = (promptOps: TaskPromptOps) => ({
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        })
+        const params = {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        }
+
+        const foreground = yield* def.execute({ ...params, background: false }, context(child))
+        expect(foreground.metadata.termination.reason).toBe(reason)
+        expect(terminationOf(foreground.output)).toBeDefined()
+
+        const background = yield* def.execute(
+          { ...params, background: true },
+          context({
+            ...child,
+            prompt: (input) =>
+              input.sessionID === chat.id
+                ? Effect.sync(() => {
+                    injected.resolve(input)
+                    return reply(input, "notified")
+                  })
+                : child.prompt(input),
+          }),
+        )
+        yield* jobs.wait({ id: background.metadata.sessionId, timeout: 1_000 })
+        const notification = yield* Effect.promise(() => injected.promise)
+        const delivered = notification.parts[0]?.type === "text" ? notification.parts[0].text : ""
+
+        expect(delivered).toContain("child done")
+        // The contract: both delivery paths expose the same termination to the
+        // parent. These two assertions are what fail if the paths diverge, and
+        // the parity check alone would also pass if both sides rendered nothing.
+        expect(terminationOf(foreground.output)).toContain(`<termination reason="${reason}">`)
+        expect(terminationOf(delivered)).toBe(terminationOf(foreground.output))
+        if (reason === "subagent_wait") {
+          expect(terminationOf(delivered)).toContain("not in flight")
+        }
+      }
     }),
   )
 })

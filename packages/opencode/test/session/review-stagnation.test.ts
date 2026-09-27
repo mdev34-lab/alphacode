@@ -902,7 +902,7 @@ it.instance(
       })
       yield* llm.text(REPEAT)
       yield* llm.text(REPEAT)
-      yield* llm.tool("finish", { result: REPEAT })
+      yield* llm.tool("finish", { reason: "success", result: REPEAT })
 
       yield* user(chat.id, TASK_PROMPT)
       const result = yield* prompt.loop({ sessionID: chat.id })
@@ -1051,7 +1051,7 @@ it.instance(
       yield* llm.text(DONE)
       yield* llm.text(DONE)
       yield* llm.text(DONE)
-      yield* llm.tool("finish", { result: REPEAT })
+      yield* llm.tool("finish", { reason: "success", result: REPEAT })
 
       yield* user(chat.id, TASK_PROMPT)
       const result = yield* prompt.loop({ sessionID: chat.id })
@@ -1090,7 +1090,7 @@ it.instance(
       yield* llm.text(REPEAT)
       yield* llm.text(REPEAT)
       yield* llm.text(REPEAT)
-      yield* llm.tool("finish", { result: "Done." })
+      yield* llm.tool("finish", { reason: "success", result: "Done." })
 
       yield* user(chat.id, "do the thing", "work")
       const result = yield* prompt.loop({ sessionID: chat.id })

@@ -97,7 +97,7 @@ describe("tool.finish – current review result", () => {
       const def = yield* tool.init()
       const exit = yield* def
         .execute(
-          { result: "Historical report must not count." },
+          { reason: "success", result: "Historical report must not count." },
           {
             sessionID: chat.id,
             messageID: current.id,

@@ -2,18 +2,51 @@ import * as Tool from "./tool"
 import { ToolFailure } from "@opencode-ai/llm"
 import { ReviewReport } from "@opencode-ai/core/review-report"
 import DESCRIPTION from "./finish.txt"
-import { Effect, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
 import { Todo } from "../session/todo"
 import { Session } from "../session/session"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 
+export const Reason = Schema.Literals(["success", "subagent_wait", "failure"])
+
+export type Reason = Schema.Schema.Type<typeof Reason>
+
 export const Parameters = Schema.Struct({
+  reason: Reason.annotate({
+    description:
+      "Why the agent is ending this turn: success when the task is complete, subagent_wait when progress depends on another subagent, or failure when the task could not be completed.",
+  }),
   result: Schema.String.annotate({
     description:
       "The final result of the task: a concise summary of what was accomplished, presented to the user as the task outcome.",
   }),
 })
+
+/**
+ * Reads the termination reason the model declared on a completed finish call.
+ *
+ * Three cases, deliberately not collapsed into one default:
+ *
+ * - A record with no `reason` is a transcript written before the field existed.
+ *   Those turns were successes, so absence reads as `success` and the loop
+ *   still exits with a verdict.
+ * - A record carrying a reason this build does not recognise is not a legacy
+ *   transcript. It resolves to `undefined` rather than to `success`, so a
+ *   future build's value is never silently upgraded into a delivered verdict by
+ *   an older one.
+ * - Anything that is not a record cannot be read at all and yields `undefined`.
+ */
+export function readTermination(part: SessionV1.ToolPart): Reason | undefined {
+  if (part.tool !== FinishTool.id) return undefined
+  if (part.state.status !== "completed") return undefined
+  const input = part.state.input
+  if (typeof input !== "object" || input === null) return undefined
+  const declared = (input as { reason?: unknown }).reason
+  if (declared === undefined) return "success"
+  return Option.getOrUndefined(Schema.decodeUnknownOption(Reason)(declared))
+}
 
 export const FinishTool = Tool.define(
   "finish",
@@ -134,6 +167,7 @@ export const FinishTool = Tool.define(
             title: "Task completed",
             output: params.result,
             metadata: {
+              termination: { reason: params.reason },
               review: {
                 verdict: reviewState.verdict,
                 reviews: reviewState.reviews,

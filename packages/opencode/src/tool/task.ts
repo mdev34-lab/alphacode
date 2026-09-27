@@ -1,4 +1,5 @@
 import * as Tool from "./tool"
+import { FinishTool, readTermination, type Reason } from "@/tool/finish"
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ReviewReport } from "@opencode-ai/core/review-report"
@@ -10,7 +11,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Effect, Exit, Ref, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
 
@@ -57,11 +58,32 @@ export const Parameters = Schema.Struct({
   }),
 })
 
+/**
+ * Wording for the termination element the parent reads out of the envelope.
+ *
+ * A subagent that ends on `subagent_wait` is parked on a dependency, not slow
+ * and not in flight. Say so in the parent envelope so the parent never reads a
+ * waiting run as a fire-and-forget task it should wait on. `success` carries no
+ * note: the reason is the signal, and the result text already says the work is
+ * done.
+ */
+const TERMINATION_NOTE: Record<Reason, string> = {
+  success: "",
+  subagent_wait: "Subagent stopped on a dependency and is not in flight; it will not report back on its own.",
+  failure: "Subagent stopped because the task could not be completed.",
+}
+
+/**
+ * Renders the parent-facing `<task>` envelope. The termination reason is part of
+ * the envelope, not of the injected text, so a background notification and a
+ * foreground tool result carry byte-identical termination for the same run.
+ */
 function renderOutput(input: {
   sessionID: SessionID
   state: "running" | "completed" | "error"
   summary?: string
   text: string
+  termination?: Reason
 }) {
   const tag = input.state === "error" ? "task_error" : "task_result"
   return [
@@ -70,6 +92,9 @@ function renderOutput(input: {
     `<${tag}>`,
     input.text,
     `</${tag}>`,
+    ...(input.termination
+      ? [`<termination reason="${input.termination}">${TERMINATION_NOTE[input.termination]}</termination>`]
+      : []),
     "</task>",
   ].join("\n")
 }
@@ -116,7 +141,9 @@ export const TaskTool = Tool.define(
       // Reject them before permission prompts so an impossible delegation
       // cannot block on user interaction.
       if (next.mode === "primary") {
-        return yield* Effect.fail(new Error(`Agent type ${params.subagent_type} is a primary agent and cannot be delegated to`))
+        return yield* Effect.fail(
+          new Error(`Agent type ${params.subagent_type} is a primary agent and cannot be delegated to`),
+        )
       }
 
       if (!ctx.extra?.bypassAgentCheck) {
@@ -195,6 +222,12 @@ export const TaskTool = Tool.define(
       const ops = ctx.extra?.promptOps as TaskPromptOps
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
+      // The child declares why it stopped on the finish tool input. Capture it
+      // once, where the reply is already in hand, so the background and the
+      // foreground delivery paths below report the same value without either
+      // one re-reading the child transcript.
+      const termination = yield* Ref.make<Reason | undefined>(undefined)
+
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         const parts = yield* ops.resolvePromptParts(params.prompt)
         const result = yield* ops.prompt({
@@ -209,6 +242,12 @@ export const TaskTool = Tool.define(
           parts,
         })
 
+        const finish = result.parts.findLast(
+          (item): item is SessionV1.ToolPart =>
+            item.type === "tool" && item.tool === FinishTool.id && item.state.status === "completed",
+        )
+        yield* Ref.set(termination, finish ? readTermination(finish) : undefined)
+
         // The review subagent delivers its canonical result through a tagged
         // report envelope. Extract it from the complete child output — every
         // text part plus the finish summary — because the last text part alone
@@ -216,10 +255,6 @@ export const TaskTool = Tool.define(
         // erase an earlier report, and a missing or malformed envelope must
         // surface as an explicit delivery failure, never as an empty result.
         if (next.name === "review") {
-          const finish = result.parts.findLast(
-            (item): item is SessionV1.ToolPart =>
-              item.type === "tool" && item.tool === "finish" && item.state.status === "completed",
-          )
           // A review run only completes through a successful finish call: the
           // finish tool itself rejects results without a parseable report, so
           // reaching this point without a completed finish means the run
@@ -261,10 +296,6 @@ export const TaskTool = Tool.define(
         if (text !== undefined) return text
         // Subagents end their turn with the finish tool; its result argument is
         // the task summary.
-        const finish = result.parts.findLast(
-          (item): item is SessionV1.ToolPart =>
-            item.type === "tool" && item.tool === "finish" && item.state.status === "completed",
-        )
         const summary = finish?.state.status === "completed" ? finish.state.input.result : undefined
         return typeof summary === "string" ? summary : ""
       })
@@ -272,6 +303,7 @@ export const TaskTool = Tool.define(
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
         state: "completed" | "error",
         text: string,
+        termination: Reason | undefined,
       ) {
         const currentParent = yield* sessions.get(ctx.sessionID)
         // Notifications must run in the parent session, with the parent's own
@@ -300,6 +332,7 @@ export const TaskTool = Tool.define(
                       ? `Background task completed: ${params.description}`
                       : `Background task failed: ${params.description}`,
                   text,
+                  termination,
                 }),
               },
             ],
@@ -309,11 +342,18 @@ export const TaskTool = Tool.define(
 
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
         yield* background.wait({ id: jobID }).pipe(
-          Effect.flatMap((result) => {
-            if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
-            if (result.info?.status === "error") return inject("error", result.info.error ?? "")
-            return Effect.void
-          }),
+          Effect.flatMap((result) =>
+            Effect.gen(function* () {
+              const reason = yield* Ref.get(termination)
+              if (result.info?.status === "completed")
+                return yield* inject("completed", result.info.output ?? "", reason)
+              // A subagent can declare a reason and still fail afterwards, for
+              // example when review envelope extraction fails after finish. The
+              // reason was captured before that failure, so deliver it rather
+              // than reporting a bare <task_error> with no signal.
+              if (result.info?.status === "error") return yield* inject("error", result.info.error ?? "", reason)
+            }),
+          ),
           Effect.forkIn(scope, { startImmediately: true }),
         )
       })
@@ -396,6 +436,7 @@ export const TaskTool = Tool.define(
             // so consumers know which revision was reviewed without re-parsing
             // the output. The output already carries the canonical envelope.
             const review = next.name === "review" ? ReviewReport.extract([result?.output ?? ""]) : undefined
+            const reason = yield* Ref.get(termination)
             const completed: Tool.ExecuteResult = {
               title: params.description,
               metadata: {
@@ -403,8 +444,14 @@ export const TaskTool = Tool.define(
                 ...(review?.ok
                   ? { review: { report: review.report, sessionId: nextSession.id, revision: review.report.revision } }
                   : {}),
+                ...(reason !== undefined ? { termination: { reason } } : {}),
               },
-              output: renderOutput({ sessionID: nextSession.id, state: "completed", text: result?.output ?? "" }),
+              output: renderOutput({
+                sessionID: nextSession.id,
+                state: "completed",
+                text: result?.output ?? "",
+                termination: reason,
+              }),
             }
             return completed
           }),

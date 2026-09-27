@@ -47,7 +47,7 @@ import { Process } from "@/util/process"
 import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Types } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
-import { FinishTool } from "@/tool/finish"
+import { FinishTool, readTermination } from "@/tool/finish"
 import PROMPT_REVIEW_LOOP from "./prompt/review-loop.txt"
 import FINISH_NUDGE from "./prompt/finish-nudge.txt"
 import REVIEW_STAGNATION_NUDGE from "./prompt/review-stagnation-nudge.txt"
@@ -1209,10 +1209,10 @@ const layer = Layer.effect(
         type: "tool",
         tool: FinishTool.id,
         callID: PartID.ascending(),
-        state: { status: "running", input: { result: input.result }, time: { start } },
+        state: { status: "running", input: { reason: "success", result: input.result }, time: { start } },
       } satisfies SessionV1.ToolPart)
       const outcome = yield* def
-        .execute({ result: input.result }, {
+        .execute({ reason: "success", result: input.result }, {
           sessionID: input.sessionID,
           messageID: input.messageID,
           agent: input.agent,
@@ -1238,7 +1238,7 @@ const layer = Layer.effect(
           ...part,
           state: {
             status: "error",
-            input: { result: input.result },
+            input: { reason: "success", result: input.result },
             error: outcome.error.message,
             time: { start, end: Date.now() },
           },
@@ -1249,7 +1249,7 @@ const layer = Layer.effect(
         ...part,
         state: {
           status: "completed",
-          input: { result: input.result },
+          input: { reason: "success", result: input.result },
           output: outcome.value.output,
           title: outcome.value.title,
           metadata: outcome.value.metadata,
@@ -1302,15 +1302,15 @@ const layer = Layer.effect(
           // agent's step cap is reached.
           const activeAgent = yield* agents.get(lastUser.agent)
           const finishRequired = activeAgent !== undefined && activeAgent.finishTool !== false
-          const finishCalled = msgs
-            .slice(msgs.findLastIndex((msg) => msg.info.id === lastUser.id) + 1)
-            .some(
-              (msg) =>
-                msg.info.role === "assistant" &&
-                msg.parts.some(
-                  (part) => part.type === "tool" && part.tool === FinishTool.id && part.state.status === "completed",
-                ),
+          const messagesAfterLastUser = msgs.slice(msgs.findLastIndex((msg) => msg.info.id === lastUser.id) + 1)
+          const completedFinish = messagesAfterLastUser
+            .flatMap((msg) => msg.parts)
+            .reverse()
+            .find(
+              (part): part is SessionV1.ToolPart =>
+                part.type === "tool" && part.tool === FinishTool.id && part.state.status === "completed",
             )
+          const termination = completedFinish ? readTermination(completedFinish) : undefined
           // A pending or running tool call on the last assistant message means
           // the turn still has work in flight; finish completing first must not
           // strand it, so the loop keeps going until the tool resolves.
@@ -1321,8 +1321,11 @@ const layer = Layer.effect(
                 !part.metadata?.providerExecuted &&
                 (part.state.status === "pending" || part.state.status === "running"),
             ) ?? false
-          if (finishRequired && finishCalled && !hasUnresolvedTools) {
-            yield* Effect.logInfo("finish tool completed, exiting loop", { "session.id": sessionID })
+          if (finishRequired && completedFinish && !hasUnresolvedTools) {
+            yield* Effect.logInfo("finish tool completed, exiting loop", {
+              "session.id": sessionID,
+              termination,
+            })
             break
           }
 
@@ -1345,7 +1348,7 @@ const layer = Layer.effect(
             }
             if (
               finishRequired &&
-              !finishCalled &&
+              !completedFinish &&
               orphan === undefined &&
               lastAssistant.error === undefined &&
               step < (activeAgent?.steps ?? Infinity)
