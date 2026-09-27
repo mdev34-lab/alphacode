@@ -121,23 +121,27 @@ export type TextPart = Types.DeepMutable<Schema.Schema.Type<typeof TextPart>>
  */
 type MaybeContextPart = {
   type: string
-  synthetic?: boolean
   metadata?: Record<string, unknown>
 }
 
 /**
  * Internal compaction / context-marker parts. These are engine bookkeeping: the `compaction` part
- * that marks a boundary, and the synthetic user text part that resumes an auto-compacted session.
+ * that marks a boundary, and the user text part marked `compaction_continue` that resumes an
+ * auto-compacted session.
  *
  * Deliberately narrower than `synthetic === true`. There are dozens of `synthetic` producers
  * (MCP resource reads, background-task notifications, attachment prompts) whose text is legitimate
  * conversation content and must survive to external surfaces.
+ *
+ * The `compaction_continue` marker alone keys the second arm, with no `synthetic` conjunct. The
+ * marker is the intent; `synthetic` is one producer's implementation detail, and requiring both
+ * couples every consumer to that producer. A future producer that marks a continuation without also
+ * setting `synthetic` would silently leak through a guard that claims to cover continuations, and
+ * nothing would fail. Widening the arm is safe in the other direction: `compaction_continue` is only
+ * ever set on auto-compaction continuations.
  */
 export function isInternalContextPart(part: MaybeContextPart) {
-  return (
-    part.type === "compaction" ||
-    (part.type === "text" && part.synthetic === true && part.metadata?.["compaction_continue"] === true)
-  )
+  return part.type === "compaction" || (part.type === "text" && part.metadata?.["compaction_continue"] === true)
 }
 
 export const ReasoningPart = Schema.Struct({

@@ -13,6 +13,7 @@ import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { Provider } from "@/provider/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ShareNext } from "@/share/share-next"
 import { SessionShareTable } from "@opencode-ai/core/share/sql"
@@ -53,6 +54,24 @@ function integrationLayer(client: HttpClient.HttpClient) {
       Database.node,
     ]),
     [replacement],
+  )
+}
+
+// Live user messages make ShareNext resolve the model for the transcript, which a bare test
+// provider cannot do. Only `getModel` is exercised here.
+function userLayer(client: HttpClient.HttpClient) {
+  return LayerNode.compile(
+    LayerNode.group([ShareNext.node, EventV2Bridge.node, Session.node, SessionProjector.node, Database.node]),
+    [
+      [httpClient, Layer.succeed(HttpClient.HttpClient, client)],
+      [
+        Provider.node,
+        Layer.mock(Provider.Service, {
+          getModel: (providerID: ProviderV2.ID, modelID: ModelV2.ID) =>
+            Effect.succeed({ id: modelID, providerID, name: modelID, capabilities: {}, limit: {} } as never),
+        }),
+      ],
+    ],
   )
 }
 
@@ -533,5 +552,202 @@ describe("ShareNext internal context markers", () => {
       },
       { config: { enterprise: { url: "https://legacy-share.example.com" } } },
     ),
+  )
+})
+
+// The share protocol is upsert-only: nothing synced for a message can be un-sent. So the live
+// `MessageV2.Event.Updated` watcher must not announce a message that only ever carries internal
+// context, or the public transcript keeps a permanent empty bubble.
+describe("ShareNext live user messages", () => {
+  const ENTERPRISE = { config: { enterprise: { url: "https://legacy-share.example.com" } } }
+
+  const collect = () => {
+    const bodies: Array<{ data: Array<{ type: string; data: unknown }> }> = []
+    const client = HttpClient.make((req) => {
+      if (req.url.endsWith("/sync") && req.body._tag === "Uint8Array") {
+        bodies.push(JSON.parse(new TextDecoder().decode(req.body.body)))
+      }
+      return Effect.succeed(json(req, { ok: true }))
+    })
+    return { bodies, client }
+  }
+
+  const markerText = (id: string) => ({
+    id,
+    type: "text",
+    text: "Continue if you have next steps",
+    synthetic: true,
+    metadata: { compaction_continue: true },
+    time: { start: Date.now(), end: Date.now() },
+  })
+
+  const userText = (id: string, text: string) => ({
+    id,
+    type: "text",
+    text,
+    time: { start: Date.now(), end: Date.now() },
+  })
+
+  const userInfo = (sessionID: SessionID, id: string) => ({
+    id,
+    role: "user",
+    sessionID,
+    agent: "work",
+    model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test") },
+    time: { created: Date.now() },
+  })
+
+  const assistantInfo = (sessionID: SessionID, id: string) => ({
+    id,
+    role: "assistant",
+    sessionID,
+    parentID: MessageID.ascending(),
+    agent: "work",
+    modelID: ModelV2.ID.make("test"),
+    providerID: ProviderV2.ID.make("test"),
+    mode: "work",
+    path: { cwd: ".", root: "." },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    time: { created: Date.now() },
+  })
+
+  const live = (sessionID: SessionID) =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      return (info: { id: string }, parts: Array<Record<string, unknown>>) =>
+        Effect.gen(function* () {
+          yield* events.publish(MessageV2.Event.Updated, { sessionID, info: info as never })
+          for (const part of parts) {
+            yield* events.publish(MessageV2.Event.PartUpdated, {
+              sessionID,
+              time: Date.now(),
+              part: { ...part, sessionID, messageID: info.id } as never,
+            })
+          }
+        })
+    })
+
+  const register = (sessionID: SessionID) =>
+    Effect.gen(function* () {
+      yield* ShareNext.Service.use((svc) => svc.init())
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(SessionShareTable)
+        .values({
+          session_id: sessionID,
+          id: "shr_live",
+          url: "https://legacy-share.example.com/share/live",
+          secret: "sec_live",
+        })
+        .run()
+        .pipe(Effect.orDie)
+    })
+
+  const synced = (bodies: Array<{ data: Array<{ type: string; data: unknown }> }>, type: string) =>
+    bodies
+      .flatMap((body) => body.data)
+      .filter((item) => item.type === type)
+      .map((item) => item.data as { id: string; type: string; text?: string; messageID?: string; sessionID?: string })
+
+  it.live("never announces a live user message that only carries the continuation marker", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "live marker" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const markerMessage = MessageID.ascending()
+        yield* publish(userInfo(info.id, markerMessage), [markerText(PartID.ascending())])
+
+        // A real message afterwards proves the live pipeline is running, so "absent" below is a
+        // filter result and not a dead watcher.
+        const realMessage = MessageID.ascending()
+        yield* publish(assistantInfo(info.id, realMessage), [userText(PartID.ascending(), "here is the answer")])
+
+        yield* pollWithTimeout(
+          Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
+          "timed out waiting for share live sync",
+          "5 seconds",
+        )
+        yield* Effect.sleep(50)
+
+        expect(synced(bodies, "message").map((message) => message.id)).not.toContain(markerMessage)
+        expect(synced(bodies, "part").map((part) => part.text)).toEqual(["here is the answer"])
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  it.live("announces a live user message with real content and drops its internal part", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "live mixed" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const message = MessageID.ascending()
+        // The marker arrives first, as it does for a real auto-compacted turn.
+        yield* publish(userInfo(info.id, message), [
+          markerText(PartID.ascending()),
+          userText(PartID.ascending(), "what did the build say?"),
+        ])
+
+        yield* pollWithTimeout(
+          Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
+          "timed out waiting for share live sync",
+          "5 seconds",
+        )
+        yield* Effect.sleep(50)
+
+        expect(synced(bodies, "message").map((item) => item.id)).toContain(message)
+        expect(synced(bodies, "part").map((part) => part.text)).toEqual(["what did the build say?"])
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  it.live("keeps tool call and result pairing when a live message also carries a marker", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "live tool" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const message = MessageID.ascending()
+        const toolPart = {
+          id: PartID.ascending(),
+          type: "tool",
+          tool: "read",
+          callID: "call_live",
+          state: {
+            status: "completed",
+            input: { path: "a.ts" },
+            output: "file body",
+            title: "read a.ts",
+            metadata: {},
+            time: { start: Date.now(), end: Date.now() },
+          },
+        }
+        yield* publish(userInfo(info.id, message), [
+          { id: PartID.ascending(), type: "compaction", auto: true },
+          toolPart,
+        ])
+
+        yield* pollWithTimeout(
+          Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
+          "timed out waiting for share live sync",
+          "5 seconds",
+        )
+        yield* Effect.sleep(50)
+
+        expect(synced(bodies, "message").map((item) => item.id)).toContain(message)
+        expect(synced(bodies, "part")).toEqual([{ ...toolPart, messageID: message, sessionID: info.id }])
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
   )
 })

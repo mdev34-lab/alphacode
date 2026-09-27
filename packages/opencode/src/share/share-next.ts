@@ -47,6 +47,8 @@ type State = {
   queue: Map<SessionID, Map<string, Data>>
   scope: Scope.Closeable
   shared: Map<SessionID, Share | null>
+  /** Message infos held back until one of their parts proves they belong in the share. */
+  pending: Map<string, SDK.Message>
 }
 
 type Data =
@@ -110,6 +112,12 @@ function key(item: Data) {
   }
 }
 
+function prunePending(state: State, sessionID: SessionID) {
+  for (const [id, message] of state.pending) {
+    if (message.sessionID === sessionID) state.pending.delete(id)
+  }
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -149,7 +157,7 @@ const layer = Layer.effect(
 
     const state: InstanceState.InstanceState<State> = yield* InstanceState.make<State>(
       Effect.fn("ShareNext.state")(function* (_ctx) {
-        const cache: State = { queue: new Map(), scope: yield* Scope.make(), shared: new Map() }
+        const cache: State = { queue: new Map(), scope: yield* Scope.make(), shared: new Map(), pending: new Map() }
 
         yield* Effect.addFinalizer(() =>
           Scope.close(cache.scope, Exit.void).pipe(
@@ -157,6 +165,7 @@ const layer = Layer.effect(
               Effect.sync(() => {
                 cache.queue.clear()
                 cache.shared.clear()
+                cache.pending.clear()
               }),
             ),
           ),
@@ -186,18 +195,41 @@ const layer = Layer.effect(
         yield* watch(MessageV2.Event.Updated, (data) =>
           Effect.gen(function* () {
             const info = data.info
-            yield* sync(info.sessionID, [{ type: "message", data: structuredClone(info) as SDK.Message }])
-            if (info.role !== "user") return
-            const model = yield* provider.getModel(info.model.providerID, info.model.modelID)
-            yield* sync(info.sessionID, [{ type: "model", data: [model] }])
+            // Hold the message back instead of announcing it. `Data` is upsert-only, so nothing
+            // synced here can be un-sent, and auto-compaction creates a `role: "user"` message
+            // whose only part is the internal continue marker. Announcing that message and then
+            // dropping its part in the filter below leaves a permanent empty bubble in a public
+            // transcript. The announcement is deferred to the first part that survives filtering;
+            // a message that never gets one is simply never announced. `updateMessage` publishes
+            // this event before any of its parts, and listeners run to completion, so the pending
+            // entry is always in place by the time the first part arrives.
+            if (!(yield* getCached(info.sessionID))) return
+            cache.pending.set(info.id, structuredClone(info) as SDK.Message)
           }),
         )
         yield* watch(MessageV2.Event.PartUpdated, (data) =>
-          // Internal context markers are engine bookkeeping, not conversation. A share is a public
-          // URL, so the live stream must be filtered too, not just the cold `full()` sync.
-          isInternalContextPart(data.part)
-            ? Effect.void
-            : sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }]),
+          Effect.gen(function* () {
+            // Internal context markers are engine bookkeeping, not conversation. A share is a public
+            // URL, so the live stream must be filtered too, not just the cold `full()` sync. This
+            // is deliberately scoped to compaction bookkeeping: injected reminders and other
+            // context that the engine adds to a message the user actually wrote are part of the
+            // transcript a reader expects, and filtering them is out of scope here.
+            if (isInternalContextPart(data.part)) return
+            const message = cache.pending.get(data.part.messageID)
+            if (!message)
+              return yield* sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }])
+            cache.pending.delete(data.part.messageID)
+            yield* sync(data.part.sessionID, [
+              { type: "message", data: message },
+              { type: "part", data: structuredClone(data.part) as SDK.Part },
+            ])
+            if (message.role !== "user") return
+            const model = yield* provider.getModel(
+              ProviderV2.ID.make(message.model.providerID),
+              ModelV2.ID.make(message.model.modelID),
+            )
+            yield* sync(data.part.sessionID, [{ type: "model", data: [model] }])
+          }),
         )
         yield* watch(Session.Event.Diff, (data) =>
           sync(data.sessionID, [{ type: "session_diff", data: structuredClone(data.diff) as SDK.SnapshotFileDiff[] }]),
@@ -296,6 +328,9 @@ const layer = Layer.effect(
 
       const shareable = messages.map((item) => stripInternalContextParts(item)).filter((item) => item !== undefined)
 
+      // `full()` supersedes anything still waiting on a first part for this session.
+      prunePending(yield* InstanceState.get(state), sessionID)
+
       yield* sync(sessionID, [
         { type: "session", data: info },
         ...shareable.map((item) => ({ type: "message" as const, data: item.info })),
@@ -363,6 +398,7 @@ const layer = Layer.effect(
       yield* db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).run().pipe(Effect.orDie)
       s.shared.delete(sessionID)
       s.queue.delete(sessionID)
+      prunePending(s, sessionID)
     })
 
     return Service.of({ init, url, request, create, remove })

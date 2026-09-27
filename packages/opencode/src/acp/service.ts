@@ -674,12 +674,12 @@ function makeUsageService(sdk: OpencodeClient) {
   })
 }
 
-// ACP deliberately annotates rather than strips. `ACPEvent.Subscription.replayMessage` already
-// drops parts that have no ACP representation (notably `compaction`) and maps synthetic text to
-// `audience: ["assistant"]` in `content.ts`, so the client decides what assistant-audience content
-// to surface. Deleting those parts here instead would apply a second, opposite policy to the same
-// subsystem and would leave a resumed session with no summary of its compacted history.
-// Unlike `share`, a share URL is public, so `ShareNext` strips the same parts.
+// Policy: annotate, do not strip. `ACPEvent.Subscription.replayMessage` already drops parts with
+// no ACP representation (notably `compaction`) and maps synthetic text to `audience: ["assistant"]`
+// in `content.ts`, leaving the client to decide what assistant-audience content to surface.
+// Deleting those parts here instead would apply a second, opposite policy inside the same subsystem
+// and would leave a resumed session with no record of its compacted history. `ShareNext` takes the
+// opposite policy on purpose, because a share URL is public rather than a local editor session.
 function replayMessages(subscription: ACPEvent.Subscription | undefined, messages: SessionMessageResponse[]) {
   if (!subscription) return Effect.void
   return Effect.promise(async () => {
