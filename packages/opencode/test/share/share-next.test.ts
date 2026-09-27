@@ -628,6 +628,11 @@ describe("ShareNext live user messages", () => {
         })
     })
 
+  const update = (sessionID: SessionID, info: { id: string }) =>
+    Effect.gen(function* () {
+      yield* (yield* EventV2Bridge.Service).publish(MessageV2.Event.Updated, { sessionID, info: info as never })
+    })
+
   const register = (sessionID: SessionID) =>
     Effect.gen(function* () {
       yield* ShareNext.Service.use((svc) => svc.init())
@@ -747,6 +752,93 @@ describe("ShareNext live user messages", () => {
 
         expect(synced(bodies, "message").map((item) => item.id)).toContain(message)
         expect(synced(bodies, "part")).toEqual([{ ...toolPart, messageID: message, sessionID: info.id }])
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  it.live("reaches the share with the terminal state of a message whose part already announced it", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "terminal" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const message = MessageID.ascending()
+        const started = assistantInfo(info.id, message)
+        yield* publish(started, [userText(PartID.ascending(), "here is the answer")])
+
+        // `updateMessage` runs many times per message; the last one carries the final state and
+        // is followed by no part at all, so it cannot be waiting on an announcement.
+        yield* update(info.id, {
+          ...started,
+          cost: 0.25,
+          finish: "stop",
+          tokens: { input: 12, output: 34, reasoning: 0, cache: { read: 0, write: 0 } },
+          time: { created: started.time.created, completed: started.time.created + 1000 },
+        } as { id: string })
+
+        yield* pollWithTimeout(
+          Effect.sync(() =>
+            synced(bodies, "message").some((item) => (item as unknown as { cost: number }).cost === 0.25)
+              ? true
+              : undefined,
+          ),
+          "timed out waiting for the terminal message update to reach the share",
+          "5 seconds",
+        )
+
+        const records = synced(bodies, "message").filter((item) => item.id === message)
+        const last = records[records.length - 1] as unknown as {
+          cost: number
+          finish: string
+          tokens: { input: number; output: number }
+          time: { completed?: number }
+        }
+        expect(records.length).toBeGreaterThan(0)
+        expect(last.cost).toBe(0.25)
+        expect(last.finish).toBe("stop")
+        expect(last.tokens.output).toBe(34)
+        expect(last.time.completed).toBe(started.time.created + 1000)
+      }).pipe(Effect.provide(userLayer(client)))
+    }, ENTERPRISE),
+  )
+
+  it.live("announces a live user message's model together with the announcement", () =>
+    provideTmpdirInstance(() => {
+      const { bodies, client } = collect()
+      return Effect.gen(function* () {
+        const session = yield* Session.Service
+        const info = yield* session.create({ title: "model" })
+        yield* register(info.id)
+        const publish = yield* live(info.id)
+
+        const first = MessageID.ascending()
+        yield* publish(
+          { ...userInfo(info.id, first), model: { providerID: "test", modelID: "model-a" } } as { id: string },
+          [userText(PartID.ascending(), "first")],
+        )
+        const second = MessageID.ascending()
+        yield* publish(
+          { ...userInfo(info.id, second), model: { providerID: "test", modelID: "model-b" } } as { id: string },
+          [userText(PartID.ascending(), "second")],
+        )
+
+        yield* pollWithTimeout(
+          Effect.sync(() => {
+            const ids = synced(bodies, "model").flatMap((model) =>
+              (model as unknown as { id: string }[]).map((m) => m.id),
+            )
+            return ids.length >= 2 ? true : undefined
+          }),
+          "timed out waiting for both model records to reach the share",
+          "5 seconds",
+        )
+
+        // Two models in the same flush window must not collapse into one: `queue` dedupes by key.
+        const models = synced(bodies, "model").flatMap((model) => model as unknown as { id: string }[])
+        expect(models.map((model) => model.id).sort()).toEqual(["model-a", "model-b"])
       }).pipe(Effect.provide(userLayer(client)))
     }, ENTERPRISE),
   )
