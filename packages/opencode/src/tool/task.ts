@@ -8,11 +8,13 @@ import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
+import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Effect, Exit, Ref, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
+import { NotFoundError } from "@/storage/storage"
 import { Database } from "@opencode-ai/core/database/database"
 
 export interface TaskPromptOps {
@@ -133,27 +135,98 @@ export const TaskTool = Tool.define(
         )
       }
 
-      const next = yield* agent.get(params.subagent_type)
+      // The agent that owns this session, read from the session itself.
+      //
+      // A session row's `agent` is null for the default session, so the newest
+      // user message is the fallback that actually names the running agent.
+      // `MessageV2.page` returns messages oldest-first, hence `findLast`: the
+      // agent currently driving the session is the last one to name itself, and
+      // `find` would return a session's first-ever user message instead - which
+      // inverts the routing in exactly the mid-session agent switch it exists to
+      // handle. `ctx.agent` is deliberately not a tier here: on the subtask path
+      // it is the CHILD's agent, so it would select a reviewer by the child's
+      // identity. Hydration is deferred into the fallback so a pinned session
+      // never pays for it.
+      //
+      // A parent that cannot be read fails the dispatch instead of resolving to
+      // nothing. Swallowing the read made an unreadable parent degrade to the
+      // generic reviewer, which then ran the wrong prompt under the wrong
+      // permissions with nothing to indicate the routing had never happened -
+      // and `ctx.agent` is no fallback, because it names the child. Only
+      // `NotFound` is narrowed here; any other cause stays a defect rather than
+      // being reinterpreted as "no parent agent", which is the only reading
+      // this function can act on.
+      const resolveParentAgent = Effect.fnUntraced(function* (session: Session.Info) {
+        if (session.agent) return session.agent
+        const messages = yield* sessions
+          .messages({ sessionID: session.id, limit: 50 })
+          .pipe(
+            Effect.catchIf(NotFoundError.isInstance, (cause) =>
+              Effect.fail(
+                new Error(
+                  `Cannot resolve which reviewer to dispatch: parent session ${session.id} could not be read (${cause.message})`,
+                ),
+              ),
+            ),
+          )
+        return messages.findLast((message) => message.info.role === "user")?.info.agent
+      })
+
+      // One resolution, two consumers: routing the review request, and
+      // addressing the background notification back to the parent. Resolving
+      // twice could disagree - the pinned row and the newest user message are
+      // read at two different moments, and a parent that switched agent
+      // mid-thread is exactly the case this routing exists to handle - and a
+      // notification delivered under an agent other than the one that
+      // dispatched the task lands in a session that never asked for it. Cached
+      // rather than hoisted so a task that neither routes a review nor delivers
+      // a background result still never pays for the message read.
+      // `Effect.cached` yields the memoized effect rather than its value, so nothing runs here.
+      // Only the `review` routing below and the background delivery yield it.
+      const parentAgentOf = yield* Effect.cached(resolveParentAgent(parent))
+
+      // `review` is the request, not the identity. The parent agent decides
+      // which reviewer actually runs, so the report gate, the permission prompt
+      // and the delivered envelope all agree on one resolved name. Parents with
+      // no specialization (plan, general, explore) keep the generic reviewer.
+      // Yielding the read unconditionally would make every delegation pay for it
+      // and hard-fail on an unreadable parent, not just a review.
+      const routedParent = params.subagent_type === "review" ? yield* parentAgentOf : undefined
+      const subagentType = resolveReviewer(params.subagent_type, routedParent)
+
+      const next = yield* agent.get(subagentType)
       if (!next) {
-        return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
+        return yield* Effect.fail(new Error(`Unknown agent type: ${subagentType} is not a valid agent type`))
       }
       // Primary agents are session entry points, never delegation targets.
       // Reject them before permission prompts so an impossible delegation
       // cannot block on user interaction.
       if (next.mode === "primary") {
-        return yield* Effect.fail(
-          new Error(`Agent type ${params.subagent_type} is a primary agent and cannot be delegated to`),
-        )
+        return yield* Effect.fail(new Error(`Agent type ${subagentType} is a primary agent and cannot be delegated to`))
       }
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission: id,
-          patterns: [params.subagent_type],
+          // Keyed on both names when routing rewrote the request. The requested
+          // name is the user-facing contract - stored always-allow grants and
+          // user config rules (`permission.task.review`) are written against it,
+          // so re-keying on the routing decision alone would silently re-prompt
+          // returning users and silently drop their `deny` rule. The resolved
+          // name is added because a rule written against `work-review` or
+          // `code-review` is just as legitimate, and because the metadata below
+          // records the resolved name: a prompt gated on one name while its
+          // stored input and every audit log report the other is a rule that
+          // cannot be seen to have applied. Asking under both names is the
+          // union, so no rule that could reasonably have gated this call is
+          // skipped, and the common case - a request routing did not rewrite -
+          // still prompts under exactly one name.
+          patterns:
+            subagentType === params.subagent_type ? [params.subagent_type] : [params.subagent_type, subagentType],
           always: ["*"],
           metadata: {
             description: params.description,
-            subagent_type: params.subagent_type,
+            subagent_type: subagentType,
           },
         })
       }
@@ -254,7 +327,7 @@ export const TaskTool = Tool.define(
         // is not a reliable delivery boundary: a trailing empty text part can
         // erase an earlier report, and a missing or malformed envelope must
         // surface as an explicit delivery failure, never as an empty result.
-        if (next.name === "review") {
+        if (isReviewAgent(next.name)) {
           // A review run only completes through a successful finish call: the
           // finish tool itself rejects results without a parseable report, so
           // reaching this point without a completed finish means the run
@@ -305,16 +378,11 @@ export const TaskTool = Tool.define(
         text: string,
         termination: Reason | undefined,
       ) {
-        const currentParent = yield* sessions.get(ctx.sessionID)
-        // Notifications must run in the parent session, with the parent's own
-        // agent. The task context agent is the child's agent on the subtask
-        // path, so fall back to the most recent parent user message before
-        // using it.
-        const parentMessages = yield* sessions
-          .messages({ sessionID: ctx.sessionID, limit: 50 })
-          .pipe(Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])))
-        const parentAgent =
-          currentParent.agent ?? parentMessages.find((message) => message.info.role === "user")?.info.agent ?? ctx.agent
+        // Notifications must run in the parent session, under the parent agent -
+        // the same one the routing above read, not a second opinion taken when
+        // the child finishes. `ctx.agent` is not a candidate: on the subtask path
+        // it is the child's agent.
+        const parentAgent = yield* parentAgentOf
         yield* ops
           .prompt({
             sessionID: ctx.sessionID,
@@ -435,7 +503,7 @@ export const TaskTool = Tool.define(
             // Re-associate the delivered review report with the result metadata
             // so consumers know which revision was reviewed without re-parsing
             // the output. The output already carries the canonical envelope.
-            const review = next.name === "review" ? ReviewReport.extract([result?.output ?? ""]) : undefined
+            const review = isReviewAgent(next.name) ? ReviewReport.extract([result?.output ?? ""]) : undefined
             const reason = yield* Ref.get(termination)
             const completed: Tool.ExecuteResult = {
               title: params.description,

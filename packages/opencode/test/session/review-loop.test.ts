@@ -144,8 +144,10 @@ describe("review loop prompt contract", () => {
     const task = await readTool("task.ts")
 
     // The review branch must extract the envelope from the whole response and
-    // fail delivery explicitly, instead of returning the last text part.
-    expect(task).toContain('next.name === "review"')
+    // fail delivery explicitly, instead of returning the last text part. Which
+    // dispatched names take that branch is not asserted here: it is the shared
+    // reviewer set's job, covered behaviourally by
+    // review-specialization.test.ts for every name in that set.
     expect(task).toContain("ReviewReport.extract")
     expect(task).toContain("ReviewReport.failureMessage")
   })
