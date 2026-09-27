@@ -154,7 +154,7 @@ it.instance("explore agent asks for external directories and allows whitelisted 
   }),
 )
 
-it.instance("review shares the plan permission set, including bash", () =>
+it.instance("review shares plan inspection permissions but denies all edits", () =>
   Effect.gen(function* () {
     const plan = yield* load((svc) => svc.get("plan"))
     const review = yield* load((svc) => svc.get("review"))
@@ -164,8 +164,7 @@ it.instance("review shares the plan permission set, including bash", () =>
     expect(review.mode).toBe("subagent")
     expect(review.native).toBe(true)
     expect(review.prompt).toContain("Do not edit")
-    // Equivalent effective permissions, evaluated identically: sharing the
-    // plan overlay keeps the two from drifting into divergent policy.
+    // Inspection capabilities are shared with Plan.
     for (const tool of ["read", "grep", "glob", "list", "webfetch", "bash", "question", "todowrite"]) {
       expect(evalPerm(review, tool)).toBe(evalPerm(plan, tool))
     }
@@ -174,13 +173,21 @@ it.instance("review shares the plan permission set, including bash", () =>
     expect(evalPerm(review, "bash")).toBe("allow")
     expect(evalPerm(review, "edit")).toBe("deny")
     expect(Permission.disabled(["bash"], review.permission)).toEqual(new Set())
-    // Tool visibility matches plan exactly, whatever the shared set hides.
+    // Review denies edits on every path, so it fully hides edit/write/apply_patch;
+    // Plan retains plan-path edit exceptions and hides none of them.
     expect(Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], review.permission)).toEqual(
-      Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], plan.permission),
+      new Set(["edit", "write", "apply_patch"]),
     )
+    expect(Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], plan.permission)).toEqual(new Set())
     // Denials outside the shared allowance hold for both.
     expect(Permission.evaluate("task", "general", review.permission).action).toBe("deny")
     expect(Permission.evaluate("task", "explore", review.permission).action).toBe("allow")
+    // Regression: Review must deny edits on EVERY path — it must not inherit
+    // Plan's plan-path edit exceptions, since review.txt forbids any file mutation.
+    expect(Permission.evaluate("edit", ".opencode/plans/review.md", review.permission).action).toBe("deny")
+    expect(Permission.evaluate("edit", "packages/opencode/src/index.ts", review.permission).action).toBe("deny")
+    // Plan's edit exceptions remain intact (unchanged by this fix).
+    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan.permission).action).toBe("allow")
   }),
 )
 
