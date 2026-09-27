@@ -319,18 +319,21 @@ const scriptPolicyFollowingModel = Effect.gen(function* () {
       prompt: TASK_PROMPT,
     }),
   )
-  // The first reviewer response reaches the real finish tool with prose only.
-  // The gate must reject it as recoverable model feedback and keep the review
-  // session alive for the model to retry.
+  // The first reviewer response reaches the real finish tool with prose only —
+  // no envelope anywhere in the reply, because the gate scans the message text
+  // parts as well as the result. The gate must reject it as recoverable model
+  // feedback and keep the review session alive for the model to retry.
   yield* llm.pushMatch(
     reviewMatch,
-    reply().text(REPORT).tool("finish", { result: "Needs fixes: one Important finding" }),
+    reply()
+      .text("Needs fixes: one Important finding")
+      .tool("finish", { reason: "success", result: "Needs fixes: one Important finding" }),
   )
   // Retry after the recoverable finish failure. This response supplies the
   // required envelope through the real finish call, so the review can complete.
   yield* llm.pushMatch(
     reviewMatch,
-    reply().tool("finish", { result: REPORT }),
+    reply().tool("finish", { reason: "success", result: REPORT }),
   )
   // Policy present, verdict received: consume it and fix the finding.
   yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
@@ -491,7 +494,7 @@ it.instance(
       expect(finishParts).toHaveLength(2)
       expect(finishParts.map((part) => part.state.status)).toEqual(["error", "completed"])
       if (finishParts[0]?.state.status === "error") {
-        expect(finishParts[0].state.error).toContain("review result")
+        expect(finishParts[0].state.error).toContain("Review finish rejected")
       }
       expect(finishParts[1]?.state.status).toBe("completed")
 

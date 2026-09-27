@@ -2,7 +2,12 @@ End your turn by reporting the outcome. You MUST call this tool exactly once at 
 
 Every user message starts a task, even one that needs no tools. Greetings, questions, and conversational or explanatory answers all end with a finish call; answering without using any tools does not remove the requirement. Producing text is never enough on its own — ending your message alone does not complete the turn. The session keeps running until you call finish.
 
-Pass `result` as a concise summary of what you did or answered. This is a silent protocol signal, not something to announce to the user — do not say that you are finishing; just call it as the last step of your reply.
+Pass `reason` and `result`. `reason` is required and must be one of:
+- `success`: the task completed and the result is usable.
+- `subagent_wait`: progress depends on another subagent and the orchestrator should handle that dependency.
+- `failure`: the task could not be completed successfully.
+
+Pass `result` as a concise summary of what you did or answered. These are silent protocol signals, not something to announce to the user — do not say that you are finishing; just call it as the last step of your reply.
 
 If the current turn changed files without a completed synchronous review, the first finish call is declined with a review nudge. Running the `review` subagent is strongly recommended; if you have determined that another review pass is unnecessary, call finish again to explicitly skip review and deliver the result, and say so in `result`.
 
