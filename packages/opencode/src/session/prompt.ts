@@ -8,6 +8,7 @@ import { MessageV2 } from "./message-v2"
 import { SessionRevert } from "./revert"
 import { Session } from "./session"
 import { Agent } from "../agent/agent"
+import { isReviewAgent } from "../agent/review-agents"
 import { Provider } from "@/provider/provider"
 
 import { type Tool as AITool, tool, jsonSchema } from "ai"
@@ -1359,8 +1360,9 @@ const layer = Layer.effect(
               // toward the existing finish path instead of the generic
               // reminder again. Any other agent keeps the generic nudge.
               const repeats = ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats })
-              const stagnation =
-                lastUser.agent === "review" ? ReviewStagnation.reviewStagnationState(msgs, repeats) : undefined
+              const stagnation = isReviewAgent(lastUser.agent)
+                ? ReviewStagnation.reviewStagnationState(msgs, repeats)
+                : undefined
               const stagnated = stagnation?.stagnated === true
               // Hard backstop (issue #176): the nudge above is model-dependent,
               // so a review that ignores it can repeat until the step cap. Once
