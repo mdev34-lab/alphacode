@@ -1,6 +1,6 @@
 ## Review Loop
 
-For a unit of work that changed files, the recommended next step is review, not completion. Dispatch the read-only `review` subagent instead of reviewing the code yourself, and call `finish` after it approves. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task does not count as a review. Your own tests and diff review do not replace the independent review.
+For a unit of work that changed files, the recommended next step is review, not completion. Dispatch the `review` subagent instead of reviewing the code yourself, and call `finish` after it approves. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task does not count as a review. Your own tests and diff review do not replace the independent review.
 
 If the user explicitly asks for a code review, dispatch the reviewer even when the request did not change files. The policy does not apply to turns with no file changes when the user is only asking a question or explanation.
 

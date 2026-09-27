@@ -309,7 +309,7 @@ const TASK_PROMPT = [
 const scriptPolicyFollowingModel = Effect.gen(function* () {
   const llm = yield* TestLLMServer
   // Policy present: after finishing the unit, hand it to the reviewer
-  // synchronously with the evidence the read-only reviewer needs.
+  // synchronously with the evidence the reviewer needs.
   yield* llm.pushMatch(
     policyMatch,
     reply().tool("task", {
@@ -390,7 +390,7 @@ it.instance(
       // The task tool teaches the review handoff and lists the review agent in
       // its roster with proactive-use wording.
       expect(body).toContain("Review handoffs")
-      expect(body).toContain("- review: Read-only code reviewer")
+      expect(body).toContain("- review: Code reviewer")
       expect(body).toContain("Use this proactively, without being asked")
 
       yield* prompt.cancel(chat.id)
@@ -408,7 +408,7 @@ it.effect("gpt provider prompt routes review requests through the review subagen
       providerID: ProviderV2.ID.make("test"),
     } as Parameters<typeof SystemPrompt.provider>[0]
     const prompt = SystemPrompt.provider(model).join("\n")
-    expect(prompt).toContain("dispatch the read-only `review` subagent")
+    expect(prompt).toContain("dispatch the `review` subagent")
     expect(prompt).toContain("instead of reviewing the code yourself")
     expect(prompt).not.toContain("default to a code review mindset")
   }),
@@ -416,7 +416,7 @@ it.effect("gpt provider prompt routes review requests through the review subagen
 
 // Behavioral arm (policy present): the default primary agent's requests carry
 // the delegation policy, so the scripted policy-follower dispatches `review`,
-// the reviewer runs with its own read-only prompt (and no review loop of its
+// the reviewer runs with its own review prompt (and no review loop of its
 // own — no recursion), and its findings land in the parent's next model
 // request next to the instructions for acting on them. If the policy stops
 // being injected, the script's no-policy branch fires instead and this test
@@ -450,15 +450,17 @@ it.instance(
       expect(reviewBody).not.toContain("## Review Loop")
       expect(reviewBody).toContain("uncommitted working tree")
 
-      // The reviewer keeps its read-only toolset but still gets the finish
-      // tool: without it a deny-by-default subagent can never end its turn,
-      // and the dispatch wedges in finish nudges instead of returning a
-      // verdict.
+      // The reviewer gets the plan-equivalent toolset — including bash for
+      // verification — and it still gets the finish tool: without it a
+      // subagent can never end its turn, and the dispatch wedges in finish
+      // nudges instead of returning a verdict. Edit denial is enforced at
+      // the permission seam (agent tests), not the tool listing, exactly as
+      // for plan sessions.
       const reviewTools = toolNames(reviewHits[0])
       expect(reviewTools).toContain("finish")
       expect(reviewTools).toContain("read")
-      expect(reviewTools).not.toContain("bash")
-      expect(reviewTools).not.toContain("task")
+      expect(reviewTools).toContain("bash")
+      expect(reviewTools).toContain("task")
 
       // The script's delegation branch fired: a synchronous review-agent
       // child session exists for this parent.

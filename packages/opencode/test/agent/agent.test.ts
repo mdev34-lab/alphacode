@@ -165,27 +165,40 @@ it.instance("explore agent asks for external directories and allows whitelisted 
   }),
 )
 
-it.instance("review agent is a read-only code reviewer subagent", () =>
+it.instance("review shares plan inspection permissions but denies all edits", () =>
   Effect.gen(function* () {
+    const plan = yield* load((svc) => svc.get("plan"))
     const review = yield* load((svc) => svc.get("review"))
+    expect(plan).toBeDefined()
     expect(review).toBeDefined()
-    expect(review?.mode).toBe("subagent")
-    expect(review?.native).toBe(true)
-    expect(review?.prompt).toContain("read-only")
-    // Read-only by construction: no mutation, no shell, no delegation, no user interaction
+    if (!plan || !review) return
+    expect(review.mode).toBe("subagent")
+    expect(review.native).toBe(true)
+    expect(review.prompt).toContain("Do not edit")
+    // Inspection capabilities are shared with Plan.
+    for (const tool of ["read", "grep", "glob", "list", "webfetch", "bash", "question", "todowrite"]) {
+      expect(evalPerm(review, tool)).toBe(evalPerm(plan, tool))
+    }
+    // Pinned absolutes: bash is available, edits stay denied.
+    expect(evalPerm(plan, "bash")).toBe("allow")
+    expect(evalPerm(review, "bash")).toBe("allow")
     expect(evalPerm(review, "edit")).toBe("deny")
-    expect(evalPerm(review, "write")).toBe("deny")
-    expect(evalPerm(review, "apply_patch")).toBe("deny")
-    expect(evalPerm(review, "bash")).toBe("deny")
-    expect(evalPerm(review, "task")).toBe("deny")
-    expect(evalPerm(review, "todowrite")).toBe("deny")
-    expect(evalPerm(review, "question")).toBe("deny")
-    // Can inspect code and files
-    expect(evalPerm(review, "read")).toBe("allow")
-    expect(evalPerm(review, "grep")).toBe("allow")
-    expect(evalPerm(review, "glob")).toBe("allow")
-    expect(evalPerm(review, "list")).toBe("allow")
-    expect(evalPerm(review, "webfetch")).toBe("allow")
+    expect(Permission.disabled(["bash"], review.permission)).toEqual(new Set())
+    // Review denies edits on every path, so it fully hides edit/write/apply_patch;
+    // Plan retains plan-path edit exceptions and hides none of them.
+    expect(Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], review.permission)).toEqual(
+      new Set(["edit", "write", "apply_patch"]),
+    )
+    expect(Permission.disabled(["edit", "write", "apply_patch", "bash", "task"], plan.permission)).toEqual(new Set())
+    // Denials outside the shared allowance hold for both.
+    expect(Permission.evaluate("task", "general", review.permission).action).toBe("deny")
+    expect(Permission.evaluate("task", "explore", review.permission).action).toBe("allow")
+    // Regression: Review must deny edits on EVERY path — it must not inherit
+    // Plan's plan-path edit exceptions, since review.txt forbids any file mutation.
+    expect(Permission.evaluate("edit", ".opencode/plans/review.md", review.permission).action).toBe("deny")
+    expect(Permission.evaluate("edit", "packages/opencode/src/index.ts", review.permission).action).toBe("deny")
+    // Plan's edit exceptions remain intact (unchanged by this fix).
+    expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan.permission).action).toBe("allow")
   }),
 )
 
