@@ -10,7 +10,10 @@ import { AccessToken, AccountID, OrgID, RefreshToken } from "../../src/account/s
 import { AccountRepo } from "../../src/account/repo"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Session } from "@/session/session"
-import type { SessionID } from "../../src/session/schema"
+import { MessageV2 } from "@/session/message-v2"
+import { MessageID, PartID, type SessionID } from "../../src/session/schema"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 import { ShareNext } from "@/share/share-next"
 import { SessionShareTable } from "@opencode-ai/core/share/sql"
 import { Database } from "@opencode-ai/core/database/database"
@@ -316,6 +319,216 @@ describe("ShareNext", () => {
               status: "modified",
             },
           ])
+        }).pipe(Effect.provide(integrationLayer(client)))
+      },
+      { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+    ),
+  )
+})
+
+// A share URL is public, so internal compaction / context-marker parts must not reach it on either
+// the cold `full()` path or the live `PartUpdated` stream. Everything else, including `synthetic`
+// content that is legitimate conversation, must survive.
+describe("ShareNext internal context markers", () => {
+  const CONTEXT_MARKER = "compacted context summary"
+  const MCP_TEXT = "server://docs/readme.md contents"
+  const TASK_TEXT = "Background task build finished: 3 files changed"
+
+  const collect = () => {
+    const bodies: Array<{ data: Array<{ type: string; data: unknown }> }> = []
+    const client = HttpClient.make((req) => {
+      if (req.url.endsWith("/sync") && req.body._tag === "Uint8Array") {
+        bodies.push(JSON.parse(new TextDecoder().decode(req.body.body)))
+      }
+      if (req.method === "POST" && req.url.endsWith("/share")) {
+        return Effect.succeed(
+          json(req, { id: "shr_ctx", url: "https://legacy-share.example.com/share/ctx", secret: "sec_ctx" }),
+        )
+      }
+      return Effect.succeed(json(req, { ok: true }))
+    })
+    return { bodies, client }
+  }
+
+  const register = (sessionID: SessionID) =>
+    Effect.gen(function* () {
+      yield* ShareNext.Service.use((svc) => svc.init())
+      yield* Effect.sleep(50)
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(SessionShareTable)
+        .values({
+          session_id: sessionID,
+          id: "shr_ctx",
+          url: "https://legacy-share.example.com/share/ctx",
+          secret: "sec_ctx",
+        })
+        .run()
+        .pipe(Effect.orDie)
+    })
+
+  // Assistant messages keep `full()` off the `provider.getModel` path, so these tests exercise
+  // part filtering rather than model resolution. `parentID` is only a foreign key in the payload,
+  // so a synthetic id keeps a real user message (and its model lookup) out of the fixture.
+  const seedMessage = (sessionID: SessionID, parts: Array<Record<string, unknown>>) =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const message = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant",
+        sessionID,
+        parentID: MessageID.ascending(),
+        modelID: ModelV2.ID.make("test"),
+        providerID: ProviderV2.ID.make("test"),
+        mode: "work",
+        agent: "work",
+        path: { cwd: ".", root: "." },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: Date.now() },
+      })
+      for (const part of parts) {
+        yield* session.updatePart({ ...part, sessionID, messageID: message.id } as never)
+      }
+      return message
+    })
+
+  const textPart = (id: string, text: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    type: "text",
+    text,
+    time: { start: Date.now(), end: Date.now() },
+    ...extra,
+  })
+
+  const syncedParts = (bodies: Array<{ data: Array<{ type: string; data: unknown }> }>) =>
+    bodies
+      .flatMap((body) => body.data)
+      .filter((item) => item.type === "part")
+      .map((item) => item.data as { id: string; type: string; text?: string })
+
+  it.live("full() strips the compaction marker but keeps normal and legitimate synthetic parts", () =>
+    provideTmpdirInstance(
+      () => {
+        const { bodies, client } = collect()
+        return Effect.gen(function* () {
+          const session = yield* Session.Service
+          const info = yield* session.create({ title: "markers" })
+          yield* seedMessage(info.id, [
+            textPart(PartID.ascending(), "here is the answer"),
+            textPart(PartID.ascending(), CONTEXT_MARKER, {
+              synthetic: true,
+              metadata: { compaction_continue: true },
+            }),
+            textPart(PartID.ascending(), MCP_TEXT, { synthetic: true }),
+            textPart(PartID.ascending(), TASK_TEXT, { synthetic: true }),
+            { id: PartID.ascending(), type: "compaction", auto: true },
+          ])
+
+          yield* (yield* ShareNext.Service).create(info.id)
+          yield* pollWithTimeout(
+            Effect.sync(() => (bodies.length > 0 ? true : undefined)),
+            "timed out waiting for share full sync",
+            "5 seconds",
+          )
+
+          const parts = syncedParts(bodies)
+          expect(parts.map((part) => part.text).filter(Boolean)).toEqual(["here is the answer", MCP_TEXT, TASK_TEXT])
+          expect(parts.some((part) => part.text === CONTEXT_MARKER)).toBe(false)
+          expect(parts.some((part) => part.type === "compaction")).toBe(false)
+        }).pipe(Effect.provide(integrationLayer(client)))
+      },
+      { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+    ),
+  )
+
+  it.live("live PartUpdated drops the compaction marker and forwards everything else", () =>
+    provideTmpdirInstance(
+      () => {
+        const { bodies, client } = collect()
+        return Effect.gen(function* () {
+          const events = yield* EventV2Bridge.Service
+          const session = yield* Session.Service
+          const info = yield* session.create({ title: "live" })
+          const message = yield* seedMessage(info.id, [textPart(PartID.ascending(), "here is the answer")])
+
+          yield* register(info.id)
+          yield* Effect.sleep(50)
+
+          for (const part of [
+            textPart(PartID.ascending(), "here is the answer"),
+            textPart(PartID.ascending(), CONTEXT_MARKER, {
+              synthetic: true,
+              metadata: { compaction_continue: true },
+            }),
+            textPart(PartID.ascending(), MCP_TEXT, { synthetic: true }),
+            { id: PartID.ascending(), type: "compaction", auto: true, time: { start: Date.now(), end: Date.now() } },
+          ]) {
+            yield* events.publish(MessageV2.Event.PartUpdated, {
+              sessionID: info.id,
+              time: Date.now(),
+              part: { ...part, sessionID: info.id, messageID: message.id } as never,
+            })
+          }
+
+          yield* pollWithTimeout(
+            Effect.sync(() => (bodies.length > 0 ? true : undefined)),
+            "timed out waiting for share live sync",
+            "5 seconds",
+          )
+          yield* Effect.sleep(50)
+
+          const parts = syncedParts(bodies)
+          expect(parts.map((part) => part.text).filter(Boolean)).toEqual(["here is the answer", MCP_TEXT])
+          expect(parts.some((part) => part.text === CONTEXT_MARKER)).toBe(false)
+          expect(parts.some((part) => part.type === "compaction")).toBe(false)
+        }).pipe(Effect.provide(integrationLayer(client)))
+      },
+      { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+    ),
+  )
+
+  it.live("prunes a message stripped down to nothing, but keeps one that still holds a tool result", () =>
+    provideTmpdirInstance(
+      () => {
+        const { bodies, client } = collect()
+        return Effect.gen(function* () {
+          const session = yield* Session.Service
+          const info = yield* session.create({ title: "pruning" })
+
+          const markerOnly = yield* seedMessage(info.id, [{ id: PartID.ascending(), type: "compaction", auto: true }])
+          const toolCarrier = yield* seedMessage(info.id, [
+            { id: PartID.ascending(), type: "compaction", auto: true },
+            {
+              id: PartID.ascending(),
+              type: "tool",
+              tool: "read",
+              callID: "call_1",
+              state: {
+                status: "completed",
+                input: { path: "a.ts" },
+                output: "file body",
+                title: "read a.ts",
+                metadata: {},
+                time: { start: Date.now(), end: Date.now() },
+              },
+            },
+          ])
+
+          yield* (yield* ShareNext.Service).create(info.id)
+          yield* pollWithTimeout(
+            Effect.sync(() => (bodies.length > 0 ? true : undefined)),
+            "timed out waiting for share full sync",
+            "5 seconds",
+          )
+
+          const messageIDs = bodies
+            .flatMap((body) => body.data)
+            .filter((item) => item.type === "message")
+            .map((item) => (item.data as { id: string }).id)
+
+          expect(messageIDs).toContain(toolCarrier.id)
+          expect(messageIDs).not.toContain(markerOnly.id)
         }).pipe(Effect.provide(integrationLayer(client)))
       },
       { config: { enterprise: { url: "https://legacy-share.example.com" } } },

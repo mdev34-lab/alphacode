@@ -115,6 +115,31 @@ export const TextPart = Schema.Struct({
 }).annotate({ identifier: "TextPart" })
 export type TextPart = Types.DeepMutable<Schema.Schema.Type<typeof TextPart>>
 
+/**
+ * Shape of any part that can carry compaction bookkeeping. Kept structural so the guard can be
+ * applied to SDK, storage and wire variants of a part without narrowing to the schema type first.
+ */
+type MaybeContextPart = {
+  type: string
+  synthetic?: boolean
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Internal compaction / context-marker parts. These are engine bookkeeping: the `compaction` part
+ * that marks a boundary, and the synthetic user text part that resumes an auto-compacted session.
+ *
+ * Deliberately narrower than `synthetic === true`. There are dozens of `synthetic` producers
+ * (MCP resource reads, background-task notifications, attachment prompts) whose text is legitimate
+ * conversation content and must survive to external surfaces.
+ */
+export function isInternalContextPart(part: MaybeContextPart) {
+  return (
+    part.type === "compaction" ||
+    (part.type === "text" && part.synthetic === true && part.metadata?.["compaction_continue"] === true)
+  )
+}
+
 export const ReasoningPart = Schema.Struct({
   ...partBase,
   type: Schema.Literal("reasoning"),
@@ -499,6 +524,18 @@ export const WithParts = Schema.Struct({
 export type WithParts = {
   info: Info
   parts: Part[]
+}
+
+/**
+ * Remove internal context-marker parts ahead of serialising a message to an external surface.
+ * Returns `undefined` when nothing is left to render and the message carries no tool call or
+ * tool result, so provider-side tool-call/result pairing is never broken by the pruning.
+ */
+export function stripInternalContextParts(message: WithParts): WithParts | undefined {
+  const parts = message.parts.filter((part) => !isInternalContextPart(part))
+  if (parts.length === message.parts.length) return message
+  if (parts.length === 0 && !message.parts.some((part) => part.type === "tool")) return undefined
+  return { info: message.info, parts }
 }
 
 const options = {

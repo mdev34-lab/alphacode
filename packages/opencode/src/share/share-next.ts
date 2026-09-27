@@ -19,6 +19,7 @@ import { SessionShareTable } from "@opencode-ai/core/share/sql"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { EventV2 } from "@opencode-ai/core/event"
+import { isInternalContextPart, stripInternalContextParts } from "@opencode-ai/schema/v1/session"
 
 const disabled = process.env["OPENCODE_DISABLE_SHARE"] === "true" || process.env["OPENCODE_DISABLE_SHARE"] === "1"
 
@@ -192,7 +193,11 @@ const layer = Layer.effect(
           }),
         )
         yield* watch(MessageV2.Event.PartUpdated, (data) =>
-          sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }]),
+          // Internal context markers are engine bookkeeping, not conversation. A share is a public
+          // URL, so the live stream must be filtered too, not just the cold `full()` sync.
+          isInternalContextPart(data.part)
+            ? Effect.void
+            : sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }]),
         )
         yield* watch(Session.Event.Diff, (data) =>
           sync(data.sessionID, [{ type: "session_diff", data: structuredClone(data.diff) as SDK.SnapshotFileDiff[] }]),
@@ -289,10 +294,12 @@ const layer = Layer.effect(
         { concurrency: 8 },
       )
 
+      const shareable = messages.map((item) => stripInternalContextParts(item)).filter((item) => item !== undefined)
+
       yield* sync(sessionID, [
         { type: "session", data: info },
-        ...messages.map((item) => ({ type: "message" as const, data: item.info })),
-        ...messages.flatMap((item) => item.parts.map((part) => ({ type: "part" as const, data: part }))),
+        ...shareable.map((item) => ({ type: "message" as const, data: item.info })),
+        ...shareable.flatMap((item) => item.parts.map((part) => ({ type: "part" as const, data: part }))),
         { type: "session_diff", data: diffs },
         { type: "model", data: models },
       ])
