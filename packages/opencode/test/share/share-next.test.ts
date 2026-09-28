@@ -473,14 +473,17 @@ describe("ShareNext internal context markers", () => {
 
           yield* register(info.id)
 
+          // `MCP_TEXT` is published last on purpose. It is the final surviving record, so waiting
+          // for it means the marker and the compaction part have already been through the queue, and
+          // the negative assertions below cannot pass merely because they have not arrived yet.
           for (const part of [
             textPart(PartID.ascending(), "here is the answer"),
             textPart(PartID.ascending(), CONTEXT_MARKER, {
               synthetic: true,
               metadata: { compaction_continue: true },
             }),
-            textPart(PartID.ascending(), MCP_TEXT, { synthetic: true }),
             { id: PartID.ascending(), type: "compaction", auto: true, time: { start: Date.now(), end: Date.now() } },
+            textPart(PartID.ascending(), MCP_TEXT, { synthetic: true }),
           ]) {
             yield* events.publish(MessageV2.Event.PartUpdated, {
               sessionID: info.id,
@@ -489,10 +492,6 @@ describe("ShareNext internal context markers", () => {
             })
           }
 
-          // Wait for the last surviving part rather than for the first flush, so the negative
-          // assertions below cannot pass merely because the marker has not arrived yet. The marker
-          // and the compaction part are published before `MCP_TEXT`, so once it is synced every
-          // earlier record has already been through the queue.
           yield* pollWithTimeout(
             Effect.sync(() => {
               const texts = syncedParts(bodies).map((part) => part.text)
@@ -566,14 +565,12 @@ describe("ShareNext internal context markers", () => {
 //
 // That artifact is deliberately accepted rather than prevented. A consumer renders a message from
 // its parts, so an empty part list renders nothing: the TUI wraps the whole user bubble in
-// `<Show when={text()}>` (the user bubble in `packages/tui/src/routes/session/index.tsx`) and a
-// zero-part message
-// yields `text() === ""`, which suppresses the box along with its `marginTop`, so it contributes no
-// gap either. The TUI already receives these marker-only messages today and already collapses them
-// by the independent route of `text()` excluding `synthetic` parts. ACP is per-part
+// `<Show when={text()}>` (the user bubble in `packages/tui/src/routes/session/index.tsx`), so a
+// zero-part message yields `text() === ""`, which suppresses the box along with its `marginTop` and
+// contributes no gap either. The TUI already receives these marker-only messages today and already
+// collapses them by the independent route of `text()` excluding `synthetic` parts. ACP is per-part
 // (`Subscription.replayMessage` in `src/acp/event.ts`) and emits no update at all for an empty list.
-// The cold `full()` path
-// produces the same state via `stripInternalContextParts`.
+// The cold `full()` path produces the same state via `stripInternalContextParts`.
 //
 // Announcing a message immediately therefore costs nothing a reader can see, and it is the only
 // design that cannot strand a message: every `MessageV2.Event.Updated` syncs, so the terminal

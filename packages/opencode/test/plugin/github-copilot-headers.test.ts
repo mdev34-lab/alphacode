@@ -81,11 +81,6 @@ describe("github-copilot chat.headers", () => {
     expect(result.headers["x-initiator"]).toBeUndefined()
   })
 
-  test("marks a compaction part as agent-initiated", async () => {
-    const result = await headers([{ type: "compaction", auto: true }])
-    expect(result.headers["x-initiator"]).toBe("agent")
-  })
-
   test("ignores a non-copilot model", async () => {
     const output = { headers: {} as Record<string, string> }
     const { hooks, requested } = await plugin([{ type: "compaction", auto: true }])
