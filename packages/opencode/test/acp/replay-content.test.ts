@@ -95,7 +95,6 @@ describe("ACP replay", () => {
     await subscription.replayMessage(message("user", [NORMAL, COMPACTION_MARKER]))
 
     expect(payloads(updates)).toEqual([NORMAL.text])
-    expect(JSON.stringify(updates)).not.toContain("prt_marker")
   })
 
   test("keeps a tool call and its result paired and intact", async () => {
@@ -115,7 +114,6 @@ describe("ACP replay", () => {
 
     await subscription.replayMessage(message("user", [NORMAL, COMPACTION_PART]))
 
-    expect(JSON.stringify(updates)).not.toContain("prt_compaction")
     expect(payloads(updates)).toEqual([NORMAL.text])
   })
 

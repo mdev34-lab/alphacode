@@ -570,7 +570,8 @@ describe("ShareNext internal context markers", () => {
 // contributes no gap either. The TUI already receives these marker-only messages today and already
 // collapses them by the independent route of `text()` excluding `synthetic` parts. ACP is per-part
 // (`Subscription.replayMessage` in `src/acp/event.ts`) and emits no update at all for an empty list.
-// The cold `full()` path produces the same state via `stripInternalContextParts`.
+// The cold `full()` path reaches the same consumer-visible result by a different route:
+// `stripInternalContextParts` prunes the record entirely instead of emptying it.
 //
 // Announcing a message immediately therefore costs nothing a reader can see, and it is the only
 // design that cannot strand a message: every `MessageV2.Event.Updated` syncs, so the terminal

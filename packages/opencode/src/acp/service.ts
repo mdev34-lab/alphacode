@@ -674,12 +674,8 @@ function makeUsageService(sdk: OpencodeClient) {
   })
 }
 
-// Policy: strip internal compaction bookkeeping on both external surfaces, using the predicate in
-// `@opencode-ai/schema/v1/session` so ACP and `ShareNext` cannot drift. ACP is a local editor
-// session rather than a public URL, but the reasoning is the same: a `compaction_continue` part is
-// the engine's own resume prompt, and replaying it makes the user see text they never typed and have
-// to explain. The `compaction` part was already dropped here by the `text`/`file`/`reasoning` gate in
-// `ACPEvent.Subscription.replayMessage`; the marker part is not, because it is a `text` part.
+// The filter and its rationale live in `ACPEvent.Subscription.replayMessage`, which is where replayed
+// history reaches the client. This wrapper only has to hand each message to that subscription.
 function replayMessages(subscription: ACPEvent.Subscription | undefined, messages: SessionMessageResponse[]) {
   if (!subscription) return Effect.void
   return Effect.promise(async () => {
