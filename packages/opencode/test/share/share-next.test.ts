@@ -472,7 +472,6 @@ describe("ShareNext internal context markers", () => {
           const message = yield* seedMessage(info.id, [textPart(PartID.ascending(), "here is the answer")])
 
           yield* register(info.id)
-          yield* Effect.sleep(50)
 
           for (const part of [
             textPart(PartID.ascending(), "here is the answer"),
@@ -490,12 +489,18 @@ describe("ShareNext internal context markers", () => {
             })
           }
 
+          // Wait for the last surviving part rather than for the first flush, so the negative
+          // assertions below cannot pass merely because the marker has not arrived yet. The marker
+          // and the compaction part are published before `MCP_TEXT`, so once it is synced every
+          // earlier record has already been through the queue.
           yield* pollWithTimeout(
-            Effect.sync(() => (bodies.length > 0 ? true : undefined)),
+            Effect.sync(() => {
+              const texts = syncedParts(bodies).map((part) => part.text)
+              return texts.includes("here is the answer") && texts.includes(MCP_TEXT) ? true : undefined
+            }),
             "timed out waiting for share live sync",
             "5 seconds",
           )
-          yield* Effect.sleep(50)
 
           const parts = syncedParts(bodies)
           expect(parts.map((part) => part.text).filter(Boolean)).toEqual(["here is the answer", MCP_TEXT])
@@ -561,11 +566,13 @@ describe("ShareNext internal context markers", () => {
 //
 // That artifact is deliberately accepted rather than prevented. A consumer renders a message from
 // its parts, so an empty part list renders nothing: the TUI wraps the whole user bubble in
-// `<Show when={text()}>` (`packages/tui/src/routes/session/index.tsx:1474`) and a zero-part message
+// `<Show when={text()}>` (the user bubble in `packages/tui/src/routes/session/index.tsx`) and a
+// zero-part message
 // yields `text() === ""`, which suppresses the box along with its `marginTop`, so it contributes no
 // gap either. The TUI already receives these marker-only messages today and already collapses them
 // by the independent route of `text()` excluding `synthetic` parts. ACP is per-part
-// (`src/acp/event.ts:112`) and emits no update at all for an empty list. The cold `full()` path
+// (`Subscription.replayMessage` in `src/acp/event.ts`) and emits no update at all for an empty list.
+// The cold `full()` path
 // produces the same state via `stripInternalContextParts`.
 //
 // Announcing a message immediately therefore costs nothing a reader can see, and it is the only
@@ -694,12 +701,13 @@ describe("ShareNext live user messages", () => {
         const realMessage = MessageID.ascending()
         yield* publish(assistantInfo(info.id, realMessage), [userText(PartID.ascending(), "here is the answer")])
 
+        // Wait for the real part, which the marker precedes, so the negative assertion is about a
+        // settled queue rather than a race.
         yield* pollWithTimeout(
           Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
           "timed out waiting for share live sync",
           "5 seconds",
         )
-        yield* Effect.sleep(50)
 
         expect(synced(bodies, "part").map((part) => part.text)).toEqual(["here is the answer"])
         expect(synced(bodies, "part").some((part) => part.messageID === markerMessage)).toBe(false)
@@ -755,12 +763,13 @@ describe("ShareNext live user messages", () => {
           userText(PartID.ascending(), "what did the build say?"),
         ])
 
+        // The marker is published first, so waiting for the real part to be synced means the
+        // marker would already have been queued and dropped if it were going to be kept.
         yield* pollWithTimeout(
           Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
           "timed out waiting for share live sync",
           "5 seconds",
         )
-        yield* Effect.sleep(50)
 
         expect(synced(bodies, "message").map((item) => item.id)).toContain(message)
         expect(synced(bodies, "part").map((part) => part.text)).toEqual(["what did the build say?"])
@@ -797,12 +806,13 @@ describe("ShareNext live user messages", () => {
           toolPart,
         ])
 
+        // The compaction part is published before the tool part, so waiting for the tool part means
+        // the queue has settled and the negative assertion is not just outrunning the filter.
         yield* pollWithTimeout(
           Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
           "timed out waiting for share live sync",
           "5 seconds",
         )
-        yield* Effect.sleep(50)
 
         expect(synced(bodies, "message").map((item) => item.id)).toContain(message)
         expect(synced(bodies, "part")).toEqual([{ ...toolPart, messageID: message, sessionID: info.id }])
@@ -965,11 +975,10 @@ describe("ShareNext live user messages", () => {
         })
 
         yield* pollWithTimeout(
-          Effect.sync(() => (synced(bodies, "part").length > 0 ? true : undefined)),
+          Effect.sync(() => (synced(bodies, "part").some((part) => part.text === "carry on") ? true : undefined)),
           "timed out waiting for the post-full part",
           "5 seconds",
         )
-        yield* Effect.sleep(50)
 
         expect(synced(bodies, "part").map((part) => part.text)).toEqual(["carry on"])
       }).pipe(Effect.provide(userLayer(client)))

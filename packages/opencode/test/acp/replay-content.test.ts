@@ -7,11 +7,13 @@ import type { Part, SessionMessageResponse } from "@opencode-ai/sdk/v2"
 type TextPart = Extract<Part, { type: "text" }>
 
 /**
- * ACP replay policy: internal context markers are annotated, not stripped.
+ * ACP replay policy: internal compaction bookkeeping is stripped, and nothing else is.
  *
- * `Subscription.replayMessage` is the only egress for replayed history, and it already drops parts
- * with no ACP representation while mapping synthetic text to `audience: ["assistant"]`. These tests
- * pin that policy so a future "strip instead" change has to be deliberate.
+ * `Subscription.replayMessage` is the only egress for replayed history. It filters with the shared
+ * `isInternalContextPart` predicate that `ShareNext` also uses, so the two external surfaces cannot
+ * drift. A `compaction_continue` part is the engine's own resume prompt, and it is a `text` part, so
+ * without the predicate it would reach the client as a user message chunk the user never wrote.
+ * These tests pin that the filter stays narrow: legitimate `synthetic` content must survive.
  */
 
 const session = { id: "ses_1", cwd: "/repo" } as unknown as ACPSession.Info
@@ -87,17 +89,13 @@ const payloads = (updates: Array<Record<string, unknown>>) =>
   texts(updates).map((update) => (update["content"] as { text: string }).text)
 
 describe("ACP replay", () => {
-  test("annotates internal context markers instead of deleting them", async () => {
+  test("strips internal context markers instead of replaying them as user text", async () => {
     const { subscription, updates } = harness()
 
     await subscription.replayMessage(message("user", [NORMAL, COMPACTION_MARKER]))
 
-    expect(payloads(updates)).toEqual([NORMAL.text, COMPACTION_MARKER.text])
-    expect(texts(updates)[1]!["content"]).toEqual({
-      type: "text",
-      text: COMPACTION_MARKER.text,
-      annotations: { audience: ["assistant"] },
-    })
+    expect(payloads(updates)).toEqual([NORMAL.text])
+    expect(JSON.stringify(updates)).not.toContain("prt_marker")
   })
 
   test("keeps a tool call and its result paired and intact", async () => {
@@ -109,7 +107,7 @@ describe("ACP replay", () => {
     // A completed tool replays as a start then a completion; both must survive the marker.
     expect(toolUpdates.map((update) => update["sessionUpdate"])).toEqual(["tool_call", "tool_call_update"])
     expect(toolUpdates.map((update) => (update as { toolCallId: string }).toolCallId)).toEqual(["call_1", "call_1"])
-    expect(payloads(updates)).toEqual([NORMAL.text, COMPACTION_MARKER.text])
+    expect(payloads(updates)).toEqual([NORMAL.text])
   })
 
   test("never emits a compaction part, which has no ACP representation", async () => {

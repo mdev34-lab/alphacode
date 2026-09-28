@@ -674,12 +674,12 @@ function makeUsageService(sdk: OpencodeClient) {
   })
 }
 
-// Policy: annotate, do not strip. `ACPEvent.Subscription.replayMessage` already drops parts with
-// no ACP representation (notably `compaction`) and maps synthetic text to `audience: ["assistant"]`
-// in `content.ts`, leaving the client to decide what assistant-audience content to surface.
-// Deleting those parts here instead would apply a second, opposite policy inside the same subsystem
-// and would leave a resumed session with no record of its compacted history. `ShareNext` takes the
-// opposite policy on purpose, because a share URL is public rather than a local editor session.
+// Policy: strip internal compaction bookkeeping on both external surfaces, using the predicate in
+// `@opencode-ai/schema/v1/session` so ACP and `ShareNext` cannot drift. ACP is a local editor
+// session rather than a public URL, but the reasoning is the same: a `compaction_continue` part is
+// the engine's own resume prompt, and replaying it makes the user see text they never typed and have
+// to explain. The `compaction` part was already dropped here by the `text`/`file`/`reasoning` gate in
+// `ACPEvent.Subscription.replayMessage`; the marker part is not, because it is a `text` part.
 function replayMessages(subscription: ACPEvent.Subscription | undefined, messages: SessionMessageResponse[]) {
   if (!subscription) return Effect.void
   return Effect.promise(async () => {
