@@ -1,6 +1,11 @@
 import { describe, it, expect } from "bun:test"
 import { isInternalContextPart, stripInternalContextParts, type WithParts } from "@opencode-ai/schema/v1/session"
 
+// This file lives under `packages/opencode/test` rather than beside the predicate in
+// `packages/schema/test` because the schema package has no `test` script and no turbo task, so a test
+// there is never executed by CI. The predicate is the contract every consumer depends on, including
+// the deliberate synthetic-less arm below, so its coverage has to live in a suite that actually runs.
+
 type ContextPart = Parameters<typeof isInternalContextPart>[0]
 
 // The guard reads only `type` and `metadata`, so the fixtures stay structural rather than

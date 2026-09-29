@@ -563,15 +563,16 @@ describe("ShareNext internal context markers", () => {
 // therefore leaves a `role: "user"` message whose only part is the internal continue marker, and
 // dropping that part leaves the message record behind with an empty part list.
 //
-// That artifact is deliberately accepted rather than prevented. A consumer renders a message from
-// its parts, so an empty part list renders nothing: the TUI wraps the whole user bubble in
-// `<Show when={text()}>` (the user bubble in `packages/tui/src/routes/session/index.tsx`), so a
-// zero-part message yields `text() === ""`, which suppresses the box along with its `marginTop` and
-// contributes no gap either. The TUI already receives these marker-only messages today and already
-// collapses them by the independent route of `text()` excluding `synthetic` parts. ACP is per-part
+// That artifact is deliberately accepted rather than prevented. ACP is per-part
 // (`Subscription.replayMessage` in `src/acp/event.ts`) and emits no update at all for an empty list.
 // The cold `full()` path reaches the same consumer-visible result by a different route:
 // `stripInternalContextParts` prunes the record entirely instead of emptying it.
+//
+// What this is NOT evidence for: the share web viewer. It is a separate service that this repository
+// only writes to, and nothing here can confirm how it renders a zero-part message. The TUI is
+// mentioned below only as the local-session case, which is a different surface: the TUI reads the
+// session stream, never share-server output, and it happens to collapse these messages by the
+// independent route of `text()` excluding `synthetic` parts. Treat the viewer as unverified.
 //
 // Announcing a message immediately therefore costs nothing a reader can see, and it is the only
 // design that cannot strand a message: every `MessageV2.Event.Updated` syncs, so the terminal

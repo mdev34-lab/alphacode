@@ -111,11 +111,17 @@ export class Subscription {
 
     const cwd = message.info.role === "assistant" ? message.info.path?.cwd : undefined
     for (const part of message.parts) {
-      // Internal compaction bookkeeping, filtered with the same predicate `ShareNext` uses so the
-      // two external surfaces cannot drift. A `compaction` part is already dropped by the
-      // `text`/`file`/`reasoning` gate in `replayContentPart`, but a `compaction_continue` part is
-      // a `text` part and would otherwise be replayed to the client as a user message chunk, so the
-      // engine's own resume prompt becomes something the user sees and has to explain.
+      // Internal compaction bookkeeping, filtered with `isInternalContextPart`, the single shared
+      // predicate the share, ACP and Copilot consumers all use, so the surfaces cannot drift. A
+      // `compaction` part is already dropped by the `text`/`file`/`reasoning` gate in
+      // `replayContentPart`, but a `compaction_continue` part is a `text` part and would otherwise be
+      // replayed to the client as a user message chunk, so the engine's own resume prompt becomes
+      // something the user sees and has to explain.
+      //
+      // Skipping before `recordFetchedPart` means the part-metadata cache is not primed for an
+      // internal part, unlike the live path, where `handlePartUpdated` records every part. That
+      // asymmetry is deliberate and harmless: a delta for an internal part would take the
+      // `fetchPartMetadata` fallback, and the role gate in `handlePartDelta` drops it either way.
       if (isInternalContextPart(part)) continue
       await this.recordFetchedPart(message.info.sessionID, message, part)
       if (part.type === "tool") {

@@ -383,7 +383,8 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
         })
         .catch(() => undefined)
 
-      // Shared with `ShareNext`: a `compaction` part, or a user text part marked
+      // Shared via `isInternalContextPart`, the same predicate the share and ACP consumers use: a
+      // `compaction` part, or a user text part marked
       // `compaction_continue`, means auto-compaction resumed the turn, so this followup is
       // agent-initiated rather than something the user typed. The marker alone is the signal; a
       // manual post-compaction prompt carries no such part and stays user-initiated.
