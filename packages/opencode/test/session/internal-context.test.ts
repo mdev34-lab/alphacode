@@ -1,10 +1,11 @@
 import { describe, it, expect } from "bun:test"
 import { isInternalContextPart, stripInternalContextParts, type WithParts } from "@opencode-ai/schema/v1/session"
 
-// This file lives under `packages/opencode/test` rather than beside the predicate in
-// `packages/schema/test` because the schema package has no `test` script and no turbo task, so a test
-// there is never executed by CI. The predicate is the contract every consumer depends on, including
-// the deliberate synthetic-less arm below, so its coverage has to live in a suite that actually runs.
+// This file lives under `packages/opencode/test` rather than in `packages/schema/test`, beside the
+// predicate in `packages/schema/src/v1/session.ts`, because the schema package defines no `test`
+// script and no turbo task, so a test there is never executed by CI. The predicate is the contract
+// every consumer depends on, including the deliberate synthetic-less arm below, so its coverage has
+// to live in a suite that actually runs.
 
 type ContextPart = Parameters<typeof isInternalContextPart>[0]
 
@@ -68,5 +69,13 @@ describe("stripInternalContextParts", () => {
     const result = { type: "tool", tool: "read", callID: "call_1" }
     const stripped = stripInternalContextParts(message([{ type: "compaction", auto: true }, result, text()]))
     expect(stripped?.parts as unknown[]).toEqual([result, text()])
+  })
+
+  it("keeps a compaction-plus-tool message even when it holds no other part", () => {
+    // The tool part is the only thing left, and dropping it would strand a tool call with no result.
+    // Asserted on its own so it cannot be satisfied by a surviving text part.
+    const result = { type: "tool", tool: "read", callID: "call_1" }
+    const stripped = stripInternalContextParts(message([{ type: "compaction", auto: true }, result]))
+    expect(stripped?.parts as unknown[]).toEqual([result])
   })
 })
