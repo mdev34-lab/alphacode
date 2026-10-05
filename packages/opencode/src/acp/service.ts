@@ -674,6 +674,8 @@ function makeUsageService(sdk: OpencodeClient) {
   })
 }
 
+// The filter and its rationale live in `ACPEvent.Subscription.replayMessage`, which is where replayed
+// history reaches the client. This wrapper only has to hand each message to that subscription.
 function replayMessages(subscription: ACPEvent.Subscription | undefined, messages: SessionMessageResponse[]) {
   if (!subscription) return Effect.void
   return Effect.promise(async () => {

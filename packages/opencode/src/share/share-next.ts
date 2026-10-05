@@ -19,6 +19,7 @@ import { SessionShareTable } from "@opencode-ai/core/share/sql"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { EventV2 } from "@opencode-ai/core/event"
+import { isInternalContextPart, stripInternalContextParts } from "@opencode-ai/schema/v1/session"
 
 const disabled = process.env["OPENCODE_DISABLE_SHARE"] === "true" || process.env["OPENCODE_DISABLE_SHARE"] === "1"
 
@@ -105,7 +106,10 @@ function key(item: Data) {
     case "session_diff":
       return "session_diff"
     case "model":
-      return "model"
+      // Keyed per model, not by the record type alone. `queue` is a dedupe map, so a constant
+      // key made two model records in the same flush window collapse into the last one written,
+      // silently dropping the other model from that batch.
+      return `model/${item.data.map((model) => model.id).join(",")}`
   }
 }
 
@@ -186,13 +190,38 @@ const layer = Layer.effect(
           Effect.gen(function* () {
             const info = data.info
             yield* sync(info.sessionID, [{ type: "message", data: structuredClone(info) as SDK.Message }])
+
+            // The model a reader needs in order to label a user turn is a property of the message,
+            // not of any of its parts, so it is announced here instead of being coupled to a part
+            // surviving the filter in the `PartUpdated` watcher. `key` is per model id, so the
+            // several updates a single message produces upsert one record instead of piling up.
             if (info.role !== "user") return
-            const model = yield* provider.getModel(info.model.providerID, info.model.modelID)
+            const model = yield* provider.getModel(
+              ProviderV2.ID.make(info.model.providerID),
+              ModelV2.ID.make(info.model.modelID),
+            )
             yield* sync(info.sessionID, [{ type: "model", data: [model] }])
           }),
         )
         yield* watch(MessageV2.Event.PartUpdated, (data) =>
-          sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }]),
+          Effect.gen(function* () {
+            // Internal context markers are engine bookkeeping, not conversation. A share is a public
+            // URL, so the live stream must be filtered too, not just the cold `full()` sync. This
+            // is deliberately scoped to compaction bookkeeping: injected reminders and other
+            // context that the engine adds to a message the user actually wrote are part of the
+            // transcript a reader expects, and filtering them is out of scope here.
+            //
+            // The message record is announced by the watcher above without waiting for a part, so
+            // auto-compaction leaves behind a `role: "user"` message whose only part was dropped
+            // here. That is deliberate and harmless: a consumer that renders a message from its
+            // parts renders nothing for an empty part list, which is exactly what `full()` already
+            // produces for the same message via `stripInternalContextParts`. Deferring the
+            // announcement to hide that record does not make the transcript more correct, and
+            // `Data` is upsert-only, so a message that never received a surviving part could never
+            // be retracted after the fact.
+            if (isInternalContextPart(data.part)) return
+            yield* sync(data.part.sessionID, [{ type: "part", data: structuredClone(data.part) as SDK.Part }])
+          }),
         )
         yield* watch(Session.Event.Diff, (data) =>
           sync(data.sessionID, [{ type: "session_diff", data: structuredClone(data.diff) as SDK.SnapshotFileDiff[] }]),
@@ -289,10 +318,12 @@ const layer = Layer.effect(
         { concurrency: 8 },
       )
 
+      const shareable = messages.map((item) => stripInternalContextParts(item)).filter((item) => item !== undefined)
+
       yield* sync(sessionID, [
         { type: "session", data: info },
-        ...messages.map((item) => ({ type: "message" as const, data: item.info })),
-        ...messages.flatMap((item) => item.parts.map((part) => ({ type: "part" as const, data: part }))),
+        ...shareable.map((item) => ({ type: "message" as const, data: item.info })),
+        ...shareable.flatMap((item) => item.parts.map((part) => ({ type: "part" as const, data: part }))),
         { type: "session_diff", data: diffs },
         { type: "model", data: models },
       ])

@@ -1,6 +1,7 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import type { Model } from "@opencode-ai/sdk/v2"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { isInternalContextPart } from "@opencode-ai/schema/v1/session"
 import { iife } from "@/util/iife"
 import { setTimeout as sleep } from "node:timers/promises"
 import { CopilotModels } from "./models"
@@ -382,15 +383,12 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
         })
         .catch(() => undefined)
 
-      if (
-        parts?.data.parts?.some(
-          (part) =>
-            part.type === "compaction" ||
-            // Auto-compaction resumes via a synthetic user text part. Treat only
-            // that marked followup as agent-initiated so manual prompts stay user-initiated.
-            (part.type === "text" && part.synthetic && part.metadata?.compaction_continue === true),
-        )
-      ) {
+      // Shared via `isInternalContextPart`, the same predicate the share and ACP consumers use: a
+      // `compaction` part, or a user text part marked
+      // `compaction_continue`, means auto-compaction resumed the turn, so this followup is
+      // agent-initiated rather than something the user typed. The marker alone is the signal; a
+      // manual post-compaction prompt carries no such part and stays user-initiated.
+      if (parts?.data.parts?.some(isInternalContextPart)) {
         output.headers["x-initiator"] = "agent"
         return
       }
