@@ -11,7 +11,7 @@ When NOT to use the Task tool:
 
 ## Review handoffs
 
-When a unit of your own work is complete and changed files, hand it to the `review` subagent for independent verification instead of reviewing your own diff (follow the review-loop policy in your instructions). Pass `background: false` so the verdict returns before you claim completion. When the user explicitly asks for a code review, dispatch `review` with the requirements and the diff rather than reviewing the code yourself.
+When a unit of your own work is complete and changed files, hand it to the `review` subagent for independent verification instead of reviewing your own diff (follow the review-loop policy in your instructions). Dispatch `subagent_type: "review"`; the runtime resolves it to the reviewer matching your agent (`work-review` for Work, `code-review` for Code, generic `review` otherwise). Every one of those reviewers enforces the same standard with the same permissions — they differ only in which domain they are pointed at, never in how strictly they judge. Pass `background: false` so the verdict returns before you claim completion. When the user explicitly asks for a code review, dispatch `review` with the requirements and the diff rather than reviewing the code yourself.
 
 
 Usage notes:

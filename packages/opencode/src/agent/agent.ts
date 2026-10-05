@@ -14,6 +14,8 @@ import PROMPT_CODE from "./prompt/code.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_REVIEW from "./prompt/review.txt"
+import PROMPT_WORK_REVIEW from "./prompt/work-review.txt"
+import PROMPT_CODE_REVIEW from "./prompt/code-review.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
@@ -157,6 +159,28 @@ const layer = Layer.effect(
           },
         })
 
+        /**
+         * Shared by `review`, `work-review` and `code-review` so the three
+         * reviewers cannot drift apart. The seam denies edits and nested
+         * delegation while leaving inspection - including `bash` for
+         * reproducing and verifying runtime behavior - at plan-equivalent
+         * strength, which is what makes the codebase-review contract
+         * (correctness, tests, types, regressions) verifiable at all.
+         */
+        const reviewPermissions = Permission.fromConfig({
+          question: "allow",
+          plan_exit: "allow",
+          task: {
+            general: "deny",
+          },
+          external_directory: {
+            [path.join(Global.Path.data, "plans", "*")]: "allow",
+          },
+          edit: {
+            "*": "deny",
+          },
+        })
+
         const agents: Record<string, Info> = {
           work: {
             name: "work",
@@ -182,7 +206,8 @@ const layer = Layer.effect(
           },
           code: {
             name: "code",
-            description: "Software-engineering specialist. Runs in Git/project folders with LSP and repo-aware context.",
+            description:
+              "Software-engineering specialist. Runs in Git/project folders with LSP and repo-aware context.",
             prompt: PROMPT_CODE,
             options: {},
             permission: Permission.merge(
@@ -255,27 +280,30 @@ const layer = Layer.effect(
           },
           review: {
             name: "review",
-            // Keep Review's capability boundary explicit so it can evolve independently
-            // from Plan while tests pin the intended equivalence.
-            permission: Permission.merge(
-              defaults,
-              Permission.fromConfig({
-                question: "allow",
-                plan_exit: "allow",
-                task: {
-                  general: "deny",
-                },
-                external_directory: {
-                  [path.join(Global.Path.data, "plans", "*")]: "allow",
-                },
-                edit: {
-                  "*": "deny",
-                },
-              }),
-              user,
-            ),
+            permission: Permission.merge(defaults, reviewPermissions, user),
             description: `Code reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files (implementation, fix, refactor, or feature), before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
             prompt: PROMPT_REVIEW,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          "work-review": {
+            name: "work-review",
+            permission: Permission.merge(defaults, reviewPermissions, user),
+            // The three reviewers enforce the same standard at the same
+            // permission boundary; they differ only in the domain they are
+            // pointed at, so this description must not advertise a weaker bar.
+            description: `Work reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements for general workspace tasks: file operations, configuration, documents, and mixed non-repository work. Applies the same standard as the code reviewers - spec compliance, correctness, tests, types, integration, regressions, and project conventions - judged against the workspace rather than a repository. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files in a general workspace context, before claiming completion, and whenever the user explicitly asks for a review. Not for conversational turns that changed no files.`,
+            prompt: PROMPT_WORK_REVIEW,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          "code-review": {
+            name: "code-review",
+            permission: Permission.merge(defaults, reviewPermissions, user),
+            description: `Code reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, types, integration, regressions, and project conventions. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files in a software repository context, before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
+            prompt: PROMPT_CODE_REVIEW,
             options: {},
             mode: "subagent",
             native: true,
@@ -393,11 +421,7 @@ const layer = Layer.effect(
               ? cfg.default_agent
               : AgentSchema.canonicalID(cfg.default_agent)
             : (AgentSchema.DEFAULT_ID as string)
-          return pipe(
-            agents,
-            values(),
-            sortBy([(x) => x.name === preferred, "desc"], [(x) => x.name, "asc"]),
-          )
+          return pipe(agents, values(), sortBy([(x) => x.name === preferred, "desc"], [(x) => x.name, "asc"]))
         })
 
         const defaultInfo = Effect.fnUntraced(function* () {

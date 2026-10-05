@@ -8,6 +8,7 @@ import { Session } from "../session/session"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
+import { isReviewAgent } from "../agent/review-agents"
 
 export const Reason = Schema.Literals(["success", "subagent_wait", "failure"])
 
@@ -69,7 +70,7 @@ export const FinishTool = Tool.define(
           // control-flow boundary: without a parseable report envelope the
           // call fails as recoverable model feedback and the run continues
           // instead of completing without a verdict.
-          if (ctx.agent === "review") {
+          if (isReviewAgent(ctx.agent)) {
             const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
             const delivery = ReviewReport.extract([
               ...(currentMessage?.parts ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])),

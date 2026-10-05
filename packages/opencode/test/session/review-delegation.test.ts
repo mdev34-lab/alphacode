@@ -244,20 +244,26 @@ const toolNames = (hit: { body: unknown }) =>
     .map((tool) => tool.function?.name ?? "")
     .toSorted()
 
+// A reviewer's request carries that reviewer's own system prompt, headed by
+// this section. A parent request never does: the parent receives the subagent
+// roster, and a roster entry is an agent `description`, not a prompt. Matching
+// on the heading rather than on one reviewer's own name is what keeps this
+// file working now that the runtime routes `review` to a runtime-specific
+// reviewer.
+const reviewerMatch = (hit: { body: unknown }) => bodyString(hit).includes("## Verify, Do Not Modify")
+
 // A primary-agent request that carries the delegation policy, and one that
 // does not. Title requests are auto-answered by the test server and never
 // reach these matchers.
 const policyMatch = (hit: { body: unknown }) => {
   const body = bodyString(hit)
-  return body.includes("## Review Loop") && !body.includes("Senior Code Reviewer")
+  return body.includes("## Review Loop") && !reviewerMatch(hit)
 }
 
 const noPolicyMatch = (hit: { body: unknown }) => {
   const body = bodyString(hit)
   return body.includes("You are opencode") && !body.includes("## Review Loop")
 }
-
-const reviewMatch = (hit: { body: unknown }) => bodyString(hit).includes("Senior Code Reviewer")
 
 // The reviewer's report, distinctive enough to trace into the parent's next
 // model request. It ends with the machine-readable report envelope the task
@@ -324,17 +330,14 @@ const scriptPolicyFollowingModel = Effect.gen(function* () {
   // parts as well as the result. The gate must reject it as recoverable model
   // feedback and keep the review session alive for the model to retry.
   yield* llm.pushMatch(
-    reviewMatch,
+    reviewerMatch,
     reply()
       .text("Needs fixes: one Important finding")
       .tool("finish", { reason: "success", result: "Needs fixes: one Important finding" }),
   )
   // Retry after the recoverable finish failure. This response supplies the
   // required envelope through the real finish call, so the review can complete.
-  yield* llm.pushMatch(
-    reviewMatch,
-    reply().tool("finish", { reason: "success", result: REPORT }),
-  )
+  yield* llm.pushMatch(reviewerMatch, reply().tool("finish", { reason: "success", result: REPORT }))
   // Policy present, verdict received: consume it and fix the finding.
   yield* llm.pushMatch(policyMatch, reply().text("Fixed the off-by-one in src/cache.ts."))
   // Policy absent (control arm): self-review, the old behavior.
@@ -443,13 +446,14 @@ it.instance(
 
       const hits = yield* llm.hits
       const policyHits = hits.filter(policyMatch)
-      const reviewHits = hits.filter(reviewMatch)
+      const reviewHits = hits.filter(reviewerMatch)
       expect(reviewHits).toHaveLength(2)
 
       // The reviewer ran with its own prompt — and no review loop of its own,
-      // so reviews cannot recurse.
+      // so reviews cannot recurse. The default primary is Work, so `review`
+      // resolved to the Work reviewer rather than the generic one.
       const reviewBody = bodyString(reviewHits[0])
-      expect(reviewBody).toContain("Senior Code Reviewer")
+      expect(reviewBody).toContain("Senior Work Reviewer")
       expect(reviewBody).not.toContain("## Review Loop")
       expect(reviewBody).toContain("uncommitted working tree")
 
@@ -478,7 +482,7 @@ it.instance(
       const childID = completed.state.metadata?.sessionId
       expect(typeof childID).toBe("string")
       const child = yield* sessions.get(SessionID.make(childID as string))
-      expect(child.agent).toBe("review")
+      expect(child.agent).toBe("work-review")
       expect(child.parentID).toBe(chat.id)
 
       // The real Review runner must record the rejected first finish and then
@@ -488,9 +492,7 @@ it.instance(
       const childMessages = yield* MessageV2.filterCompactedEffect(child.id)
       const finishParts = childMessages
         .flatMap((msg) => msg.parts)
-        .filter(
-          (part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish",
-        )
+        .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish")
       expect(finishParts).toHaveLength(2)
       expect(finishParts.map((part) => part.state.status)).toEqual(["error", "completed"])
       if (finishParts[0]?.state.status === "error") {
@@ -541,7 +543,7 @@ it.instance(
 
       // ...so the same model that delegated above did not dispatch a reviewer.
       expect(hits.filter(policyMatch)).toHaveLength(0)
-      expect(hits.filter(reviewMatch)).toHaveLength(0)
+      expect(hits.filter(reviewerMatch)).toHaveLength(0)
       const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
       expect(msgs.flatMap((msg) => msg.parts).some((part) => part.type === "tool" || part.type === "subtask")).toBe(
         false,
