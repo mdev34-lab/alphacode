@@ -427,6 +427,9 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
       if (payload["tool_choice"] !== "auto" && payload["tool_choice"] !== "none") payload["tool_choice"] = "auto"
     }
 
+    // The rewritten body is a different length than whatever the caller
+    // computed, so a forwarded Content-Length would be stale.
+    headers.delete("content-length")
     const response = await upstream(url, {
       ...options,
       signal,
