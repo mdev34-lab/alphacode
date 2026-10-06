@@ -118,9 +118,23 @@ function secondsLeft(expiresAt: number) {
 export function Countdown(props: { expiresAt: number }) {
   const { theme } = useTheme()
   const [seconds, setSeconds] = createSignal(secondsLeft(props.expiresAt))
-  // Follow the deadline as soon as it changes instead of on the next tick.
-  createEffect(() => setSeconds(secondsLeft(props.expiresAt)))
-  const timer = setInterval(() => setSeconds(secondsLeft(props.expiresAt)), 1000)
+  let timer: ReturnType<typeof setInterval> | undefined = setInterval(tick, 1000)
+  // Follow the deadline as soon as it changes instead of on the next tick, and start the
+  // interval again if it had already stopped for a deadline that has since moved.
+  createEffect(() => {
+    setSeconds(secondsLeft(props.expiresAt))
+    timer ??= setInterval(tick, 1000)
+  })
+  // Once the deadline has passed there is nothing left to count: the label clamps at 0 until
+  // the prompt goes away, so the interval would only wake the component every second to set
+  // the same value — which would not even re-render it. Stop instead.
+  function tick() {
+    const left = secondsLeft(props.expiresAt)
+    setSeconds(left)
+    if (left > 0) return
+    clearInterval(timer)
+    timer = undefined
+  }
   onCleanup(() => clearInterval(timer))
 
   return (
