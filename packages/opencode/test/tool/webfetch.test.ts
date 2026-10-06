@@ -191,7 +191,45 @@ describe("tool.webfetch", () => {
       (url) =>
         Effect.gen(function* () {
           const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", offset: 2, limit: 0 })
+          // The window is never empty and never asks for the same offset again.
+          expect(result.output.startsWith("line2\n")).toBe(true)
           expect(result.output).toContain("(Showing lines 2-2 of 3. Use offset=3 to continue.)")
+        }),
+    ),
+  )
+
+  it.instance("clamps a zero limit to one line when offset is omitted", () =>
+    withFetch(
+      () => new Response("line1\nline2\nline3", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", limit: 0 })
+          expect(result.output).toBe("line1\n\n(Showing lines 1-1 of 3. Use offset=2 to continue.)")
+        }),
+    ),
+  )
+
+  it.instance("spills byte-only overflow and reports the cap when no params are given", () =>
+    withFetch(
+      () =>
+        // 120 lines of ~800 bytes: one page by line count, but over the 50 KB
+        // byte cap, so `cut` is true while `more` is not the only reason.
+        new Response(Array.from({ length: 120 }, (_, i) => `line${i} ${"x".repeat(800)}`).join("\n"), {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text" })
+          expect(result.output).toContain("(Output capped at 50 KB. Showing lines 1-")
+          expect(result.output).toContain("Use offset=")
+          expect(result.output).not.toContain("line119")
+          expect(result.metadata.truncated).toBe(true)
+          const outputPath = result.metadata.outputPath
+          if (typeof outputPath !== "string") throw new Error("expected metadata.outputPath to be a string")
+          expect(result.output).toContain(`Full output saved to: ${outputPath}`)
+          const saved = yield* Effect.promise(() => Bun.file(outputPath).text())
+          expect(saved).toContain("line119 ")
         }),
     ),
   )

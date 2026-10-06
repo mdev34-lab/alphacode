@@ -175,16 +175,14 @@ export const WebFetchTool = Tool.define<typeof Parameters, Metadata, HttpClient.
           if (fetched.kind === "image") return fetched.output
 
           // Windowing applies to the converted content so `offset` means the
-          // same line for every format. Both params are NonNegativeInt like
-          // `read`'s, so normalise the low end: 0 must not produce a reversed
-          // or empty window.
-          const windowed = windowContent(
-            fetched.converted,
-            Math.max(1, params.offset ?? 1),
-            Math.max(1, params.limit ?? DEFAULT_LIMIT),
-          )
+          // same line for every format. `windowContent` clamps the low end of
+          // both NonNegativeInt params, so a zero can never produce an empty
+          // window that asks for the same call again.
+          const windowed = windowContent(fetched.converted, params.offset ?? 1, params.limit ?? DEFAULT_LIMIT)
           if (!windowed.ok) return yield* Effect.fail(new ToolFailure({ message: windowed.message }))
-          if (!windowed.truncated && params.offset === undefined && params.limit === undefined) {
+          // `cut` (byte cap) and `more` (line cap) both leave content out, so both
+          // must keep the default path from handing the raw body to the wrapper.
+          if (!windowed.cut && !windowed.more && params.offset === undefined && params.limit === undefined) {
             // Same body and shape as before paging existed: the generic wrapper
             // still gets to observe it if it ever exceeds its own caps.
             return { output: fetched.converted, title: fetched.title, metadata: {} }
@@ -207,7 +205,14 @@ export const WebFetchTool = Tool.define<typeof Parameters, Metadata, HttpClient.
   }),
 )
 
-function windowContent(content: string, offset: number, limit: number) {
+function windowContent(content: string, rawOffset: number, rawLimit: number) {
+  // `offset` and `limit` decode as NonNegativeInt, like `read`'s, so clamp the
+  // low end here: `limit: 0` would otherwise break before the first line and
+  // answer with a reversed `Showing lines 2-1 ... Use offset=2` notice that
+  // tells the model to repeat the identical call.
+  const offset = Math.max(1, rawOffset)
+  const limit = Math.max(1, rawLimit)
+
   const lines = content.split(/\r?\n/)
   if (lines[lines.length - 1] === "") lines.pop()
 
@@ -241,7 +246,7 @@ function windowContent(content: string, offset: number, limit: number) {
       ? `(Showing lines ${offset}-${last} of ${count}. Use offset=${next} to continue.)`
       : `(End of file - total ${count} lines)`
 
-  return { ok: true as const, output: `${page.join("\n")}\n\n${notice}`, truncated: cut || more }
+  return { ok: true as const, output: `${page.join("\n")}\n\n${notice}`, cut, more, truncated: cut || more }
 }
 
 function extractTextFromHTML(html: string) {
