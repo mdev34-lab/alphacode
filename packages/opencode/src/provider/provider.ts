@@ -186,14 +186,12 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       }),
     opencode: Effect.fnUntraced(function* (input: Info) {
       const env = yield* dep.env()
+      const config = yield* dep.config()
       const hasKey = iife(() => {
         if (input.env.some((item) => env[item])) return true
         return false
       })
-      const ok =
-        hasKey ||
-        Boolean(yield* dep.auth(input.id)) ||
-        Boolean((yield* dep.config()).provider?.["opencode"]?.options?.apiKey)
+      const ok = hasKey || Boolean(yield* dep.auth(input.id)) || Boolean(config.provider?.["opencode"]?.options?.apiKey)
 
       if (!ok) {
         for (const [key, value] of Object.entries(input.models)) {
@@ -204,17 +202,22 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
 
       // Free-tier models are only served to the OpenCode CLI and reject regular
       // API keys, so they are routed through the Zen adapter. See `opencode-zen`.
+      // The gateway matches the payload's config model id, not a distinct API id.
       const free = new Set(
         Object.entries(input.models)
           .filter(([, model]) => model.cost.input === 0)
-          .flatMap(([id, model]) => [id, model.api.id]),
+          .map(([id]) => id),
       )
+      const chunkTimeout = config.provider?.["opencode"]?.options?.chunkTimeout
 
       return {
         autoload: Object.keys(input.models).length > 0,
         options: {
           ...(ok ? {} : { apiKey: "public" }),
-          fetch: OpenCodeZen.createFetch({ free }),
+          fetch: OpenCodeZen.createFetch({
+            free,
+            chunkTimeout: typeof chunkTimeout === "number" ? chunkTimeout : undefined,
+          }),
         },
       }
     }),

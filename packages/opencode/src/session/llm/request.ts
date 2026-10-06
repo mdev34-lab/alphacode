@@ -180,6 +180,17 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   const opencodeProjectID = input.model.providerID.startsWith("opencode")
     ? (yield* InstanceState.context).project.id
     : undefined
+  const opencode = input.model.providerID.startsWith("opencode")
+    ? {
+        ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
+        "x-opencode-session": OpenCodeZen.sessionID(input.sessionID),
+        // Zen expects a fresh request id per turn, while the session id above
+        // stays stable for the whole conversation thread.
+        "x-opencode-request": OpenCodeZen.requestID(),
+        "x-opencode-client": input.flags.client,
+        "User-Agent": USER_AGENT,
+      }
+    : undefined
 
   return {
     system,
@@ -188,24 +199,17 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     params,
     messageTransformOptions: options,
     headers: {
-      ...(input.model.providerID.startsWith("opencode")
-        ? {
-            ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
-            "x-opencode-session": OpenCodeZen.sessionID(input.sessionID),
-            // Zen expects a fresh request id per turn, while the session id above
-            // stays stable for the whole conversation thread.
-            "x-opencode-request": OpenCodeZen.requestID(),
-            "x-opencode-client": input.flags.client,
-            "User-Agent": USER_AGENT,
-          }
-        : {
-            "x-session-affinity": input.sessionID,
-            "X-Session-Id": input.sessionID,
-            ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-            "User-Agent": USER_AGENT,
-          }),
+      ...(opencode ?? {
+        "x-session-affinity": input.sessionID,
+        "X-Session-Id": input.sessionID,
+        ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+        "User-Agent": USER_AGENT,
+      }),
       ...input.model.headers,
       ...headers,
+      // Zen verifies these headers, so neither model config nor plugin headers
+      // may override them.
+      ...opencode,
     },
   }
 })
