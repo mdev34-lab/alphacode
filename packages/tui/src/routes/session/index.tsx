@@ -798,12 +798,12 @@ export function Session() {
       },
     },
     {
-      title: activityAllExpanded() ? "Collapse tool activity" : "Expand tool activity",
+      title: activityAllExpanded() ? "Collapse working blocks" : "Expand working blocks",
       value: "session.toggle.activity",
       category: "Session",
       slash: {
-        name: "activity",
-        aliases: ["working"],
+        name: "working",
+        aliases: ["activity"],
       },
       run: () => {
         setActivityAllExpanded((prev) => !prev)
