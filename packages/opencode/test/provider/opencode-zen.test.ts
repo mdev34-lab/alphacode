@@ -162,10 +162,15 @@ describe("OpenCodeZen", () => {
 
   describe("responses", () => {
     it("reassembles a stream for a non-streaming caller", async () => {
-      const { upstream } = recorder(() => sse())
+      const { calls, upstream } = recorder(() => sse())
       const zen = createFetch({ upstream })
 
-      const response = await zen(zenURL, { method: "POST", body: JSON.stringify({ model: "big-pickle", messages: [] }) })
+      const response = await zen(zenURL, {
+        method: "POST",
+        body: JSON.stringify({ model: "big-pickle", messages: [], stream: false }),
+      })
+
+      expect(calls[0].body?.stream).toBe(true)
 
       expect(response.headers.get("content-type")).toContain("application/json")
       expect(await response.json()).toEqual({
