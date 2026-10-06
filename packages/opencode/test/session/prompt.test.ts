@@ -1897,7 +1897,7 @@ it.instance(
 )
 
 it.instance(
-  "loop reports a declined review finish as incomplete after the shared reminder limit",
+  "loop reports a declined review finish as incomplete after the shared nudge limit",
   () =>
     Effect.gen(function* () {
       const { llm } = yield* useServerConfig(providerCfg)
