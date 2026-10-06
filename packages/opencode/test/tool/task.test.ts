@@ -281,7 +281,8 @@ function terminationOf(envelope: string) {
  * foreground path therefore carry this config, and tests that do not leave it out
  * and get the background default. `review` is configured under the requested name
  * because a generic `review` dispatch is routed to the parent's specialist
- * reviewer (`work-review`), and either name opts the run in.
+ * reviewer (`work-review`), which is itself unconfigured here and so takes the
+ * opt-in written for the name the caller used.
  */
 const FOREGROUND = {
   agent: {
@@ -2108,8 +2109,9 @@ describe("tool.task", () => {
   )
 
   // Opt-in is per subagent: configuring one delegate does not change another, and
-  // the reviewer's config is read under the name the caller used, because the
-  // runtime rewrites a `review` request onto the parent's specialist reviewer.
+  // an unconfigured reviewer still takes the opt-in written under the name the
+  // caller used, because the runtime rewrites a `review` request onto the parent's
+  // specialist reviewer.
   it.instance(
     "synchronous opt-in is configured per subagent",
     () =>
@@ -2160,6 +2162,97 @@ describe("tool.task", () => {
         expect((yield* jobs.get(general.metadata.sessionId))?.status).toBe("running")
       }),
     { config: { agent: { review: { background: false } } } },
+  )
+
+  // A routed review dispatch can be configured under two names, and they can
+  // disagree, so the precedence is pinned here: the agent that actually runs
+  // decides, and the requested name is only the fallback for a runner that says
+  // nothing. `work-review` is what a `review` request from Work runs as.
+  it.instance(
+    "the running reviewer's own config overrides an opt-in written under the requested name",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+
+        const result = yield* def.execute(
+          {
+            description: "review cache fix",
+            prompt: "review the cache fix",
+            subagent_type: "review",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: {
+                ...stubOps(),
+                prompt: () => Effect.never,
+              } satisfies TaskPromptOps,
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        // `agent.review.background: false` still says the run should be waited on,
+        // and the reviewer that runs says it should not. The launch wins: the
+        // parent is notified rather than held, which is the whole point of
+        // background being the default.
+        expect(result.metadata.background).toBe(true)
+        expect(result.output).toContain(`state="running"`)
+        expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
+      }),
+    {
+      config: {
+        agent: {
+          review: { background: false },
+          "work-review": { background: true },
+        },
+      },
+    },
+  )
+
+  it.instance(
+    "configuring the reviewer that runs opts in a request that named it indirectly",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+
+        const result = yield* def.execute(
+          {
+            description: "review cache fix",
+            prompt: "review the cache fix",
+            subagent_type: "review",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            extra: { promptOps: reviewRunOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`]) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        // Nothing was requested about execution mode, and the name the caller
+        // used is not configured at all: the runner's own opt-in is enough.
+        expect(result.metadata.background).toBeUndefined()
+        expect(result.output).toContain(`state="completed"`)
+        expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
+        expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("completed")
+      }),
+    { config: { agent: { "work-review": { background: false } } } },
   )
 
   // Both modes end through the same finish contract: the termination the child

@@ -302,7 +302,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "background": {
-      "description": "Run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Defaults to true, except for an agent configured with \`background: false\` in opencode.json. Setting it to false waits for the result only for such an opted-in agent; every other subagent is launched in the background regardless.",
+      "description": "Whether to run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. An omitted value runs in the background unless the agent is configured with \`background: false\` in opencode.json, which makes the tool wait for the result. Set true to force a background launch for such an agent; setting false on any other agent still launches it in the background.",
       "type": "boolean",
     },
     "command": {

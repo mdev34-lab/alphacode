@@ -56,7 +56,7 @@ export const Parameters = Schema.Struct({
   ...BaseParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Defaults to true, except for an agent configured with `background: false` in opencode.json. Setting it to false waits for the result only for such an opted-in agent; every other subagent is launched in the background regardless.",
+      "Whether to run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. An omitted value runs in the background unless the agent is configured with `background: false` in opencode.json, which makes the tool wait for the result. Set true to force a background launch for such an agent; setting false on any other agent still launches it in the background.",
   }),
 })
 
@@ -215,13 +215,19 @@ export const TaskTool = Tool.define(
       // `background: false` may run in its parent's foreground. Honoring a bare
       // `background: false` request would hand the parent's execution path to a
       // child that never finishes, which is the coupling the background path and
-      // this configuration exist to make explicit. The requested name is checked
-      // next to the resolved one because a `review` request is rewritten to the
-      // parent's specialist reviewer, and user config - like the permission rules
-      // keyed on both names below - is written against the name that was asked
-      // for.
-      const synchronous = next.background === false || cfg.agent?.[params.subagent_type]?.background === false
-      const runInBackground = !synchronous || params.background === true
+      // this configuration exist to make explicit.
+      //
+      // A `review` request is rewritten to the parent's specialist reviewer, and
+      // config - like the permission rules keyed on both names below - is usually
+      // written against the name that was asked for, so the requested name counts
+      // as a fallback. Precedence: the agent that actually runs decides, the
+      // requested name decides only when the runner says nothing, and background
+      // decides when neither does. Both names are read through `Agent.get` rather
+      // than off the raw config so a name resolves exactly the way the delegation
+      // itself resolves it, legacy aliases included; the fallback is skipped
+      // entirely when routing left the name alone, which is every other dispatch.
+      const requested = subagentType === params.subagent_type ? undefined : yield* agent.get(params.subagent_type)
+      const runInBackground = (next.background ?? requested?.background ?? true) || params.background === true
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
