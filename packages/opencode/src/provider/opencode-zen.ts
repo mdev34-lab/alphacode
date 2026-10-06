@@ -82,6 +82,39 @@ type Chunk = {
 
 type Frame = { readonly chunk: Chunk } | { readonly done: true }
 
+/** Cost metadata of a catalog model, including its context-priced tiers. */
+export type ModelCost = {
+  readonly input: number
+  readonly output: number
+  readonly cache: { readonly read: number; readonly write: number }
+  readonly tiers?: ReadonlyArray<{
+    readonly input: number
+    readonly output: number
+    readonly cache: { readonly read: number; readonly write: number }
+  }>
+}
+
+function zeroCost(cost: ModelCost) {
+  const entries = [cost, ...(cost.tiers ?? [])]
+  return entries.every(
+    (entry) => entry.input === 0 && entry.output === 0 && entry.cache.read === 0 && entry.cache.write === 0,
+  )
+}
+
+/**
+ * Wire model ids Zen serves for free.
+ *
+ * The gateway reads the request's `model` field, which the AI SDK fills from
+ * the model's API id, so the set has to be keyed by that id: a config alias
+ * must not hide a free model, and an alias for a paid model must not unlock
+ * the public token. Only models whose complete cost metadata (every component,
+ * including context tiers) is zero qualify — a zero input price with priced
+ * output is not a free model.
+ */
+export function freeTier(models: Iterable<{ readonly api: { readonly id: string }; readonly cost: ModelCost }>) {
+  return new Set([...models].filter((model) => zeroCost(model.cost)).map((model) => model.api.id))
+}
+
 function parsed(data: string): Chunk | undefined {
   let value: unknown
   try {
@@ -99,6 +132,27 @@ function streamError(value: unknown) {
 
 function stallError(chunkTimeout: number) {
   return new ProviderError.ResponseStreamError(`Zen stream stalled for more than ${chunkTimeout}ms`)
+}
+
+function abortReason(signal: AbortSignal) {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError")
+}
+
+/**
+ * Reject a pending read as soon as the caller aborts. `AbortSignal` listeners
+ * never fire for a signal that is already aborted, and an upstream that
+ * ignores the abort would otherwise leave the read hanging forever.
+ */
+function abortWatch(signal: AbortSignal) {
+  let fail: (reason: unknown) => void = () => {}
+  const promise = new Promise<never>((_, reject) => {
+    fail = reject
+  })
+  const listener = () => fail(abortReason(signal))
+  if (signal.aborted) listener()
+  else signal.addEventListener("abort", listener, { once: true })
+  void promise.catch(() => {})
+  return { promise, clear: () => signal.removeEventListener("abort", listener) }
 }
 
 function read(reader: ReadableStreamDefaultReader<Uint8Array>, chunkTimeout: number | undefined) {
@@ -130,13 +184,20 @@ function read(reader: ReadableStreamDefaultReader<Uint8Array>, chunkTimeout: num
 async function* frames(response: Response, input: AggregateInput): AsyncGenerator<Frame> {
   const reader = response.body?.getReader()
   if (!reader) return
+  const signal = input.signal
   const decoder = new TextDecoder()
-  const abort = () => void reader.cancel(input.signal?.reason).catch(() => {})
-  input.signal?.addEventListener("abort", abort, { once: true })
+  const cancel = () => void reader.cancel(signal?.reason).catch(() => {})
+  const watch = signal ? abortWatch(signal) : undefined
+  signal?.addEventListener("abort", cancel, { once: true })
   try {
+    if (signal?.aborted) {
+      cancel()
+      throw abortReason(signal)
+    }
     let buffer = ""
     while (true) {
-      const part = await read(reader, input.chunkTimeout)
+      const pending = read(reader, input.chunkTimeout)
+      const part = await (watch ? Promise.race([pending, watch.promise]) : pending)
       if (part.done) break
       buffer += decoder.decode(part.value, { stream: true })
       const lines = buffer.split("\n")
@@ -154,7 +215,8 @@ async function* frames(response: Response, input: AggregateInput): AsyncGenerato
       if (frame) yield frame
     }
   } finally {
-    input.signal?.removeEventListener("abort", abort)
+    signal?.removeEventListener("abort", cancel)
+    watch?.clear()
     await reader.cancel().catch(() => {})
   }
 }
@@ -262,13 +324,15 @@ function chatRequest(body: string | undefined): Record<string, unknown> | undefi
 }
 
 /**
- * The body fetch would actually send: `init.body` overrides a `Request` body.
- * Only text-like bodies are readable; streams, `FormData`, and binary payloads
- * of unknown shape stay untouched so they cannot be corrupted by a decode.
+ * The body fetch would actually send: `init.body` overrides a `Request` body,
+ * including an explicit `null`, which removes it. Only text-like bodies are
+ * readable; streams, `FormData`, and binary payloads of unknown shape stay
+ * untouched so they cannot be corrupted by a decode.
  */
 async function bodyText(input: RequestInfo | URL, init: RequestInit | undefined) {
   const body = init?.body
-  if (body !== undefined && body !== null) {
+  if (body === null) return undefined
+  if (body !== undefined) {
     if (typeof body === "string") return body
     if (body instanceof Uint8Array) return new TextDecoder().decode(body)
     if (body instanceof ArrayBuffer) return new TextDecoder().decode(body)
@@ -331,8 +395,10 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     const method = init?.method ?? request?.method
     const options = requestOptions(request, init)
     const signal = init?.signal ?? options.signal
-    const headers = new Headers(request?.headers)
-    new Headers(init?.headers).forEach((value, key) => headers.set(key, value))
+    // Fetch replaces the whole header list when init supplies one, so the
+    // Request's headers only apply when init has none. Merging them would keep
+    // a header the caller deliberately dropped, e.g. an Authorization key.
+    const headers = new Headers(init?.headers ?? request?.headers)
     headers.set("user-agent", ZEN_USER_AGENT)
     headers.set("x-opencode-client", headers.get("x-opencode-client") ?? "cli")
     headers.set("x-opencode-project", headers.get("x-opencode-project") ?? "global")

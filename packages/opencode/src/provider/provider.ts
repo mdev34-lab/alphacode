@@ -202,12 +202,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
 
       // Free-tier models are only served to the OpenCode CLI and reject regular
       // API keys, so they are routed through the Zen adapter. See `opencode-zen`.
-      // The gateway matches the payload's config model id, not a distinct API id.
-      const free = new Set(
-        Object.entries(input.models)
-          .filter(([, model]) => model.cost.input === 0)
-          .map(([id]) => id),
-      )
+      // The set is keyed by wire model id and requires fully zero cost metadata.
+      const free = OpenCodeZen.freeTier(Object.values(input.models))
       const chunkTimeout = config.provider?.["opencode"]?.options?.chunkTimeout
 
       return {

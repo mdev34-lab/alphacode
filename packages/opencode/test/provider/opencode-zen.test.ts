@@ -16,6 +16,7 @@ import {
   ZEN_PUBLIC_AUTHENTICATION,
   ZEN_USER_AGENT,
   createFetch,
+  freeTier,
   requestID,
   sessionID,
   type ZenFetch,
@@ -103,6 +104,27 @@ describe("OpenCodeZen", () => {
       expect(sessionID(undefined, () => ZEN_UUID)).toBe(`ses_${ZEN_UUID}`)
       const sessions = uuids("first", "second")
       expect(sessionID(undefined, sessions)).not.toBe(sessionID(undefined, sessions))
+    })
+
+    it("only treats fully zero-cost models as free and keys them by wire id", () => {
+      const costs = { input: 0, output: 0, cache: { read: 0, write: 0 } }
+      expect(
+        [
+          ...freeTier([
+            { api: { id: "wire/free" }, cost: costs },
+            { api: { id: "wire/free-alias" }, cost: costs },
+            { api: { id: "wire/paid-output" }, cost: { ...costs, output: 5 } },
+            { api: { id: "wire/paid-cache" }, cost: { ...costs, cache: { read: 0.1, write: 0 } } },
+            {
+              api: { id: "wire/paid-tier" },
+              cost: {
+                ...costs,
+                tiers: [{ input: 1, output: 1, cache: { read: 0, write: 0 } }],
+              },
+            },
+          ]),
+        ].sort(),
+      ).toEqual(["wire/free", "wire/free-alias"])
     })
 
     it("regenerates request ids", () => {
@@ -270,6 +292,36 @@ describe("OpenCodeZen", () => {
 
       expect(calls[0].body?.messages).toEqual([])
       expect(calls[0].body?.stream).toBe(true)
+    })
+
+    it("honors an explicit null body override", async () => {
+      const { calls, upstream } = recorder(() => Response.json({ ok: true }))
+      const zen = createFetch({ upstream })
+      const request = new Request(zenURL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "big-pickle", messages: [] }),
+      })
+
+      await zen(request, { body: null })
+
+      expect(calls[0].raw).toBeNull()
+      expect(calls[0].body).toBeUndefined()
+    })
+
+    it("builds headers from the effective list instead of reviving a dropped Authorization header", async () => {
+      const { calls, upstream } = recorder(() => Response.json({ ok: true }))
+      const zen = createFetch({ upstream, free: new Set(["big-pickle"]) })
+      const request = new Request(zenURL, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer sk-secret" },
+        body: JSON.stringify({ model: "claude-sonnet-4", messages: [] }),
+      })
+
+      await zen(request, { headers: { "content-type": "application/json" } })
+
+      expect(calls[0].headers.get("authorization")).toBeNull()
+      expect(calls[0].headers.get("x-opencode-session")).toMatch(/^ses_/)
     })
 
     it("keeps a Request method that has no init override", async () => {
@@ -446,6 +498,7 @@ describe("OpenCodeZen", () => {
 
     it("cancels the upstream stream when the caller aborts", async () => {
       const controller = new AbortController()
+      const reading = Promise.withResolvers<void>()
       const { calls, upstream } = recorder(
         (_input, init) =>
           new Response(
@@ -457,6 +510,10 @@ describe("OpenCodeZen", () => {
                   () => stream.error(init.signal?.reason ?? new Error("aborted")),
                   { once: true },
                 )
+              },
+              pull() {
+                // The adapter is waiting for the next chunk when pull runs.
+                reading.resolve()
               },
             }),
             { headers: { "content-type": "text/event-stream" } },
@@ -471,12 +528,70 @@ describe("OpenCodeZen", () => {
       })
 
       const pending = zen(request)
-      await Bun.sleep(20)
+      await reading.promise
       controller.abort()
 
       await expect(pending).rejects.toThrow()
       // The Request's signal has to survive the rewrite to a URL request.
       expect(calls[0].init?.signal?.aborted).toBe(true)
+    })
+
+    it("fails immediately when the caller signal is already aborted", async () => {
+      const controller = new AbortController()
+      controller.abort()
+      const { upstream } = recorder(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(stream) {
+                stream.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}\n\n'))
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      )
+      const zen = createFetch({ upstream })
+      const request = new Request(zenURL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "big-pickle", messages: [], stream: false }),
+        signal: controller.signal,
+      })
+
+      await expect(zen(request)).rejects.toThrow()
+    })
+
+    it("fails a pending read on abort even when the upstream ignores it", async () => {
+      const controller = new AbortController()
+      const reading = Promise.withResolvers<void>()
+      const { upstream } = recorder(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(stream) {
+                stream.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}\n\n'))
+                // The stream never closes and never reacts to the abort.
+              },
+              pull() {
+                reading.resolve()
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      )
+      const zen = createFetch({ upstream })
+      const request = new Request(zenURL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "big-pickle", messages: [], stream: false }),
+        signal: controller.signal,
+      })
+
+      const pending = zen(request)
+      await reading.promise
+      controller.abort()
+
+      await expect(pending).rejects.toThrow()
     })
   })
 })
@@ -603,6 +718,54 @@ itEffect.live("runs a non-streaming free-tier request through the opencode provi
   }),
 )
 
+const zenRequest = (modelID: string) =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => zenServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make(modelID))
+          const language = yield* provider.getLanguage(model)
+          yield* Effect.promise(() => generateText({ model: language, messages: [{ role: "user", content: "hello" }] }))
+        }),
+      { config: zenProviderConfig(server.url) },
+    )
+    return server.requests[0]
+  })
+
+itEffect.live("keeps the caller API key for paid models", () =>
+  Effect.gen(function* () {
+    const request = yield* zenRequest("paid-sonnet")
+
+    expect(request.headers.get("authorization")).toBe("Bearer sk-secret")
+    expect(request.body?.stream).toBe(true)
+  }),
+)
+
+itEffect.live("never authenticates a zero-input model with priced output as free", () =>
+  Effect.gen(function* () {
+    const request = yield* zenRequest("zero-input-paid")
+
+    expect(request.body?.model).toBe("zero-input-paid")
+    expect(request.headers.get("authorization")).toBe("Bearer sk-secret")
+  }),
+)
+
+itEffect.live("authenticates a free model through its wire model id", () =>
+  Effect.gen(function* () {
+    // The config alias is not a Zen model id, and no model is configured under
+    // the wire id, so only wire-id metadata can mark this request free.
+    const request = yield* zenRequest("free-alias")
+
+    expect(request.body?.model).toBe("team-wire-free")
+    expect(request.headers.get("authorization")).toBe(ZEN_PUBLIC_AUTHENTICATION)
+  }),
+)
+
 itEffect.live("streams a free-tier response through the opencode provider", () =>
   Effect.gen(function* () {
     const server = yield* Effect.acquireRelease(
@@ -647,6 +810,24 @@ function zenProviderConfig(url: string) {
           "big-pickle": {
             name: "Big Pickle",
             tool_call: true,
+            limit: { context: 100_000, output: 10_000 },
+          },
+          "free-alias": {
+            id: "team-wire-free",
+            name: "Aliased Free",
+            tool_call: true,
+            cost: { input: 0, output: 0 },
+          },
+          "zero-input-paid": {
+            name: "Priced Output",
+            tool_call: true,
+            cost: { input: 0, output: 5 },
+            limit: { context: 100_000, output: 10_000 },
+          },
+          "paid-sonnet": {
+            name: "Paid",
+            tool_call: true,
+            cost: { input: 3, output: 15 },
             limit: { context: 100_000, output: 10_000 },
           },
         },
