@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
@@ -113,6 +113,142 @@ describe("tool.webfetch", () => {
           const result = yield* exec({ url: new URL("/page.html", url).toString(), format: "text" })
           expect(result.output).toBe("Hello world")
           expect(result.attachments).toBeUndefined()
+        }),
+    ),
+  )
+
+  it.instance("returns the full body unchanged when offset and limit are omitted", () =>
+    withFetch(
+      () => new Response("alpha\nbeta\ngamma\n", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text" })
+          expect(result.output).toBe("alpha\nbeta\ngamma\n")
+          expect(result.metadata.truncated).toBe(false)
+        }),
+    ),
+  )
+
+  it.instance("windows text output and states how to continue", () =>
+    withFetch(
+      () =>
+        new Response("line1\nline2\nline3\nline4\nline5", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({
+            url: new URL("/file.txt", url).toString(),
+            format: "text",
+            offset: 2,
+            limit: 2,
+          })
+          expect(result.output).toContain("line2\nline3")
+          expect(result.output).not.toContain("line1")
+          expect(result.output).not.toContain("line4")
+          expect(result.output).toContain("(Showing lines 2-3 of 5. Use offset=4 to continue.)")
+          expect(result.metadata.truncated).toBe(true)
+        }),
+    ),
+  )
+
+  it.instance("uses the default limit when only offset is supplied", () =>
+    withFetch(
+      () => new Response("line1\nline2\nline3", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", offset: 2 })
+          expect(result.output).toBe("line2\nline3\n\n(End of file - total 3 lines)")
+        }),
+    ),
+  )
+
+  it.instance("windows markdown after html conversion", () =>
+    withFetch(
+      () =>
+        new Response("<h1>One</h1><p>Two</p><p>Three</p>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({
+            url: new URL("/page.html", url).toString(),
+            format: "markdown",
+            offset: 3,
+            limit: 1,
+          })
+          expect(result.output).toBe("Two\n\n(Showing lines 3-3 of 5. Use offset=4 to continue.)")
+        }),
+    ),
+  )
+
+  it.instance("windows raw html when format is html", () =>
+    withFetch(
+      () =>
+        new Response("<div>one</div>\n<div>two</div>\n<div>three</div>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({
+            url: new URL("/page.html", url).toString(),
+            format: "html",
+            offset: 2,
+            limit: 1,
+          })
+          expect(result.output).toContain("<div>two</div>")
+          expect(result.output).not.toContain("<div>one</div>")
+          expect(result.output).not.toContain("<div>three</div>")
+          expect(result.output).toContain("(Showing lines 2-2 of 3. Use offset=3 to continue.)")
+        }),
+    ),
+  )
+
+  it.instance("adds a continuation notice to large default output", () =>
+    withFetch(
+      () =>
+        new Response(Array.from({ length: 2001 }, (_, i) => `line${i + 1}`).join("\n"), {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text" })
+          expect(result.output).toContain("(Showing lines 1-2000 of 2001. Use offset=2001 to continue.)")
+          expect(result.output).not.toContain("line2001")
+          expect(result.metadata.truncated).toBe(true)
+        }),
+    ),
+  )
+
+  it.instance("caps a window by bytes when lines are long", () =>
+    withFetch(
+      () =>
+        new Response(Array.from({ length: 30 }, (_, i) => `${i}:${"x".repeat(2500)}`).join("\n"), {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", offset: 1 })
+          expect(result.output).toContain("(line truncated to 2000 chars)")
+          expect(result.output).toContain("(Output capped at 50 KB. Showing lines 1-")
+          expect(result.output).toContain("Use offset=")
+          expect(result.metadata.truncated).toBe(true)
+        }),
+    ),
+  )
+
+  it.instance("fails when offset starts past the end of the content", () =>
+    withFetch(
+      () => new Response("alpha\nbeta", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const exit = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", offset: 10 }).pipe(
+            Effect.exit,
+          )
+          expect(Exit.isFailure(exit)).toBe(true)
+          if (Exit.isFailure(exit)) expect(String(Cause.squash(exit.cause))).toContain("Offset 10 is out of range")
         }),
     ),
   )

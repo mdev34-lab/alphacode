@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Parser } from "htmlparser2"
+import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as Tool from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
@@ -9,6 +10,11 @@ import { isImageAttachment } from "@/util/media"
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
 const MAX_TIMEOUT = 120 * 1000 // 2 minutes
+const DEFAULT_LIMIT = 2000 // mirrors read's DEFAULT_READ_LIMIT
+const MAX_LINE_LENGTH = 2000
+const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
+const MAX_BYTES = 50 * 1024
+const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 
 export const Parameters = Schema.Struct({
   url: Schema.String.annotate({ description: "The URL to fetch content from" }),
@@ -18,6 +24,12 @@ export const Parameters = Schema.Struct({
       default: "markdown",
     })
     .pipe(Schema.withDecodingDefault(Effect.succeed("markdown" as const))),
+  offset: Schema.optional(NonNegativeInt).annotate({
+    description: "The line number to start returning content from (1-indexed)",
+  }),
+  limit: Schema.optional(NonNegativeInt).annotate({
+    description: `The maximum number of lines to return (defaults to ${DEFAULT_LIMIT})`,
+  }),
   timeout: Schema.optional(Schema.Number).annotate({ description: "Optional timeout in seconds (max 120)" }),
 })
 
@@ -126,34 +138,74 @@ export const WebFetchTool = Tool.define(
           const content = new TextDecoder().decode(arrayBuffer)
 
           // Handle content based on requested format and actual content type
-          switch (params.format) {
-            case "markdown":
-              if (contentType.includes("text/html")) {
-                const markdown = convertHTMLToMarkdown(content)
-                return {
-                  output: markdown,
-                  title,
-                  metadata: {},
-                }
-              }
-              return { output: content, title, metadata: {} }
+          const converted = (() => {
+            switch (params.format) {
+              case "markdown":
+                if (contentType.includes("text/html")) return convertHTMLToMarkdown(content)
+                return content
 
-            case "text":
-              if (contentType.includes("text/html")) {
-                return { output: extractTextFromHTML(content), title, metadata: {} }
-              }
-              return { output: content, title, metadata: {} }
+              case "text":
+                if (contentType.includes("text/html")) return extractTextFromHTML(content)
+                return content
 
-            case "html":
-              return { output: content, title, metadata: {} }
+              default:
+                return content
+            }
+          })()
 
-            default:
-              return { output: content, title, metadata: {} }
+          // Windowing applies to the converted content so `offset` means the
+          // same line for every format.
+          const windowed = windowContent(converted, params.offset || 1, params.limit ?? DEFAULT_LIMIT)
+          if (!windowed.truncated && params.offset === undefined && params.limit === undefined) {
+            return { output: converted, title, metadata: {} }
+          }
+
+          return {
+            output: windowed.output,
+            title,
+            metadata: windowed.truncated ? { truncated: true } : {},
           }
         }).pipe(Effect.orDie),
     }
   }),
 )
+
+function windowContent(content: string, offset: number, limit: number) {
+  const lines = content.split("\n")
+  if (lines[lines.length - 1] === "") lines.pop()
+
+  const count = lines.length
+  const start = offset - 1
+  if (start >= count && !(count === 0 && offset === 1)) {
+    throw new Error(`Offset ${offset} is out of range for this content (${count} lines)`)
+  }
+
+  const page: string[] = []
+  let bytes = 0
+  let cut = false
+  for (const line of lines.slice(start)) {
+    if (page.length >= limit) break
+    const clipped = line.length > MAX_LINE_LENGTH ? line.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : line
+    const size = Buffer.byteLength(clipped, "utf-8") + (page.length > 0 ? 1 : 0)
+    if (bytes + size > MAX_BYTES) {
+      cut = true
+      break
+    }
+    page.push(clipped)
+    bytes += size
+  }
+
+  const last = offset + page.length - 1
+  const next = last + 1
+  const more = start + page.length < count
+  const notice = cut
+    ? `(Output capped at ${MAX_BYTES_LABEL}. Showing lines ${offset}-${last}. Use offset=${next} to continue.)`
+    : more
+      ? `(Showing lines ${offset}-${last} of ${count}. Use offset=${next} to continue.)`
+      : `(End of file - total ${count} lines)`
+
+  return { output: `${page.join("\n")}\n\n${notice}`, truncated: cut || more }
+}
 
 function extractTextFromHTML(html: string) {
   let text = ""

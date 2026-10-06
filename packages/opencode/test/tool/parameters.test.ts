@@ -271,6 +271,14 @@ describe("tool parameters", () => {
         format: "markdown",
       })
     })
+    test("accepts optional offset + limit", () => {
+      const parsed = parse(WebFetch, { url: "https://example.com", offset: 10, limit: 100 })
+      expect(parsed.offset).toBe(10)
+      expect(parsed.limit).toBe(100)
+    })
+    test("rejects a negative offset", () => {
+      expect(accepts(WebFetch, { url: "https://example.com", offset: -1 })).toBe(false)
+    })
   })
 
   describe("websearch", () => {
