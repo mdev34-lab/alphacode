@@ -1160,19 +1160,22 @@ itConfiguredRepeats.instance(
 )
 
 it.instance(
-  "a routed reviewer earns the recovery nudge at the loop seam",
+  "a work-review agent earns the recovery nudge at the loop seam",
   () =>
     Effect.gen(function* () {
       const { llm } = yield* useServerConfig
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const chat = yield* sessions.create({
-        title: "Routed reviewer",
+        title: "Work reviewer",
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       })
       // The stagnation heuristic is a Review-subagent heuristic, not a string
-      // comparison against the name `review`: the routed reviewers carry the
-      // same doomloop risk and must be handled the same at the nudge seam.
+      // comparison against the name `review`: the session runs the `work-review`
+      // agent directly — one of the routed REVIEW_AGENTS reviewers, which the
+      // work task flow dispatches and which carries the same doomloop risk —
+      // and the nudge seam must handle it exactly like the generic reviewer.
+      // Routing itself is covered by review-specialization.test.ts.
       yield* llm.text(REPEAT)
       yield* llm.text(REPEAT)
       yield* llm.tool("finish", { reason: "success", result: REPEAT })

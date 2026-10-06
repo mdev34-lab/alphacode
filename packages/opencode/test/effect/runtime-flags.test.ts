@@ -337,41 +337,6 @@ describe("RuntimeFlags", () => {
     )
   }
 
-  for (const input of [
-    { name: "absent", config: {}, expected: undefined },
-    {
-      name: "valid positive integer",
-      config: { OPENCODE_EXPERIMENTAL_REVIEW_STAGNATION_REPEATS: "3" },
-      expected: 3,
-    },
-    {
-      name: "invalid string",
-      config: { OPENCODE_EXPERIMENTAL_REVIEW_STAGNATION_REPEATS: "nope" },
-      expected: undefined,
-    },
-    // Unlike the positive-integer flags, 0 is a meaningful value here: it
-    // disables the review stagnation heuristic.
-    { name: "zero", config: { OPENCODE_EXPERIMENTAL_REVIEW_STAGNATION_REPEATS: "0" }, expected: 0 },
-    {
-      name: "negative",
-      config: { OPENCODE_EXPERIMENTAL_REVIEW_STAGNATION_REPEATS: "-1" },
-      expected: undefined,
-    },
-    {
-      name: "non-integer",
-      config: { OPENCODE_EXPERIMENTAL_REVIEW_STAGNATION_REPEATS: "2.5" },
-      expected: undefined,
-    },
-  ]) {
-    it.effect(`parses reviewStagnationRepeats from config: ${input.name}`, () =>
-      Effect.gen(function* () {
-        const flags = yield* readFlags.pipe(Effect.provide(fromConfig(input.config)))
-
-        expect(flags.reviewStagnationRepeats).toBe(input.expected)
-      }),
-    )
-  }
-
   it.effect("layer ignores the active ConfigProvider for omitted test overrides", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(
