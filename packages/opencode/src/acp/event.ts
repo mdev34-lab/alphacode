@@ -9,6 +9,7 @@ import type {
   ToolPart,
 } from "@opencode-ai/sdk/v2"
 import { Effect } from "effect"
+import { signal } from "@/util/signal"
 import { ACPSession } from "./session"
 import { ACPPermission } from "./permission"
 import { isInternalContextPart } from "@opencode-ai/schema/v1/session"
@@ -81,9 +82,9 @@ export class Subscription {
 
     try {
       // Idle is queued after the turn's events, and this subscription awaits each update in order.
-      void waiter.promise.catch(() => {})
+      void waiter.wait().catch(() => {})
       const response = await request()
-      await waiter.promise
+      await waiter.wait()
       return response
     } finally {
       waiters.delete(waiter)
@@ -195,7 +196,7 @@ export class Subscription {
     this.connected = false
     const error = new Error("ACP event stream disconnected")
     for (const waiters of this.idleWaiters.values()) {
-      for (const waiter of waiters) waiter.reject(error)
+      for (const waiter of waiters) waiter.fail(error)
     }
     this.idleWaiters.clear()
   }
@@ -204,7 +205,7 @@ export class Subscription {
     const waiters = this.idleWaiters.get(sessionId)
     if (!waiters) return
     this.idleWaiters.delete(sessionId)
-    for (const waiter of waiters) waiter.resolve()
+    for (const waiter of waiters) waiter.trigger()
   }
 
   private async handlePartUpdated(event: EventMessagePartUpdated) {
@@ -415,25 +416,6 @@ export class Subscription {
   private clearTool(toolCallId: string) {
     this.toolStarts.delete(toolCallId)
     this.shellSnapshots.delete(toolCallId)
-  }
-}
-
-function signal() {
-  const state: {
-    resolve: () => void
-    reject: (reason?: unknown) => void
-  } = {
-    resolve: () => {},
-    reject: () => {},
-  }
-  const promise = new Promise<void>((resolve, reject) => {
-    state.resolve = resolve
-    state.reject = reject
-  })
-  return {
-    promise,
-    resolve: () => state.resolve(),
-    reject: (reason?: unknown) => state.reject(reason),
   }
 }
 
