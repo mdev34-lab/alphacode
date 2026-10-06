@@ -2,12 +2,17 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import { InstanceState } from "@/effect/instance-state"
 import { Wildcard } from "@opencode-ai/core/util/wildcard"
-import { Deferred, Effect, Layer, Context } from "effect"
+import { Deferred, Duration, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { Config } from "@/config/config"
 import { EventV2Bridge } from "@/event-v2-bridge"
 
 export const Event = PermissionV1.Event
+
+// Deliberately generous: long enough for a human watching the TUI to answer,
+// short enough that an unattended run does not hang on a prompt nobody sees.
+const DEFAULT_TIMEOUT_SECONDS = 45
 
 export interface Interface {
   readonly ask: (input: PermissionV1.AskInput) => Effect.Effect<void, PermissionV1.Error>
@@ -15,9 +20,13 @@ export interface Interface {
   readonly list: () => Effect.Effect<ReadonlyArray<PermissionV1.Request>>
 }
 
+// Outcomes a registered request can settle with. `DeniedError` is absent because a
+// deny rule short-circuits `ask` before the request is ever published.
+type ReplyError = PermissionV1.RejectedError | PermissionV1.CorrectedError | PermissionV1.TimedOutError
+
 interface PendingEntry {
   info: PermissionV1.Request
-  deferred: Deferred.Deferred<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>
+  deferred: Deferred.Deferred<void, ReplyError>
 }
 
 interface State {
@@ -43,6 +52,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const config = yield* Config.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
         void ctx
@@ -83,6 +93,11 @@ const layer = Layer.effect(
 
       if (!needsAsk) return
 
+      const timeout = (yield* config.get()).permission_timeout
+      // On unless explicitly disabled: an unanswered prompt would otherwise pin the
+      // session forever, which is what headless runs and subagents hit.
+      const seconds = timeout?.enabled === false ? undefined : (timeout?.seconds ?? DEFAULT_TIMEOUT_SECONDS)
+
       const id = request.id ?? PermissionV1.ID.ascending()
       const info: PermissionV1.Request = {
         id,
@@ -92,14 +107,39 @@ const layer = Layer.effect(
         metadata: request.metadata,
         always: request.always,
         tool: request.tool,
+        expiresAt: seconds === undefined ? undefined : Date.now() + seconds * 1000,
       }
-      yield* Effect.logInfo("asking", { id, permission: info.permission, patterns: info.patterns })
+      yield* Effect.logInfo("asking", {
+        id,
+        permission: info.permission,
+        patterns: info.patterns,
+        expiresAt: info.expiresAt,
+      })
 
-      const deferred = yield* Deferred.make<void, PermissionV1.RejectedError | PermissionV1.CorrectedError>()
+      const deferred = yield* Deferred.make<void, ReplyError>()
       pending.set(id, { info, deferred })
       yield* events.publish(Event.Asked, info)
+
+      // Settles this request alone. A manual reject cascades to every pending request
+      // in the session; a timeout must not, or one unanswered prompt would take down
+      // unrelated tool calls that a human may still be about to answer.
+      const expire = (waited: number) =>
+        Effect.gen(function* () {
+          yield* Effect.sleep(Duration.millis(waited * 1000))
+          // A reply can win the race in the gap between the sleep ending and this fiber
+          // resuming. Whoever removes the entry from `pending` owns the outcome, so a
+          // late timer defers to the reply instead of publishing a second one.
+          if (!pending.delete(id)) return yield* Deferred.await(deferred)
+          yield* events.publish(Event.Replied, { sessionID: info.sessionID, requestID: id, reply: "timeout" })
+          yield* Deferred.fail(deferred, new PermissionV1.TimedOutError({ seconds: waited }))
+          return yield* Deferred.await(deferred)
+        })
+
+      const wait = Deferred.await(deferred)
+      // Racing interrupts the loser, so every reply path — and the instance dispose
+      // finalizer — cancels the countdown without a separate timer handle.
       return yield* Effect.ensuring(
-        Deferred.await(deferred),
+        seconds === undefined ? wait : Effect.raceFirst(wait, expire(seconds)),
         Effect.sync(() => {
           pending.delete(id)
         }),
@@ -218,6 +258,6 @@ export function visibleTools<T>(tools: Record<string, T>, ruleset: PermissionV1.
   return Object.fromEntries(Object.entries(tools).filter(([name]) => !hidden.has(name)))
 }
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node] })
+export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node, Config.node] })
 
 export * as Permission from "."

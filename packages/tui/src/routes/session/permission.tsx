@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
@@ -108,6 +108,26 @@ function TextBody(props: { title: string; description?: string; icon?: string })
   )
 }
 
+// Rounded up so the label still reads "1s" on the last second instead of jumping
+// to 0 while the request is pending.
+function secondsLeft(expiresAt: number) {
+  return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
+}
+
+function Countdown(props: { expiresAt: number }) {
+  const { theme } = useTheme()
+  const [seconds, setSeconds] = createSignal(secondsLeft(props.expiresAt))
+  const timer = setInterval(() => setSeconds(secondsLeft(props.expiresAt)), 1000)
+  onCleanup(() => clearInterval(timer))
+
+  return (
+    <text fg={theme.textMuted} flexShrink={0}>
+      {"⏱ auto-deny in "}
+      <span style={{ fg: seconds() <= 10 ? theme.error : theme.text }}>{seconds() + "s"}</span>
+    </text>
+  )
+}
+
 export function PermissionPrompt(props: { request: PermissionRequest; directory?: string }) {
   const sdk = useSDK()
   const project = useProject()
@@ -162,6 +182,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
           }
           options={{ confirm: "Confirm", cancel: "Cancel" }}
           escapeKey="cancel"
+          expiresAt={props.request.expiresAt}
           onSelect={(option) => {
             setStore("stage", "permission")
             if (option === "cancel") return
@@ -176,6 +197,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
       </Match>
       <Match when={store.stage === "reject"}>
         <RejectPrompt
+          expiresAt={props.request.expiresAt}
           onConfirm={(message) => {
             void sdk.client.permission.reply({
               reply: "reject",
@@ -405,6 +427,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
               options={{ once: "Allow once", always: "Allow always", reject: "Reject" }}
               escapeKey="reject"
               fullscreen
+              expiresAt={props.request.expiresAt}
               onSelect={(option) => {
                 if (option === "always") {
                   setStore("stage", "always")
@@ -440,7 +463,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
   )
 }
 
-function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: () => void }) {
+function RejectPrompt(props: { expiresAt?: number; onConfirm: (message: string) => void; onCancel: () => void }) {
   let input: TextareaRenderable
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
@@ -510,6 +533,7 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
           cursorStyle={tuiConfig.cursor}
         />
         <box flexDirection="row" gap={2} flexShrink={0}>
+          <Show when={props.expiresAt}>{(expiresAt) => <Countdown expiresAt={expiresAt()} />}</Show>
           <text fg={theme.text}>
             enter <span style={{ fg: theme.textMuted }}>confirm</span>
           </text>
@@ -529,6 +553,7 @@ function Prompt<const T extends Record<string, string>>(props: {
   options: T
   escapeKey?: keyof T
   fullscreen?: boolean
+  expiresAt?: number
   onSelect: (option: keyof T) => void
 }) {
   const { theme } = useTheme()
@@ -695,6 +720,7 @@ function Prompt<const T extends Record<string, string>>(props: {
           </For>
         </box>
         <box flexDirection="row" gap={2} flexShrink={0}>
+          <Show when={props.expiresAt}>{(expiresAt) => <Countdown expiresAt={expiresAt()} />}</Show>
           <Show when={props.fullscreen}>
             <text fg={theme.text}>
               {fullscreenHint()} <span style={{ fg: theme.textMuted }}>{hint()}</span>

@@ -216,6 +216,9 @@ const layer = Layer.effect(
             time: { start: match.part.state.time.start, end: Date.now() },
           },
         })
+        // `PermissionV1.TimedOutError` is deliberately absent: an unanswered prompt
+        // fails only this tool call so the model can pick another approach, while a
+        // rejection ends the turn unless `experimental.continue_loop_on_deny` is set.
         if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
@@ -389,6 +392,11 @@ const layer = Layer.effect(
             }
 
             const agent = yield* agents.get(ctx.assistantMessage.agent)
+            // Unlike a tool permission this ask runs inside the event stream, not inside a
+            // tool, so a failure here halts the turn instead of failing one tool call. That
+            // is intentional for the countdown too: nobody answering "keep going after three
+            // identical failures?" is treated like a "no", which is the bounded outcome for
+            // an agent that is already stuck. See issue #186.
             yield* permission.ask({
               permission: "doom_loop",
               patterns: [value.name],

@@ -146,6 +146,19 @@ export const Info = Schema.Struct({
   }),
   layout: Schema.optional(ConfigLayoutV1.Layout).annotate({ description: "@deprecated Always uses stretch layout." }),
   permission: Schema.optional(ConfigPermissionV1.Info),
+  permission_timeout: Schema.optional(
+    Schema.Struct({
+      enabled: Schema.optional(Schema.Boolean).annotate({
+        description: "Automatically deny permission prompts nobody answers. Enabled by default.",
+      }),
+      seconds: Schema.optional(PositiveInt).annotate({
+        description: "Countdown in seconds before an unanswered permission prompt is denied (default: 45)",
+      }),
+    }),
+  ).annotate({
+    description:
+      "Auto-deny unanswered permission prompts after a countdown so unattended runs never hang. Set enabled to false to wait for a human indefinitely.",
+  }),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   tool_search: Schema.optional(
     Schema.Struct({

@@ -672,6 +672,8 @@ export type Todo = {
   priority: string
 }
 
+export type PermissionReplyOutcome = "once" | "always" | "reject" | "timeout"
+
 export type SessionStatus =
   | {
       type: "idle"
@@ -1391,6 +1393,7 @@ export type GlobalEvent = {
             messageID: string
             callID: string
           }
+          expiresAt?: number
         }
       }
     | {
@@ -1399,7 +1402,7 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           requestID: string
-          reply: "once" | "always" | "reject"
+          reply: PermissionReplyOutcome
         }
       }
     | {
@@ -2009,6 +2012,10 @@ export type Config = {
   ste_lite?: boolean
   layout?: LayoutConfig
   permission?: PermissionConfig
+  permission_timeout?: {
+    enabled?: boolean
+    seconds?: number
+  }
   tools?: {
     [key: string]: boolean
   }
@@ -2494,6 +2501,7 @@ export type PermissionRequest = {
     messageID: string
     callID: string
   }
+  expiresAt?: number
 }
 
 export type PermissionNotFoundError = {
@@ -5749,6 +5757,7 @@ export type PermissionAsked = {
       messageID: string
       callID: string
     }
+    expiresAt?: number
   }
 }
 
@@ -5767,7 +5776,7 @@ export type PermissionReplied = {
   data: {
     sessionID: string
     requestID: string
-    reply: "once" | "always" | "reject"
+    reply: PermissionReplyOutcome
   }
 }
 
@@ -6914,6 +6923,7 @@ export type EventPermissionAsked = {
       messageID: string
       callID: string
     }
+    expiresAt?: number
   }
 }
 
@@ -6923,7 +6933,7 @@ export type EventPermissionReplied = {
   properties: {
     sessionID: string
     requestID: string
-    reply: "once" | "always" | "reject"
+    reply: PermissionReplyOutcome
   }
 }
 
