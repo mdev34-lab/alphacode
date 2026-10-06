@@ -1359,9 +1359,9 @@ export class Global extends HeyApiClient {
   }
 
   /**
-   * Upgrade opencode
+   * Upgrade silvercode
    *
-   * Upgrade opencode to the specified version or latest if not specified.
+   * Upgrade silvercode to the specified version or latest if not specified.
    */
   public upgrade<ThrowOnError extends boolean = false>(
     parameters?: {

@@ -127,8 +127,8 @@ export const GlobalApi = HttpApi.make("global").add(
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "global.upgrade",
-          summary: "Upgrade opencode",
-          description: "Upgrade opencode to the specified version or latest if not specified.",
+          summary: "Upgrade silvercode",
+          description: "Upgrade silvercode to the specified version or latest if not specified.",
         }),
       ),
     )

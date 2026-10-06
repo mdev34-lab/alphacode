@@ -3,7 +3,7 @@ import { Spec } from "../framework/spec"
 
 declare const OPENCODE_CLI_NAME: string | undefined
 
-export const Commands = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME : "opencode", {
+export const Commands = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME : "silvercode", {
   description: "silvercode 2.0 preview command line interface",
   params: {
     "factory-default": Flag.boolean("factory-default")
