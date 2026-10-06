@@ -97,6 +97,9 @@ const layer = Layer.effect(
       // On unless explicitly disabled: an unanswered prompt would otherwise pin the
       // session forever, which is what headless runs and subagents hit.
       const seconds = timeout?.enabled === false ? undefined : (timeout?.seconds ?? DEFAULT_TIMEOUT_SECONDS)
+      // One instant drives both the published `expiresAt` and the countdown below, so what
+      // a client renders is exactly when the request expires.
+      const deadline = seconds === undefined ? undefined : { at: Date.now() + seconds * 1000, seconds }
 
       const id = request.id ?? PermissionV1.ID.ascending()
       const info: PermissionV1.Request = {
@@ -107,7 +110,7 @@ const layer = Layer.effect(
         metadata: request.metadata,
         always: request.always,
         tool: request.tool,
-        expiresAt: seconds === undefined ? undefined : Date.now() + seconds * 1000,
+        expiresAt: deadline?.at,
       }
       yield* Effect.logInfo("asking", {
         id,
@@ -118,36 +121,45 @@ const layer = Layer.effect(
 
       const deferred = yield* Deferred.make<void, ReplyError>()
       pending.set(id, { info, deferred })
-      yield* events.publish(Event.Asked, info)
 
-      // Settles this request alone. A manual reject cascades to every pending request
-      // in the session; a timeout must not, or one unanswered prompt would take down
+      // Expires this request alone. A manual reject cascades to every pending request in
+      // the session; a timeout must not, or one unanswered prompt would take down
       // unrelated tool calls that a human may still be about to answer.
-      const expire = (waited: number) =>
+      const countdown = (due: { at: number; seconds: number }) =>
         Effect.gen(function* () {
-          yield* Effect.sleep(Duration.millis(waited * 1000))
-          // A reply that claimed the request first completed the deferred in the same step
-          // that removed it from `pending`, so losing the claim can never block here.
-          if (!pending.delete(id)) return yield* Deferred.await(deferred)
-          // Unlike `reply`, this fiber's lifetime is tied to the race below: completing the
-          // deferred lets the ask resume, which interrupts whatever this fiber is still
-          // doing. So the announcement goes out first and the completion is guaranteed by
-          // `ensuring` — the entry is already out of `pending`, so a publish that fails or
-          // is interrupted would otherwise leave the ask waiting on it forever.
-          yield* Effect.ensuring(
-            events.publish(Event.Replied, { sessionID: info.sessionID, requestID: id, reply: "timeout" }),
-            Effect.sync(() => {
-              Deferred.doneUnsafe(deferred, Effect.fail(new PermissionV1.TimedOutError({ seconds: waited })))
-            }),
-          )
-          return yield* Deferred.await(deferred)
+          // Against the absolute deadline, not for a duration started here: the countdown
+          // is forked before `asked` is published, and a listener on either event can be
+          // slow, so measuring from the publish would stretch the timeout past `expiresAt`.
+          yield* Effect.sleep(Duration.millis(Math.max(0, due.at - Date.now())))
+          // Claiming is what expires the request. A reply that claimed it first completed
+          // the deferred in the same step that removed it from `pending`, so losing the
+          // claim here can never block.
+          if (!pending.delete(id)) return
+          // Detached, and started before the request is expired: completing the deferred
+          // lets the ask resume, and the ask terminating takes this child fiber with it,
+          // which would swallow the event clients dismiss the prompt on. Nothing waits for
+          // it either, so a listener that is slow cannot stretch the timeout and one that
+          // fails cannot replace `TimedOutError` with its own error.
+          yield* events
+            .publish(Event.Replied, { sessionID: info.sessionID, requestID: id, reply: "timeout" })
+            .pipe(
+              Effect.ignoreCause({ log: true, message: "failed to announce the permission timeout" }),
+              Effect.forkDetach,
+            )
+          Deferred.doneUnsafe(deferred, Effect.fail(new PermissionV1.TimedOutError({ seconds: due.seconds })))
         })
 
-      const wait = Deferred.await(deferred)
-      // Racing interrupts the loser, so every reply path — and the instance dispose
-      // finalizer — cancels the countdown without a separate timer handle.
+      // Forked into this fiber's scope, so it is cancelled whenever the ask ends — every
+      // reply path, an abort, and the instance dispose finalizer — without a timer handle.
+      if (deadline !== undefined) yield* countdown(deadline).pipe(Effect.forkChild)
+
+      // Announced inside the same guard as the wait, so a listener that fails on `asked`
+      // cannot leave a request registered that nobody is waiting on any more.
       return yield* Effect.ensuring(
-        seconds === undefined ? wait : Effect.raceFirst(wait, expire(seconds)),
+        Effect.gen(function* () {
+          yield* events.publish(Event.Asked, info)
+          return yield* Deferred.await(deferred)
+        }),
         Effect.sync(() => {
           pending.delete(id)
         }),
@@ -172,48 +184,42 @@ const layer = Layer.effect(
       if (!(yield* settle(pending, existing, rejection)))
         return yield* new PermissionV1.NotFoundError({ requestID: input.requestID })
 
-      yield* events.publish(Event.Replied, {
-        sessionID: existing.info.sessionID,
-        requestID: existing.info.id,
-        reply: input.reply,
-      })
+      const announced = [{ sessionID: existing.info.sessionID, requestID: existing.info.id, reply: input.reply }]
 
       if (input.reply === "reject") {
         for (const item of pending.values()) {
           if (item.info.sessionID !== existing.info.sessionID) continue
           if (!(yield* settle(pending, item, new PermissionV1.RejectedError()))) continue
-          yield* events.publish(Event.Replied, {
-            sessionID: item.info.sessionID,
-            requestID: item.info.id,
-            reply: "reject",
+          announced.push({ sessionID: item.info.sessionID, requestID: item.info.id, reply: "reject" })
+        }
+      }
+
+      if (input.reply === "always") {
+        for (const pattern of existing.info.always) {
+          approved.push({
+            permission: existing.info.permission,
+            pattern,
+            action: "allow",
           })
         }
-        return
+
+        for (const item of pending.values()) {
+          if (item.info.sessionID !== existing.info.sessionID) continue
+          const ok = item.info.patterns.every(
+            (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
+          )
+          if (!ok) continue
+          if (!(yield* settle(pending, item, undefined))) continue
+          announced.push({ sessionID: item.info.sessionID, requestID: item.info.id, reply: "always" })
+        }
       }
 
-      if (input.reply === "once") return
-
-      for (const pattern of existing.info.always) {
-        approved.push({
-          permission: existing.info.permission,
-          pattern,
-          action: "allow",
-        })
-      }
-
-      for (const item of pending.values()) {
-        if (item.info.sessionID !== existing.info.sessionID) continue
-        const ok = item.info.patterns.every(
-          (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
-        )
-        if (!ok) continue
-        if (!(yield* settle(pending, item, undefined))) continue
-        yield* events.publish(Event.Replied, {
-          sessionID: item.info.sessionID,
-          requestID: item.info.id,
-          reply: "always",
-        })
-      }
+      // Every request this reply decided about is settled before any of them is
+      // announced. Publishing is interruptible and runs listeners inline, so a listener
+      // that fails — or a reply fiber interrupted mid-publish — would otherwise leave the
+      // siblings a reject already cascaded over sitting in `pending` with an open deferred
+      // that nothing can complete any more.
+      for (const event of announced) yield* events.publish(Event.Replied, event)
     })
 
     const list = Effect.fn("Permission.list")(function* () {

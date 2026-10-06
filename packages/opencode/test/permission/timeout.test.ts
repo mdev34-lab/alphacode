@@ -1,6 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { expect } from "bun:test"
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -298,6 +298,122 @@ it.instance(
       yield* Fiber.interrupt(answering)
 
       yield* notStranded(Fiber.join(fiber))
+      expect(yield* list()).toHaveLength(0)
+    }),
+  { git: true, config: countdown },
+)
+
+// The countdown is armed against the absolute deadline and forked before `asked` is
+// published, so no listener can stretch it: the request expires when `expiresAt` says it
+// does even while the publish that announces it is still held open.
+it.instance(
+  "ask - expires on the deadline while a listener holds the asked event open",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      const release = yield* Deferred.make<void, never>()
+      const unsub = yield* events.listen((event) =>
+        event.type === Permission.Event.Asked.type ? Deferred.await(release) : Effect.void,
+      )
+      yield* Effect.addFinalizer(() => unsub)
+
+      const fiber = yield* ask(bash("per_timeout_slow_asked")).pipe(Effect.forkScoped)
+      // A request is registered before it is announced, so it is observable here even
+      // though the ask fiber is still sitting inside the publish.
+      yield* waitForPending(1)
+
+      yield* Effect.sleep("1200 millis")
+      expect(yield* list()).toHaveLength(0)
+
+      yield* Deferred.succeed(release, undefined)
+      const exit = yield* Fiber.await(fiber)
+      if (Exit.isSuccess(exit)) throw new Error("expected the unanswered prompt to be denied")
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(PermissionV1.TimedOutError)
+    }),
+  { git: true, config: countdown },
+)
+
+it.instance(
+  "ask - still fails with the timeout when announcing it fails",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      // The request is already expired by the time this is announced, so a listener that
+      // dies must not replace `TimedOutError` with its own error.
+      const unsub = yield* events.listen((event) =>
+        event.type === Permission.Event.Replied.type ? Effect.die(new Error("listener boom")) : Effect.void,
+      )
+      yield* Effect.addFinalizer(() => unsub)
+
+      const exit = yield* ask(bash("per_timeout_bad_listener")).pipe(Effect.exit)
+      if (Exit.isSuccess(exit)) throw new Error("expected the unanswered prompt to be denied")
+      expect(Cause.squash(exit.cause)).toBeInstanceOf(PermissionV1.TimedOutError)
+      expect(yield* list()).toHaveLength(0)
+    }),
+  { git: true, config: countdown },
+)
+
+// A reject has to reach every request in the session, so each of them fails with the
+// rejection rather than being left for its own countdown to pick up later.
+const expectAllRejected = (exits: ReadonlyArray<Exit.Exit<void, unknown>>) => {
+  for (const exit of exits) {
+    if (Exit.isSuccess(exit)) throw new Error("expected the reject to cascade across the session")
+    expect(Cause.squash(exit.cause)).toBeInstanceOf(PermissionV1.RejectedError)
+  }
+}
+
+const cascadedExits = (first: Fiber.Fiber<void, unknown>, second: Fiber.Fiber<void, unknown>) =>
+  Effect.all([Fiber.join(first).pipe(Effect.exit), Fiber.join(second).pipe(Effect.exit)])
+
+it.instance(
+  "reply - reject settles the whole session when announcing fails",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      const unsub = yield* events.listen((event) =>
+        event.type === Permission.Event.Replied.type ? Effect.die(new Error("listener boom")) : Effect.void,
+      )
+      yield* Effect.addFinalizer(() => unsub)
+
+      const first = yield* ask(bash("per_timeout_cascade_a")).pipe(Effect.forkScoped)
+      const second = yield* ask(bash("per_timeout_cascade_b")).pipe(Effect.forkScoped)
+      yield* waitForPending(2)
+
+      const answered = yield* reply({
+        requestID: PermissionV1.ID.make("per_timeout_cascade_a"),
+        reply: "reject",
+      }).pipe(Effect.exit)
+      expect(Exit.isFailure(answered)).toBe(true)
+
+      // Every request the reject decided about is settled before any of them is announced.
+      expectAllRejected(yield* notStranded(cascadedExits(first, second)))
+      expect(yield* list()).toHaveLength(0)
+    }),
+  { git: true, config: countdown },
+)
+
+it.instance(
+  "reply - reject settles the whole session when the reply is interrupted mid-publish",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      const unsub = yield* events.listen((event) =>
+        event.type === Permission.Event.Replied.type ? Effect.sleep("10 seconds") : Effect.void,
+      )
+      yield* Effect.addFinalizer(() => unsub)
+
+      const first = yield* ask(bash("per_timeout_interrupt_a")).pipe(Effect.forkScoped)
+      const second = yield* ask(bash("per_timeout_interrupt_b")).pipe(Effect.forkScoped)
+      yield* waitForPending(2)
+
+      const rejecting = yield* reply({
+        requestID: PermissionV1.ID.make("per_timeout_interrupt_a"),
+        reply: "reject",
+      }).pipe(Effect.forkScoped)
+      yield* Effect.sleep("100 millis")
+      yield* Fiber.interrupt(rejecting)
+
+      expectAllRejected(yield* notStranded(cascadedExits(first, second)))
       expect(yield* list()).toHaveLength(0)
     }),
   { git: true, config: countdown },
