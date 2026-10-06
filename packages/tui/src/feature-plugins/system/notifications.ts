@@ -13,7 +13,7 @@ function notify(api: TuiPluginApi, sessionID: string | undefined, message: strin
     title: session?.title,
     message,
     notification: isSubagent ? false : { when: "blurred" },
-    sound: { name: sound, when: "blurred" },
+    sound: { name: sound, when: api.tuiConfig.attention.sound_when },
   })
 }
 
@@ -68,10 +68,7 @@ const tui: TuiPlugin = async (api) => {
     if (!active.has(sessionID)) return
     active.delete(sessionID)
 
-    if (errored.has(sessionID)) {
-      errored.delete(sessionID)
-      return
-    }
+    if (errored.has(sessionID)) return
 
     const session = api.state.session.get(sessionID)
     notify(api, sessionID, "Session done", session?.parentID ? "subagent_done" : "done")
@@ -79,8 +76,8 @@ const tui: TuiPlugin = async (api) => {
 
   api.event.on("session.error", (event) => {
     const sessionID = event.properties.sessionID
-    if (!sessionID) return
-    if (active.has(sessionID)) errored.add(sessionID)
+    if (!sessionID || errored.has(sessionID)) return
+    errored.add(sessionID)
     notify(api, sessionID, sessionErrorMessage(event.properties.error), "error")
   })
 }

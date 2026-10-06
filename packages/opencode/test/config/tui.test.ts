@@ -151,6 +151,7 @@ it.instance("resolves attention config defaults and overrides", () =>
         enabled: false,
         notifications: true,
         sound: true,
+        sound_when: "blurred",
         volume: 0.4,
         sound_pack: "opencode.default",
         sounds: {},
@@ -161,6 +162,7 @@ it.instance("resolves attention config defaults and overrides", () =>
           enabled: false,
           notifications: false,
           sound: false,
+          sound_when: "always",
           volume: 0.7,
           sound_pack: "acme.soft",
           sounds: {
@@ -176,6 +178,7 @@ it.instance("resolves attention config defaults and overrides", () =>
         enabled: false,
         notifications: false,
         sound: false,
+        sound_when: "always",
         volume: 0.7,
         sound_pack: "acme.soft",
         sounds: {

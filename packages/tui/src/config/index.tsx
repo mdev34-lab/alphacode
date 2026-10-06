@@ -45,6 +45,9 @@ export const Attention = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   notifications: Schema.optional(Schema.Boolean),
   sound: Schema.optional(Schema.Boolean),
+  sound_when: Schema.optional(Schema.Literals(["blurred", "always"])).annotate({
+    description: "When to play attention sounds: only when the TUI is blurred (default), or always.",
+  }),
   volume: Schema.optional(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(1))),
   sound_pack: Schema.optional(Schema.String),
   sounds: Schema.optional(AttentionSounds),
@@ -80,6 +83,7 @@ export type Resolved = Omit<Info, "attention" | "keybinds" | "leader_timeout" | 
     enabled: boolean
     notifications: boolean
     sound: boolean
+    sound_when: "blurred" | "always"
     volume: number
     sound_pack: string
     sounds: AttentionSoundPaths
@@ -116,6 +120,7 @@ export function resolve(input: Info, options: ResolveOptions): Resolved {
       enabled: input.attention?.enabled ?? false,
       notifications: input.attention?.notifications ?? true,
       sound: input.attention?.sound ?? true,
+      sound_when: input.attention?.sound_when ?? "blurred",
       volume: input.attention?.volume ?? 0.4,
       sound_pack: input.attention?.sound_pack ?? "opencode.default",
       sounds: input.attention?.sounds ?? {},
