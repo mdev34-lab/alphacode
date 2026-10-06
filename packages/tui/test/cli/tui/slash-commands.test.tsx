@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { onCleanup } from "solid-js"
+import type { AssistantMessage, Message, Part, ReasoningPart, TextPart, ToolPart } from "@opencode-ai/sdk/v2"
 import { tmpdir } from "../../fixture/fixture"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
@@ -40,8 +41,75 @@ import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 
 const SESSION_ID = "ses_slash_commands"
+const BASE = 1_700_000_000_000
 
 type Setup = Awaited<ReturnType<typeof testRender>>
+
+function assistantInfo(id: string, index: number, finish: "stop" | "tool-calls" = "tool-calls"): AssistantMessage {
+  return {
+    id,
+    sessionID: SESSION_ID,
+    role: "assistant",
+    time: { created: BASE + index * 1000, completed: BASE + index * 1000 + 1000 },
+    parentID: "msg_user",
+    modelID: "test",
+    providerID: "test",
+    mode: "work",
+    agent: "work",
+    path: { cwd: directory, root: directory },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    finish,
+  }
+}
+
+function textPart(message: AssistantMessage, name: string, text: string): TextPart {
+  return { id: `prt_${name}`, sessionID: SESSION_ID, messageID: message.id, type: "text", text }
+}
+
+function toolPart(message: AssistantMessage, name: string, tool: string, input: Record<string, unknown>): ToolPart {
+  return {
+    id: `prt_${name}`,
+    sessionID: SESSION_ID,
+    messageID: message.id,
+    type: "tool",
+    callID: `call_${name}`,
+    tool,
+    state: { status: "running", input, time: { start: BASE } },
+  }
+}
+
+function messagesPayload(): { info: Message; parts: Part[] }[] {
+  const thoughtMessage = assistantInfo("msg_thought", 0, "stop")
+  const answerMessage = assistantInfo("msg_answer", 1, "stop")
+  const firstRead = assistantInfo("msg_read_a", 2)
+  const firstGrep = assistantInfo("msg_grep", 3)
+  const summaryMessage = assistantInfo("msg_summary", 4, "stop")
+  const secondRead = assistantInfo("msg_read_b", 5)
+  const thirdRead = assistantInfo("msg_read_c", 6)
+
+  return [
+    {
+      info: thoughtMessage,
+      parts: [
+        {
+          id: "prt_thought",
+          sessionID: SESSION_ID,
+          messageID: thoughtMessage.id,
+          type: "reasoning",
+          text: "**Planning**\n\nPrivate reasoning body.",
+          time: { start: BASE, end: BASE + 1000 },
+        } satisfies ReasoningPart,
+      ],
+    },
+    { info: answerMessage, parts: [textPart(answerMessage, "answer", "Assistant answer remains visible.")] },
+    { info: firstRead, parts: [toolPart(firstRead, "read_a", "read", { filePath: "src/a.ts" })] },
+    { info: firstGrep, parts: [toolPart(firstGrep, "grep", "grep", { pattern: "todo" })] },
+    { info: summaryMessage, parts: [textPart(summaryMessage, "summary", "Another ordinary assistant output.")] },
+    { info: secondRead, parts: [toolPart(secondRead, "read_b", "read", { filePath: "src/b.ts" })] },
+    { info: thirdRead, parts: [toolPart(thirdRead, "read_c", "read", { filePath: "src/c.ts" })] },
+  ]
+}
 type Harness = {
   app: Setup
   keymap: OpenTuiKeymap
@@ -79,7 +147,8 @@ async function mountSlashHarness(): Promise<Harness> {
         revert: { messageID: "msg_reverted" },
       })
     }
-    if (["message", "todo", "diff"].some((suffix) => url.pathname === `/session/${SESSION_ID}/${suffix}`)) {
+    if (url.pathname === `/session/${SESSION_ID}/message`) return json(messagesPayload())
+    if (["todo", "diff"].some((suffix) => url.pathname === `/session/${SESSION_ID}/${suffix}`)) {
       return json([])
     }
     return undefined
@@ -183,7 +252,7 @@ const expectedSlashes = [
   ["/timestamps", "/toggle-timestamps"],
   ["/thinking", "/toggle-thinking"],
   ["/details"],
-  ["/activity", "/working"],
+  ["/working", "/activity"],
   ["/copy"],
   ["/export"],
 ] as const
@@ -200,14 +269,28 @@ describe("session slash commands", () => {
     expect(actual).toEqual(expected)
   })
 
-  test("dispatches /details and /working through their canonical commands", async () => {
+  test("dispatches /details and globally toggles /working without affecting assistant text or thinking", async () => {
     const harness = await mountSlashHarness()
     const entries = harness.slashes()
+    const frame = () => harness.app.captureCharFrame()
 
     const details = entries.find((entry) => entry.display === "/details")
-    const working = entries.find((entry) => entry.aliases?.includes("/working"))
+    const working = entries.find((entry) => entry.display === "/working")
     expect(details).toBeDefined()
-    expect(working?.display).toBe("/activity")
+    expect(working?.aliases).toContain("/activity")
+
+    await harness.app.waitForFrame(
+      (value: string) =>
+        value.split("\n").filter((line) => line.includes("Working... 2 tool calls")).length === 2 &&
+        value.includes("Assistant answer remains visible.") &&
+        value.includes("Another ordinary assistant output.") &&
+        value.includes("Thought: Planning"),
+    )
+    const collapsed = frame()
+    expect(collapsed).not.toContain("Read src/a.ts")
+    expect(collapsed).not.toContain('Grep "todo"')
+    expect(collapsed).not.toContain("Read src/c.ts")
+    expect(collapsed).not.toContain("Private reasoning body.")
 
     const commandTitle = (name: string) => harness.keymap.getCommands().find((command) => command.name === name)?.title
 
@@ -216,9 +299,31 @@ describe("session slash commands", () => {
     await harness.app.renderOnce()
     expect(commandTitle("session.toggle.actions")).toBe("Show tool details")
 
-    expect(commandTitle("session.toggle.activity")).toBe("Expand tool activity")
+    expect(commandTitle("session.toggle.activity")).toBe("Expand working blocks")
     working?.onSelect()
-    await harness.app.renderOnce()
-    expect(commandTitle("session.toggle.activity")).toBe("Collapse tool activity")
+    await harness.app.waitForFrame(
+      (value: string) =>
+        value.includes("Read src/a.ts") && value.includes('Grep "todo"') && value.includes("Read src/c.ts"),
+    )
+    expect(commandTitle("session.toggle.activity")).toBe("Collapse working blocks")
+    const expanded = frame()
+    expect(expanded).toContain("Read src/a.ts")
+    expect(expanded).toContain('Grep "todo"')
+    expect(expanded).toContain("Read src/c.ts")
+    expect(expanded).toContain("Assistant answer remains visible.")
+    expect(expanded).toContain("Another ordinary assistant output.")
+    expect(expanded).toContain("Thought: Planning")
+    expect(expanded).not.toContain("Private reasoning body.")
+
+    working?.onSelect()
+    await harness.app.waitForFrame(
+      (value: string) => !value.includes("Read src/a.ts") && !value.includes("Read src/c.ts"),
+    )
+    expect(commandTitle("session.toggle.activity")).toBe("Expand working blocks")
+    expect(frame()).not.toContain('Grep "todo"')
+    expect(frame()).toContain("Assistant answer remains visible.")
+    expect(frame()).toContain("Another ordinary assistant output.")
+    expect(frame()).toContain("Thought: Planning")
+    expect(frame()).not.toContain("Private reasoning body.")
   })
 })
