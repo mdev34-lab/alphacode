@@ -44,27 +44,79 @@ function makeSessionService() {
   )
 }
 
+/**
+ * Holds session lookups open, so a `permission.replied` can land in the window where the
+ * handler is still setting up for a prompt. `release` opens the oldest held lookup,
+ * `openAll` opens every held and future one.
+ */
+function lookupGate() {
+  const held: (() => void)[] = []
+  let open = false
+  let holds = 0
+  return {
+    hold: () => {
+      holds += 1
+      return open ? Promise.resolve() : new Promise<void>((resolve) => held.push(resolve))
+    },
+    release: () => {
+      held.shift()?.()
+    },
+    openAll: () => {
+      open = true
+      while (held.length > 0) held.shift()?.()
+    },
+    /** How many lookups have been held so far, including released ones. */
+    holds: () => holds,
+  }
+}
+
 function createHarness(
   requestPermission: (params: RequestPermissionRequest) => Promise<RequestPermissionResponse> = () =>
     Promise.resolve({ outcome: { outcome: "selected", optionId: "once" } }),
+  options: {
+    readonly lookupGate?: ReturnType<typeof lookupGate>
+    // Makes the reply call fail, so `process` throws once the editor has answered.
+    readonly replyError?: Error
+    // Stands in for the SDK's private transport, which is where the JSON-RPC id of an
+    // outgoing request comes from. Left out by default: a SDK that hides those fields must
+    // degrade to not cancelling rather than to guessing an id.
+    readonly transport?: boolean
+  } = {},
 ) {
   const replies: PermissionReplyParams[] = []
   const requests: RequestPermissionRequest[] = []
   const updates: SessionUpdateParams[] = []
-  const session = makeSessionService()
+  const cancellations: Array<{ method: string; params: Record<string, unknown> }> = []
+  const sessions = makeSessionService()
+  const gate = options.lookupGate
+  const session: ACPSession.Interface = gate
+    ? {
+        ...sessions,
+        tryGet: (sessionId: string) =>
+          Effect.gen(function* () {
+            yield* Effect.promise(() => gate.hold())
+            return yield* sessions.tryGet(sessionId)
+          }),
+      }
+    : sessions
+  // The real SDK allocates the id for an outgoing request from this counter, inside the call.
+  const transport = { nextRequestId: 41 }
   const sdk = {
     permission: {
       reply: (params: PermissionReplyParams) => {
         replies.push(params)
-        return Promise.resolve({ data: true })
+        return options.replyError ? Promise.reject(options.replyError) : Promise.resolve({ data: true })
       },
     },
     session: {
       message: () => Promise.resolve({ data: undefined }),
     },
   } as unknown as OpencodeClient
+  // `satisfies` below keeps the fake honest about the shapes the handler relies on,
+  // including the private transport the JSON-RPC id is read from.
   const connection = {
     requestPermission: (params: RequestPermissionRequest) => {
+      transport.nextRequestId += 1
       requests.push(params)
       return requestPermission(params)
     },
@@ -72,10 +124,17 @@ function createHarness(
       updates.push(params)
       return Promise.resolve()
     },
-  } satisfies Pick<AgentSideConnection, "requestPermission" | "sessionUpdate">
+    extNotification: (method: string, params: Record<string, unknown>) => {
+      cancellations.push({ method, params })
+      return Promise.resolve()
+    },
+    ...(options.transport ? { connection: transport } : {}),
+  } satisfies Partial<Pick<AgentSideConnection, "requestPermission" | "sessionUpdate" | "extNotification">> & {
+    readonly connection?: { nextRequestId: number }
+  }
   const subscription = new ACPEvent.Subscription({ sdk, connection, session })
 
-  return { connection, replies, requests, sdk, session, subscription, updates }
+  return { cancellations, connection, replies, requests, sdk, session, subscription, updates }
 }
 
 async function createSession(session: ACPSession.Interface, sessionId: string, cwd = "/workspace") {
@@ -440,6 +499,9 @@ describe("acp permissions", () => {
     answers[1]?.({ outcome: { outcome: "selected", optionId: "always" } })
     await pollUntil(() => harness.replies.length === 1, "the live prompt was never replied")
     expect(harness.replies).toEqual([{ requestID: "perm_next", reply: "always", directory: "/workspace" }])
+    // No transport in this harness, so there is no request id to aim a cancel at: the wait
+    // is still released, which is what frees OpenCode.
+    expect(harness.cancellations).toEqual([])
   })
 
   it("skips a prompt the server settled while it waited behind another one", async () => {
@@ -475,5 +537,110 @@ describe("acp permissions", () => {
     answers[1]?.({ outcome: { outcome: "selected", optionId: "once" } })
     await pollUntil(() => harness.replies.length === 1, "the third prompt was never replied")
     expect(harness.replies).toEqual([{ requestID: "perm_third", reply: "once", directory: "/workspace" }])
+  })
+
+  it("drops a prompt the server settles during the session lookup", async () => {
+    const gate = lookupGate()
+    const harness = createHarness(() => new Promise<RequestPermissionResponse>(() => {}), { lookupGate: gate })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_lookup", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    await pollUntil(() => gate.holds() === 1, "the handler never reached the session lookup")
+    // Settle it while that lookup is still open, then let the handler resume.
+    harness.subscription.handle(permissionReplied("ses_a", "perm_lookup", "timeout"))
+    gate.openAll()
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_next", { tool: { messageID: "msg_1", callID: "call_2" } }),
+    )
+    await pollUntil(() => harness.requests.length === 1, "the queue never reached the next prompt")
+    // The settled prompt never reached the editor: only the next one did, and its answer
+    // belongs to the server rather than to the editor.
+    expect(harness.requests[0]).toMatchObject({ toolCall: { toolCallId: "call_2" } })
+    expect(harness.replies).toEqual([])
+    expect(harness.cancellations).toEqual([])
+  })
+
+  it("drops a prompt the server settles while the tool call is built", async () => {
+    const file = await tempFile("slow.ts", "one\n")
+    const patch = createTwoFilesPatch(file, file, "one\n", "two\n")
+    // Building an edit prompt reads and patches every file in the metadata before the editor
+    // is asked. Enough of them keeps that build open across the single yield below, which is
+    // what puts the reply inside the build rather than inside the session lookup.
+    const files = Array.from({ length: 4000 }, () => ({ filePath: file, relativePath: "slow.ts", patch }))
+    const gate = lookupGate()
+    const harness = createHarness(() => new Promise<RequestPermissionResponse>(() => {}), { lookupGate: gate })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_build", {
+        permission: "edit",
+        metadata: { filepath: "slow.ts", files },
+        tool: { messageID: "msg_1", callID: "call_1" },
+      }),
+    )
+    await pollUntil(() => gate.holds() === 1, "the handler never reached the session lookup")
+    gate.openAll()
+    // Microtask hops only: a timer would wait for the build's file reads to finish, while
+    // these let the handler resume past the lookup and suspend inside the build.
+    for (let hop = 0; hop < 50; hop++) await Promise.resolve()
+    expect(harness.requests).toHaveLength(0)
+
+    harness.subscription.handle(permissionReplied("ses_a", "perm_build", "timeout"))
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_after", { tool: { messageID: "msg_1", callID: "call_2" } }),
+    )
+    await pollUntil(() => harness.requests.length === 1, "the queue never reached the next prompt")
+    // The settled prompt was never sent, and the queue moved on to the next one.
+    expect(harness.requests[0]).toMatchObject({ toolCall: { toolCallId: "call_2" } })
+    expect(harness.replies).toEqual([])
+  })
+
+  it("cancels the editor dialog when the server settles an open prompt", async () => {
+    const harness = createHarness(() => new Promise<RequestPermissionResponse>(() => {}), { transport: true })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_open", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    await pollUntil(() => harness.requests.length === 1, "the editor was never asked")
+
+    harness.subscription.handle(permissionReplied("ses_a", "perm_open", "timeout"))
+
+    await pollUntil(() => harness.cancellations.length === 1, "the editor was never told to close the dialog")
+    // 41 is the id the transport hands out for the first request: the handler reads that
+    // counter immediately before the call, which is what makes the cancel aim at the open
+    // request rather than at the next one.
+    expect(harness.cancellations).toEqual([{ method: "$/cancel_request", params: { requestId: 41 } }])
+  })
+
+  it("stops tracking a prompt whose handling throws", async () => {
+    const harness = createHarness(undefined, { replyError: new Error("reply failed"), transport: true })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_throw", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    // The editor answers, posting that answer fails, and handling the prompt throws while it
+    // is still marked as waiting on the editor.
+    await pollUntil(() => harness.replies.length === 1, "the editor answer was never posted")
+    // One macrotask boundary, so the throw has unwound through the handler's cleanup.
+    await Bun.sleep(20)
+
+    // The answer did reach the server, which settles the request afterwards. A prompt that
+    // were still tracked would be cancelled here, aiming at a dialog the editor already
+    // closed when it answered.
+    harness.subscription.handle(permissionReplied("ses_a", "perm_throw", "once"))
+    await Bun.sleep(20)
+    expect(harness.cancellations).toEqual([])
+
+    // And the session queue is not stuck behind the prompt that threw.
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_next", { tool: { messageID: "msg_1", callID: "call_2" } }),
+    )
+    await pollUntil(() => harness.requests.length === 2, "the queue never reached the next prompt")
   })
 })

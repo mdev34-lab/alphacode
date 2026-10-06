@@ -23,7 +23,7 @@ import {
 } from "./tool"
 
 type Connection = Pick<AgentSideConnection, "sessionUpdate"> &
-  Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile">>
+  Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile" | "extNotification">>
 type GlobalEventEnvelope = {
   payload?: Event
 }
