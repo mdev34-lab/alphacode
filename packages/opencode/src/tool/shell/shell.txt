@@ -26,3 +26,19 @@ ${commandSection}
 - Before creating a PR, inspect status, diff, remote tracking, recent commits, and the diff from the base branch.
 - Review all commits included in the PR, not just the latest commit.
 - Use `gh` for GitHub tasks, including PRs, issues, checks, and releases; return the PR URL when done.
+
+## Shell identity and failure adaptation
+
+- Your shell may be bash (POSIX) or PowerShell (Windows). Constructs valid in
+  one are parse errors in the other. PowerShell rejects: heredocs (`<<`),
+  `for f in ...; do ... done` one-liners, and POSIX `rm` flags. Bash rejects
+  PowerShell idioms like `Remove-Item`.
+- On the first shell parse error (`ParserError`, "is not recognized", "not a
+  valid regular expression", etc.), STOP retrying the same construct. Either:
+  (a) translate to the native shell's syntax, or
+  (b) for anything multi-line or loop-shaped, write a script file with the
+  `write` tool (`.py`, `.ps1`, or `.sh` as appropriate) and execute it.
+  Never attempt the same failing syntax pattern more than once.
+- PowerShell regex/quoting rules differ from POSIX: use single-quoted literal
+  strings for patterns, and prefer a script file over inline regex flags when
+  unsure.
