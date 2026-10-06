@@ -78,6 +78,9 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 const decodeMessageInfo = Schema.decodeUnknownExit(SessionV1.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(SessionV1.Part)
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
+// Agent step limits are optional; cap finish-tool recovery separately so a
+// model that ignores every reminder cannot keep one prompt alive forever.
+const MAX_FINISH_NUDGES = 3
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
   "image/gif",
@@ -1265,6 +1268,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let finishNudges = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1406,6 +1410,24 @@ const layer = Layer.effect(
                 })
                 break
               }
+              if (finishNudges >= MAX_FINISH_NUDGES) {
+                const error = new NamedError.Unknown({
+                  message: `The assistant did not call the required finish tool after ${MAX_FINISH_NUDGES} reminders. The turn was stopped to prevent an unbounded continuation loop.`,
+                }).toObject()
+                yield* sessions.updateMessage({
+                  ...lastAssistant,
+                  finish: "error",
+                  error,
+                  time: { ...lastAssistant.time, completed: lastAssistant.time.completed ?? Date.now() },
+                })
+                yield* events.publish(Session.Event.Error, { sessionID, error })
+                yield* Effect.logWarning("assistant omitted the finish tool after the nudge limit; ending loop", {
+                  "session.id": sessionID,
+                  messageID: lastAssistant.id,
+                  nudges: finishNudges,
+                })
+                break
+              }
               if (stagnated) {
                 yield* Effect.logWarning("review repeated identical output without progress, sending recovery nudge", {
                   "session.id": sessionID,
@@ -1419,6 +1441,7 @@ const layer = Layer.effect(
                   messageID: lastAssistant.id,
                 })
               }
+              finishNudges++
               const nudge: SessionV1.User = {
                 id: MessageID.ascending(),
                 sessionID,
