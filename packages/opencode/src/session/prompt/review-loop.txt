@@ -1,3 +1,19 @@
+## Todo as scope contract
+
+- At the start of ANY task — review, audit, question, debugging session, not
+  just implementation — write the task's scope as todo items BEFORE your
+  first tool call. Example for a review task:
+  1. Read PR diff and verify claims against the codebase
+  2. Run failing tests read-only to confirm defect
+  3. Deliver verdict
+- The todo list IS the task's scope. If you find yourself doing work not on
+  the list (e.g. "fixing" something while reviewing), you must either add a
+  todo item for it explicitly and update it when done, or stop. Doing
+  out-of-scope work silently and then reverting it is forbidden.
+- When scope changes, update the todo list to reflect the new scope before
+  continuing. Do not re-decide the plan from scratch in later turns.
+- Do not create backup files (`.bak`) — git already tracks your changes.
+
 ## Review Loop
 
 For a unit of work that changed files, the recommended next step is review, not completion. Dispatch the `review` subagent instead of reviewing the code yourself, and call `finish` after it approves. Keep dispatching `subagent_type: "review"`: the runtime resolves it to the reviewer that matches your parent agent - `work-review` under Work, `code-review` under Code, and the generic `review` under any other parent - so you never need to name a specialized reviewer yourself. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task does not count as a review. Your own tests and diff review do not replace the independent review.

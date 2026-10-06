@@ -90,6 +90,27 @@ function toolMessage(tool: string, options?: { writesFiles?: boolean }) {
 }
 
 describe("review loop prompt contract", () => {
+  test("uses todo as the scope contract for every task", async () => {
+    const prompt = (await readPrompt("review-loop.txt")).replace(/\s+/g, " ")
+
+    expect(prompt).toContain("## Todo as scope contract")
+    expect(prompt).toContain(
+      "At the start of ANY task — review, audit, question, debugging session, not just implementation — write the task's scope as todo items BEFORE your first tool call.",
+    )
+    expect(prompt).toContain("The todo list IS the task's scope.")
+    expect(prompt).toContain("Doing out-of-scope work silently and then reverting it is forbidden.")
+    expect(prompt).toContain("When scope changes, update the todo list to reflect the new scope before continuing.")
+    expect(prompt).toContain("Do not create backup files (`.bak`) — git already tracks your changes.")
+  })
+
+  test("todo tool guidance defers optional skips to the scope contract", async () => {
+    const description = (await readTool("todowrite.txt")).replace(/\s+/g, " ")
+
+    expect(description).toContain(
+      "The system-prompt todo scope contract overrides these skips: when present, write its scope items before your first tool call, even for the cases above.",
+    )
+  })
+
   test("recommends a review after work that follows review findings", async () => {
     const prompt = await readPrompt("review-loop.txt")
 
