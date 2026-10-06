@@ -2270,24 +2270,31 @@ export function sortReviewFindings(findings: readonly ReviewReport.Finding[]) {
     .map((entry) => entry.finding)
 }
 
-/** The `file:line` locator for a finding, when the report names one. */
+/**
+ * The `file:line` locator for a finding, when the report names a file.
+ * A line without a file would render as a bare `:42`, so it is dropped.
+ */
 export function reviewFindingLocation(finding: ReviewReport.Finding): string | undefined {
   const file = finding.file?.trim()
+  if (!file) return undefined
   const line =
     finding.line !== undefined && Number.isInteger(finding.line) && finding.line > 0 ? `:${finding.line}` : ""
-  if (file) return file + line
-  return line || undefined
+  return file + line
 }
 
 function ReviewFinish(props: { review: { report: ReviewReport.Info; analysis: string }; part: ToolPart }) {
   const { theme } = useTheme()
   const ctx = use()
-  const report = props.review.report
   const [expanded, setExpanded] = createSignal(false)
   const [rawOpen, setRawOpen] = createSignal(false)
 
-  const approved = report.assessment === "approved"
-  const findings = createMemo(() => sortReviewFindings(report.findings))
+  // Read props.review through memos: the finish result (and therefore the
+  // extracted report) can change while the component stays mounted, e.g.
+  // when the part is updated in place. Plain consts would capture the first
+  // report and keep rendering stale data under the unkeyed <Show> in Finish.
+  const report = createMemo(() => props.review.report)
+  const approved = createMemo(() => report().assessment === "approved")
+  const findings = createMemo(() => sortReviewFindings(report().findings))
   const analysis = createMemo(() => props.review.analysis.trim())
   const analysisCollapsed = createMemo(() =>
     collapseToolOutput(
@@ -2302,8 +2309,8 @@ function ReviewFinish(props: { review: { report: ReviewReport.Info; analysis: st
   // The envelope is stripped from the default view; the exact canonical
   // JSON stays reachable on demand, re-serialized the same way the runtime
   // delivers it to the parent agent.
-  const rawReport = createMemo(() => capOutputLines(ReviewReport.envelope(report)))
-  const revision = createMemo(() => (report.revision ? Locale.truncateMiddle(report.revision, 24) : undefined))
+  const rawReport = createMemo(() => capOutputLines(ReviewReport.envelope(report())))
+  const revision = createMemo(() => (report().revision ? Locale.truncateMiddle(report().revision, 24) : undefined))
 
   const severityColor = (severity: ReviewReport.Finding["severity"]) =>
     severity === "critical" ? theme.error : severity === "important" ? theme.warning : theme.textMuted
@@ -2317,8 +2324,8 @@ function ReviewFinish(props: { review: { report: ReviewReport.Info; analysis: st
       >
         <box gap={1}>
           <text fg={theme.text}>
-            <span style={{ fg: approved ? theme.success : theme.error, bold: true }}>
-              {approved ? "✓ Approved" : "✗ Needs fixes"}
+            <span style={{ fg: approved() ? theme.success : theme.error, bold: true }}>
+              {approved() ? "✓ Approved" : "✗ Needs fixes"}
             </span>
             <Show when={findings().length > 0}>
               <span style={{ fg: theme.textMuted }}>
@@ -2326,7 +2333,7 @@ function ReviewFinish(props: { review: { report: ReviewReport.Info; analysis: st
               </span>
             </Show>
           </text>
-          <text fg={theme.text}>{report.summary}</text>
+          <text fg={theme.text}>{report().summary}</text>
           <Show when={analysis()}>
             <text fg={theme.text}>
               {expanded() || !analysisCollapsed().overflow ? analysis() : analysisCollapsed().output}

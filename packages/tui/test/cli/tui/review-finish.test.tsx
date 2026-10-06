@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { afterEach, describe, expect, test } from "bun:test"
-import { createMemo, onCleanup } from "solid-js"
+import { createMemo, createSignal, onCleanup } from "solid-js"
 import { Dynamic } from "solid-js/web"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
@@ -41,7 +41,7 @@ function envelope(report: Record<string, unknown>): string {
 
 const ANALYSIS = "## Review\n\nI checked the diff against the brief.\n\n### Assessment\n\nAssessment: Needs fixes\n\nReasoning: Two issues need attention before merge.\n"
 
-function reviewResult(overrides: { assessment?: "approved" | "needs-fixes"; revision?: string } = {}) {
+function reviewResult(overrides: { assessment?: "approved" | "needs-fixes"; revision?: string; summary?: string } = {}) {
   const report = {
     version: 1,
     revision: "uncommitted",
@@ -155,7 +155,8 @@ describe("review finish parsing", () => {
   test("formats finding locations", () => {
     expect(reviewFindingLocation({ severity: "minor", title: "t", file: "src/a.ts", line: 42 })).toBe("src/a.ts:42")
     expect(reviewFindingLocation({ severity: "minor", title: "t", file: "src/a.ts" })).toBe("src/a.ts")
-    expect(reviewFindingLocation({ severity: "minor", title: "t", line: 7 })).toBe(":7")
+    // A line without a file would render as a bare ":7", so it is dropped.
+    expect(reviewFindingLocation({ severity: "minor", title: "t", line: 7 })).toBeUndefined()
     expect(reviewFindingLocation({ severity: "minor", title: "t" })).toBeUndefined()
     expect(reviewFindingLocation({ severity: "minor", title: "t", file: "  " })).toBeUndefined()
     expect(reviewFindingLocation({ severity: "minor", title: "t", file: "src/a.ts", line: 0 })).toBe("src/a.ts")
@@ -215,6 +216,9 @@ async function mountSession(part: ToolPart, options: { width?: number; height?: 
   const calls = createFetch(undefined, events)
 
   let sync!: Sync
+  // Drives the rendered part so a test can push an updated part (same id,
+  // new state) through the same reactive prop path the transcript uses.
+  const [currentPart, setPart] = createSignal(part)
 
   function Harness() {
     const renderer = useRenderer()
@@ -256,7 +260,7 @@ async function mountSession(part: ToolPart, options: { width?: number; height?: 
                 plain height/width (no sticky props) keeps the mouse grid in
                 sync with the captured frame, matching activity-group tests. */}
             <scrollbox height={options.height ?? 40} width={options.width ?? 72}>
-              <FinishPart part={part} />
+              <FinishPart part={currentPart()} />
             </scrollbox>
           </LocationProvider>
         </SessionContext.Provider>
@@ -313,32 +317,28 @@ async function mountSession(part: ToolPart, options: { width?: number; height?: 
   }
   await waitUntil(() => sync !== undefined)
   await app.renderOnce()
-  return { app }
+  return { app, setPart }
 }
 
 describe("review finish rendering", () => {
   test("renders a completed review finish as a structured report, not raw JSON", async () => {
     const { app } = await mountSession(finishPart({ status: "completed", result: reviewResult() }), { height: 30 })
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Needs fixes"))
-      const frame = frameOf(app)
-      // Structured verdict, summary, and per-finding rows...
-      expect(frame).toContain("Needs fixes")
-      expect(frame).toContain("3 findings")
-      expect(frame).toContain("Two issues need attention before merge.")
-      expect(frame).toContain("SQL injection risk")
-      expect(frame).toContain("src/db.ts:42")
-      expect(frame).toContain("Race condition")
-      expect(frame).toContain("Unused variable")
-      expect(frame).toContain("src/util.ts:10")
-      expect(frame).toContain("Raw review report")
-      // ...instead of the raw envelope dump.
-      expect(frame).not.toContain("alphacode-review")
-      expect(frame).not.toContain('"assessment"')
-      expect(frame).not.toContain("Task completed")
-    } finally {
-      app.renderer.destroy()
-    }
+    await app.waitForFrame((frame: string) => frame.includes("Needs fixes"))
+    const frame = frameOf(app)
+    // Structured verdict, summary, and per-finding rows...
+    expect(frame).toContain("Needs fixes")
+    expect(frame).toContain("3 findings")
+    expect(frame).toContain("Two issues need attention before merge.")
+    expect(frame).toContain("SQL injection risk")
+    expect(frame).toContain("src/db.ts:42")
+    expect(frame).toContain("Race condition")
+    expect(frame).toContain("Unused variable")
+    expect(frame).toContain("src/util.ts:10")
+    expect(frame).toContain("Raw review report")
+    // ...instead of the raw envelope dump.
+    expect(frame).not.toContain("alphacode-review")
+    expect(frame).not.toContain('"assessment"')
+    expect(frame).not.toContain("Task completed")
   })
 
   test("orders findings critical first and keeps the approved verdict", async () => {
@@ -346,73 +346,81 @@ describe("review finish rendering", () => {
       finishPart({ status: "completed", result: reviewResult({ assessment: "approved" }) }),
       { height: 30 },
     )
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Approved"))
-      const frame = frameOf(app)
-      expect(frame).toContain("Approved")
-      const critical = rowOf(frame, "SQL injection risk")
-      const important = rowOf(frame, "Race condition")
-      const minor = rowOf(frame, "Unused variable")
-      expect(critical).toBeLessThan(important)
-      expect(important).toBeLessThan(minor)
-      // No raw JSON in the default view.
-      expect(frame).not.toContain("alphacode-review")
-    } finally {
-      app.renderer.destroy()
-    }
+    await app.waitForFrame((frame: string) => frame.includes("Approved"))
+    const frame = frameOf(app)
+    expect(frame).toContain("Approved")
+    const critical = rowOf(frame, "SQL injection risk")
+    const important = rowOf(frame, "Race condition")
+    const minor = rowOf(frame, "Unused variable")
+    expect(critical).toBeLessThan(important)
+    expect(important).toBeLessThan(minor)
+    // No raw JSON in the default view.
+    expect(frame).not.toContain("alphacode-review")
   })
 
   test("keeps finding details collapsed until the block is expanded", async () => {
     const { app } = await mountSession(finishPart({ status: "completed", result: reviewResult() }), { height: 36 })
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Click to expand"))
-      const collapsed = frameOf(app)
-      expect(collapsed).toContain("Click to expand")
-      // Details stay hidden while collapsed...
-      expect(collapsed).not.toContain("Use parameterized queries.")
-      expect(collapsed).not.toContain("Guard the counter")
+    await app.waitForFrame((frame: string) => frame.includes("Click to expand"))
+    const collapsed = frameOf(app)
+    expect(collapsed).toContain("Click to expand")
+    // Details stay hidden while collapsed...
+    expect(collapsed).not.toContain("Use parameterized queries.")
+    expect(collapsed).not.toContain("Guard the counter")
 
-      await app.mockMouse.click(5, rowOf(collapsed, "Click to expand"))
-      await app.waitForFrame((frame: string) => frame.includes("Click to collapse"))
-      const expanded = frameOf(app)
-      expect(expanded).toContain("Use parameterized queries.")
-      expect(expanded).toContain("Guard the counter")
-      expect(expanded).toContain("Remove the variable")
-    } finally {
-      app.renderer.destroy()
-    }
+    await app.mockMouse.click(5, rowOf(collapsed, "Click to expand"))
+    await app.waitForFrame((frame: string) => frame.includes("Click to collapse"))
+    const expanded = frameOf(app)
+    expect(expanded).toContain("Use parameterized queries.")
+    expect(expanded).toContain("Guard the counter")
+    expect(expanded).toContain("Remove the variable")
   })
 
   test("shows the exact report envelope on demand and hides it again", async () => {
     // Tall enough viewport that the full report (block + envelope) stays
     // visible without scrolling.
     const { app } = await mountSession(finishPart({ status: "completed", result: reviewResult() }), { height: 56 })
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Raw review report"))
-      expect(frameOf(app)).not.toContain("alphacode-review")
+    await app.waitForFrame((frame: string) => frame.includes("Raw review report"))
+    expect(frameOf(app)).not.toContain("alphacode-review")
 
-      await app.mockMouse.click(5, rowOf(frameOf(app), "Raw review report"))
-      await app.waitForFrame((frame: string) => frame.includes("alphacode-review"))
-      const frame = frameOf(app)
-      expect(frame).toContain("<alphacode-review>")
-      expect(frame).toContain('"assessment": "needs-fixes"')
+    await app.mockMouse.click(5, rowOf(frameOf(app), "Raw review report"))
+    await app.waitForFrame((frame: string) => frame.includes("alphacode-review"))
+    const frame = frameOf(app)
+    expect(frame).toContain("<alphacode-review>")
+    expect(frame).toContain('"assessment": "needs-fixes"')
 
-      await app.mockMouse.click(5, rowOf(frame, "Click to hide the raw report"))
-      await app.waitForFrame((frame: string) => !frame.includes("alphacode-review"))
-      expect(frameOf(app)).toContain("Raw review report")
-    } finally {
-      app.renderer.destroy()
-    }
+    await app.mockMouse.click(5, rowOf(frame, "Click to hide the raw report"))
+    await app.waitForFrame((frame: string) => !frame.includes("alphacode-review"))
+    expect(frameOf(app)).toContain("Raw review report")
   })
 
-  test("envelope repeat", async () => {
-    const { app } = await mountSession(finishPart({ status: "completed", result: reviewResult() }), { height: 56 })
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Raw review report"))
-      expect(frameOf(app)).not.toContain("alphacode-review")
-    } finally {
-      app.renderer.destroy()
-    }
+  test("re-renders with the updated report when the finished part changes", async () => {
+    // The same part id is updated in place with a different (approved) report.
+    // The block must reflect the new verdict and summary, not the stale first
+    // report, even though the unkeyed <Show> keeps the same component mounted.
+    const initial = finishPart({ status: "completed", result: reviewResult() })
+    const { app, setPart } = await mountSession(initial, { height: 30 })
+    await app.waitForFrame((frame: string) => frame.includes("Needs fixes"))
+    expect(frameOf(app)).toContain("Two issues need attention before merge.")
+
+    const nextResult = reviewResult({ assessment: "approved", summary: "All checks passed." })
+    setPart({
+      ...initial,
+      state: {
+        status: "completed",
+        input: { reason: "success", result: nextResult },
+        output: nextResult,
+        title: "Task completed",
+        metadata: {},
+        time: { start: at(3), end: at(4) },
+      } as ToolPart["state"],
+    })
+
+    await app.waitForFrame((frame: string) => frame.includes("Approved") && frame.includes("All checks passed."))
+    const frame = frameOf(app)
+    expect(frame).toContain("Approved")
+    expect(frame).toContain("All checks passed.")
+    expect(frame).not.toContain("Needs fixes")
+    expect(frame).not.toContain("Two issues need attention before merge.")
   })
 
   test("keeps plain finish results on the existing inline path", async () => {
@@ -420,29 +428,21 @@ describe("review finish rendering", () => {
       finishPart({ status: "completed", result: "Implemented the feature and verified tests." }),
       { height: 10 },
     )
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Task completed"))
-      const frame = frameOf(app)
-      expect(frame).toContain("Task completed")
-      expect(frame).toContain("Implemented the feature and verified tests.")
-      expect(frame).not.toContain("Raw review report")
-    } finally {
-      app.renderer.destroy()
-    }
+    await app.waitForFrame((frame: string) => frame.includes("Task completed"))
+    const frame = frameOf(app)
+    expect(frame).toContain("Task completed")
+    expect(frame).toContain("Implemented the feature and verified tests.")
+    expect(frame).not.toContain("Raw review report")
   })
 
   test("does not pre-announce the verdict while the finish is still running", async () => {
     const { app } = await mountSession(finishPart({ status: "running", result: reviewResult() }), { height: 10 })
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Completing task"))
-      const frame = frameOf(app)
-      expect(frame).toContain("Completing task")
-      expect(frame).not.toContain("Needs fixes")
-      expect(frame).not.toContain("Approved")
-      expect(frame).not.toContain("Raw review report")
-    } finally {
-      app.renderer.destroy()
-    }
+    await app.waitForFrame((frame: string) => frame.includes("Completing task"))
+    const frame = frameOf(app)
+    expect(frame).toContain("Completing task")
+    expect(frame).not.toContain("Needs fixes")
+    expect(frame).not.toContain("Approved")
+    expect(frame).not.toContain("Raw review report")
   })
 
   test("keeps the failure presentation for a declined review finish", async () => {
@@ -454,14 +454,10 @@ describe("review finish rendering", () => {
       }),
       { height: 10 },
     )
-    try {
-      await app.waitForFrame((frame: string) => frame.includes("Finish failed"))
-      const frame = frameOf(app)
-      expect(frame).toContain("Finish failed")
-      expect(frame).not.toContain("Raw review report")
-      expect(frame).not.toContain("Needs fixes")
-    } finally {
-      app.renderer.destroy()
-    }
+    await app.waitForFrame((frame: string) => frame.includes("Finish failed"))
+    const frame = frameOf(app)
+    expect(frame).toContain("Finish failed")
+    expect(frame).not.toContain("Raw review report")
+    expect(frame).not.toContain("Needs fixes")
   })
 })
