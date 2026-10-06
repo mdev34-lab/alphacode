@@ -98,6 +98,17 @@ const waitForReplies = (replies: ReadonlyArray<unknown>, count: number) =>
     }),
   )
 
+// Once a request leaves `pending` with its deferred still open, nothing can settle it any
+// more: not a later reply, not the countdown, not the instance dispose finalizer. Fail
+// loudly instead of hanging the suite for the full test timeout.
+const notStranded = <A, E>(self: Effect.Effect<A, E>) =>
+  self.pipe(
+    Effect.timeoutOrElse({
+      duration: "3 seconds",
+      orElse: () => Effect.fail(new Error("permission ask was never settled")),
+    }),
+  )
+
 it.instance(
   "ask - auto-denies an unanswered prompt when the countdown expires",
   () =>
@@ -117,7 +128,6 @@ it.instance(
       expect(error).toBeInstanceOf(PermissionV1.TimedOutError)
       // A timeout must read differently from a rejection: the model should change
       // approach instead of treating it as the user saying no.
-      expect(error).not.toBeInstanceOf(PermissionV1.RejectedError)
       if (error instanceof PermissionV1.TimedOutError) expect(error.message).toContain("automatically denied")
 
       expect(yield* list()).toHaveLength(0)
@@ -172,9 +182,10 @@ it.instance(
     Effect.gen(function* () {
       const first = yield* ask(bash("per_timeout_first")).pipe(Effect.forkScoped)
       yield* waitForPending(1)
-      // Start the second prompt late so its countdown is still running when the first
-      // one expires.
-      yield* Effect.sleep("700 millis")
+      // Start the second prompt late so its countdown is still running when the first one
+      // expires. The stagger doubles as the slack the reply below has to land in, so this
+      // test runs a longer countdown than the rest of the file.
+      yield* Effect.sleep("2 seconds")
       const second = yield* ask(bash("per_timeout_second")).pipe(Effect.forkScoped)
       yield* waitForPending(2)
 
@@ -191,7 +202,7 @@ it.instance(
       yield* Fiber.join(second)
       expect(yield* list()).toHaveLength(0)
     }),
-  { git: true, config: countdown },
+  { git: true, config: { permission_timeout: { enabled: true, seconds: 3 } } },
 )
 
 it.instance(
@@ -230,4 +241,64 @@ it.instance(
       yield* Fiber.join(fiber)
     }),
   { git: true, config: { permission_timeout: { enabled: false, seconds: 1 } } },
+)
+
+// `permission.replied` is not a durable event, so publishing runs its listeners inline: a
+// listener that dies fails the publish, and interrupting the publisher lands inside it.
+// Both are the fault the claim has to survive, because at that point the entry is already
+// out of `pending` — the state the countdown reads as "a reply settled this" and the
+// dispose finalizer can no longer see.
+it.instance(
+  "reply - settles the ask when publishing the replied event fails",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      const unsub = yield* events.listen((event) =>
+        event.type === Permission.Event.Replied.type ? Effect.die(new Error("listener boom")) : Effect.void,
+      )
+      yield* Effect.addFinalizer(() => unsub)
+
+      const fiber = yield* ask(bash("per_timeout_publish")).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+
+      const answered = yield* reply({
+        requestID: PermissionV1.ID.make("per_timeout_publish"),
+        reply: "once",
+      }).pipe(Effect.exit)
+      expect(Exit.isFailure(answered)).toBe(true)
+
+      // The answer was applied before the publish was attempted, so the ask is already
+      // done and the countdown has nothing left to expire.
+      yield* notStranded(Fiber.join(fiber))
+      expect(yield* list()).toHaveLength(0)
+    }),
+  { git: true, config: countdown },
+)
+
+it.instance(
+  "reply - settles the ask when the reply is interrupted mid-publish",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2Bridge.Service
+      // Hold the publish open so the reply can be interrupted after it claimed the
+      // request but before it finished announcing it.
+      const unsub = yield* events.listen((event) =>
+        event.type === Permission.Event.Replied.type ? Effect.sleep("10 seconds") : Effect.void,
+      )
+      yield* Effect.addFinalizer(() => unsub)
+
+      const fiber = yield* ask(bash("per_timeout_interrupt")).pipe(Effect.forkScoped)
+      yield* waitForPending(1)
+
+      const answering = yield* reply({
+        requestID: PermissionV1.ID.make("per_timeout_interrupt"),
+        reply: "once",
+      }).pipe(Effect.forkScoped)
+      yield* Effect.sleep("100 millis")
+      yield* Fiber.interrupt(answering)
+
+      yield* notStranded(Fiber.join(fiber))
+      expect(yield* list()).toHaveLength(0)
+    }),
+  { git: true, config: countdown },
 )

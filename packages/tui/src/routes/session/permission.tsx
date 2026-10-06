@@ -114,7 +114,8 @@ function secondsLeft(expiresAt: number) {
   return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
 }
 
-function Countdown(props: { expiresAt: number }) {
+// Exported for the rendered countdown test; the prompt owns it everywhere else.
+export function Countdown(props: { expiresAt: number }) {
   const { theme } = useTheme()
   const [seconds, setSeconds] = createSignal(secondsLeft(props.expiresAt))
   const timer = setInterval(() => setSeconds(secondsLeft(props.expiresAt)), 1000)

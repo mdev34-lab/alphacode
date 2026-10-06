@@ -126,12 +126,20 @@ const layer = Layer.effect(
       const expire = (waited: number) =>
         Effect.gen(function* () {
           yield* Effect.sleep(Duration.millis(waited * 1000))
-          // A reply can win the race in the gap between the sleep ending and this fiber
-          // resuming. Whoever removes the entry from `pending` owns the outcome, so a
-          // late timer defers to the reply instead of publishing a second one.
+          // A reply that claimed the request first completed the deferred in the same step
+          // that removed it from `pending`, so losing the claim can never block here.
           if (!pending.delete(id)) return yield* Deferred.await(deferred)
-          yield* events.publish(Event.Replied, { sessionID: info.sessionID, requestID: id, reply: "timeout" })
-          yield* Deferred.fail(deferred, new PermissionV1.TimedOutError({ seconds: waited }))
+          // Unlike `reply`, this fiber's lifetime is tied to the race below: completing the
+          // deferred lets the ask resume, which interrupts whatever this fiber is still
+          // doing. So the announcement goes out first and the completion is guaranteed by
+          // `ensuring` — the entry is already out of `pending`, so a publish that fails or
+          // is interrupted would otherwise leave the ask waiting on it forever.
+          yield* Effect.ensuring(
+            events.publish(Event.Replied, { sessionID: info.sessionID, requestID: id, reply: "timeout" }),
+            Effect.sync(() => {
+              Deferred.doneUnsafe(deferred, Effect.fail(new PermissionV1.TimedOutError({ seconds: waited })))
+            }),
+          )
           return yield* Deferred.await(deferred)
         })
 
@@ -151,7 +159,19 @@ const layer = Layer.effect(
       const existing = pending.get(input.requestID)
       if (!existing) return yield* new PermissionV1.NotFoundError({ requestID: input.requestID })
 
-      pending.delete(input.requestID)
+      // A rejection carries the user's feedback when they typed any.
+      const rejection =
+        input.reply !== "reject"
+          ? undefined
+          : input.message
+            ? new PermissionV1.CorrectedError({ feedback: input.message })
+            : new PermissionV1.RejectedError()
+
+      // Losing the claim means the countdown expired between the lookup above and here,
+      // so the honest answer to the client is the same as for an unknown request.
+      if (!(yield* settle(pending, existing, rejection)))
+        return yield* new PermissionV1.NotFoundError({ requestID: input.requestID })
+
       yield* events.publish(Event.Replied, {
         sessionID: existing.info.sessionID,
         requestID: existing.info.id,
@@ -159,27 +179,18 @@ const layer = Layer.effect(
       })
 
       if (input.reply === "reject") {
-        yield* Deferred.fail(
-          existing.deferred,
-          input.message
-            ? new PermissionV1.CorrectedError({ feedback: input.message })
-            : new PermissionV1.RejectedError(),
-        )
-
-        for (const [id, item] of pending.entries()) {
+        for (const item of pending.values()) {
           if (item.info.sessionID !== existing.info.sessionID) continue
-          pending.delete(id)
+          if (!(yield* settle(pending, item, new PermissionV1.RejectedError()))) continue
           yield* events.publish(Event.Replied, {
             sessionID: item.info.sessionID,
             requestID: item.info.id,
             reply: "reject",
           })
-          yield* Deferred.fail(item.deferred, new PermissionV1.RejectedError())
         }
         return
       }
 
-      yield* Deferred.succeed(existing.deferred, undefined)
       if (input.reply === "once") return
 
       for (const pattern of existing.info.always) {
@@ -190,19 +201,18 @@ const layer = Layer.effect(
         })
       }
 
-      for (const [id, item] of pending.entries()) {
+      for (const item of pending.values()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
         const ok = item.info.patterns.every(
           (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
         )
         if (!ok) continue
-        pending.delete(id)
+        if (!(yield* settle(pending, item, undefined))) continue
         yield* events.publish(Event.Replied, {
           sessionID: item.info.sessionID,
           requestID: item.info.id,
           reply: "always",
         })
-        yield* Deferred.succeed(item.deferred, undefined)
       }
     })
 
@@ -214,6 +224,20 @@ const layer = Layer.effect(
     return Service.of({ ask, reply, list })
   }),
 )
+
+// Dropping an entry from `pending` and completing its deferred has to be one synchronous
+// step. The countdown reads a missing entry as "a reply already settled this" and then
+// awaits that deferred, and the instance dispose finalizer can only complete entries that
+// are still in `pending`, so splitting the two around the interruptible `events.publish`
+// would strand the ask forever when that publish fails or its fiber is interrupted.
+// Returns whether this call won the claim.
+function settle(pending: Map<PermissionV1.ID, PendingEntry>, entry: PendingEntry, error?: ReplyError) {
+  return Effect.sync(() => {
+    if (!pending.delete(entry.info.id)) return false
+    Deferred.doneUnsafe(entry.deferred, error === undefined ? Effect.void : Effect.fail(error))
+    return true
+  })
+}
 
 function expand(pattern: string): string {
   if (pattern.startsWith("~/")) return os.homedir() + pattern.slice(1)
