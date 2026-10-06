@@ -27,7 +27,7 @@ const id = "task"
 const BACKGROUND_DESCRIPTION = [
   "Subagents run asynchronously by default: the tool launches the subagent and returns immediately.",
   "You will be notified automatically when it finishes; do not sleep, poll, or ask it for status.",
-  "Use background=false for synchronous execution only when you need the result before continuing.",
+  "Set background=false when you need the result before continuing; the tool then waits only for subagents whose agent sets background=false in opencode.json, and launches a background task for every other agent.",
 ].join(" ")
 const BACKGROUND_STARTED = [
   "The task is running in the background. You will be notified automatically when it finishes.",
@@ -56,7 +56,7 @@ export const Parameters = Schema.Struct({
   ...BaseParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Run the agent asynchronously (default: true). The tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Set to false to run synchronously and wait for the result.",
+      "Run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Defaults to true, except for an agent configured with `background: false` in opencode.json. Setting it to false waits for the result only for such an opted-in agent; every other subagent is launched in the background regardless.",
   }),
 })
 
@@ -124,9 +124,6 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
-      // Background is the default. Only an explicit `background: false`
-      // (synchronous request) waits for the child result before returning.
-      const runInBackground = params.background !== false
 
       const parent = yield* sessions.get(ctx.sessionID)
       let current = parent
@@ -212,6 +209,19 @@ export const TaskTool = Tool.define(
       if (next.mode === "primary") {
         return yield* Effect.fail(new Error(`Agent type ${subagentType} is a primary agent and cannot be delegated to`))
       }
+
+      // Background execution is the default and waiting for a subagent's result
+      // is opt-in per agent, not per call: only an agent configured with
+      // `background: false` may run in its parent's foreground. Honoring a bare
+      // `background: false` request would hand the parent's execution path to a
+      // child that never finishes, which is the coupling the background path and
+      // this configuration exist to make explicit. The requested name is checked
+      // next to the resolved one because a `review` request is rewritten to the
+      // parent's specialist reviewer, and user config - like the permission rules
+      // keyed on both names below - is written against the name that was asked
+      // for.
+      const synchronous = next.background === false || cfg.agent?.[params.subagent_type]?.background === false
+      const runInBackground = !synchronous || params.background === true
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({

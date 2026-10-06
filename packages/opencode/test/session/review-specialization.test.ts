@@ -175,6 +175,13 @@ const cfg = {
     // conceding it here would not leave the routing untested.
     custom: { finishTool: false, mode: "primary" as const },
     plan: { finishTool: false },
+    // Waiting on a subagent is opt-in per agent (#173). The arms below assert the
+    // blocking review handoff for all three reviewer names, so each is opted in:
+    // the requested `review` (a `review` request is rewritten to the parent's
+    // specialist) plus the two specialists a caller can name directly.
+    review: { background: false },
+    "work-review": { background: false },
+    "code-review": { background: false },
   },
   provider: {
     test: {

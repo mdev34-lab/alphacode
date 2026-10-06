@@ -58,6 +58,12 @@ export const Info = Schema.Struct({
   options: Schema.Record(Schema.String, Schema.Unknown),
   steps: Schema.optional(Schema.Finite),
   finishTool: Schema.optional(Schema.Boolean),
+  /**
+   * Opt-in for synchronous (foreground) delegation. `false` means callers
+   * delegating to this agent wait for its result by default; `true` and unset
+   * mean the subagent always runs as a background job.
+   */
+  background: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -388,6 +394,7 @@ const layer = Layer.effect(
           item.name = value.name ?? item.name
           item.steps = value.steps ?? item.steps
           item.finishTool = value.finishTool ?? item.finishTool
+          item.background = value.background ?? item.background
           item.options = mergeDeep(item.options, value.options ?? {})
           item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
         }
