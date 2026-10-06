@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test"
-import type {
+import {
   AgentSideConnection,
-  RequestPermissionRequest,
-  RequestPermissionResponse,
-  SessionUpdate,
+  ndJsonStream,
+  type Agent,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
+  type SessionUpdate,
 } from "@agentclientprotocol/sdk"
 import type { Event, OpencodeClient } from "@opencode-ai/sdk/v2"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -45,6 +47,31 @@ function makeSessionService() {
 }
 
 /**
+ * A real SDK connection over an in-memory stream, so a test can assert on the JSON-RPC ids
+ * the SDK actually puts on the wire rather than on a fake that mimics how it allocates them.
+ * Nothing is ever written back: requests are left unanswered on purpose.
+ */
+function realConnection() {
+  const sent: Array<Record<string, unknown>> = []
+  const decoder = new TextDecoder()
+  let buffer = ""
+  const incoming = new ReadableStream<Uint8Array>({ start() {} })
+  const outgoing = new WritableStream<Uint8Array>({
+    write(chunk) {
+      buffer += decoder.decode(chunk, { stream: true })
+      const lines = buffer.split("\n")
+      buffer = lines.pop() ?? ""
+      for (const line of lines) {
+        if (line.trim()) sent.push(JSON.parse(line) as Record<string, unknown>)
+      }
+    },
+  })
+  // The agent side is never exercised here: only the outgoing direction matters.
+  const connection = new AgentSideConnection(() => ({}) as Agent, ndJsonStream(outgoing, incoming))
+  return { connection, sent }
+}
+
+/**
  * Holds session lookups open, so a `permission.replied` can land in the window where the
  * handler is still setting up for a prompt. `release` opens the oldest held lookup,
  * `openAll` opens every held and future one.
@@ -77,9 +104,14 @@ function createHarness(
     readonly lookupGate?: ReturnType<typeof lookupGate>
     // Makes the reply call fail, so `process` throws once the editor has answered.
     readonly replyError?: Error
+    // Holds the call that posts an answer back to OpenCode open, so the `permission.replied`
+    // event that post causes can arrive while it is still in flight.
+    readonly replyHold?: Promise<void>
     // Leaves `requestPermission` off the connection, as an editor that does not implement it
     // would: prompts are then rejected back to the server instead of being asked.
     readonly noRequestPermission?: boolean
+    // Substitutes a real SDK connection for the fake one below.
+    readonly connection?: AgentSideConnection
     // Stands in for the SDK's private transport, which is where the JSON-RPC id of an
     // outgoing request comes from. Left out by default: a SDK that hides those fields must
     // degrade to not cancelling rather than to guessing an id.
@@ -108,7 +140,9 @@ function createHarness(
     permission: {
       reply: (params: PermissionReplyParams) => {
         replies.push(params)
-        return options.replyError ? Promise.reject(options.replyError) : Promise.resolve({ data: true })
+        if (options.replyError) return Promise.reject(options.replyError)
+        const hold = options.replyHold
+        return hold ? hold.then(() => ({ data: true })) : Promise.resolve({ data: true })
       },
     },
     session: {
@@ -139,7 +173,7 @@ function createHarness(
   } satisfies Partial<Pick<AgentSideConnection, "requestPermission" | "sessionUpdate" | "extNotification">> & {
     readonly connection?: { nextRequestId: number }
   }
-  const subscription = new ACPEvent.Subscription({ sdk, connection, session })
+  const subscription = new ACPEvent.Subscription({ sdk, connection: options.connection ?? connection, session })
 
   return { cancellations, connection, replies, requests, sdk, session, subscription, updates }
 }
@@ -644,6 +678,84 @@ describe("acp permissions", () => {
     // counter immediately before the call, which is what makes the cancel aim at the open
     // request rather than at the next one.
     expect(harness.cancellations).toEqual([{ method: "$/cancel_request", params: { requestId: 41 } }])
+  })
+
+  it("does not cancel a dialog the editor has just answered", async () => {
+    let posted: (() => void) | undefined
+    const hold = new Promise<void>((resolve) => {
+      posted = resolve
+    })
+    const harness = createHarness(undefined, { transport: true, replyHold: hold })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_answered", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    // The editor answers at once, and the POST carrying that answer is still in flight when
+    // the `permission.replied` event it caused reaches the handler.
+    await pollUntil(() => harness.replies.length === 1, "the editor answer was never posted")
+    harness.subscription.handle(permissionReplied("ses_a", "perm_answered", "once"))
+    // Cancelling is synchronous, so this needs no wait: a dialog the editor completed must
+    // not be told to close.
+    expect(harness.cancellations).toEqual([])
+
+    posted?.()
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_next", { tool: { messageID: "msg_1", callID: "call_2" } }),
+    )
+    await pollUntil(() => harness.requests.length === 2, "the queue never reached the next prompt")
+    expect(harness.cancellations).toEqual([])
+  })
+
+  it("does not cancel a prompt whose request never reached the editor", async () => {
+    let posted: (() => void) | undefined
+    const hold = new Promise<void>((resolve) => {
+      posted = resolve
+    })
+    const harness = createHarness(() => Promise.reject(new Error("editor went away")), {
+      transport: true,
+      replyHold: hold,
+    })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_failed", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    // The request fails, so the handler rejects the prompt back to the server, and the event
+    // that post causes arrives while it is still in flight.
+    await pollUntil(() => harness.replies.length === 1, "the rejection was never posted")
+    harness.subscription.handle(permissionReplied("ses_a", "perm_failed", "reject"))
+    expect(harness.cancellations).toEqual([])
+    expect(harness.replies).toEqual([{ requestID: "perm_failed", reply: "reject", directory: "/workspace" }])
+
+    posted?.()
+  })
+
+  it("cancels by the request id the real SDK puts on the wire", async () => {
+    const { connection, sent } = realConnection()
+    const harness = createHarness(undefined, { connection })
+    await createSession(harness.session, "ses_a")
+    // One request ahead of the prompt, so the id under test is not the counter's initial
+    // value. Only its id allocation matters, so it is left unanswered.
+    void connection.writeTextFile({ sessionId: "ses_a", path: "/workspace/a.ts", content: "a\n" }).catch(() => {})
+    const wire = (method: string) => sent.find((message) => message["method"] === method)
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_wire", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    await pollUntil(() => wire("session/request_permission") !== undefined, "the editor was never asked")
+
+    harness.subscription.handle(permissionReplied("ses_a", "perm_wire", "timeout"))
+
+    await pollUntil(() => wire("$/cancel_request") !== undefined, "the editor was never told to close the dialog")
+    // Aimed at the request the SDK really sent. The id comes from the connection's private
+    // counter, read immediately before the call that allocates from it, so an SDK that moves
+    // or hides that counter yields no id, no notification, and a failure here — which is the
+    // point: the pinned version is 0.21.0 and this is what says so out loud.
+    expect(wire("$/cancel_request")).toMatchObject({
+      params: { requestId: wire("session/request_permission")?.["id"] },
+    })
+    expect(wire("session/request_permission")?.["id"]).toBe(1)
   })
 
   it("stops tracking a prompt whose handling throws", async () => {

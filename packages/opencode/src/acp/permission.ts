@@ -20,8 +20,9 @@ type Reply = "once" | "always" | "reject"
 type Connection = Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile" | "extNotification">>
 
 // Where one prompt is on the ACP side: `queued` while it waits behind the session's other
-// prompts, `waiting` while the editor has it open, `settled` once the server resolved it
-// without an answer from this editor. `requestID` is the JSON-RPC id of the outgoing
+// prompts, `waiting` while the editor has it open, `settled` once nothing more is expected
+// from the editor — either the server resolved the request itself or the editor's answer is
+// already on its way back. `requestID` is the JSON-RPC id of the outgoing
 // `session/request_permission`, which is what cancelling that dialog is aimed by.
 type Prompt =
   | { readonly state: "queued" }
@@ -119,6 +120,7 @@ export class Handler {
             options: permissionOptions,
           })
           .catch(async () => {
+            this.answered(permission.id)
             await this.reply(permission.id, "reject", session.cwd)
             return undefined
           }),
@@ -130,6 +132,7 @@ export class Handler {
       if (!result) return
 
       const reply = selectedReply(result)
+      this.answered(permission.id)
       if (reply !== "once" && reply !== "always") {
         await this.reply(permission.id, "reject", session.cwd)
         return
@@ -160,8 +163,18 @@ export class Handler {
     return this.prompts.get(id)?.state === "settled"
   }
 
+  // Marks the prompt done with the editor before its answer is posted, not after: posting is
+  // what makes the server publish `permission.replied`, and that event arriving while the
+  // prompt still looks like it is waiting on the editor would cancel a dialog the editor has
+  // already completed.
+  private answered(id: string) {
+    if (this.prompts.get(id)?.state === "waiting") this.prompts.set(id, { state: "settled" })
+  }
+
   // Best-effort by nature: only the editor can close its own dialog, and a client that does
-  // not implement the notification simply ignores it.
+  // not implement the notification simply ignores it. `$/cancel_request` is UNSTABLE in the
+  // schema of the SDK pinned here (0.21.0), which no client of that version dispatches, and
+  // the schema is explicit that a `$/` notification is free to be ignored.
   private cancel(requestID: number | undefined) {
     if (requestID === undefined) return
     void this.input.connection.extNotification?.("$/cancel_request", { requestId: requestID }).catch(() => {})
