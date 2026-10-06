@@ -32,6 +32,9 @@ const it = testEffect(
 
 const zenURL = "https://opencode.ai/zen/v1/chat/completions"
 const ZEN_UUID = "11111111-1111-4111-8111-111111111111"
+// A session id as `Identifier.create` generates it: 12 hex timestamp chars
+// followed by 14 base 62 chars. These are not UUIDs.
+const SESSION_ID = "ses_1134d213e0014q5ohvhfGiiuCj"
 
 const encoder = new TextEncoder()
 
@@ -98,9 +101,16 @@ function uuids(...values: string[]) {
 
 describe("OpenCodeZen", () => {
   describe("ids", () => {
-    test("prefixes a conversation session id and generates one without a caller", () => {
-      expect(sessionID("ses_conversation")).toBe("ses_conversation")
-      expect(sessionID("abc")).toBe("ses_abc")
+    test("keeps a workspace session id, a UUID, and a bare UUID", () => {
+      expect(sessionID(SESSION_ID)).toBe(SESSION_ID)
+      expect(sessionID(`ses_${ZEN_UUID}`)).toBe(`ses_${ZEN_UUID}`)
+      expect(sessionID(ZEN_UUID, () => "unused")).toBe(`ses_${ZEN_UUID}`)
+    })
+
+    test("replaces an invalid session id instead of forwarding it", () => {
+      expect(sessionID("ses_invalid", () => ZEN_UUID)).toBe(`ses_${ZEN_UUID}`)
+      expect(sessionID("ses_conversation", () => ZEN_UUID)).toBe(`ses_${ZEN_UUID}`)
+      expect(sessionID("", () => ZEN_UUID)).toBe(`ses_${ZEN_UUID}`)
       expect(sessionID(undefined, () => ZEN_UUID)).toBe(`ses_${ZEN_UUID}`)
       const sessions = uuids("first", "second")
       expect(sessionID(undefined, sessions)).not.toBe(sessionID(undefined, sessions))
@@ -157,22 +167,25 @@ describe("OpenCodeZen", () => {
       expect(calls[0].headers.get("x-opencode-request")).toBe(`msg_${ZEN_UUID}`)
     })
 
-    test("keeps the caller session for a conversation and reuses the generated one without a caller", async () => {
+    test("keeps a caller session and gives each caller without one its own session", async () => {
       const { calls, upstream } = recorder(() => Response.json({ ok: true }))
       const zen = createFetch({ upstream, uuid: uuids("first", "second") })
       const body = JSON.stringify({ model: "big-pickle", messages: [], stream: true })
 
-      await zen(zenURL, { method: "POST", headers: { "x-opencode-session": "ses_thread" }, body })
-      await zen(zenURL, { method: "POST", headers: { "x-opencode-session": "ses_thread" }, body })
+      await zen(zenURL, { method: "POST", headers: { "x-opencode-session": SESSION_ID }, body })
+      await zen(zenURL, { method: "POST", headers: { "x-opencode-session": SESSION_ID }, body })
       await zen(zenURL, { method: "POST", body })
       await zen(zenURL, { method: "POST", body })
 
       const sessions = calls.map((call) => call.headers.get("x-opencode-session"))
-      expect(sessions[0]).toBe("ses_thread")
-      expect(sessions[1]).toBe("ses_thread")
+      expect(sessions[0]).toBe(SESSION_ID)
+      expect(sessions[1]).toBe(SESSION_ID)
+      // Callers without a conversation id get a session per request instead of
+      // sharing one client-wide id.
       expect(sessions[2]).toMatch(/^ses_/)
-      // Callers without a conversation id share the client's fallback thread.
-      expect(sessions[3]).toBe(sessions[2])
+      expect(sessions[2]).not.toBe(SESSION_ID)
+      expect(sessions[3]).not.toBe(SESSION_ID)
+      expect(sessions[3]).not.toBe(sessions[2])
     })
 
     test("authenticates free models with the public bearer token", async () => {
@@ -643,13 +656,13 @@ it.live("keeps the session header and regenerates the request header per turn", 
         LLMRequestPrep.prepare({
           user: {
             id: "msg_turn",
-            sessionID: "ses_conversation",
+            sessionID: SESSION_ID,
             role: "user",
             time: { created: Date.now() },
             agent: "test",
             model: { providerID: "opencode", modelID: "deepseek-v4-flash-free" },
           } as any,
-          sessionID: "ses_conversation",
+          sessionID: SESSION_ID,
           model,
           agent: { name: "test", mode: "primary", options: {}, permission: [] } as any,
           system: [],
@@ -667,8 +680,8 @@ it.live("keeps the session header and regenerates the request header per turn", 
       const first = (yield* prepare()).headers as Record<string, string | undefined>
       const second = (yield* prepare()).headers as Record<string, string | undefined>
 
-      expect(first["x-opencode-session"]).toBe("ses_conversation")
-      expect(second["x-opencode-session"]).toBe("ses_conversation")
+      expect(first["x-opencode-session"]).toBe(SESSION_ID)
+      expect(second["x-opencode-session"]).toBe(SESSION_ID)
       expect(first["x-opencode-request"]).toMatch(/^msg_/)
       expect(second["x-opencode-request"]).toMatch(/^msg_/)
       expect(first["x-opencode-request"]).not.toBe(second["x-opencode-request"])
@@ -684,13 +697,13 @@ it.live("keeps the Zen headers in front of model or plugin headers", () =>
       const prepared = yield* LLMRequestPrep.prepare({
         user: {
           id: "msg_turn",
-          sessionID: "ses_conversation",
+          sessionID: SESSION_ID,
           role: "user",
           time: { created: Date.now() },
           agent: "test",
           model: { providerID: "opencode", modelID: "deepseek-v4-flash-free" },
         } as any,
-        sessionID: "ses_conversation",
+        sessionID: SESSION_ID,
         model: { ...model, headers: { "x-opencode-session": "ses_stale", "User-Agent": "stale" } },
         agent: { name: "test", mode: "primary", options: {}, permission: [] } as any,
         system: [],
@@ -709,7 +722,7 @@ it.live("keeps the Zen headers in front of model or plugin headers", () =>
       })
 
       const headers = prepared.headers as Record<string, string | undefined>
-      expect(headers["x-opencode-session"]).toBe("ses_conversation")
+      expect(headers["x-opencode-session"]).toBe(SESSION_ID)
       expect(headers["x-opencode-request"]).toMatch(/^msg_/)
       expect(headers["x-opencode-request"]).not.toBe("msg_stale")
       expect(headers["User-Agent"]).not.toBe("stale")
@@ -734,7 +747,7 @@ it.live("runs a non-streaming free-tier request through the opencode provider", 
             generateText({
               model: language,
               messages: [{ role: "user", content: "hello" }],
-              headers: { "x-opencode-session": "ses_conversation", "x-opencode-request": "msg_turn" },
+              headers: { "x-opencode-session": SESSION_ID, "x-opencode-request": "msg_turn" },
             }),
           )
 
@@ -744,7 +757,7 @@ it.live("runs a non-streaming free-tier request through the opencode provider", 
           expect(request.headers.get("user-agent")).toBe(ZEN_USER_AGENT)
           expect(request.headers.get("x-opencode-client")).toBe("cli")
           expect(request.headers.get("x-opencode-project")).toBe("global")
-          expect(request.headers.get("x-opencode-session")).toBe("ses_conversation")
+          expect(request.headers.get("x-opencode-session")).toBe(SESSION_ID)
           expect(request.headers.get("x-opencode-request")).toBe("msg_turn")
           expect(request.headers.get("authorization")).toBe(ZEN_PUBLIC_AUTHENTICATION)
           expect(request.body?.stream).toBe(true)
@@ -820,11 +833,11 @@ it.live("streams a free-tier response through the opencode provider", () =>
           const result = streamText({
             model: language,
             messages: [{ role: "user", content: "hello" }],
-            headers: { "x-opencode-session": "ses_conversation", "x-opencode-request": "msg_turn" },
+            headers: { "x-opencode-session": SESSION_ID, "x-opencode-request": "msg_turn" },
           })
 
           expect(yield* Effect.promise(() => result.text)).toBe("Hello world")
-          expect(server.requests[0].headers.get("x-opencode-session")).toBe("ses_conversation")
+          expect(server.requests[0].headers.get("x-opencode-session")).toBe(SESSION_ID)
           expect(server.requests[0].body?.stream).toBe(true)
         }),
       { config: zenProviderConfig(server.url) },

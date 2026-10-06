@@ -28,7 +28,14 @@
 import { isRecord } from "@/util/record"
 import { ProviderError } from "./error"
 
-/** User agent the gateway accepts. Anything else is treated as an untrusted client. */
+/**
+ * User agent the gateway accepts. Anything else is treated as an untrusted
+ * client, so this is pinned to the versions the CLI ships with rather than
+ * derived from the build: the workspace version does not identify a released
+ * CLI (dev builds report `opencode/local`) and the AI SDK and runtime tokens
+ * would drift with whatever is installed. Update this string as a contract
+ * change, together with a check against the gateway, not automatically.
+ */
 export const ZEN_USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
 
 /** The free tier authenticates as the public client; paid keys require a billing account. */
@@ -48,10 +55,26 @@ export type UUID = () => string
 
 const randomUUID: UUID = () => crypto.randomUUID()
 
-/** Session ids stay stable for one conversation thread; request ids change every turn. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/**
+ * Session ids the workspace itself generates: 12 hex timestamp characters
+ * followed by 14 base 62 characters (`Identifier.create`).
+ */
+const WORKSPACE_SESSION_PATTERN = /^[0-9a-f]{12}[0-9a-zA-Z]{14}$/
+
+/**
+ * Session ids stay stable for one conversation thread; request ids change
+ * every turn.
+ *
+ * Zen documents the header as `ses_<uuid>`, while a conversation id generated
+ * by this workspace is `ses_` plus an identifier, not a UUID, so both shapes
+ * are accepted. Anything else (`ses_invalid`, an unrelated string) is replaced
+ * with a generated id instead of being forwarded.
+ */
 export function sessionID(value: string | undefined, uuid: UUID = randomUUID) {
-  if (value === undefined || value.length === 0) return `ses_${uuid()}`
-  return value.startsWith("ses_") ? value : `ses_${value}`
+  const id = value?.startsWith("ses_") ? value.slice("ses_".length) : value
+  if (id === undefined || (!UUID_PATTERN.test(id) && !WORKSPACE_SESSION_PATTERN.test(id))) return `ses_${uuid()}`
+  return `ses_${id}`
 }
 
 /** Request ids are regenerated for every provider turn. */
@@ -378,11 +401,6 @@ export type FetchInput = {
 export function createFetch(input: FetchInput = {}): ZenFetch {
   const upstream = input.upstream ?? globalThis.fetch
   const uuid = input.uuid ?? randomUUID
-  // Callers that do not carry session context (direct SDK calls) still need a
-  // session id, so the adapter keeps one thread per client instance. Those
-  // callers share that thread; callers with their own conversation id (the
-  // session runtime always sends one) are unaffected.
-  const fallback = { session: undefined as string | undefined }
 
   return async (requestInput, init) => {
     const request = requestInput instanceof Request ? requestInput : undefined
@@ -402,10 +420,12 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     headers.set("user-agent", ZEN_USER_AGENT)
     headers.set("x-opencode-client", headers.get("x-opencode-client") ?? "cli")
     headers.set("x-opencode-project", headers.get("x-opencode-project") ?? "global")
-    headers.set(
-      "x-opencode-session",
-      sessionID(headers.get("x-opencode-session") ?? (fallback.session ??= sessionID(undefined, uuid)), uuid),
-    )
+    // Zen rejects a request without a session header, but callers that carry no
+    // conversation id (direct SDK calls) have no thread to keep, so each such
+    // request gets its own session instead of sharing one client-wide id. The
+    // session runtime always sends the conversation's id (see
+    // `session/llm/request.ts`), which is what keeps a conversation stable.
+    headers.set("x-opencode-session", sessionID(headers.get("x-opencode-session") ?? undefined, uuid))
     headers.set("x-opencode-request", headers.get("x-opencode-request") ?? requestID(uuid))
 
     const body = await bodyText(requestInput, init)
