@@ -721,10 +721,7 @@ const layer = Layer.effect(
                     if (Option.isNone(current)) return false
                     const currentModel = current.value.model
                     if (!currentModel) return false
-                    return (
-                      currentModel.providerID !== input.model.providerID ||
-                      currentModel.id !== input.model.id
-                    )
+                    return currentModel.providerID !== input.model.providerID || currentModel.id !== input.model.id
                   }),
               }),
             ),
