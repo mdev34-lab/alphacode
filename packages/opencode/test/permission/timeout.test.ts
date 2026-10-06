@@ -98,6 +98,21 @@ const waitForReplies = (replies: ReadonlyArray<unknown>, count: number) =>
     }),
   )
 
+// Records the instant the request was announced. The deadline is computed immediately
+// before that — measured 2ms apart, with only a log line and the publish in between — so
+// the two instants bracket `expiresAt` to within the countdown itself.
+const collectAnnounced = () =>
+  Effect.gen(function* () {
+    const events = yield* EventV2Bridge.Service
+    const announced = { at: 0 }
+    const unsub = yield* events.listen((event) => {
+      if (event.type === Permission.Event.Asked.type) announced.at = Date.now()
+      return Effect.void
+    })
+    yield* Effect.addFinalizer(() => unsub)
+    return announced
+  })
+
 // Once a request leaves `pending` with its deferred still open, nothing can settle it any
 // more: not a later reply, not the countdown, not the instance dispose finalizer. Fail
 // loudly instead of hanging the suite for the full test timeout.
@@ -114,13 +129,20 @@ it.instance(
   () =>
     Effect.gen(function* () {
       const replies = yield* collectReplies()
+      const announced = yield* collectAnnounced()
+      const before = Date.now()
       const fiber = yield* ask(bash("per_timeout_expire")).pipe(Effect.forkScoped)
 
       const [request] = yield* waitForPending(1)
-      // Published on the request so every client renders the same countdown.
+      // Published on the request so every client renders the same countdown. Both bounds are
+      // measured from a captured instant rather than from `Date.now()` at the assertion,
+      // which would move with the test's own scheduling and let a deadline anchored anywhere
+      // through. From the ask the countdown can only be late, never short; from the
+      // announcement it is pinned to one second either side of a 100ms tolerance.
       const expiresAt = request.expiresAt ?? 0
-      expect(expiresAt).toBeGreaterThan(Date.now())
-      expect(expiresAt).toBeLessThanOrEqual(Date.now() + 1000)
+      expect(expiresAt - before).toBeGreaterThanOrEqual(1000)
+      expect(expiresAt - announced.at).toBeGreaterThanOrEqual(900)
+      expect(expiresAt - announced.at).toBeLessThanOrEqual(1000)
 
       const exit = yield* Fiber.await(fiber)
       if (Exit.isSuccess(exit)) throw new Error("expected the unanswered prompt to be denied")
@@ -142,12 +164,17 @@ it.instance(
   "ask - defaults to a 45 second countdown",
   () =>
     Effect.gen(function* () {
+      const announced = yield* collectAnnounced()
+      const before = Date.now()
       const fiber = yield* ask(bash("per_timeout_default")).pipe(Effect.forkScoped)
 
       const [request] = yield* waitForPending(1)
-      const remaining = (request.expiresAt ?? 0) - Date.now()
-      expect(remaining).toBeGreaterThan(43_000)
-      expect(remaining).toBeLessThanOrEqual(45_000)
+      // The default is 45s, not "somewhere north of 43s": measured from the announcement,
+      // where a wrong default cannot hide behind the fork's scheduling delay.
+      const expiresAt = request.expiresAt ?? 0
+      expect(expiresAt - before).toBeGreaterThanOrEqual(45_000)
+      expect(expiresAt - announced.at).toBeGreaterThanOrEqual(44_900)
+      expect(expiresAt - announced.at).toBeLessThanOrEqual(45_000)
 
       yield* rejectAll()
       yield* Fiber.await(fiber)
@@ -168,7 +195,7 @@ for (const answer of ["once", "always", "reject"] as const) {
         const exit = yield* Fiber.await(fiber)
         expect(Exit.isFailure(exit)).toBe(answer === "reject")
 
-        yield* Effect.sleep("1200 millis")
+        yield* Effect.sleep("1500 millis")
         expect(replies).toEqual([answer])
         expect(yield* list()).toHaveLength(0)
       }),
@@ -233,7 +260,7 @@ it.instance(
 
       // Well past the one second countdown this instance is configured with, which
       // stays inert because the timeout is switched off.
-      yield* Effect.sleep("1200 millis")
+      yield* Effect.sleep("1500 millis")
       expect(yield* list()).toHaveLength(1)
       expect(replies).toEqual([])
 
@@ -322,7 +349,7 @@ it.instance(
       // though the ask fiber is still sitting inside the publish.
       yield* waitForPending(1)
 
-      yield* Effect.sleep("1200 millis")
+      yield* Effect.sleep("1500 millis")
       expect(yield* list()).toHaveLength(0)
 
       yield* Deferred.succeed(release, undefined)
