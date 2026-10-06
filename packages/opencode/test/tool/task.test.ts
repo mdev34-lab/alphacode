@@ -1605,6 +1605,201 @@ describe("tool.task", () => {
     }),
   )
 
+  // A user cancelling the subagent they are watching reaches the runtime as a
+  // cancel of that child session. The parent is blocked on this tool call, and
+  // a free-form failure would leave it re-deriving the outcome from prose; the
+  // typed termination is what lets it continue orchestration knowing the child
+  // did not succeed.
+  it.instance("cancelling a blocking subagent returns a typed cancellation to the parent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const runState = yield* SessionRunState.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const started = defer<SessionID>()
+      const cancelled = defer<SessionID>()
+      const promptOps: TaskPromptOps = {
+        cancel: (sessionID) =>
+          Effect.sync(() => {
+            cancelled.resolve(sessionID)
+          }),
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          Effect.sync(() => {
+            started.resolve(input.sessionID)
+          }).pipe(Effect.andThen(Effect.never)),
+      }
+
+      const fiber = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            background: false,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.forkChild)
+
+      const child = yield* Effect.promise(() => started.promise)
+      expect((yield* jobs.get(child))?.status).toBe("running")
+
+      yield* runState.cancel(child)
+
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata.termination.reason).toBe("cancelled")
+      expect(result.output).toContain(`<task id="${child}" state="cancelled">`)
+      expect(result.output).toContain('<termination reason="cancelled">')
+      expect(result.output).toContain("cancelled by the user")
+      // The cancel reached the child's execution handle itself, not only the
+      // envelope handed back to the parent.
+      expect((yield* jobs.get(child))?.status).toBe("cancelled")
+      expect(yield* Effect.promise(() => cancelled.promise)).toBe(child)
+    }),
+  )
+
+  it.instance("a cancelled background subagent notifies the parent with a typed cancellation", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const runState = yield* SessionRunState.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const injected = defer<SessionPrompt.PromptInput>()
+      const started = defer<SessionID>()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.sync(() => {
+                injected.resolve(input)
+                return reply(input, "notified")
+              })
+            : Effect.sync(() => {
+                started.resolve(input.sessionID)
+              }).pipe(Effect.andThen(Effect.never)),
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      const child = result.metadata.sessionId
+      yield* Effect.promise(() => started.promise)
+
+      yield* runState.cancel(child)
+
+      expect((yield* jobs.wait({ id: child, timeout: 1_000 })).info?.status).toBe("cancelled")
+      const notification = yield* Effect.promise(() => injected.promise)
+      const text = notification.parts[0]?.type === "text" ? notification.parts[0].text : ""
+      expect(notification.sessionID).toBe(chat.id)
+      expect(text).toContain(`<task id="${child}" state="cancelled">`)
+      expect(text).toContain("<summary>Background task cancelled: inspect bug</summary>")
+      expect(text).toContain('<termination reason="cancelled">')
+      expect(text).toContain("cancelled by the user")
+    }),
+  )
+
+  // Double-Esc is scoped to the trace it is pressed in. Cancelling one child
+  // must not reach the sibling's job or the parent's own run, and the parent
+  // must still be driven by the sibling's completion afterwards.
+  it.instance("cancelling one subagent leaves its sibling and the parent's orchestration intact", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const runState = yield* SessionRunState.Service
+      const { chat, assistant } = yield* seed("Isolation")
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const injections: string[] = []
+      const delivered = defer<void>()
+      const runningB = defer<void>()
+      const gates = new Map<string, () => void>()
+      const hold = (key: string) => {
+        const entry = defer<void>()
+        gates.set(key, () => entry.resolve())
+        return entry.promise
+      }
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            return Effect.sync(() => {
+              const part = input.parts[0]
+              injections.push(part?.type === "text" ? part.text : "")
+              if (injections.length === 2) delivered.resolve()
+              return reply(input, "notified")
+            })
+          }
+          const text = input.parts[0]?.type === "text" ? input.parts[0].text : ""
+          const key = text.includes("task B") ? "B" : "A"
+          const gate = hold(key)
+          if (key === "B") runningB.resolve()
+          return Effect.promise(() => gate).pipe(Effect.as(reply(input, `${key} done`)))
+        },
+      }
+      const context = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "work",
+        abort: new AbortController().signal,
+        extra: { promptOps },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+
+      const a = yield* def.execute(
+        { description: "task A", prompt: "investigate task A", subagent_type: "general" },
+        context,
+      )
+      const b = yield* def.execute(
+        { description: "task B", prompt: "investigate task B", subagent_type: "general" },
+        context,
+      )
+      yield* Effect.promise(() => runningB.promise)
+
+      yield* runState.cancel(a.metadata.sessionId)
+
+      expect((yield* jobs.get(a.metadata.sessionId))?.status).toBe("cancelled")
+      expect((yield* jobs.get(b.metadata.sessionId))?.status).toBe("running")
+
+      gates.get("B")?.()
+      expect((yield* jobs.wait({ id: b.metadata.sessionId, timeout: 1_000 })).info?.status).toBe("completed")
+
+      yield* Effect.promise(() => delivered.promise)
+      expect(injections.find((text) => text.includes('state="cancelled"'))).toContain(
+        "<summary>Background task cancelled: task A</summary>",
+      )
+      expect(injections.find((text) => text.includes('state="completed"'))).toContain("task B")
+    }),
+  )
+
   it.instance("a waiting subagent delivers the same termination in the background and the foreground", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service

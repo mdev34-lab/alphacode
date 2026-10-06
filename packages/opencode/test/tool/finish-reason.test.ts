@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Parameters, readTermination } from "@/tool/finish"
+import { Parameters, TerminationReason, readTermination } from "@/tool/finish"
 
 function finishPart(input: unknown, status: SessionV1.ToolState["status"] = "completed") {
   return {
@@ -21,11 +21,29 @@ describe("tool.finish termination reason", () => {
   })
 
   test("rejects unknown reasons", () => {
+    expect(() => Schema.decodeUnknownSync(Parameters)({ reason: "aborted", result: "done" })).toThrow()
+  })
+
+  // Cancellation is a runtime outcome recorded by the tool, never something the
+  // model declares: a cancelled child is stopped mid-run and reaches no finish
+  // call at all. The finish input therefore still refuses it even though the
+  // delivered termination contract carries it.
+  test("rejects a runtime-only reason", () => {
     expect(() => Schema.decodeUnknownSync(Parameters)({ reason: "cancelled", result: "done" })).toThrow()
   })
 
   test("requires a reason", () => {
     expect(() => Schema.decodeUnknownSync(Parameters)({ result: "done" })).toThrow()
+  })
+})
+
+describe("tool.finish termination contract", () => {
+  test.each(["success", "subagent_wait", "failure", "cancelled"] as const)("carries %s", (reason) => {
+    expect(Schema.decodeUnknownSync(TerminationReason)(reason)).toBe(reason)
+  })
+
+  test("rejects a value outside the contract", () => {
+    expect(() => Schema.decodeUnknownSync(TerminationReason)("aborted")).toThrow()
   })
 })
 

@@ -10,9 +10,24 @@ import { Config } from "@/config/config"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 import { isReviewAgent } from "../agent/review-agents"
 
-export const Reason = Schema.Literals(["success", "subagent_wait", "failure"])
+const DeclaredReasons = ["success", "subagent_wait", "failure"] as const
+
+export const Reason = Schema.Literals(DeclaredReasons)
 
 export type Reason = Schema.Schema.Type<typeof Reason>
+
+/**
+ * The full termination contract for a finished run, as delivered to a parent
+ * through a `<termination reason="...">` element.
+ *
+ * The model only ever declares {@link Reason} on the finish tool; `cancelled`
+ * cannot be declared there. A cancelled subagent never reaches a finish call —
+ * the user stops it mid-run — so the runtime records the cancellation itself
+ * instead of forcing the reason through a tool input the model never supplied.
+ */
+export const TerminationReason = Schema.Literals([...DeclaredReasons, "cancelled"])
+
+export type TerminationReason = Schema.Schema.Type<typeof TerminationReason>
 
 export const Parameters = Schema.Struct({
   reason: Reason.annotate({

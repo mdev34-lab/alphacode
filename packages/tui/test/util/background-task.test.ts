@@ -19,6 +19,16 @@ const failed = [
   "</task>",
 ].join("\n")
 
+const cancelled = [
+  '<task id="ses_abc" state="cancelled">',
+  "<summary>Background task cancelled: Review cache fix</summary>",
+  "<task_result>",
+  "The subagent was cancelled by the user before it delivered a result.",
+  "</task_result>",
+  '<termination reason="cancelled">Subagent stopped because the user cancelled it.</termination>',
+  "</task>",
+].join("\n")
+
 describe("parseBackgroundResult", () => {
   test("parses a completed background result", () => {
     expect(parseBackgroundResult(completed)).toEqual({
@@ -31,6 +41,13 @@ describe("parseBackgroundResult", () => {
     expect(parseBackgroundResult(failed)).toEqual({
       state: "error",
       summary: "Background task failed: Review cache fix",
+    })
+  })
+
+  test("parses a cancelled background result", () => {
+    expect(parseBackgroundResult(cancelled)).toEqual({
+      state: "cancelled",
+      summary: "Background task cancelled: Review cache fix",
     })
   })
 

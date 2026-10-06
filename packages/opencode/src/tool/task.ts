@@ -1,5 +1,5 @@
 import * as Tool from "./tool"
-import { FinishTool, readTermination, type Reason } from "@/tool/finish"
+import { FinishTool, readTermination, type TerminationReason } from "@/tool/finish"
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ReviewReport } from "@opencode-ai/core/review-report"
@@ -69,11 +69,19 @@ export const Parameters = Schema.Struct({
  * note: the reason is the signal, and the result text already says the work is
  * done.
  */
-const TERMINATION_NOTE: Record<Reason, string> = {
+const TERMINATION_NOTE: Record<TerminationReason, string> = {
   success: "",
   subagent_wait: "Subagent stopped on a dependency and is not in flight; it will not report back on its own.",
   failure: "Subagent stopped because the task could not be completed.",
+  cancelled: "Subagent stopped because the user cancelled it; it did not complete and its result was not delivered.",
 }
+
+/**
+ * Stand-in result for a cancelled run. A cancelled child never reaches a finish
+ * call, so there is usually no output at all; the envelope must still say what
+ * became of the task instead of delivering an empty result.
+ */
+const CANCELLED_TEXT = "The subagent was cancelled by the user before it delivered a result."
 
 /**
  * Renders the parent-facing `<task>` envelope. The termination reason is part of
@@ -82,10 +90,10 @@ const TERMINATION_NOTE: Record<Reason, string> = {
  */
 function renderOutput(input: {
   sessionID: SessionID
-  state: "running" | "completed" | "error"
+  state: "running" | "completed" | "error" | "cancelled"
   summary?: string
   text: string
-  termination?: Reason
+  termination?: TerminationReason
 }) {
   const tag = input.state === "error" ? "task_error" : "task_result"
   return [
@@ -298,8 +306,10 @@ export const TaskTool = Tool.define(
       // The child declares why it stopped on the finish tool input. Capture it
       // once, where the reply is already in hand, so the background and the
       // foreground delivery paths below report the same value without either
-      // one re-reading the child transcript.
-      const termination = yield* Ref.make<Reason | undefined>(undefined)
+      // one re-reading the child transcript. A cancelled run never made a
+      // finish call; that path records `cancelled` itself, so this ref holds the
+      // whole termination contract rather than only the declared subset.
+      const termination = yield* Ref.make<TerminationReason | undefined>(undefined)
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         const parts = yield* ops.resolvePromptParts(params.prompt)
@@ -374,9 +384,9 @@ export const TaskTool = Tool.define(
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
-        state: "completed" | "error",
+        state: "completed" | "error" | "cancelled",
         text: string,
-        termination: Reason | undefined,
+        termination: TerminationReason | undefined,
       ) {
         // Notifications must run in the parent session, under the parent agent -
         // the same one the routing above read, not a second opinion taken when
@@ -398,7 +408,9 @@ export const TaskTool = Tool.define(
                   summary:
                     state === "completed"
                       ? `Background task completed: ${params.description}`
-                      : `Background task failed: ${params.description}`,
+                      : state === "cancelled"
+                        ? `Background task cancelled: ${params.description}`
+                        : `Background task failed: ${params.description}`,
                   text,
                   termination,
                 }),
@@ -420,6 +432,12 @@ export const TaskTool = Tool.define(
               // reason was captured before that failure, so deliver it rather
               // than reporting a bare <task_error> with no signal.
               if (result.info?.status === "error") return yield* inject("error", result.info.error ?? "", reason)
+              // A cancelled run produced no finish call and no declared reason.
+              // The job outcome is the termination: deliver it so the parent
+              // resumes orchestration knowing the user stopped the child,
+              // instead of never hearing about a subagent that vanished.
+              if (result.info?.status === "cancelled")
+                return yield* inject("cancelled", result.info.output ?? CANCELLED_TEXT, "cancelled")
             }),
           ),
           Effect.forkIn(scope, { startImmediately: true }),
@@ -499,7 +517,24 @@ export const TaskTool = Tool.define(
             )
             if (result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
-            if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
+            // Cancellation is a delivery, not a tool failure: the parent is
+            // blocked on this call, and a free-form failure would leave it
+            // re-deriving what happened from prose. The same envelope the
+            // background path injects carries the typed reason here.
+            if (result?.status === "cancelled")
+              return {
+                title: params.description,
+                metadata: {
+                  ...metadata,
+                  termination: { reason: "cancelled" },
+                },
+                output: renderOutput({
+                  sessionID: nextSession.id,
+                  state: "cancelled",
+                  text: result.output ?? CANCELLED_TEXT,
+                  termination: "cancelled",
+                }),
+              } satisfies Tool.ExecuteResult
             // Re-associate the delivered review report with the result metadata
             // so consumers know which revision was reviewed without re-parsing
             // the output. The output already carries the canonical envelope.
