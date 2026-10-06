@@ -122,6 +122,13 @@ describe("OpenCodeZen", () => {
                 tiers: [{ input: 1, output: 1, cache: { read: 0, write: 0 } }],
               },
             },
+            {
+              api: { id: "wire/paid-over-200k" },
+              cost: {
+                ...costs,
+                experimentalOver200K: { input: 2, output: 4, cache: { read: 0, write: 0 } },
+              },
+            },
           ]),
         ].sort(),
       ).toEqual(["wire/free", "wire/free-alias"])

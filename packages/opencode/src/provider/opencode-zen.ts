@@ -82,20 +82,20 @@ type Chunk = {
 
 type Frame = { readonly chunk: Chunk } | { readonly done: true }
 
-/** Cost metadata of a catalog model, including its context-priced tiers. */
-export type ModelCost = {
+type Cost = {
   readonly input: number
   readonly output: number
   readonly cache: { readonly read: number; readonly write: number }
-  readonly tiers?: ReadonlyArray<{
-    readonly input: number
-    readonly output: number
-    readonly cache: { readonly read: number; readonly write: number }
-  }>
+}
+
+/** Cost metadata of a catalog model, including its context-priced tiers. */
+export type ModelCost = Cost & {
+  readonly tiers?: ReadonlyArray<Cost>
+  readonly experimentalOver200K?: Cost
 }
 
 function zeroCost(cost: ModelCost) {
-  const entries = [cost, ...(cost.tiers ?? [])]
+  const entries = [cost, ...(cost.tiers ?? []), ...(cost.experimentalOver200K ? [cost.experimentalOver200K] : [])]
   return entries.every(
     (entry) => entry.input === 0 && entry.output === 0 && entry.cache.read === 0 && entry.cache.write === 0,
   )
