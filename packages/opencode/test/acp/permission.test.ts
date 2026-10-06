@@ -16,6 +16,7 @@ import { ACPEvent } from "@/acp/event"
 import { ACPSession } from "@/acp/session"
 
 type PermissionEvent = Extract<Event, { type: "permission.asked" }>
+type RepliedEvent = Extract<Event, { type: "permission.replied" }>
 type PermissionReplyParams = Parameters<OpencodeClient["permission"]["reply"]>[0]
 type SessionUpdateParams = Parameters<AgentSideConnection["sessionUpdate"]>[0]
 const cleanupDirs: string[] = []
@@ -120,6 +121,14 @@ function permissionAsked(
       ...(input.tool ? { tool: input.tool } : {}),
     },
   } as PermissionEvent
+}
+
+function permissionReplied(sessionID: string, requestID: string, reply: "once" | "always" | "reject" | "timeout") {
+  return {
+    id: `evt_${requestID}_replied`,
+    type: "permission.replied",
+    properties: { sessionID, requestID, reply },
+  } as RepliedEvent
 }
 
 function textDelta(sessionID: string, messageID: string, partID: string, delta: string) {
@@ -397,5 +406,74 @@ describe("acp permissions", () => {
       ["perm_1", "once"],
       ["perm_2", "always"],
     ])
+  })
+
+  it("releases the session queue when the server settles the prompt itself", async () => {
+    const answers: Array<(value: RequestPermissionResponse) => void> = []
+    const harness = createHarness(
+      () =>
+        new Promise<RequestPermissionResponse>((resolve) => {
+          answers.push(resolve)
+        }),
+    )
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_slow", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    await pollUntil(() => harness.requests.length === 1, "editor was never asked about the first prompt")
+
+    // The countdown expired on the server, which ACP only learns from `permission.replied`.
+    harness.subscription.handle(permissionReplied("ses_a", "perm_slow", "timeout"))
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_next", { tool: { messageID: "msg_1", callID: "call_2" } }),
+    )
+    await pollUntil(
+      () => harness.requests.length === 2,
+      "the session queue stayed blocked behind the prompt the server had already settled",
+    )
+    expect(harness.requests[1]).toMatchObject({ toolCall: { toolCallId: "call_2" } })
+
+    // A choice made in the editor after its request expired must not be posted for it.
+    answers[0]?.({ outcome: { outcome: "selected", optionId: "once" } })
+    answers[1]?.({ outcome: { outcome: "selected", optionId: "always" } })
+    await pollUntil(() => harness.replies.length === 1, "the live prompt was never replied")
+    expect(harness.replies).toEqual([{ requestID: "perm_next", reply: "always", directory: "/workspace" }])
+  })
+
+  it("skips a prompt the server settled while it waited behind another one", async () => {
+    const answers: Array<(value: RequestPermissionResponse) => void> = []
+    const harness = createHarness(
+      () =>
+        new Promise<RequestPermissionResponse>((resolve) => {
+          answers.push(resolve)
+        }),
+    )
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_first", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_second", { tool: { messageID: "msg_1", callID: "call_2" } }),
+    )
+    await pollUntil(() => harness.requests.length === 1, "editor was never asked about the first prompt")
+
+    // Both expire while the second is still queued, so it was never sent to the editor and
+    // there is nothing to release: it has to be skipped when it reaches the front.
+    harness.subscription.handle(permissionReplied("ses_a", "perm_second", "timeout"))
+    harness.subscription.handle(permissionReplied("ses_a", "perm_first", "timeout"))
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_third", { tool: { messageID: "msg_1", callID: "call_3" } }),
+    )
+    await pollUntil(() => harness.requests.length === 2, "the queue never reached the third prompt")
+    expect(harness.requests[1]).toMatchObject({ toolCall: { toolCallId: "call_3" } })
+    expect(harness.replies).toEqual([])
+
+    answers[1]?.({ outcome: { outcome: "selected", optionId: "once" } })
+    await pollUntil(() => harness.replies.length === 1, "the third prompt was never replied")
+    expect(harness.replies).toEqual([{ requestID: "perm_third", reply: "once", directory: "/workspace" }])
   })
 })

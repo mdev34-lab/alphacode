@@ -99,6 +99,12 @@ export class Subscription {
       case "permission.asked":
         this.permission.handle(event)
         return
+      case "permission.replied":
+        // The server settled this one without the editor — a countdown expiring, another
+        // client answering, a reject cascading over the session — so the prompt ACP is
+        // waiting on has to be let go or it blocks every later prompt for the session.
+        this.permission.replied(event)
+        return
       case "message.part.updated":
         return this.handlePartUpdated(event)
       case "message.part.delta":
