@@ -1837,6 +1837,7 @@ it.instance(
         ...providerCfg(url),
         agent: { work: { finishTool: true } },
       }))
+      const events = yield* EventV2Bridge.Service
       const prompt = yield* SessionPrompt.Service
       const sessions = yield* Session.Service
       const status = yield* SessionStatus.Service
@@ -1855,9 +1856,17 @@ it.instance(
       yield* llm.text("Bom dia! Como posso ajudar?")
       yield* llm.text("Bom dia! Como posso ajudar?")
 
+      const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+      const off = yield* events.listen((event) => {
+        if (event.type !== Session.Event.Error.type) return Effect.void
+        const data = event.data as typeof Session.Event.Error.data.Type
+        if (data.sessionID === session.id && data.error) errors.push(data.error)
+        return Effect.void
+      })
       const result = yield* prompt.loop({ sessionID: session.id })
       const stored = yield* MessageV2.get({ sessionID: session.id, messageID: result.info.id })
       const messages = yield* sessions.messages({ sessionID: session.id })
+      yield* off
 
       expect(yield* llm.calls).toBe(4)
       expect(toolNames((yield* llm.hits)[0]?.body)).toContain("finish")
@@ -1868,12 +1877,11 @@ it.instance(
         expect(result.info.finish).toBe("error")
         expect(result.info.error?.name).toBe("UnknownError")
         if (result.info.error?.name === "UnknownError") {
-          expect(result.info.error.data.message).toContain(
-            "did not complete the required finish tool after 3 reminders",
-          )
+          expect(result.info.error.data.message).toContain("did not complete the required finish tool after 3 nudges")
           expect(result.info.error.data.message).toContain("Set agent.<name>.finishTool to false")
         }
         expect(stored.info.error).toEqual(result.info.error)
+        if (result.info.error) expect(errors).toContainEqual(result.info.error)
         expect(result.parts).toEqual(
           expect.arrayContaining([expect.objectContaining({ type: "text", text: "Bom dia! Como posso ajudar?" })]),
         )
@@ -1922,9 +1930,7 @@ it.instance(
         expect(result.info.finish).toBe("error")
         expect(result.info.error?.name).toBe("UnknownError")
         if (result.info.error?.name === "UnknownError") {
-          expect(result.info.error.data.message).toContain(
-            "did not complete the required finish tool after 3 reminders",
-          )
+          expect(result.info.error.data.message).toContain("did not complete the required finish tool after 3 nudges")
           expect(result.info.error.data.message).not.toContain("did not call the required finish tool")
         }
       }

@@ -79,7 +79,7 @@ const decodeMessageInfo = Schema.decodeUnknownExit(SessionV1.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(SessionV1.Part)
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 // Agent step limits are optional; cap finish-tool recovery separately so a
-// model that ignores every reminder cannot keep one prompt alive forever. The
+// model that ignores every nudge cannot keep one prompt alive forever. The
 // counter is per runLoop invocation and is not persisted across re-prompts.
 const MAX_FINISH_NUDGES = 3
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
@@ -1362,8 +1362,8 @@ const layer = Layer.effect(
               // Review stagnation recovery (issue #171): a review that
               // restates the same completed output across consecutive
               // generations without tool activity gets the recovery nudge
-              // toward the existing finish path instead of the generic
-              // reminder again. Any other agent keeps the generic nudge.
+              // toward the existing finish path instead of repeating the
+              // generic finish nudge. Any other agent keeps the generic nudge.
               const repeats = ReviewStagnation.resolveRepeats({ repeats: flags.reviewStagnationRepeats })
               const stagnation = isReviewAgent(lastUser.agent)
                 ? ReviewStagnation.reviewStagnationState(msgs, repeats)
@@ -1413,7 +1413,7 @@ const layer = Layer.effect(
               }
               if (finishNudges >= MAX_FINISH_NUDGES) {
                 const error = new NamedError.Unknown({
-                  message: `The assistant did not complete the required finish tool after ${MAX_FINISH_NUDGES} reminders. The turn was stopped to prevent an unbounded continuation loop. Set agent.<name>.finishTool to false for agents that must end turns without finish.`,
+                  message: `The assistant did not complete the required finish tool after ${MAX_FINISH_NUDGES} nudges. The turn was stopped to prevent an unbounded continuation loop. Set agent.<name>.finishTool to false for agents that must end turns without finish.`,
                 }).toObject()
                 yield* sessions.updateMessage({
                   ...lastAssistant,
@@ -1465,24 +1465,14 @@ const layer = Layer.effect(
               } satisfies SessionV1.TextPart)
               continue
             }
-            if (
-              finishRequired &&
-              activeAgent?.steps !== undefined &&
-              !completedFinish &&
-              orphan === undefined &&
-              lastAssistant.error === undefined &&
-              step >= activeAgent.steps
-            ) {
-              yield* Effect.logWarning(
-                "assistant reached the agent step cap without completing the finish tool; ending loop",
-                {
-                  "session.id": sessionID,
-                  messageID: lastAssistant.id,
-                  step,
-                  maxSteps: activeAgent.steps,
-                  nudges: finishNudges,
-                },
-              )
+            if (finishRequired && activeAgent?.steps !== undefined && !completedFinish && step >= activeAgent.steps) {
+              yield* Effect.logWarning("run reached the agent step cap without a completed finish tool; ending loop", {
+                "session.id": sessionID,
+                messageID: lastAssistant.id,
+                step,
+                maxSteps: activeAgent.steps,
+                nudges: finishNudges,
+              })
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
