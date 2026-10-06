@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
@@ -118,6 +118,8 @@ function secondsLeft(expiresAt: number) {
 export function Countdown(props: { expiresAt: number }) {
   const { theme } = useTheme()
   const [seconds, setSeconds] = createSignal(secondsLeft(props.expiresAt))
+  // Follow the deadline as soon as it changes instead of on the next tick.
+  createEffect(() => setSeconds(secondsLeft(props.expiresAt)))
   const timer = setInterval(() => setSeconds(secondsLeft(props.expiresAt)), 1000)
   onCleanup(() => clearInterval(timer))
 
