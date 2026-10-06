@@ -683,6 +683,8 @@ it.instance(
       const hits = yield* llm.hits
       const body = JSON.stringify(hits[0]?.body)
       expect(body).toContain("## Review Loop")
+      expect(body).toContain("## Todo as scope contract")
+      expect(body).toContain("first tool call")
       yield* Fiber.interrupt(fiber)
     }),
   15_000,

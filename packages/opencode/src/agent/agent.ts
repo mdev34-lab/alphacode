@@ -191,6 +191,7 @@ const layer = Layer.effect(
               Permission.fromConfig({
                 question: "allow",
                 plan_enter: "allow",
+                todowrite: "allow",
                 lsp: "deny",
                 task: {
                   work: "deny",
