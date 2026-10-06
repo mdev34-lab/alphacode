@@ -7,10 +7,11 @@ import { Todo } from "../session/todo"
 import { Session } from "../session/session"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
+import { BackgroundJob } from "@/background/job"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 import { isReviewAgent } from "../agent/review-agents"
 
-const DeclaredReasons = ["success", "subagent_wait", "failure"] as const
+const DeclaredReasons = ["success", "subagent_wait", "waiting_for_subagent", "failure"] as const
 
 export const Reason = Schema.Literals(DeclaredReasons)
 
@@ -32,7 +33,7 @@ export type TerminationReason = Schema.Schema.Type<typeof TerminationReason>
 export const Parameters = Schema.Struct({
   reason: Reason.annotate({
     description:
-      "Why the agent is ending this turn: success when the task is complete, subagent_wait when progress depends on another subagent, or failure when the task could not be completed.",
+      "Why the agent is ending this turn: success when the task is complete, waiting_for_subagent when yielding the turn while background subagents you launched are still running, subagent_wait when progress depends on a subagent that will not report back on its own, or failure when the task could not be completed.",
   }),
   result: Schema.String.annotate({
     description:
@@ -70,11 +71,19 @@ export const FinishTool = Tool.define(
     const todo = yield* Todo.Service
     const sessions = yield* Session.Service
     const config = yield* Config.Service
+    const background = yield* BackgroundJob.Service
 
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+      // A yield and a terminal result are two success shapes with different
+      // metadata. Keeping the tool's metadata contract as its record type stops
+      // inference from collapsing them into one shape whose fields are all
+      // optional for every consumer.
+      execute: (
+        params: Schema.Schema.Type<typeof Parameters>,
+        ctx: Tool.Context,
+      ): Effect.Effect<Tool.ExecuteResult, ToolFailure> =>
         Effect.gen(function* () {
           yield* ctx.waitForOtherTools ?? Effect.void
           const messages = yield* sessions
@@ -107,6 +116,36 @@ export const FinishTool = Tool.define(
               )
             }
           }
+          // Yielding for background work is not a termination. The turn ends so
+          // the model stops polling for the subagents it launched, but the
+          // session is woken by their notification, so a wait must leave
+          // everything the real finish depends on untouched: the review nudge
+          // (consumed once per unit of work), the plan, and the terminal
+          // metadata the review loop reads as a delivered outcome.
+          if (params.reason === "waiting_for_subagent") {
+            const running = (yield* background.list()).filter(
+              (job) => job.status === "running" && job.metadata?.parentSessionId === ctx.sessionID,
+            )
+            if (running.length === 0) {
+              return yield* Effect.fail(
+                new ToolFailure({
+                  message:
+                    "Cannot wait: no running background subagents found for this session. " +
+                    'If the work is complete, call finish with reason: "success".',
+                }),
+              )
+            }
+            yield* Effect.logInfo("finish yielded while background subagents run", {
+              sessionID: ctx.sessionID,
+              subagents: running.length,
+            })
+            return {
+              title: `Waiting for ${running.length} background subagent(s)`,
+              output: params.result,
+              metadata: { waiting: true },
+            }
+          }
+
           const cfg = yield* config.get()
           const maxIterations = cfg.review_loop?.max_iterations ?? 5
           const reviewState = reviewLoopState(messages, maxIterations)

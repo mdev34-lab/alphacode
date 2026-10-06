@@ -2164,7 +2164,13 @@ function Finish(props: ToolProps) {
     ),
   )
   const visible = createMemo(() => (expanded() || !collapsed().overflow ? result() : collapsed().output))
-  const view = createMemo(() => finishToolView(props.part.state.status, visible()))
+  const view = createMemo(() =>
+    finishToolView(
+      props.part.state.status,
+      visible(),
+      props.part.state.status === "completed" && props.part.state.metadata?.waiting === true,
+    ),
+  )
   const content = createMemo(() => {
     if (!collapsed().overflow) return view().children
     return `${view().children}
@@ -2189,11 +2195,16 @@ function Finish(props: ToolProps) {
 
 type FinishToolStatus = ToolPart["state"]["status"]
 
+const WAITING_LABEL = "Waiting for subagent execution..."
+
 export function finishResult(input: Record<string, unknown>, output?: string) {
   return (output?.trim() || stringValue(input.result)?.trim() || undefined) ?? undefined
 }
 
-export function finishToolView(status: FinishToolStatus, result?: string) {
+export function finishToolView(status: FinishToolStatus, result?: string, waiting = false) {
+  // A wait is not a completion: the agent yielded the turn while the background
+  // subagents it launched still run, so the block must not read as done.
+  const completed = waiting ? WAITING_LABEL : "Task completed"
   if (status === "pending") {
     return {
       icon: "✓",
@@ -2201,7 +2212,7 @@ export function finishToolView(status: FinishToolStatus, result?: string) {
       complete: false,
       spinner: false,
       failure: "Finish failed",
-      children: "Task completion",
+      children: waiting ? WAITING_LABEL : "Task completion",
     }
   }
   if (status === "running") {
@@ -2211,7 +2222,7 @@ export function finishToolView(status: FinishToolStatus, result?: string) {
       complete: false,
       spinner: true,
       failure: "Finish failed",
-      children: "Completing task...",
+      children: waiting ? WAITING_LABEL : "Completing task...",
     }
   }
   return {
@@ -2220,7 +2231,7 @@ export function finishToolView(status: FinishToolStatus, result?: string) {
     complete: status === "completed",
     spinner: false,
     failure: "Finish failed",
-    children: result ? `Task completed\n↳ ${result}` : "Task completed",
+    children: result ? `${completed}\n↳ ${result}` : completed,
   }
 }
 

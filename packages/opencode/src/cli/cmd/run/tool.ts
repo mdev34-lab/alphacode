@@ -597,9 +597,11 @@ function runFinish(p: ToolProps): ToolInline {
       ...(result && { mode: "block" as const, body: result }),
     }
   }
+  // A wait is not a completion: the agent yielded the turn while the background
+  // subagents it launched still run, so the block must not read as done.
   return {
     icon: "✓",
-    title: "Task completed",
+    title: p.frame.meta.waiting === true ? "Waiting for subagent execution..." : "Task completed",
     ...(result && { mode: "block" as const, body: result }),
   }
 }
