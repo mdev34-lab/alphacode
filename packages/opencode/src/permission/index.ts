@@ -130,6 +130,8 @@ const layer = Layer.effect(
           // Against the absolute deadline, not for a duration started here: the countdown
           // is forked before `asked` is published, and a listener on either event can be
           // slow, so measuring from the publish would stretch the timeout past `expiresAt`.
+          // One sleep is enough because the config schema caps `seconds` at what a single
+          // timer can express; past 2^31 - 1 ms it would never resume.
           yield* Effect.sleep(Duration.millis(Math.max(0, due.at - Date.now())))
           // Claiming is what expires the request. A reply that claimed it first completed
           // the deferred in the same step that removed it from `pending`, so losing the

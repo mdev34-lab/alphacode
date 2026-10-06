@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
@@ -84,6 +84,22 @@ describe("Config", () => {
         }),
         { numRuns: 100 },
       )
+    }),
+  )
+
+  it.effect("bounds the permission timeout countdown to what one timer can express", () =>
+    Effect.sync(() => {
+      const decode = Schema.decodeUnknownOption(ConfigV1.Info)
+      const seconds = (value: number) => decode({ permission_timeout: { enabled: true, seconds: value } })
+      // The countdown is one `Effect.sleep`, and its timer takes a 32-bit millisecond
+      // timeout: past 2^31 - 1 ms it never resumes, so an unanswered prompt would hang its
+      // session forever instead of being denied. Rejecting the value at the schema keeps
+      // that out of reach rather than silently clamping it.
+      const maximum = Math.floor((2 ** 31 - 1) / 1000)
+      expect(Option.isSome(seconds(maximum))).toBe(true)
+      expect(Option.isNone(seconds(maximum + 1))).toBe(true)
+      expect(Option.isSome(seconds(45))).toBe(true)
+      expect(Option.isNone(seconds(0))).toBe(true)
     }),
   )
 
