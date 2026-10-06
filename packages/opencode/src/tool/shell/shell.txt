@@ -26,3 +26,5 @@ ${commandSection}
 - Before creating a PR, inspect status, diff, remote tracking, recent commits, and the diff from the base branch.
 - Review all commits included in the PR, not just the latest commit.
 - Use `gh` for GitHub tasks, including PRs, issues, checks, and releases; return the PR URL when done.
+
+${shellAdaptation}
