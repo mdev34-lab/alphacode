@@ -189,15 +189,12 @@ export const WebFetchTool = Tool.define<typeof Parameters, Metadata, HttpClient.
             // still gets to observe it if it ever exceeds its own caps.
             return { output: fetched.converted, title: fetched.title, metadata: {} }
           }
-          // A window that fits the caps was already bounded here, so the generic
-          // wrapper should not re-truncate it and add a second, conflicting notice.
-          if (!windowed.truncated)
-            return { output: windowed.output, title: fetched.title, metadata: { truncated: false } }
-
           // The generic tool wrapper stops spilling oversized output as soon as a
           // tool reports its own `truncated` metadata, so a windowed fetch saves
           // the full converted body itself; otherwise the model could only
-          // re-fetch and re-convert it.
+          // re-fetch and re-convert it. A window that fit webfetch's own caps still
+          // reports empty metadata, so the wrapper stays responsible for spilling
+          // output that exceeds configured `tool_output` caps.
           const saved = windowed.truncated ? yield* truncate.output(fetched.converted) : undefined
           const outputPath = saved && saved.truncated ? saved.outputPath : undefined
           return {

@@ -1,20 +1,26 @@
 import { describe, expect } from "bun:test"
+import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { Agent } from "../../src/agent/agent"
+import { Config } from "@/config/config"
 import { Truncate } from "@/tool/truncate"
 import { WebFetchTool } from "../../src/tool/webfetch"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Tool } from "@/tool/tool"
 import { testEffect } from "../lib/effect"
+import { TestConfig } from "../fixture/config"
 
-const it = testEffect(
-  LayerNode.compile(LayerNode.group([httpClient, Truncate.node, Agent.node]), [
+const layer = (cfg?: ConfigV1.Info) =>
+  LayerNode.compile(LayerNode.group([httpClient, Truncate.node, Agent.node, Config.node]), [
     [httpClient, FetchHttpClient.layer as Layer.Layer<HttpClient.HttpClient>],
-  ]),
-)
+    ...(cfg ? ([[Config.node, TestConfig.layer({ get: () => Effect.succeed(cfg) })]] as LayerNode.Replacements) : []),
+  ])
+
+const it = testEffect(layer())
+const capped = testEffect(layer({ tool_output: { max_bytes: 10 * 1024 } }))
 
 const ctx = {
   sessionID: SessionID.make("ses_test"),
@@ -292,6 +298,29 @@ describe("tool.webfetch", () => {
           expect(result.output).toContain("(Showing lines 1-2000 of 2001. Use offset=2001 to continue.)")
           expect(result.output).not.toContain("line2001")
           expect(result.metadata.truncated).toBe(true)
+        }),
+    ),
+  )
+
+  capped.instance("re-truncates a fitting window through a tighter configured output cap", () =>
+    withFetch(
+      () =>
+        // 100 lines of ~380 bytes: the window holds the whole body, so it fits
+        // webfetch's own 50 KB cap, but still exceeds the configured 10 KB
+        // `tool_output.max_bytes`.
+        new Response(Array.from({ length: 100 }, (_, i) => `line${i} ${"x".repeat(380)}`).join("\n"), {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", limit: 100 })
+          // The generic wrapper capped the window at the configured 10 KB, so its
+          // byte-truncation hint is present and no webfetch window notice is.
+          expect(result.output).toContain("bytes truncated...")
+          expect(result.output).not.toContain("(Showing lines")
+          expect(result.metadata.truncated).toBe(true)
+          expect(result.metadata.outputPath).toBeDefined()
         }),
     ),
   )
