@@ -218,6 +218,28 @@ Usage notes:
     </bad-example>`
 }
 
+const NO_RETRY_RULE = `- On the first shell parse error (\`ParserError\`, "is not recognized", "not a valid regular expression", etc.), STOP retrying the same construct. Either (a) translate the command to this shell's native syntax, or (b) for anything multi-line or loop-shaped, write a script file with the Write tool (\`.py\`, \`.ps1\`, or \`.sh\` as appropriate) and execute it. Never attempt the same failing syntax pattern more than once.`
+
+function shellAdaptationSection(name: string) {
+  const header = "# Shell identity and failure adaptation"
+  if (PS.has(name)) {
+    return `${header}
+- This host runs ${shellDisplayName(name)}, not a POSIX shell. POSIX-shaped commands are parse errors here: heredocs (\`<<\`), \`for f in ...; do ... done\` one-liners, and POSIX flag forms such as \`rm -f\` (PowerShell reads \`-f\` as an ambiguous parameter name).
+${NO_RETRY_RULE}
+- PowerShell regex and quoting rules differ from POSIX: use single-quoted verbatim strings for patterns so backslashes are not mangled, and prefer a script file over inline regex when unsure.`
+  }
+  if (CMD.has(name)) {
+    return `${header}
+- This host runs ${shellDisplayName(name)}, not a POSIX shell and not PowerShell. POSIX constructs (heredocs \`<<\`, \`for f in ...; do ... done\` one-liners, POSIX flag forms such as \`rm -f\`) and PowerShell cmdlets such as \`Remove-Item\` are both parse errors here.
+${NO_RETRY_RULE}
+- cmd.exe quoting and escaping rules differ from POSIX: use double quotes, escape \`%\` as \`%%\`, and prefer a script file over an elaborate inline one-liner.`
+  }
+  return `${header}
+- This host runs ${name} (POSIX). PowerShell and cmd.exe idioms such as \`Remove-Item\`, \`Get-ChildItem\`, or \`if exist\` are not valid here; use POSIX equivalents.
+${NO_RETRY_RULE}
+- If a POSIX-shaped command ever produces a parse error, treat it as a shell-family mismatch rather than a typo and switch strategy instead of re-sending the same construct.`
+}
+
 function profile(name: string, platform: NodeJS.Platform, limits: Limits, defaultTimeoutMs: number) {
   const isPowerShell = PS.has(name)
   const chain = chainGuidance(name)
@@ -278,6 +300,7 @@ export function render(name: string, platform: NodeJS.Platform, limits: Limits, 
       os: platform,
       shell: name,
       tmp: Global.Path.tmp,
+      shellAdaptation: shellAdaptationSection(name),
       workdirSection: selected.workdirSection,
       commandSection: selected.commandSection,
       gitCommands: selected.gitCommands,
