@@ -2190,6 +2190,16 @@ describe("tool.task", () => {
           metadata: () => Effect.void,
           ask: () => Effect.void,
         })
+        const notify: TaskPromptOps = {
+          ...child,
+          prompt: (input) =>
+            input.sessionID === chat.id
+              ? Effect.sync(() => {
+                  injected.resolve(input)
+                  return reply(input, "notified")
+                })
+              : child.prompt(input),
+        }
         const queued = yield* def.execute(
           { ...params, background: true },
           {
@@ -2197,18 +2207,7 @@ describe("tool.task", () => {
             messageID: assistant.id,
             agent: "work",
             abort: new AbortController().signal,
-            extra: {
-              promptOps: {
-                ...child,
-                prompt: (input) =>
-                  input.sessionID === chat.id
-                    ? Effect.sync(() => {
-                        injected.resolve(input)
-                        return reply(input, "notified")
-                      })
-                    : child.prompt(input),
-              },
-            },
+            extra: { promptOps: notify },
             messages: [],
             metadata: () => Effect.void,
             ask: () => Effect.void,
