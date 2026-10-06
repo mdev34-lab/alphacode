@@ -436,8 +436,16 @@ export const TaskTool = Tool.define(
               // The job outcome is the termination: deliver it so the parent
               // resumes orchestration knowing the user stopped the child,
               // instead of never hearing about a subagent that vanished.
-              if (result.info?.status === "cancelled")
+              //
+              // A cancel that cascaded from an ancestor's teardown is the
+              // exception: cancelling a session (Ctrl+C, or its own double-Esc)
+              // sweeps up every job beneath it, so delivering those would prompt
+              // the session that is stopping and undo the interrupt. Only a
+              // cancellation aimed at this job's own session is reported.
+              if (result.info?.status === "cancelled") {
+                if (result.info.cancelledByTeardown) return
                 return yield* inject("cancelled", result.info.output ?? CANCELLED_TEXT, "cancelled")
+              }
             }),
           ),
           Effect.forkIn(scope, { startImmediately: true }),

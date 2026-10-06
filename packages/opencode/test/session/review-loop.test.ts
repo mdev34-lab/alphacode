@@ -438,6 +438,38 @@ describe("runtime review gate", () => {
     expect(finishGateError(state)).toBeUndefined()
   })
 
+  test("ignores a cancelled review instead of counting it as a delivered one", () => {
+    const approved = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
+    const cancelled = reviewMessage("", { metadata: { termination: { reason: "cancelled" } } })
+
+    // A cancelled review that follows an approval leaves that approval intact.
+    const stillApproved = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      approved,
+      cancelled,
+    ])
+    expect(stillApproved.verdict).toBe("approved")
+    expect(stillApproved.reviews).toBe(1)
+    expect(finishGateError(stillApproved)).toBeUndefined()
+
+    // Cancellations must not pile up into the iteration cap and silently
+    // disable the gate: each one is a non-event.
+    const cancelledTwice = reviewLoopState(
+      [
+        userMessage(),
+        toolMessage("edit", { writesFiles: true }),
+        cancelled,
+        toolMessage("edit", { writesFiles: true }),
+        cancelled,
+      ],
+      2,
+    )
+    expect(cancelledTwice.reviews).toBe(0)
+    expect(cancelledTwice.verdict).toBe("pending")
+    expect(finishGateError(cancelledTwice)).toBeInstanceOf(Error)
+  })
+
   test("does not treat an incomplete or malformed review as approval", () => {
     const running = reviewMessage("", { status: "running" })
     const malformed = reviewMessage("review failed before producing an assessment")

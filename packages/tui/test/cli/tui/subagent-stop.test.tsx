@@ -31,8 +31,9 @@ import { FrecencyProvider } from "../../../src/prompt/frecency"
 import { PromptHistoryProvider } from "../../../src/prompt/history"
 import { PromptStashProvider } from "../../../src/prompt/stash"
 import { Session } from "../../../src/routes/session"
-import { DialogProvider } from "../../../src/ui/dialog"
+import { DialogProvider, useDialog } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
+import { DOUBLE_PRESS_WINDOW_MS } from "../../../src/util/double-press"
 
 /**
  * Double-Esc while a subagent trace is open stops that subagent and nothing
@@ -94,12 +95,49 @@ function abortedMessageEvent(id: string): GlobalEvent {
   })
 }
 
-async function mountChildTrace(status: SessionStatus, options: { sibling?: boolean } = {}) {
+function completedMessage(id: string): Message {
+  return {
+    id,
+    sessionID: CHILD_ID,
+    parentID: "msg_stop_user",
+    role: "assistant",
+    time: { created: 1_700_000_000_000, completed: 1_700_000_001_000 },
+    modelID: "model",
+    providerID: "test",
+    mode: "review",
+    agent: "review",
+    path: { cwd: directory, root: directory },
+    cost: 0,
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  }
+}
+
+function completedMessageEvent(id: string): GlobalEvent {
+  return globalEvent({
+    id: "evt_completed",
+    type: "message.updated",
+    properties: { sessionID: CHILD_ID, info: completedMessage(id) },
+  })
+}
+
+function rowOf(frame: string, needle: string): number {
+  const row = frame.split("\n").findIndex((line) => line.includes(needle))
+  if (row === -1) throw new Error(`needle "${needle}" not found in frame:\n${frame}`)
+  return row
+}
+
+function columnOf(frame: string, needle: string): number {
+  const line = frame.split("\n")[rowOf(frame, needle)] ?? ""
+  return line.indexOf(needle)
+}
+
+async function mountChildTrace(status: SessionStatus, options: { sibling?: boolean; failAbort?: boolean } = {}) {
   // Disposal is owned by `setups` so the tempdir outlives this function.
   const tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
 
   const aborts: string[] = []
+  const failAbort = { current: options.failAbort === true }
   const events = createEventSource()
   function sessionInfo(id: string, title: string) {
     return {
@@ -126,6 +164,7 @@ async function mountChildTrace(status: SessionStatus, options: { sibling?: boole
       return json(options.sibling ? { [CHILD_ID]: status, [SIBLING_ID]: { type: "busy" } } : { [CHILD_ID]: status })
     if (url.pathname === `/session/${CHILD_ID}/abort` || url.pathname === `/session/${SIBLING_ID}/abort`) {
       aborts.push(url.pathname)
+      if (failAbort.current) return json({ error: "abort failed" }, { status: 500 })
       return json(true)
     }
     return undefined
@@ -133,10 +172,17 @@ async function mountChildTrace(status: SessionStatus, options: { sibling?: boole
 
   const config = createTuiResolvedConfig({})
   let navigate: ((sessionID: string) => void) | undefined
+  let openDialog: (() => void) | undefined
 
   function RouteProbe() {
     const route = useRoute()
     navigate = (sessionID: string) => route.navigate({ type: "session", sessionID })
+    return undefined
+  }
+
+  function DialogProbe() {
+    const dialog = useDialog()
+    openDialog = () => dialog.replace(() => <text>Probe dialog</text>)
     return undefined
   }
 
@@ -171,6 +217,7 @@ async function mountChildTrace(status: SessionStatus, options: { sibling?: boole
                                               <PromptHistoryProvider>
                                                 <PromptRefProvider>
                                                   <RouteProbe />
+                                                  <DialogProbe />
                                                   <Session />
                                                 </PromptRefProvider>
                                               </PromptHistoryProvider>
@@ -211,7 +258,14 @@ async function mountChildTrace(status: SessionStatus, options: { sibling?: boole
   )
 
   setups.push({ app, dispose: async () => await tmp[Symbol.asyncDispose]() })
-  return { app, aborts, events, navigate: (sessionID: string) => navigate?.(sessionID) }
+  return {
+    app,
+    aborts,
+    events,
+    failAbort,
+    navigate: (sessionID: string) => navigate?.(sessionID),
+    openDialog: () => openDialog?.(),
+  }
 }
 
 /** Pumps frames until `probe` yields, so assertions read a settled layout. */
@@ -308,5 +362,117 @@ describe("subagent double-Esc stop", () => {
 
     expect(aborts).toEqual([])
     expect(app.captureCharFrame()).not.toContain("Cancelling…")
+  })
+
+  test("an accepted but ineffective abort leaves no stale cancellation label", async () => {
+    const { app, aborts, events } = await mountChildTrace({ type: "busy" })
+
+    await waitFor(app, () => (app.captureCharFrame().includes("Stop subagent") ? true : undefined))
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? true : undefined))
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("Cancelling…") ? true : undefined))
+    expect(aborts).toEqual([`/session/${CHILD_ID}/abort`])
+
+    // The abort was accepted but the child kept working and finished on its
+    // own: a completed turn is not a cancellation.
+    events.emit(completedMessageEvent("msg_stop_finished"))
+    events.emit(statusEvent({ type: "idle" }))
+    await waitFor(app, () => (app.captureCharFrame().includes("Stop subagent") ? undefined : true))
+
+    const finished = app.captureCharFrame()
+    expect(finished).not.toContain("Cancelling…")
+    expect(finished).not.toContain("Cancelled")
+
+    // The child runs again: the stale request must not resurface as progress.
+    events.emit(statusEvent({ type: "busy" }))
+    await waitFor(app, () => (app.captureCharFrame().includes("Stop subagent") ? true : undefined))
+    expect(app.captureCharFrame()).not.toContain("Cancelling…")
+    expect(aborts).toEqual([`/session/${CHILD_ID}/abort`])
+  })
+
+  test("a failed abort request reads as still running and can be retried", async () => {
+    const { app, aborts, failAbort } = await mountChildTrace({ type: "busy" }, { failAbort: true })
+
+    await waitFor(app, () => (app.captureCharFrame().includes("Stop subagent") ? true : undefined))
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? true : undefined))
+    app.mockInput.pressEscape()
+    // The press consumed the arm and reached the server; the request failed.
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? undefined : true))
+    await waitFor(app, () => (aborts.length === 1 ? true : undefined))
+    // A request that never landed must not read as progress: the footer is back
+    // to offering the stop instead of claiming a cancellation is under way.
+    await waitFor(app, () => {
+      const current = app.captureCharFrame()
+      return !current.includes("Cancelling…") && !current.includes("Cancelled") ? true : undefined
+    })
+    expect(aborts).toEqual([`/session/${CHILD_ID}/abort`])
+    expect(app.captureCharFrame()).toContain("Stop subagent escape escape")
+
+    // The second attempt is a fresh double press, not a re-armed leftover.
+    failAbort.current = false
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? true : undefined))
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("Cancelling…") ? true : undefined))
+    expect(aborts).toEqual([`/session/${CHILD_ID}/abort`, `/session/${CHILD_ID}/abort`])
+  })
+
+  test("clicking the stop action twice cancels the traced subagent", async () => {
+    const { app, aborts } = await mountChildTrace({ type: "busy" })
+
+    const frame = await waitFor(app, () => {
+      const current = app.captureCharFrame()
+      return current.includes("Stop subagent") ? current : undefined
+    })
+    const column = columnOf(frame, "Stop subagent") + 2
+    const row = rowOf(frame, "Stop subagent")
+
+    await app.mockMouse.click(column, row)
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? true : undefined))
+    expect(aborts).toEqual([])
+
+    await app.mockMouse.click(column, rowOf(app.captureCharFrame(), "Stop subagent"))
+    await waitFor(app, () => (app.captureCharFrame().includes("Cancelling…") ? true : undefined))
+    expect(aborts).toEqual([`/session/${CHILD_ID}/abort`])
+  })
+
+  test("an armed stop lapses when the second press never comes", async () => {
+    const { app, aborts } = await mountChildTrace({ type: "busy" })
+
+    await waitFor(app, () => (app.captureCharFrame().includes("Stop subagent") ? true : undefined))
+
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? true : undefined))
+
+    // Wait the window out. Rendering keeps running, so this asserts the lapse
+    // itself rather than a paused clock.
+    await Bun.sleep(DOUBLE_PRESS_WINDOW_MS + 250)
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? undefined : true))
+
+    // A press after the lapse re-arms instead of cancelling.
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("again to stop") ? true : undefined))
+    expect(aborts).toEqual([])
+    // This test spends the real window on purpose; the default test budget is
+    // shorter than the window it waits out.
+  }, 15_000)
+
+  test("Esc over the trace belongs to a dialog while one is open", async () => {
+    const { app, aborts, openDialog } = await mountChildTrace({ type: "busy" })
+
+    await waitFor(app, () => (app.captureCharFrame().includes("Stop subagent") ? true : undefined))
+    openDialog()
+    await waitFor(app, () => (app.captureCharFrame().includes("Probe dialog") ? true : undefined))
+
+    // The overlay owns Esc: it closes, and the stop neither arms nor fires.
+    app.mockInput.pressEscape()
+    await waitFor(app, () => (app.captureCharFrame().includes("Probe dialog") ? undefined : true))
+
+    const closed = app.captureCharFrame()
+    expect(closed).toContain("Stop subagent")
+    expect(closed).not.toContain("again to stop")
+    expect(aborts).toEqual([])
   })
 })

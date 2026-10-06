@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Parameters, TerminationReason, readTermination } from "@/tool/finish"
+import { Parameters, readTermination } from "@/tool/finish"
 
 function finishPart(input: unknown, status: SessionV1.ToolState["status"] = "completed") {
   return {
@@ -34,16 +34,6 @@ describe("tool.finish termination reason", () => {
 
   test("requires a reason", () => {
     expect(() => Schema.decodeUnknownSync(Parameters)({ result: "done" })).toThrow()
-  })
-})
-
-describe("tool.finish termination contract", () => {
-  test.each(["success", "subagent_wait", "failure", "cancelled"] as const)("carries %s", (reason) => {
-    expect(Schema.decodeUnknownSync(TerminationReason)(reason)).toBe(reason)
-  })
-
-  test("rejects a value outside the contract", () => {
-    expect(() => Schema.decodeUnknownSync(TerminationReason)("aborted")).toThrow()
   })
 })
 

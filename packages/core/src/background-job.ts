@@ -16,6 +16,14 @@ export type Info = {
   output?: string
   error?: string
   metadata?: Record<string, unknown>
+  /**
+   * Set when the cancellation was part of a session's teardown — an ancestor
+   * session stopped and swept up the jobs beneath it — rather than a request
+   * that targeted this job's own session. A delivery from such a job would go
+   * to the session that is being torn down, so background notifications drop
+   * it instead of resurrecting the run.
+   */
+  cancelledByTeardown?: boolean
 }
 
 type Active = {
@@ -85,6 +93,15 @@ export type WaitResult = {
   timedOut: boolean
 }
 
+export type CancelOptions = {
+  /**
+   * The cancel is a consequence of an ancestor session stopping, not a request
+   * aimed at this job's own session. Recorded on the job so the notification
+   * path can drop a delivery that would prompt the session being torn down.
+   */
+  teardown?: boolean
+}
+
 export interface Interface {
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: string) => Effect.Effect<Info | undefined>
@@ -93,7 +110,7 @@ export interface Interface {
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
   readonly waitForPromotion: (id: string) => Effect.Effect<Info>
   readonly promote: (id: string) => Effect.Effect<Info | undefined>
-  readonly cancel: (id: string) => Effect.Effect<Info | undefined>
+  readonly cancel: (id: string, options?: CancelOptions) => Effect.Effect<Info | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/BackgroundJob") {}
@@ -334,7 +351,7 @@ export const make = Effect.gen(function* () {
     return result.info
   })
 
-  const cancel: Interface["cancel"] = Effect.fn("BackgroundJob.cancel")(function* (id) {
+  const cancel: Interface["cancel"] = Effect.fn("BackgroundJob.cancel")(function* (id, options) {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modify(state.jobs, (jobs): readonly [FinishResult, Map<string, Active>] => {
       const job = jobs.get(id)
@@ -348,6 +365,7 @@ export const make = Effect.gen(function* () {
           ...job.info,
           status: "cancelled" as const,
           completed_at,
+          ...(options?.teardown ? { cancelledByTeardown: true } : {}),
         },
       }
       return [{ info: snapshot(next), done: job.done, scope: job.scope }, new Map(jobs).set(id, next)]

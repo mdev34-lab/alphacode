@@ -57,6 +57,7 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { useLocation } from "../../context/location"
+import { DOUBLE_PRESS_WINDOW_MS } from "../../util/double-press"
 
 registerOpencodeSpinner()
 
@@ -399,7 +400,7 @@ export function Prompt(props: PromptProps) {
 
           setTimeout(() => {
             setStore("interrupt", 0)
-          }, 5000)
+          }, DOUBLE_PRESS_WINDOW_MS)
 
           if (store.interrupt >= 2) {
             void sdk.client.session.abort({

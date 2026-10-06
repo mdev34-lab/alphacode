@@ -23,7 +23,7 @@ import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { disposeAllInstances } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -1722,6 +1722,74 @@ describe("tool.task", () => {
       expect(text).toContain("<summary>Background task cancelled: inspect bug</summary>")
       expect(text).toContain('<termination reason="cancelled">')
       expect(text).toContain("cancelled by the user")
+    }),
+  )
+
+  // Ctrl+C (or the parent's own double-Esc) cancels the parent run, and the
+  // teardown sweeps up every job underneath it. Reporting those cancellations
+  // back would prompt the session that is stopping and undo the interrupt, so
+  // an ancestor-driven cancel must be swallowed while a targeted one is not.
+  it.instance("a parent teardown sweeps a background subagent without notifying the parent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const runState = yield* SessionRunState.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const injections: string[] = []
+      const started = defer<SessionID>()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (input) =>
+          input.sessionID === chat.id
+            ? Effect.sync(() => {
+                const part = input.parts[0]
+                injections.push(part?.type === "text" ? part.text : "")
+                return reply(input, "notified")
+              })
+            : Effect.sync(() => {
+                started.resolve(input.sessionID)
+              }).pipe(Effect.andThen(Effect.never)),
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      const child = result.metadata.sessionId
+      yield* Effect.promise(() => started.promise)
+
+      yield* runState.cancel(chat.id)
+
+      const swept = yield* jobs.wait({ id: child, timeout: 1_000 })
+      expect(swept.info?.status).toBe("cancelled")
+      // The tag is what distinguishes "the user stopped this child" from "the
+      // session above it stopped and took the child with it".
+      expect(swept.info?.cancelledByTeardown).toBe(true)
+
+      // The job has settled, so the watcher has everything it needs to deliver
+      // a notification. It must never do so, teardown cancels are dropped.
+      const notified = yield* pollWithTimeout(
+        Effect.sync(() => (injections.length > 0 ? injections.join("\n") : undefined)),
+        "a teardown cancel notified the parent",
+        "250 millis",
+      ).pipe(Effect.exit)
+      expect(Exit.isFailure(notified)).toBe(true)
+      expect(injections).toEqual([])
     }),
   )
 

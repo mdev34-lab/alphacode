@@ -86,6 +86,21 @@ describe("BackgroundJob", () => {
     }).pipe(Effect.provide(jobsLayer)),
   )
 
+  it.live("records a cancellation that cascaded from an ancestor's teardown", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const own = yield* jobs.start({ id: "job_own", type: "test", run: Effect.never })
+      const descendant = yield* jobs.start({ id: "job_descendant", type: "test", run: Effect.never })
+
+      expect(yield* jobs.cancel(own.id)).toMatchObject({ status: "cancelled" })
+      expect(yield* jobs.get(own.id)).not.toHaveProperty("cancelledByTeardown")
+      expect(yield* jobs.cancel(descendant.id, { teardown: true })).toMatchObject({
+        status: "cancelled",
+        cancelledByTeardown: true,
+      })
+    }).pipe(Effect.provide(jobsLayer)),
+  )
+
   it.live("interrupts live work without promising settlement after the owning process-local scope closes", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make()
