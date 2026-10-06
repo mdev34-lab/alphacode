@@ -14,6 +14,7 @@ import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FinishTool } from "@/tool/finish"
+import { BackgroundJob } from "@/background/job"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -35,6 +36,7 @@ const layer = () =>
       Config.node,
       EventV2Bridge.node,
       CrossSpawnSpawner.node,
+      BackgroundJob.node,
     ]),
   )
 
@@ -411,6 +413,183 @@ describe("tool.finish – todo closure safety net", () => {
       expect(result.title).toBe("Task completed")
       const after = yield* todos.get(chat.id)
       expect(after).toHaveLength(0)
+    }),
+  )
+})
+
+// A wait yields the turn while the subagents this session launched keep
+// running. Everything the eventual real finish needs - the review nudge, the
+// plan, the terminal metadata - must survive it, and a wait that has nothing to
+// wait on must be refused rather than recorded as a termination.
+describe("tool.finish – waiting for a background subagent", () => {
+  const workCtx = (
+    sessionID: SessionID,
+    messageID: MessageID,
+    metadata: (input: { title?: string; metadata?: Record<string, unknown> }) => Effect.Effect<void> = () =>
+      Effect.void,
+  ) => ({
+    sessionID,
+    messageID,
+    agent: "work",
+    abort: new AbortController().signal,
+    messages: [],
+    metadata,
+    ask: () => Effect.void,
+  })
+
+  const startRunningChild = Effect.fn("FinishTest.startRunningChild")(function* (parent: SessionID) {
+    const sessions = yield* Session.Service
+    const background = yield* BackgroundJob.Service
+    const child = yield* sessions.create({ parentID: parent, title: "child" })
+    yield* background.start({
+      id: child.id,
+      type: "task",
+      metadata: { parentSessionId: parent, sessionId: child.id },
+      run: Effect.never,
+    })
+    return child.id
+  })
+
+  const recordFinishPart = Effect.fn("FinishTest.recordFinishPart")(function* (
+    sessionID: SessionID,
+    messageID: MessageID,
+    input: Record<string, unknown>,
+    result: { title: string; output: string; metadata: Record<string, unknown> },
+  ) {
+    const sessions = yield* Session.Service
+    const now = Date.now()
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID,
+      sessionID,
+      type: "tool",
+      tool: "finish",
+      callID: "finish-call-wait",
+      state: {
+        status: "completed",
+        input,
+        output: result.output,
+        title: result.title,
+        metadata: result.metadata,
+        time: { start: now, end: now },
+      },
+    })
+  })
+
+  it.instance("refuses a wait when no background subagent of this session is running", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+      const recorded: Record<string, unknown>[] = []
+
+      const failure = reviewFailure(
+        yield* def
+          .execute(
+            { reason: "waiting_for_subagent", result: "waiting" },
+            workCtx(chat.id, assistant.id, (input) => {
+              recorded.push(input.metadata ?? {})
+              return Effect.void
+            }),
+          )
+          .pipe(Effect.exit),
+      )
+
+      expect(failure?.message).toContain("no running background subagents found for this session")
+      // The refusal is model feedback, not a nudge: nothing is persisted that
+      // would let the next finish call skip review.
+      expect(recorded).toEqual([])
+    }),
+  )
+
+  it.instance("refuses a wait for a subagent owned by another session", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      const sessions = yield* Session.Service
+      const sibling = yield* sessions.create({ title: "sibling" })
+      yield* startRunningChild(sibling.id)
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const failure = reviewFailure(
+        yield* def
+          .execute({ reason: "waiting_for_subagent", result: "waiting" }, workCtx(chat.id, assistant.id))
+          .pipe(Effect.exit),
+      )
+
+      expect(failure?.message).toContain("no running background subagents found for this session")
+    }),
+  )
+
+  it.instance("refuses a wait after the subagent stopped", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      const background = yield* BackgroundJob.Service
+      const child = yield* startRunningChild(chat.id)
+      yield* background.cancel(child)
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const failure = reviewFailure(
+        yield* def
+          .execute({ reason: "waiting_for_subagent", result: "waiting" }, workCtx(chat.id, assistant.id))
+          .pipe(Effect.exit),
+      )
+
+      expect(failure?.message).toContain("no running background subagents found for this session")
+    }),
+  )
+
+  it.instance("yields the turn without consuming the review nudge or the plan", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      const todos = yield* Todo.Service
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+      const recorded: Record<string, unknown>[] = []
+
+      yield* addToolPart(chat.id, assistant.id, "edit")
+      yield* todos.update({
+        sessionID: chat.id,
+        todos: [
+          { content: "wire the parser", status: "in_progress", priority: "high" },
+          { content: "cover the edge case", status: "pending", priority: "medium" },
+        ],
+      })
+      yield* startRunningChild(chat.id)
+      yield* startRunningChild(chat.id)
+
+      const result = yield* def.execute(
+        { reason: "waiting_for_subagent", result: "Waiting on the two children." },
+        workCtx(chat.id, assistant.id, (input) => {
+          recorded.push(input.metadata ?? {})
+          return Effect.void
+        }),
+      )
+
+      expect(result.title).toBe("Waiting for 2 background subagent(s)")
+      expect(result.output).toBe("Waiting on the two children.")
+      // Non-terminal: no review verdict, so nothing marks the run complete, and
+      // no nudge was persisted for the gate to read later.
+      expect(result.metadata.waiting).toBe(true)
+      expect(result.metadata).not.toHaveProperty("review")
+      expect(recorded).toEqual([])
+      const plan = yield* todos.get(chat.id)
+      expect(plan.map((todo) => todo.status)).toEqual(["in_progress", "pending"])
+
+      // The gate is still armed for the eventual finish: persisting the wait the
+      // way the runtime does must not let a later finish skip review.
+      yield* recordFinishPart(
+        chat.id,
+        assistant.id,
+        { reason: "waiting_for_subagent", result: "Waiting on the two children." },
+        result,
+      )
+      const failure = reviewFailure(
+        yield* def.execute({ reason: "success", result: "done" }, workCtx(chat.id, assistant.id)).pipe(Effect.exit),
+      )
+      expect(failure?.message).toContain("no explicit Approved review")
+      expect(failure?.message).toContain("call finish again to skip review")
     }),
   )
 })

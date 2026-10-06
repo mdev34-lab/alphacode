@@ -804,6 +804,45 @@ describe("tool.task", () => {
     }),
   )
 
+  // The parent has no way to end its turn while a background child runs unless
+  // it is told which finish reason yields instead of terminating. The launch
+  // result is where that instruction has to land, because it is the only text
+  // the model reads back from the call that started the child.
+  it.instance("background launch tells the parent how to yield while the child runs", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: {
+            promptOps: {
+              ...stubOps(),
+              prompt: () => Effect.never,
+            } satisfies TaskPromptOps,
+          },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.output).toContain('state="running"')
+      expect(result.output).toContain('call finish with reason "waiting_for_subagent"')
+    }),
+  )
+
   const runReview = (promptOps: TaskPromptOps) =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
@@ -1873,7 +1912,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const tool = yield* TaskTool
       const def = yield* tool.init()
-      for (const reason of ["subagent_wait", "failure", "success"] as const) {
+      for (const reason of ["subagent_wait", "waiting_for_subagent", "failure", "success"] as const) {
         const { chat, assistant } = yield* seed(`Parity ${reason}`)
         const injected = defer<SessionPrompt.PromptInput>()
         const child = finishRunOps(reason, "child done")
@@ -1922,6 +1961,9 @@ describe("tool.task", () => {
         expect(terminationOf(delivered)).toBe(terminationOf(foreground.output))
         if (reason === "subagent_wait") {
           expect(terminationOf(delivered)).toContain("not in flight")
+        }
+        if (reason === "waiting_for_subagent") {
+          expect(terminationOf(delivered)).toContain("still running")
         }
       }
     }),

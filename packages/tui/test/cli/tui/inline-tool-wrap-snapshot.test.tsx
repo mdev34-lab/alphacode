@@ -224,8 +224,12 @@ function InterruptedToolFixture() {
   )
 }
 
-function FinishToolFixture(props: { status: "pending" | "running" | "completed" | "error"; result?: string }) {
-  const view = finishToolView(props.status, props.result)
+function FinishToolFixture(props: {
+  status: "pending" | "running" | "completed" | "error"
+  result?: string
+  waiting?: boolean
+}) {
+  const view = finishToolView(props.status, props.result, props.waiting)
   return (
     <InlineToolRow
       icon={view.icon}
@@ -317,6 +321,18 @@ describe("TUI inline tool wrapping", () => {
     )
     expect(frame).toContain("✓ Task completed")
     expect(frame).toContain("↳ Implemented the feature and verified tests.")
+  })
+
+  // Yielding for a background subagent is not completion: the block must not
+  // tell the user the task is done while the child it launched keeps running.
+  test("renders a waiting finish distinctly from a completed one", async () => {
+    const frame = await renderFrame(
+      () => <FinishToolFixture status="completed" result="Waiting on the delegated review." waiting />,
+      { width: 72, height: 4 },
+    )
+    expect(frame).toContain("✓ Waiting for subagent execution...")
+    expect(frame).toContain("↳ Waiting on the delegated review.")
+    expect(frame).not.toContain("Task completed")
   })
 
   test("renders pending and failed finish states distinctly", async () => {
