@@ -150,6 +150,81 @@ describe("tool.webfetch", () => {
     ),
   )
 
+  it.instance("saves the full converted body when the window leaves content out", () =>
+    withFetch(
+      () =>
+        new Response(
+          `<html><body>${Array.from({ length: 150 }, (_, i) => `<p>line${i + 1} ${"x".repeat(500)}</p>`).join("")}</body></html>`,
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          },
+        ),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({
+            url: new URL("/page.html", url).toString(),
+            format: "markdown",
+            offset: 1,
+            limit: 2,
+          })
+          const outputPath = result.metadata.outputPath
+          if (typeof outputPath !== "string") throw new Error("expected metadata.outputPath to be a string")
+          expect(result.output).toContain(`Full output saved to: ${outputPath}`)
+          const saved = yield* Effect.promise(() => Bun.file(outputPath).text())
+          expect(saved).toContain("line1 ")
+          expect(saved).toContain("line150 ")
+          expect(saved).not.toContain("Use offset=")
+        }),
+    ),
+  )
+
+  it.instance("clamps a zero limit instead of returning a reversed window", () =>
+    withFetch(
+      () => new Response("line1\nline2\nline3", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", offset: 2, limit: 0 })
+          expect(result.output).toContain("(Showing lines 2-2 of 3. Use offset=3 to continue.)")
+        }),
+    ),
+  )
+
+  it.instance("strips carriage returns from CRLF bodies", () =>
+    withFetch(
+      () => new Response("line1\r\nline2\r\nline3\r\n", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/crlf.txt", url).toString(), format: "text", offset: 2, limit: 1 })
+          expect(result.output).toBe("line2\n\n(Showing lines 2-2 of 3. Use offset=3 to continue.)")
+        }),
+    ),
+  )
+
+  it.instance("reports an empty body with an explicit offset as end of file", () =>
+    withFetch(
+      () => new Response("", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/empty.txt", url).toString(), format: "text", offset: 1 })
+          expect(result.output).toBe("\n\n(End of file - total 0 lines)")
+          expect(result.metadata.truncated).toBe(false)
+        }),
+    ),
+  )
+
+  it.instance("windows the final line when offset is exactly the last line", () =>
+    withFetch(
+      () => new Response("line1\nline2\nline3", { status: 200, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/file.txt", url).toString(), format: "text", offset: 3, limit: 5 })
+          expect(result.output).toBe("line3\n\n(End of file - total 3 lines)")
+          expect(result.metadata.truncated).toBe(false)
+        }),
+    ),
+  )
+
   it.instance("uses the default limit when only offset is supplied", () =>
     withFetch(
       () => new Response("line1\nline2\nline3", { status: 200, headers: { "content-type": "text/plain" } }),
@@ -239,6 +314,35 @@ describe("tool.webfetch", () => {
     ),
   )
 
+  it.instance("resumes after a byte cap over mixed long and short lines", () =>
+    withFetch(
+      () =>
+        new Response(
+          [`small:${"s".repeat(100)}`, ...Array.from({ length: 40 }, (_, i) => `long${i}:${"x".repeat(2500)}`)].join(
+            "\n",
+          ),
+          { status: 200, headers: { "content-type": "text/plain" } },
+        ),
+      (server) =>
+        Effect.gen(function* () {
+          const url = new URL("/mixed.txt", server).toString()
+          const first = yield* exec({ url, format: "text", offset: 1 })
+          expect(first.output).toContain("small:")
+          expect(first.output).toContain("(line truncated to 2000 chars)")
+          expect(first.output).toContain("(Output capped at 50 KB. Showing lines 1-")
+
+          const next = Number(first.output.match(/Use offset=(\d+) to continue\./)![1])
+          expect(next).toBeGreaterThan(1)
+
+          const second = yield* exec({ url, format: "text", offset: next })
+          // Line 1 is the short line, so line `next` is `long${next - 2}`.
+          expect(second.output.startsWith(`long${next - 2}:`)).toBe(true)
+          expect(second.output).not.toContain("small:")
+          expect(second.output).toContain("(End of file - total 41 lines)")
+        }),
+    ),
+  )
+
   it.instance("fails when offset starts past the end of the content", () =>
     withFetch(
       () => new Response("alpha\nbeta", { status: 200, headers: { "content-type": "text/plain" } }),
@@ -248,7 +352,12 @@ describe("tool.webfetch", () => {
             Effect.exit,
           )
           expect(Exit.isFailure(exit)).toBe(true)
-          if (Exit.isFailure(exit)) expect(String(Cause.squash(exit.cause))).toContain("Offset 10 is out of range")
+          if (Exit.isFailure(exit)) {
+            // A normal tool failure, not a defect escaping Effect.orDie.
+            expect(Cause.hasFails(exit.cause)).toBe(true)
+            expect(Cause.hasDies(exit.cause)).toBe(false)
+            expect(String(Cause.squash(exit.cause))).toContain("Offset 10 is out of range")
+          }
         }),
     ),
   )

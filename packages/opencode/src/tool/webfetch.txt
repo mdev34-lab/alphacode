@@ -12,3 +12,4 @@ Usage notes:
   - This tool is read-only and does not modify any files
   - Large results are windowed by line: use "offset" (1-indexed line to start from) and "limit" (maximum lines to return, defaults to 2000) to page through the converted content
   - Windowed output ends with a notice showing the returned line range and the next offset to continue from
+  - When the window leaves content out, the complete converted body is saved to a file and the notice includes that path, so it does not need to be fetched again

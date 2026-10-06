@@ -279,6 +279,11 @@ describe("tool parameters", () => {
     test("rejects a negative offset", () => {
       expect(accepts(WebFetch, { url: "https://example.com", offset: -1 })).toBe(false)
     })
+    // `limit` stays NonNegativeInt like `read`'s, so runtime normalises 0 to 1
+    // instead of rejecting it in the schema.
+    test("accepts a zero limit for the runtime to normalise", () => {
+      expect(parse(WebFetch, { url: "https://example.com", limit: 0 }).limit).toBe(0)
+    })
   })
 
   describe("websearch", () => {
