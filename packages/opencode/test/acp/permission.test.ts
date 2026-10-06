@@ -77,6 +77,9 @@ function createHarness(
     readonly lookupGate?: ReturnType<typeof lookupGate>
     // Makes the reply call fail, so `process` throws once the editor has answered.
     readonly replyError?: Error
+    // Leaves `requestPermission` off the connection, as an editor that does not implement it
+    // would: prompts are then rejected back to the server instead of being asked.
+    readonly noRequestPermission?: boolean
     // Stands in for the SDK's private transport, which is where the JSON-RPC id of an
     // outgoing request comes from. Left out by default: a SDK that hides those fields must
     // degrade to not cancelling rather than to guessing an id.
@@ -115,11 +118,15 @@ function createHarness(
   // `satisfies` below keeps the fake honest about the shapes the handler relies on,
   // including the private transport the JSON-RPC id is read from.
   const connection = {
-    requestPermission: (params: RequestPermissionRequest) => {
-      transport.nextRequestId += 1
-      requests.push(params)
-      return requestPermission(params)
-    },
+    ...(options.noRequestPermission
+      ? {}
+      : {
+          requestPermission: (params: RequestPermissionRequest) => {
+            transport.nextRequestId += 1
+            requests.push(params)
+            return requestPermission(params)
+          },
+        }),
     sessionUpdate: (params: SessionUpdateParams) => {
       updates.push(params)
       return Promise.resolve()
@@ -597,6 +604,28 @@ describe("acp permissions", () => {
     // The settled prompt was never sent, and the queue moved on to the next one.
     expect(harness.requests[0]).toMatchObject({ toolCall: { toolCallId: "call_2" } })
     expect(harness.replies).toEqual([])
+  })
+
+  it("does not reply for a prompt the server settled before the editor could be asked", async () => {
+    const gate = lookupGate()
+    const harness = createHarness(undefined, { lookupGate: gate, noRequestPermission: true })
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_noask", { tool: { messageID: "msg_1", callID: "call_1" } }),
+    )
+    await pollUntil(() => gate.holds() === 1, "the handler never reached the session lookup")
+    harness.subscription.handle(permissionReplied("ses_a", "perm_noask", "timeout"))
+    gate.openAll()
+
+    // A prompt nobody can be asked about is rejected back to the server, but not one the
+    // server already resolved: that reply would arrive for a request that is gone.
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_live", { tool: { messageID: "msg_1", callID: "call_2" } }),
+    )
+    await pollUntil(() => harness.replies.length === 1, "the prompt nobody can answer was never rejected")
+    expect(harness.replies).toEqual([{ requestID: "perm_live", reply: "reject", directory: "/workspace" }])
+    expect(harness.requests).toEqual([])
   })
 
   it("cancels the editor dialog when the server settles an open prompt", async () => {
