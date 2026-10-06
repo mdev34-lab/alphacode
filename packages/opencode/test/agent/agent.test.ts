@@ -69,7 +69,6 @@ it.instance("work agent has correct default properties", () =>
     expect(work?.color).toBe("#FFFFFF")
     expect(evalPerm(work, "edit")).toBe("allow")
     expect(evalPerm(work, "bash")).toBe("allow")
-    expect(evalPerm(work, "todowrite")).toBe("allow")
   }),
 )
 

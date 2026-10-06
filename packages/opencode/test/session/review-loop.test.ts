@@ -103,6 +103,14 @@ describe("review loop prompt contract", () => {
     expect(prompt).toContain("Do not create backup files (`.bak`) — git already tracks your changes.")
   })
 
+  test("todo tool guidance defers optional skips to the scope contract", async () => {
+    const description = (await readTool("todowrite.txt")).replace(/\s+/g, " ")
+
+    expect(description).toContain(
+      "The system-prompt todo scope contract overrides these skips: when present, write its scope items before your first tool call, even for the cases above.",
+    )
+  })
+
   test("recommends a review after work that follows review findings", async () => {
     const prompt = await readPrompt("review-loop.txt")
 

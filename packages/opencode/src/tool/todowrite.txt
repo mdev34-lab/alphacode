@@ -15,6 +15,8 @@ Skip when:
 - The request is purely informational or conversational
 - Tracking adds no organizational value
 
+The system-prompt todo scope contract overrides these skips: when present, write its scope items before your first tool call, even for the cases above.
+
 ## States
 - `pending` - not started
 - `in_progress` - actively working (exactly ONE at a time)
