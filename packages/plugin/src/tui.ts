@@ -411,6 +411,7 @@ type TuiAttentionConfigView = {
   enabled: boolean
   notifications: boolean
   sound: boolean
+  sound_when: "blurred" | "always"
   volume: number
   sound_pack: string
   sounds: Partial<Record<TuiAttentionSoundName, string>>

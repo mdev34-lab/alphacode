@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import Notifications from "../../../../src/feature-plugins/system/notifications"
 import type { Event, PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2"
-import type { TuiAttentionNotifyInput } from "@opencode-ai/plugin/tui"
+import type { TuiAttentionNotifyInput, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createTuiPluginApi } from "../../../fixture/tui-plugin"
+import { createTuiResolvedConfig } from "../../../fixture/tui-runtime"
 
-async function setup() {
+type SetupOptions = {
+  attention?: Partial<TuiPluginApi["attention"]>
+  tuiConfig?: TuiPluginApi["tuiConfig"]
+}
+
+async function setup(options: SetupOptions = {}) {
   const notifications: TuiAttentionNotifyInput[] = []
   const handlers = new Map<Event["type"], ((event: Event) => void)[]>()
   const session = (id: string, title: string, parentID?: string): Session => ({
@@ -31,7 +37,9 @@ async function setup() {
           notifications.push(input)
           return { ok: true, notification: true, sound: true }
         },
+        ...options.attention,
       },
+      tuiConfig: options.tuiConfig,
       event: {
         on: <Type extends Event["type"]>(type: Type, handler: (event: Extract<Event, { type: Type }>) => void) => {
           const list = handlers.get(type) ?? []
@@ -87,24 +95,37 @@ const questionNotification: TuiAttentionNotifyInput = {
   title: "Demo session",
   message: "Question needs input",
   notification: { when: "blurred" },
-  sound: { name: "question", when: "always" },
+  sound: { name: "question", when: "blurred" },
 }
 
 const permissionNotification: TuiAttentionNotifyInput = {
   title: "Demo session",
   message: "Permission needs input",
   notification: { when: "blurred" },
-  sound: { name: "permission", when: "always" },
+  sound: { name: "permission", when: "blurred" },
 }
 
 describe("internal notifications TUI plugin", () => {
-  test("notifies for question and permission requests with blurred notifications and always-on sounds", async () => {
+  test("notifies for question and permission requests with blurred-only notifications and sounds", async () => {
     const harness = await setup()
 
     harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1") })
     harness.emit({ id: "event-2", type: "permission.asked", properties: permission("permission-1") })
 
     expect(harness.notifications).toEqual([questionNotification, permissionNotification])
+  })
+
+  test("honors the configured sound focus policy", async () => {
+    const harness = await setup({ tuiConfig: createTuiResolvedConfig({ attention: { sound_when: "always" } }) })
+
+    harness.emit({ id: "event-1", type: "permission.asked", properties: permission("permission-1") })
+
+    expect(harness.notifications).toEqual([
+      {
+        ...permissionNotification,
+        sound: { name: "permission", when: "always" },
+      },
+    ])
   })
 
   test("dedupes pending questions and permissions until they are resolved", async () => {
@@ -160,7 +181,7 @@ describe("internal notifications TUI plugin", () => {
         title: "Demo session",
         message: "Session done",
         notification: { when: "blurred" },
-        sound: { name: "done", when: "always" },
+        sound: { name: "done", when: "blurred" },
       },
     ])
   })
@@ -185,13 +206,13 @@ describe("internal notifications TUI plugin", () => {
         title: "Subagent session",
         message: "Question needs input",
         notification: false,
-        sound: { name: "question", when: "always" },
+        sound: { name: "question", when: "blurred" },
       },
       {
         title: "Subagent session",
         message: "Session done",
         notification: false,
-        sound: { name: "subagent_done", when: "always" },
+        sound: { name: "subagent_done", when: "blurred" },
       },
     ])
   })
@@ -220,9 +241,48 @@ describe("internal notifications TUI plugin", () => {
         title: "Demo session",
         message: "Session error",
         notification: { when: "blurred" },
-        sound: { name: "error", when: "always" },
+        sound: { name: "error", when: "blurred" },
       },
     ])
+  })
+
+  test("dedupes session errors until the next busy transition", async () => {
+    const harness = await setup()
+    const emitError = (id: string) =>
+      harness.emit({
+        id,
+        type: "session.error",
+        properties: { sessionID: "session", error: { name: "UnknownError", data: { message: "boom" } } },
+      })
+    const errorNotification: TuiAttentionNotifyInput = {
+      title: "Demo session",
+      message: "Session error",
+      notification: { when: "blurred" },
+      sound: { name: "error", when: "blurred" },
+    }
+
+    emitError("event-1")
+    emitError("event-2")
+    harness.emit({
+      id: "event-3",
+      type: "session.status",
+      properties: { sessionID: "session", status: { type: "idle" } },
+    })
+
+    harness.emit({
+      id: "event-4",
+      type: "session.status",
+      properties: { sessionID: "session", status: { type: "busy" } },
+    })
+    emitError("event-5")
+    emitError("event-6")
+    harness.emit({
+      id: "event-7",
+      type: "session.status",
+      properties: { sessionID: "session", status: { type: "idle" } },
+    })
+
+    expect(harness.notifications).toEqual([errorNotification, errorNotification])
   })
 
   test("special-cases aborts and model response timeouts", async () => {
@@ -254,13 +314,13 @@ describe("internal notifications TUI plugin", () => {
         title: "Abort session",
         message: "Session aborted",
         notification: { when: "blurred" },
-        sound: { name: "error", when: "always" },
+        sound: { name: "error", when: "blurred" },
       },
       {
         title: "Timeout session",
         message: "Model stopped responding",
         notification: { when: "blurred" },
-        sound: { name: "error", when: "always" },
+        sound: { name: "error", when: "blurred" },
       },
     ])
   })

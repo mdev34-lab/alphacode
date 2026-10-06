@@ -88,6 +88,7 @@ function config(attention: Partial<AttentionConfig["attention"]> = {}): Attentio
       enabled: true,
       notifications: true,
       sound: true,
+      sound_when: "blurred",
       volume: 0.4,
       sound_pack: "opencode.default",
       sounds: {},
@@ -260,6 +261,12 @@ describe("createTuiAttention", () => {
     empty.emit("blur")
     const disabled = new FakeRenderer()
     disabled.emit("blur")
+    const disabledAudio = new FakeAudioEngine()
+    const disabledAttention = createTuiAttention({
+      renderer: disabled,
+      config: config({ enabled: false }),
+      audio: disabledAudio,
+    })
 
     expect(await createTuiAttention({ renderer: empty, config: config() }).notify({ message: " \n " })).toEqual({
       ok: false,
@@ -267,14 +274,15 @@ describe("createTuiAttention", () => {
       sound: false,
       skipped: "empty_message",
     })
-    expect(
-      await createTuiAttention({ renderer: disabled, config: config({ enabled: false }) }).notify({ message: "hello" }),
-    ).toEqual({
+    expect(await disabledAttention.notify({ message: "hello" })).toEqual({
       ok: false,
       notification: false,
       sound: false,
       skipped: "attention_disabled",
     })
+    expect(disabled.notifications).toHaveLength(0)
+    expect(disabledAudio.loadCalls).toBe(0)
+    expect(disabledAudio.playCalls).toBe(0)
   })
 
   test("respects notification and sound config independently", async () => {
@@ -305,7 +313,9 @@ describe("createTuiAttention", () => {
       notification: true,
       sound: false,
     })
+    expect(soundDisabledRenderer.notifications).toHaveLength(1)
     expect(soundDisabledAudio.loadCalls).toBe(0)
+    expect(soundDisabledAudio.playCalls).toBe(0)
   })
 
   test("loads audio lazily only for eligible sound requests", async () => {
