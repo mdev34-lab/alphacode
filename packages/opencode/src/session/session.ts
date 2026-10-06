@@ -941,12 +941,7 @@ const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function*
 ) {
   const jobs = yield* background.list()
   yield* Effect.forEach(
-    jobs.filter((job) => {
-      if (job.status !== "running") return false
-      if (job.id === sessionID) return true
-      if (job.metadata?.sessionId === sessionID) return true
-      return job.metadata?.parentSessionId === sessionID
-    }),
+    jobs.filter((job) => job.status === "running" && BackgroundJob.belongsToSession(job, sessionID)),
     (job) => background.cancel(job.id),
     { concurrency: "unbounded", discard: true },
   )

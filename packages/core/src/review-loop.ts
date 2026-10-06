@@ -129,15 +129,24 @@ function taskTerminationReason(part: ReviewHistoryPart) {
 }
 
 /**
+ * A review task that delivered no verdict for this turn.
+ *
  * A cancelled subagent delivered no review. The tool reports the cancellation as
  * a completed part carrying the typed reason, so without this the evaluator
  * counts a cancellation as a delivered review — and a few of them walk the turn
  * to the iteration cap and disable the review gate entirely.
+ *
+ * A yielded subagent (`waiting_for_subagent`) is the same kind of non-event,
+ * for the opposite reason: it is still in flight through its own subagents, so
+ * its report is provisional and its run ending now means nothing further will
+ * be delivered for it. Counting it would let a review that keeps working after
+ * its envelope - and whose final result is then dropped - satisfy the gate.
  */
-function isCancelledReviewTask(part: ReviewHistoryPart) {
+function isUnreportedReviewTask(part: ReviewHistoryPart) {
   if (!isSynchronousReviewTask(part)) return false
   if (part.state?.status === "cancelled") return true
-  return taskTerminationReason(part) === "cancelled"
+  const reason = taskTerminationReason(part)
+  return reason === "cancelled" || reason === "waiting_for_subagent"
 }
 
 function isFileWritingTool(part: ReviewHistoryPart) {
@@ -217,10 +226,10 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
   for (const part of current.flatMap((message) => message.parts)) {
     if (isReviewTask(part)) {
       if (!isSynchronousReviewTask(part)) continue
-      // A cancelled review is a non-event: it never delivered a verdict, so it
-      // neither counts toward the cap nor disturbs the verdict already on
-      // record.
-      if (isCancelledReviewTask(part)) continue
+      // A cancelled or yielded review is a non-event: it never delivered a
+      // verdict, so it neither counts toward the cap nor disturbs the verdict
+      // already on record.
+      if (isUnreportedReviewTask(part)) continue
 
       if (part.state?.status !== "completed") {
         latest = undefined

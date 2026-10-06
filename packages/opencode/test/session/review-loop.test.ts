@@ -72,6 +72,10 @@ function finishNudgeMessage() {
 }
 
 function waitingFinishMessage() {
+  return finishPart({ reason: "waiting_for_subagent", result: "Waiting on the children." }, { waiting: true })
+}
+
+function finishPart(input: Record<string, unknown>, metadata: Record<string, unknown>) {
   return {
     info: { role: "assistant" },
     parts: [
@@ -80,9 +84,9 @@ function waitingFinishMessage() {
         tool: "finish",
         state: {
           status: "completed",
-          input: { reason: "waiting_for_subagent", result: "Waiting on the children." },
-          output: "Waiting on the children.",
-          metadata: { waiting: true },
+          input,
+          output: "done",
+          metadata,
         },
       },
     ],
@@ -289,6 +293,10 @@ describe("runtime review gate", () => {
   // Yielding for a background subagent is not a terminal result: the run is
   // still in flight through its children, so the transcript must not record a
   // termination and the nudge stays armed for the finish that really ends it.
+  //
+  // The counter-case is what makes this discriminating: the evaluator does read
+  // a terminal finish's review metadata, so the assertions above are about the
+  // wait being non-terminal rather than about finish parts being ignored.
   test("a waiting finish leaves no termination and keeps the review gate armed", () => {
     const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), waitingFinishMessage()])
 
@@ -296,6 +304,14 @@ describe("runtime review gate", () => {
     expect(state.nudged).toBe(false)
     expect(state.verdict).toBe("pending")
     expect(finishGateError(state)).toBeInstanceOf(Error)
+
+    const terminal = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      finishPart({ reason: "success", result: "done" }, { review: { termination: "approved" } }),
+    ])
+    expect(terminal.termination).toBe("approved")
+    expect(terminal.nudged).toBe(false)
   })
 
   test("lets a second finish call skip review after a nudge", () => {

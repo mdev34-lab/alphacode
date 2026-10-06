@@ -29,16 +29,19 @@ const BACKGROUND_DESCRIPTION = [
   "You will be notified automatically when it finishes; do not sleep, poll, or ask it for status.",
   "Use background=false for synchronous execution only when you need the result before continuing.",
 ].join(" ")
+// The yield instruction is scoped to a parent that has not finished: delivering
+// a completed result while a task keeps running is still the normal ending, and
+// this task's notification wakes the session when its run ends.
 const BACKGROUND_STARTED = [
-  "The task is running in the background. You will be notified automatically when it finishes.",
+  "The task is running in the background. You will be notified automatically when its run ends.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
-  'Work on non-overlapping tasks. If you have no further independent work to execute in this turn, call finish with reason "waiting_for_subagent" — the turn ends and you are woken when this task reports back; do not end the turn any other way.',
+  'Work on non-overlapping tasks. If your own task is not finished and you have no further independent work for this turn, call finish with reason "waiting_for_subagent" to yield — this task\'s notification wakes you. If your own task is complete, call finish with reason "success" as usual: a task still running in the background does not hold your result back.',
 ].join("\n")
 const BACKGROUND_UPDATED = [
   "Additional context sent to the running background task.",
-  "The task is still working in the background. You will be notified automatically when it finishes.",
+  "The task is still working in the background. You will be notified automatically when its run ends.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
-  'Work on non-overlapping tasks. If you have no further independent work to execute in this turn, call finish with reason "waiting_for_subagent" — the turn ends and you are woken when this task reports back; do not end the turn any other way.',
+  'Work on non-overlapping tasks. If your own task is not finished and you have no further independent work for this turn, call finish with reason "waiting_for_subagent" to yield — this task\'s notification wakes you. If your own task is complete, call finish with reason "success" as usual: a task still running in the background does not hold your result back.',
 ].join("\n")
 
 const BaseParameterFields = {
@@ -65,16 +68,23 @@ export const Parameters = Schema.Struct({
  *
  * A subagent that ends on `subagent_wait` is parked on a dependency, not slow
  * and not in flight. Say so in the parent envelope so the parent never reads a
- * waiting run as a fire-and-forget task it should wait on. `waiting_for_subagent`
- * is the mirror image - the subagent yielded while its own children run, so it
- * is still in flight and its result is provisional. `success` carries no note:
- * the reason is the signal, and the result text already says the work is done.
+ * waiting run as a fire-and-forget task it should wait on. `success` carries no
+ * note: the reason is the signal, and the result text already says the work is
+ * done.
+ *
+ * `waiting_for_subagent` says what is actually true rather than what the reason
+ * name implies. The subagent yielded while its own children run, and this
+ * envelope is its run's only delivery: `runTask` is a single prompt, so the
+ * parent's job has already settled by the time the yield is read, nothing
+ * re-arms it when the child resumes, and no later envelope exists to replace
+ * this one. Promising a follow-up report would leave a parent waiting for a
+ * message that is never sent.
  */
 const TERMINATION_NOTE: Record<TerminationReason, string> = {
   success: "",
   subagent_wait: "Subagent stopped on a dependency and is not in flight; it will not report back on its own.",
   waiting_for_subagent:
-    "Subagent yielded its turn while the background subagents it launched are still running; treat its result as provisional until it reports back.",
+    "Subagent yielded its turn while the background subagents it launched are still running. It resumes when they finish, but this result is the only delivery for its run: there is no further report, and a parent that ends its turn now will not be woken by it.",
   failure: "Subagent stopped because the task could not be completed.",
   cancelled: "Subagent stopped because the user cancelled it; it did not complete and its result was not delivered.",
 }

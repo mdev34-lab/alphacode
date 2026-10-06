@@ -840,6 +840,12 @@ describe("tool.task", () => {
 
       expect(result.output).toContain('state="running"')
       expect(result.output).toContain('call finish with reason "waiting_for_subagent"')
+      // Scoped to a parent that has not finished: delivering a completed result
+      // while a background task keeps running is still the normal ending, and
+      // nothing may read the new reason as the only way out.
+      expect(result.output).toContain("If your own task is not finished")
+      expect(result.output).toContain('If your own task is complete, call finish with reason "success" as usual')
+      expect(result.output).toContain("does not hold your result back")
     }),
   )
 
@@ -1963,7 +1969,12 @@ describe("tool.task", () => {
           expect(terminationOf(delivered)).toContain("not in flight")
         }
         if (reason === "waiting_for_subagent") {
+          // The yielded child is the one termination whose envelope must not
+          // promise another delivery: its run has already settled the parent's
+          // job, so no report follows the one carrying this note.
           expect(terminationOf(delivered)).toContain("still running")
+          expect(terminationOf(delivered)).toContain("no further report")
+          expect(terminationOf(delivered)).not.toContain("until it reports back")
         }
       }
     }),

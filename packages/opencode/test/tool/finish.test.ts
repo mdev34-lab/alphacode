@@ -174,8 +174,8 @@ describe("tool.finish – persisted review nudge", () => {
       )
 
       expect(result.title).toBe("Task completed")
-      expect(result.metadata.review.termination).toBe("skipped")
-      expect(result.metadata.review.verdict).toBe("pending")
+      expect(result.metadata.review?.termination).toBe("skipped")
+      expect(result.metadata.review?.verdict).toBe("pending")
     }),
   )
 
@@ -205,8 +205,8 @@ describe("tool.finish – persisted review nudge", () => {
         },
       )
 
-      expect(result.metadata.review.termination).toBe("approved")
-      expect(result.metadata.review.verdict).toBe("approved")
+      expect(result.metadata.review?.termination).toBe("approved")
+      expect(result.metadata.review?.verdict).toBe("approved")
     }),
   )
 })
@@ -508,6 +508,32 @@ describe("tool.finish – waiting for a background subagent", () => {
       const sessions = yield* Session.Service
       const sibling = yield* sessions.create({ title: "sibling" })
       yield* startRunningChild(sibling.id)
+      const tool = yield* FinishTool
+      const def = yield* tool.init()
+
+      const failure = reviewFailure(
+        yield* def
+          .execute({ reason: "waiting_for_subagent", result: "waiting" }, workCtx(chat.id, assistant.id))
+          .pipe(Effect.exit),
+      )
+
+      expect(failure?.message).toContain("no running background subagents found for this session")
+    }),
+  )
+
+  // The wait follows the parent link on a task job only. A job this session
+  // merely owns - its own run, or something that is not a delegated task - is
+  // not work that notifies a parent, so it cannot hold a wait.
+  it.instance("refuses a wait on a job of this session that is not a task", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      const background = yield* BackgroundJob.Service
+      yield* background.start({
+        id: `${chat.id}-own-run`,
+        type: "server",
+        metadata: { sessionId: chat.id },
+        run: Effect.never,
+      })
       const tool = yield* FinishTool
       const def = yield* tool.init()
 

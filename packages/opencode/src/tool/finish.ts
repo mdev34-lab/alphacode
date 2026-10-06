@@ -11,7 +11,7 @@ import { BackgroundJob } from "@/background/job"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 import { isReviewAgent } from "../agent/review-agents"
 
-const DeclaredReasons = ["success", "subagent_wait", "waiting_for_subagent", "failure"] as const
+const DeclaredReasons = ["success", "waiting_for_subagent", "subagent_wait", "failure"] as const
 
 export const Reason = Schema.Literals(DeclaredReasons)
 
@@ -76,14 +76,27 @@ export const FinishTool = Tool.define(
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      // A yield and a terminal result are two success shapes with different
-      // metadata. Keeping the tool's metadata contract as its record type stops
-      // inference from collapsing them into one shape whose fields are all
-      // optional for every consumer.
+      // A yield and a terminal result are two success shapes. Naming the fields
+      // the tool can return keeps `metadata` checked for consumers instead of
+      // widening it to the index signature, while still letting inference see a
+      // single contract rather than collapsing both branches into one shape
+      // whose every field is optional.
       execute: (
         params: Schema.Schema.Type<typeof Parameters>,
         ctx: Tool.Context,
-      ): Effect.Effect<Tool.ExecuteResult, ToolFailure> =>
+      ): Effect.Effect<
+        Tool.ExecuteResult<{
+          waiting?: boolean
+          termination?: { reason: Reason }
+          review?: {
+            verdict: string
+            reviews: number
+            maxIterations: number
+            termination: string
+          }
+        }>,
+        ToolFailure
+      > =>
         Effect.gen(function* () {
           yield* ctx.waitForOtherTools ?? Effect.void
           const messages = yield* sessions
@@ -122,16 +135,33 @@ export const FinishTool = Tool.define(
           // everything the real finish depends on untouched: the review nudge
           // (consumed once per unit of work), the plan, and the terminal
           // metadata the review loop reads as a delivered outcome.
+          //
+          // The check below is a snapshot, not a reservation. A job whose
+          // cancellation is already in flight still reads `running` here, and a
+          // cancellation records its delivery (or its decision to drop one) as
+          // it settles, so a race can accept a wait whose child never notifies.
+          // Nothing can close that window from inside the tool: the wait is
+          // what makes `running` true, and a job that has ended is not one the
+          // waiter can hold open. The cost is bounded - the wait still never
+          // consumes the review nudge, the plan, or the result metadata, and
+          // the session is idle, not blocked - so it is left observable through
+          // the log line below rather than papered over.
           if (params.reason === "waiting_for_subagent") {
+            // The same ownership relation the cancellation walks use, narrowed
+            // to the jobs a wait can actually be woken by: a task this session
+            // launched. A session's own run job is not work it can wait for.
             const running = (yield* background.list()).filter(
-              (job) => job.status === "running" && job.metadata?.parentSessionId === ctx.sessionID,
+              (job) =>
+                job.type === "task" && job.status === "running" && BackgroundJob.isSubagentOf(job, ctx.sessionID),
             )
             if (running.length === 0) {
               return yield* Effect.fail(
                 new ToolFailure({
                   message:
                     "Cannot wait: no running background subagents found for this session. " +
-                    'If the work is complete, call finish with reason: "success".',
+                    "Wait only for a task you launched that is still running — a subagent whose run " +
+                    "already ended will not report again. " +
+                    'If your work is complete, call finish with reason: "success".',
                 }),
               )
             }

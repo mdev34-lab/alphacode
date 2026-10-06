@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { BackgroundJob } from "@opencode-ai/core/background-job"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Deferred, Effect, Exit, Scope } from "effect"
@@ -100,6 +100,45 @@ describe("BackgroundJob", () => {
       })
     }).pipe(Effect.provide(jobsLayer)),
   )
+
+  // Ownership is one relation with three readings, and callers pick the one
+  // their intent needs: cancellation sweeps everything a session owns, while a
+  // wait may only follow the parent link. Keeping them here means a change to
+  // one reading cannot quietly move another.
+  describe("ownership relations", () => {
+    const job = (input: { id: string; metadata?: Record<string, unknown> }) => ({
+      id: input.id,
+      type: "task",
+      status: "running" as const,
+      started_at: 0,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+    })
+
+    test("a session's own run matches runsSession and belongsToSession", () => {
+      const own = job({ id: "ses_parent", metadata: { sessionId: "ses_parent" } })
+
+      expect(BackgroundJob.runsSession(own, "ses_parent")).toBe(true)
+      expect(BackgroundJob.belongsToSession(own, "ses_parent")).toBe(true)
+      // Its own run is not work it can wait for.
+      expect(BackgroundJob.isSubagentOf(own, "ses_parent")).toBe(false)
+    })
+
+    test("a launched subagent matches isSubagentOf and belongsToSession", () => {
+      const child = job({ id: "ses_child", metadata: { parentSessionId: "ses_parent", sessionId: "ses_child" } })
+
+      expect(BackgroundJob.isSubagentOf(child, "ses_parent")).toBe(true)
+      expect(BackgroundJob.belongsToSession(child, "ses_parent")).toBe(true)
+      expect(BackgroundJob.runsSession(child, "ses_parent")).toBe(false)
+    })
+
+    test("an unrelated job matches none of the relations", () => {
+      const other = job({ id: "ses_other", metadata: { parentSessionId: "ses_sibling", sessionId: "ses_other" } })
+
+      expect(BackgroundJob.isSubagentOf(other, "ses_parent")).toBe(false)
+      expect(BackgroundJob.belongsToSession(other, "ses_parent")).toBe(false)
+      expect(BackgroundJob.runsSession(other, "ses_parent")).toBe(false)
+    })
+  })
 
   it.live("interrupts live work without promising settlement after the owning process-local scope closes", () =>
     Effect.gen(function* () {

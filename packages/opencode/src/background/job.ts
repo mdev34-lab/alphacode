@@ -5,6 +5,9 @@ import { Effect, Layer } from "effect"
 
 export {
   Service,
+  belongsToSession,
+  isSubagentOf,
+  runsSession,
   type CancelOptions,
   type ExtendInput,
   type Info,

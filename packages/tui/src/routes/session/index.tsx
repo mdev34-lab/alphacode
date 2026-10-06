@@ -2164,13 +2164,7 @@ function Finish(props: ToolProps) {
     ),
   )
   const visible = createMemo(() => (expanded() || !collapsed().overflow ? result() : collapsed().output))
-  const view = createMemo(() =>
-    finishToolView(
-      props.part.state.status,
-      visible(),
-      props.part.state.status === "completed" && props.part.state.metadata?.waiting === true,
-    ),
-  )
+  const view = createMemo(() => finishToolViewForPart(props.part, visible()))
   const content = createMemo(() => {
     if (!collapsed().overflow) return view().children
     return `${view().children}
@@ -2199,6 +2193,17 @@ const WAITING_LABEL = "Waiting for subagent execution..."
 
 export function finishResult(input: Record<string, unknown>, output?: string) {
   return (output?.trim() || stringValue(input.result)?.trim() || undefined) ?? undefined
+}
+
+/**
+ * The part-to-view mapping, kept separate from the component so the wiring is
+ * testable without mounting the route. The wait flag is read from the part's
+ * metadata for every status rather than only the completed branch: a finished
+ * wait carries `metadata.waiting`, and the pending and running branches render
+ * it too instead of that flag becoming unreachable there.
+ */
+export function finishToolViewForPart(part: ToolPart, result?: string) {
+  return finishToolView(part.state.status, result, "metadata" in part.state && part.state.metadata?.waiting === true)
 }
 
 export function finishToolView(status: FinishToolStatus, result?: string, waiting = false) {

@@ -3,8 +3,8 @@ End your turn by reporting the outcome. You MUST call this tool exactly once at 
 Every user message starts a task, even one that needs no tools. Greetings, questions, and conversational or explanatory answers all end with a finish call; answering without using any tools does not remove the requirement. Producing text is never enough on its own — ending your message alone does not complete the turn. The session keeps running until you call finish.
 
 Pass `reason` and `result`. `reason` is required and must be one of:
-- `success`: the task completed and the result is usable.
-- `waiting_for_subagent`: you have launched background subagents and have no independent work left this turn, so you are yielding it while they run. Only valid while at least one background subagent you launched is still running; you are woken automatically when they report back.
+- `success`: the task completed and the result is usable. Call this whenever your own work is done, even if a background subagent you launched is still running — its notification wakes the session afterwards.
+- `waiting_for_subagent`: your own task is not finished and you have no independent work left this turn while background subagents you launched keep running, so you are yielding it. Only valid while at least one of those subagents is running; a notification wakes the session when one of them ends.
 - `subagent_wait`: progress depends on another subagent and the orchestrator should handle that dependency.
 - `failure`: the task could not be completed successfully.
 
@@ -14,4 +14,4 @@ If the current turn changed files without a completed synchronous review, the fi
 
 Call it once, after any other tool calls have completed. Do not call it to report partial progress, and do not use it to ask a question — use the question tool for questions and keep working otherwise.
 
-When finish succeeds, it makes a best-effort attempt to close any remaining open todos (pending or in_progress) for this task as cancelled, leaving a clean terminal todo state when possible. This cleanup does not block task completion — if todo closure fails, finish still succeeds and the failure is logged. This is a safety net — you must still explicitly mark individual todo items completed during execution rather than relying on finish to clean up. A `waiting_for_subagent` finish is not a completion: it keeps the todo list, the review nudge, and the terminal result metadata untouched so the wait does not consume state the eventual finish needs.
+When finish succeeds, it makes a best-effort attempt to close any remaining open todos (pending or in_progress) for this task as cancelled, leaving a clean terminal todo state when possible. This cleanup does not block task completion — if todo closure fails, finish still succeeds and the failure is logged. This is a safety net — you must still explicitly mark individual todo items completed during execution rather than relying on finish to clean up. A `waiting_for_subagent` finish is not a completion: it keeps the todo list, the review nudge, and the terminal result metadata untouched so the wait does not consume state the eventual finish needs, and it is only accepted while a background subagent of yours is running — once the last one ends, deliver with `success` or `failure`.
