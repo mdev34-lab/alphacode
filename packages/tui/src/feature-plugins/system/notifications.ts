@@ -13,7 +13,7 @@ function notify(api: TuiPluginApi, sessionID: string | undefined, message: strin
     title: session?.title,
     message,
     notification: isSubagent ? false : { when: "blurred" },
-    sound: { name: sound, when: "always" },
+    sound: { name: sound, when: "blurred" },
   })
 }
 
@@ -80,8 +80,7 @@ const tui: TuiPlugin = async (api) => {
   api.event.on("session.error", (event) => {
     const sessionID = event.properties.sessionID
     if (!sessionID) return
-    if (!active.has(sessionID)) return
-    errored.add(sessionID)
+    if (active.has(sessionID)) errored.add(sessionID)
     notify(api, sessionID, sessionErrorMessage(event.properties.error), "error")
   })
 }

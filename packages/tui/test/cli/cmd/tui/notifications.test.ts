@@ -58,6 +58,7 @@ async function setup() {
 
   return {
     notifications,
+    sessions,
     emit(event: Event) {
       for (const handler of handlers.get(event.type) ?? []) handler(event)
     },
@@ -87,18 +88,18 @@ const questionNotification: TuiAttentionNotifyInput = {
   title: "Demo session",
   message: "Question needs input",
   notification: { when: "blurred" },
-  sound: { name: "question", when: "always" },
+  sound: { name: "question", when: "blurred" },
 }
 
 const permissionNotification: TuiAttentionNotifyInput = {
   title: "Demo session",
   message: "Permission needs input",
   notification: { when: "blurred" },
-  sound: { name: "permission", when: "always" },
+  sound: { name: "permission", when: "blurred" },
 }
 
 describe("internal notifications TUI plugin", () => {
-  test("notifies for question and permission requests with blurred notifications and always-on sounds", async () => {
+  test("notifies for question and permission requests with blurred-only notifications and sounds", async () => {
     const harness = await setup()
 
     harness.emit({ id: "event-1", type: "question.asked", properties: question("question-1") })
@@ -136,6 +137,19 @@ describe("internal notifications TUI plugin", () => {
     ])
   })
 
+  test("does not re-notify a pending permission on unrelated session updates", async () => {
+    const harness = await setup()
+
+    harness.emit({ id: "event-1", type: "permission.asked", properties: permission("permission-1") })
+    harness.emit({
+      id: "event-2",
+      type: "session.updated",
+      properties: { sessionID: "session", info: harness.sessions.session },
+    })
+
+    expect(harness.notifications).toEqual([permissionNotification])
+  })
+
   test("notifies when an active session becomes idle and suppresses no-op idle", async () => {
     const harness = await setup()
 
@@ -160,7 +174,7 @@ describe("internal notifications TUI plugin", () => {
         title: "Demo session",
         message: "Session done",
         notification: { when: "blurred" },
-        sound: { name: "done", when: "always" },
+        sound: { name: "done", when: "blurred" },
       },
     ])
   })
@@ -185,13 +199,13 @@ describe("internal notifications TUI plugin", () => {
         title: "Subagent session",
         message: "Question needs input",
         notification: false,
-        sound: { name: "question", when: "always" },
+        sound: { name: "question", when: "blurred" },
       },
       {
         title: "Subagent session",
         message: "Session done",
         notification: false,
-        sound: { name: "subagent_done", when: "always" },
+        sound: { name: "subagent_done", when: "blurred" },
       },
     ])
   })
@@ -220,7 +234,31 @@ describe("internal notifications TUI plugin", () => {
         title: "Demo session",
         message: "Session error",
         notification: { when: "blurred" },
-        sound: { name: "error", when: "always" },
+        sound: { name: "error", when: "blurred" },
+      },
+    ])
+  })
+
+  test("notifies errors even when no busy transition was observed", async () => {
+    const harness = await setup()
+
+    harness.emit({
+      id: "event-1",
+      type: "session.error",
+      properties: { sessionID: "session", error: { name: "UnknownError", data: { message: "boom" } } },
+    })
+    harness.emit({
+      id: "event-2",
+      type: "session.status",
+      properties: { sessionID: "session", status: { type: "idle" } },
+    })
+
+    expect(harness.notifications).toEqual([
+      {
+        title: "Demo session",
+        message: "Session error",
+        notification: { when: "blurred" },
+        sound: { name: "error", when: "blurred" },
       },
     ])
   })
@@ -254,13 +292,13 @@ describe("internal notifications TUI plugin", () => {
         title: "Abort session",
         message: "Session aborted",
         notification: { when: "blurred" },
-        sound: { name: "error", when: "always" },
+        sound: { name: "error", when: "blurred" },
       },
       {
         title: "Timeout session",
         message: "Model stopped responding",
         notification: { when: "blurred" },
-        sound: { name: "error", when: "always" },
+        sound: { name: "error", when: "blurred" },
       },
     ])
   })
