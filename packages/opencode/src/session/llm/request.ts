@@ -8,6 +8,7 @@ import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "../message-v2"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
+import { OpenCodeZen } from "@/provider/opencode-zen"
 import { SystemPrompt } from "../system"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Record } from "effect"
@@ -190,8 +191,10 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       ...(input.model.providerID.startsWith("opencode")
         ? {
             ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
-            "x-opencode-session": input.sessionID,
-            "x-opencode-request": input.user.id,
+            "x-opencode-session": OpenCodeZen.sessionID(input.sessionID),
+            // Zen expects a fresh request id per turn, while the session id above
+            // stays stable for the whole conversation thread.
+            "x-opencode-request": OpenCodeZen.requestID(),
             "x-opencode-client": input.flags.client,
             "User-Agent": USER_AGENT,
           }

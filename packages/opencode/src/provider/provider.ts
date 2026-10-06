@@ -31,6 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { OpenCodeZen } from "./opencode-zen"
 import {
   createQwenWebModel,
   providerInfo as qwenWebProviderInfo,
@@ -201,9 +202,20 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         }
       }
 
+      // Free-tier models are only served to the OpenCode CLI and reject regular
+      // API keys, so they are routed through the Zen adapter. See `opencode-zen`.
+      const free = new Set(
+        Object.entries(input.models)
+          .filter(([, model]) => model.cost.input === 0)
+          .flatMap(([id, model]) => [id, model.api.id]),
+      )
+
       return {
         autoload: Object.keys(input.models).length > 0,
-        options: ok ? {} : { apiKey: "public" },
+        options: {
+          ...(ok ? {} : { apiKey: "public" }),
+          fetch: OpenCodeZen.createFetch({ free }),
+        },
       }
     }),
     openai: () =>
