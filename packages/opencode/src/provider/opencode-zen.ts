@@ -322,7 +322,12 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
 
   return async (requestInput, init) => {
     const request = requestInput instanceof Request ? requestInput : undefined
-    const url = request ? request.url : typeof requestInput === "string" ? requestInput : requestInput.href
+    const url =
+      requestInput instanceof Request
+        ? requestInput.url
+        : typeof requestInput === "string"
+          ? requestInput
+          : requestInput.href
     const method = init?.method ?? request?.method
     const options = requestOptions(request, init)
     const signal = init?.signal ?? options.signal
