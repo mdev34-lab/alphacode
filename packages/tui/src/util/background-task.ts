@@ -1,4 +1,4 @@
-export type BackgroundResultState = "completed" | "error"
+export type BackgroundResultState = "completed" | "error" | "cancelled"
 
 export type BackgroundResult = {
   state: BackgroundResultState
@@ -6,7 +6,7 @@ export type BackgroundResult = {
 }
 
 const TASK_OPEN = /<task\b[^>]*>/
-const TASK_STATE = /\bstate="(completed|error)"/
+const TASK_STATE = /\bstate="(completed|error|cancelled)"/
 const TASK_SUMMARY = /<summary>([\s\S]*?)<\/summary>/
 
 // A background subagent result reaches the parent session as a synthetic text
@@ -17,7 +17,7 @@ export function parseBackgroundResult(text: string): BackgroundResult | undefine
   const open = text.match(TASK_OPEN)?.[0]
   if (!open) return undefined
   const state = open.match(TASK_STATE)?.[1]
-  if (state !== "completed" && state !== "error") return undefined
+  if (state !== "completed" && state !== "error" && state !== "cancelled") return undefined
   const summary = text.match(TASK_SUMMARY)?.[1]?.trim()
   if (!summary) return undefined
   return { state, summary }

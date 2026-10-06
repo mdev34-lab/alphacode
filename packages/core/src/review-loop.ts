@@ -122,6 +122,24 @@ function isSynchronousReviewTask(part: ReviewHistoryPart) {
   return isReviewTask(part) && inputRecord(part)?.background === false
 }
 
+function taskTerminationReason(part: ReviewHistoryPart) {
+  const metadata = isRecord(part.state?.metadata) ? part.state.metadata : undefined
+  const termination = isRecord(metadata?.termination) ? metadata.termination : undefined
+  return typeof termination?.reason === "string" ? termination.reason : undefined
+}
+
+/**
+ * A cancelled subagent delivered no review. The tool reports the cancellation as
+ * a completed part carrying the typed reason, so without this the evaluator
+ * counts a cancellation as a delivered review — and a few of them walk the turn
+ * to the iteration cap and disable the review gate entirely.
+ */
+function isCancelledReviewTask(part: ReviewHistoryPart) {
+  if (!isSynchronousReviewTask(part)) return false
+  if (part.state?.status === "cancelled") return true
+  return taskTerminationReason(part) === "cancelled"
+}
+
 function isFileWritingTool(part: ReviewHistoryPart) {
   if (part.type !== "tool" || typeof part.tool !== "string") return false
   if (part.state?.status !== "completed") return false
@@ -199,6 +217,10 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
   for (const part of current.flatMap((message) => message.parts)) {
     if (isReviewTask(part)) {
       if (!isSynchronousReviewTask(part)) continue
+      // A cancelled review is a non-event: it never delivered a verdict, so it
+      // neither counts toward the cap nor disturbs the verdict already on
+      // record.
+      if (isCancelledReviewTask(part)) continue
 
       if (part.state?.status !== "completed") {
         latest = undefined

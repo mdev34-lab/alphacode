@@ -1,18 +1,26 @@
-import { createMemo, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, on, onCleanup, Show } from "solid-js"
 import { useRouteData } from "../../context/route"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
+import { useSDK } from "../../context/sdk"
+import { useDialog } from "../../ui/dialog"
 import { SplitBorder } from "../../ui/border"
+import { Spinner } from "../../component/spinner"
 import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { useTerminalDimensions } from "@opentui/solid"
-import { useCommandShortcut, useOpencodeKeymap } from "../../keymap"
+import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
+import { useTuiConfig } from "../../config"
+import { DOUBLE_PRESS_WINDOW_MS } from "../../util/double-press"
 
 export function SubagentFooter() {
   const route = useRouteData("session")
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const session = createMemo(() => sync.session.get(route.sessionID))
+  const sdk = useSDK()
+  const dialog = useDialog()
+  const tuiConfig = useTuiConfig()
 
   const subagentInfo = createMemo(() => {
     const s = session()
@@ -54,12 +62,117 @@ export function SubagentFooter() {
     }
   })
 
+  // Only a running subagent has an execution handle to stop. Session status
+  // covers a child that is mid-turn; an assistant message that never completed
+  // covers the gap before the status event lands.
+  const running = createMemo(() => {
+    const status = sync.data.session_status[route.sessionID]?.type
+    if (status === "busy" || status === "retry") return true
+    const last = messages().findLast((message) => message.role === "assistant")
+    return last !== undefined && !last.time.completed
+  })
+
+  // An interrupted child's assistant message carries the abort, which is the
+  // persisted proof the child was cancelled. Reading the transcript keeps the
+  // label correct after navigating away and back, not just during the press.
+  const cancelled = createMemo(() => {
+    const last = messages().findLast((message) => message.role === "assistant")
+    return last?.error?.name === "MessageAbortedError"
+  })
+
+  // Both the armed press and the in-flight request belong to one trace: moving
+  // to another subagent must re-arm for that child and must not show its
+  // status as cancelling because of a request aimed at a sibling.
+  const [armedFor, setArmedFor] = createSignal<string>()
+  const [requestedFor, setRequestedFor] = createSignal<string>()
+  let disarm: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => clearTimeout(disarm))
+
+  const armed = createMemo(() => armedFor() === route.sessionID)
+  const requested = createMemo(() => requestedFor() === route.sessionID)
+
+  createEffect(
+    on(
+      () => route.sessionID,
+      () => {
+        clearTimeout(disarm)
+        setArmedFor(undefined)
+      },
+    ),
+  )
+
+  // A request only describes a stop that is still in flight. Once the child is
+  // no longer running, the transcript is the only evidence of how it ended: an
+  // abort the server accepted but the child outlived must not label a later
+  // completion as cancelled, and must not resurface on the child's next run.
+  createEffect(
+    on(running, (alive) => {
+      if (!alive) setRequestedFor(undefined)
+    }),
+  )
+
+  const stopPhase = createMemo<"cancelling" | "cancelled" | undefined>(() => {
+    if (running()) return requested() ? "cancelling" : undefined
+    return cancelled() ? "cancelled" : undefined
+  })
+
+  // Deeper navigation opens dialogs over the trace; Esc belongs to the dialog
+  // while one is open, exactly as the child session navigation keys assume.
+  const stop = () => {
+    if (dialog.stack.length > 0) return
+    if (!running()) return
+    const target = route.sessionID
+    if (!armed()) {
+      clearTimeout(disarm)
+      setArmedFor(target)
+      disarm = setTimeout(
+        () => setArmedFor((current) => (current === target ? undefined : current)),
+        DOUBLE_PRESS_WINDOW_MS,
+      )
+      return
+    }
+    clearTimeout(disarm)
+    setArmedFor(undefined)
+    setRequestedFor(target)
+    // A request that never reached the server must not read as progress: the
+    // child is still running and nothing was cancelled.
+    sdk.client.session.abort({ sessionID: target }, { throwOnError: true }).catch(() => {
+      if (requestedFor() === target) setRequestedFor(undefined)
+    })
+  }
+
+  useBindings(() => ({
+    commands: [
+      {
+        name: "session.subagent.stop",
+        title: "Stop subagent",
+        desc: "Stop the selected subagent",
+        hidden: true,
+        enabled: running(),
+        run: stop,
+      },
+    ],
+  }))
+
+  // Registered by the footer, which only renders while a subagent trace is
+  // open: Esc outside that view keeps whatever the parent session had bound.
+  // Base mode keeps it out of dialogs, and the lowest priority makes it a
+  // fallback so inline prompts - a permission prompt's reject, for instance -
+  // keep the Esc they bind while one is open over the trace.
+  useBindings(() => ({
+    mode: OPENCODE_BASE_MODE,
+    priority: -1,
+    enabled: running(),
+    bindings: tuiConfig.keybinds.get("session.subagent.stop"),
+  }))
+
   const { theme } = useTheme()
   const keymap = useOpencodeKeymap()
   const parentShortcut = useCommandShortcut("session.parent")
   const previousShortcut = useCommandShortcut("session.child.previous")
   const nextShortcut = useCommandShortcut("session.child.next")
-  const [hover, setHover] = createSignal<"parent" | "prev" | "next" | null>(null)
+  const stopShortcut = useCommandShortcut("session.subagent.stop")
+  const [hover, setHover] = createSignal<"parent" | "prev" | "next" | "stop" | null>(null)
   useTerminalDimensions()
 
   return (
@@ -92,8 +205,32 @@ export function SubagentFooter() {
                 </text>
               )}
             </Show>
+            <Show when={stopPhase()}>
+              {(phase) => (
+                <Show when={phase() === "cancelling"} fallback={<text fg={theme.textMuted}>Cancelled</text>}>
+                  <Spinner color={theme.warning}>Cancelling…</Spinner>
+                </Show>
+              )}
+            </Show>
           </box>
           <box flexDirection="row" gap={2}>
+            <Show when={running()}>
+              <box flexDirection="row" gap={1}>
+                {/* The click target names the action; the shortcut beside it is
+                    what advertises the double press. */}
+                <box
+                  onMouseOver={() => setHover("stop")}
+                  onMouseOut={() => setHover(null)}
+                  onMouseUp={() => keymap.dispatchCommand("session.subagent.stop")}
+                  backgroundColor={hover() === "stop" ? theme.backgroundElement : theme.backgroundPanel}
+                >
+                  <text fg={armed() ? theme.primary : theme.text}>Stop subagent</text>
+                </box>
+                <text style={{ fg: armed() ? theme.primary : theme.textMuted }}>
+                  {armed() ? `${stopShortcut()} again to stop` : `${stopShortcut()} ${stopShortcut()}`}
+                </text>
+              </box>
+            </Show>
             <box
               onMouseOver={() => setHover("parent")}
               onMouseOut={() => setHover(null)}

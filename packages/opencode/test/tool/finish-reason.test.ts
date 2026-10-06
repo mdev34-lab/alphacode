@@ -21,6 +21,14 @@ describe("tool.finish termination reason", () => {
   })
 
   test("rejects unknown reasons", () => {
+    expect(() => Schema.decodeUnknownSync(Parameters)({ reason: "aborted", result: "done" })).toThrow()
+  })
+
+  // Cancellation is a runtime outcome recorded by the tool, never something the
+  // model declares: a cancelled child is stopped mid-run and reaches no finish
+  // call at all. The finish input therefore still refuses it even though the
+  // delivered termination contract carries it.
+  test("rejects a runtime-only reason", () => {
     expect(() => Schema.decodeUnknownSync(Parameters)({ reason: "cancelled", result: "done" })).toThrow()
   })
 

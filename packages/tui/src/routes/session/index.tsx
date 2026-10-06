@@ -1532,23 +1532,33 @@ function UserMessage(props: {
         </box>
       </Show>
       <For each={backgroundResults()}>
-        {(result) => (
-          <>
-            <box
-              marginTop={1}
-              border={["top"]}
-              title={result.state === "completed" ? " Background subagent completed " : " Background subagent failed "}
-              titleAlignment="center"
-              borderColor={theme.borderActive}
-            />
-            <text fg={theme.textMuted}>
-              <span style={{ fg: result.state === "completed" ? theme.success : theme.error }}>
-                {result.state === "completed" ? "✓" : "✗"}
-              </span>{" "}
-              {result.summary} — result delivered to the main agent
-            </text>
-          </>
-        )}
+        {(result) => {
+          const completed = () => result.state === "completed"
+          const cancelled = () => result.state === "cancelled"
+          return (
+            <>
+              <box
+                marginTop={1}
+                border={["top"]}
+                title={
+                  completed()
+                    ? " Background subagent completed "
+                    : cancelled()
+                      ? " Background subagent cancelled "
+                      : " Background subagent failed "
+                }
+                titleAlignment="center"
+                borderColor={theme.borderActive}
+              />
+              <text fg={theme.textMuted}>
+                <span style={{ fg: completed() ? theme.success : cancelled() ? theme.textMuted : theme.error }}>
+                  {completed() ? "✓" : cancelled() ? "○" : "✗"}
+                </span>{" "}
+                {result.summary} — {cancelled() ? "cancellation" : "result"} delivered to the main agent
+              </text>
+            </>
+          )
+        }}
       </For>
       <Show when={compaction()}>
         <box
