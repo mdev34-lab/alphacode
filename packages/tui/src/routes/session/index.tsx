@@ -2342,21 +2342,24 @@ function ReviewFinish(props: { review: { report: ReviewReport.Info; analysis: st
           <Show when={findings().length > 0}>
             <box>
               <For each={findings()}>
-                {(finding) => (
-                  <>
-                    <text fg={theme.text}>
-                      {"↳ "}
-                      <span style={{ fg: severityColor(finding.severity), bold: true }}>{finding.severity}</span>
-                      {" · "}{finding.title}
-                      {reviewFindingLocation(finding) ? ` (${reviewFindingLocation(finding)})` : ""}
-                    </text>
-                    <Show when={expanded() && (finding.detail ?? "").trim() !== ""}>
+                {(finding) => {
+                  const loc = reviewFindingLocation(finding)
+                  return (
+                    <>
                       <text fg={theme.text}>
-                        {"   ↳ "}{finding.detail}
+                        {"↳ "}
+                        <span style={{ fg: severityColor(finding.severity), bold: true }}>{finding.severity}</span>
+                        {" · "}{finding.title}
+                        {loc ? ` (${loc})` : ""}
                       </text>
-                    </Show>
-                  </>
-                )}
+                      <Show when={expanded() && (finding.detail ?? "").trim() !== ""}>
+                        <text fg={theme.text}>
+                          {"   ↳ "}{finding.detail}
+                        </text>
+                      </Show>
+                    </>
+                  )
+                }}
               </For>
             </box>
           </Show>

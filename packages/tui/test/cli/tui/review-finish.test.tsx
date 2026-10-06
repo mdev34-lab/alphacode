@@ -339,6 +339,10 @@ describe("review finish rendering", () => {
     expect(frame).not.toContain("alphacode-review")
     expect(frame).not.toContain('"assessment"')
     expect(frame).not.toContain("Task completed")
+    // The block above can only appear if Finish's <Show> callback child
+    // ({(item) => <ReviewFinish .../>}) is actually invoked with the report
+    // accessor; a function rendered as text would show up here instead.
+    expect(frame).not.toContain("[object Function]")
   })
 
   test("orders findings critical first and keeps the approved verdict", async () => {
