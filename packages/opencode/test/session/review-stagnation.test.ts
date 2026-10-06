@@ -745,6 +745,12 @@ function compileRoot(flagOverrides: Parameters<typeof RuntimeFlags.layer>[0]) {
 
 const it = testEffect(compileRoot({ experimentalEventSystem: true }))
 
+// A second root compiled with an explicit reviewStagnationRepeats override, so a
+// loop test can prove the configured number of consecutive identical outputs is
+// what steers the recovery nudge through the real wiring (flag -> resolveRepeats
+// -> nudge seam), not just the module default.
+const itConfiguredRepeats = testEffect(compileRoot({ experimentalEventSystem: true, reviewStagnationRepeats: 3 }))
+
 // Finish stays enabled for `review` and `work` so the nudge paths exercised
 // here match production (agents end their turn through the finish tool).
 const cfg = {
@@ -1104,6 +1110,90 @@ it.instance(
       expect(nudges.filter((text) => text.includes(RECOVERY_MARKER))).toHaveLength(0)
       expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(3)
       expect(finishParts(messages).map((part) => part.state.status)).toEqual(["completed"])
+    }),
+  20_000,
+)
+
+itConfiguredRepeats.instance(
+  "the configured repeats threshold defers the recovery nudge in the loop",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Configured repeats",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      // The same scenario as the default-threshold test, with the threshold
+      // configured to 3. Two identical generations still earn only the generic
+      // reminder; the recovery nudge arrives once the configured number of
+      // consecutive repeats is reached. If the flag were ignored, the second
+      // repetition would earn the recovery nudge at the default threshold and
+      // the third would complete the review through the stagnation backstop —
+      // leaving the scripted finish unconsumed.
+      yield* llm.text(REPEAT)
+      yield* llm.text(REPEAT)
+      yield* llm.text(REPEAT)
+      yield* llm.tool("finish", { reason: "success", result: REPEAT })
+
+      yield* user(chat.id, TASK_PROMPT)
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+
+      // Four generations: the two that earned generic reminders, the one that
+      // earned the recovery nudge, and the nudged model's own finish.
+      expect(yield* turnHits()).toHaveLength(4)
+      expect(yield* llm.pending).toBe(0)
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      expect(syntheticTexts(messages).map((text) => text.includes(RECOVERY_MARKER))).toEqual([false, false, true])
+
+      // The review was completed by the model's own finish call with its own
+      // result, not by the backstop re-rendering the report.
+      const finishes = finishParts(messages)
+      expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
+      if (finishes[0]?.state.status === "completed") {
+        expect(finishes[0].state.input.result).toBe(REPEAT)
+      }
+    }),
+  20_000,
+)
+
+it.instance(
+  "a routed reviewer earns the recovery nudge at the loop seam",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Routed reviewer",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      // The stagnation heuristic is a Review-subagent heuristic, not a string
+      // comparison against the name `review`: the routed reviewers carry the
+      // same doomloop risk and must be handled the same at the nudge seam.
+      yield* llm.text(REPEAT)
+      yield* llm.text(REPEAT)
+      yield* llm.tool("finish", { reason: "success", result: REPEAT })
+
+      yield* user(chat.id, TASK_PROMPT, "work-review")
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(result.info.role).toBe("assistant")
+
+      expect(yield* turnHits()).toHaveLength(3)
+      const messages = yield* sessions.messages({ sessionID: chat.id })
+      const nudges = syntheticTexts(messages)
+      expect(nudges.map((text) => text.includes(RECOVERY_MARKER))).toEqual([false, true])
+      expect(nudges.filter((text) => text.includes(GENERIC_MARKER))).toHaveLength(1)
+
+      // The stagnated work-review finishes through the normal path, like the
+      // generic reviewer covered by the default-threshold test above.
+      const finishes = finishParts(messages)
+      expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
+      if (finishes[0]?.state.status === "completed") {
+        expect(finishes[0].state.input.result).toBe(REPEAT)
+      }
     }),
   20_000,
 )
