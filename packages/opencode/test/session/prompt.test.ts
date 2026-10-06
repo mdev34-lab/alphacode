@@ -1831,6 +1831,129 @@ it.instance(
   { timeout: 30_000 },
 )
 
+it.instance(
+  "loop stops after a bounded number of finish nudges when the model never calls finish",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => ({
+        ...providerCfg(url),
+        agent: { work: { finishTool: true } },
+      }))
+      const events = yield* EventV2Bridge.Service
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const status = yield* SessionStatus.Service
+      const session = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "Bom dia" }],
+      })
+      yield* llm.text("Bom dia! Como posso ajudar?")
+      yield* llm.text("Bom dia! Como posso ajudar?")
+      yield* llm.text("Bom dia! Como posso ajudar?")
+      yield* llm.text("Bom dia! Como posso ajudar?")
+
+      const errors: NonNullable<SessionV1.Assistant["error"]>[] = []
+      const off = yield* events.listen((event) => {
+        if (event.type !== Session.Event.Error.type) return Effect.void
+        const data = event.data as typeof Session.Event.Error.data.Type
+        if (data.sessionID === session.id && data.error) errors.push(data.error)
+        return Effect.void
+      })
+      const result = yield* prompt.loop({ sessionID: session.id })
+      const stored = yield* MessageV2.get({ sessionID: session.id, messageID: result.info.id })
+      const messages = yield* sessions.messages({ sessionID: session.id })
+      yield* off
+
+      expect(yield* llm.calls).toBe(4)
+      expect(toolNames((yield* llm.hits)[0]?.body)).toContain("finish")
+      expect(yield* status.get(session.id)).toEqual({ type: "idle" })
+      expect(result.info.role).toBe("assistant")
+      expect(stored.info.role).toBe("assistant")
+      if (result.info.role === "assistant" && stored.info.role === "assistant") {
+        expect(result.info.finish).toBe("error")
+        expect(result.info.error?.name).toBe("UnknownError")
+        if (result.info.error?.name === "UnknownError") {
+          expect(result.info.error.data.message).toContain("did not complete the required finish tool after 3 nudges")
+          expect(result.info.error.data.message).toContain("Set agent.<name>.finishTool to false")
+        }
+        expect(stored.info.error).toEqual(result.info.error)
+        if (result.info.error) expect(errors).toContainEqual(result.info.error)
+        expect(result.parts).toEqual(
+          expect.arrayContaining([expect.objectContaining({ type: "text", text: "Bom dia! Como posso ajudar?" })]),
+        )
+      }
+      const nudges = messages.filter(
+        (msg) =>
+          msg.info.role === "user" &&
+          msg.parts.some((part) => part.type === "text" && part.synthetic && part.text.includes("finish")),
+      )
+      expect(nudges).toHaveLength(3)
+    }),
+  { timeout: 30_000 },
+)
+
+it.instance(
+  "loop reports a declined review finish as incomplete after the shared nudge limit",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const session = yield* sessions.create({
+        title: "Review without a report envelope",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: session.id,
+        agent: "work-review",
+        noReply: true,
+        parts: [{ type: "text", text: "Review the changes and report your findings." }],
+      })
+      yield* llm.text("I am reviewing the requested changes.")
+      yield* llm.tool("finish", { reason: "success", result: "Needs fixes, but no report envelope." })
+      yield* llm.text("I am still checking the changed files.")
+      yield* llm.tool("finish", { reason: "success", result: "The report is still missing its envelope." })
+      yield* llm.text("The review report is not ready yet.")
+      yield* llm.tool("finish", { reason: "success", result: "This is another invalid report." })
+      yield* llm.text("I need another pass before reporting.")
+
+      const result = yield* prompt.loop({ sessionID: session.id })
+      const messages = yield* sessions.messages({ sessionID: session.id })
+
+      expect(yield* llm.calls).toBe(7)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.info.finish).toBe("error")
+        expect(result.info.error?.name).toBe("UnknownError")
+        if (result.info.error?.name === "UnknownError") {
+          expect(result.info.error.data.message).toContain("did not complete the required finish tool after 3 nudges")
+          expect(result.info.error.data.message).not.toContain("did not call the required finish tool")
+        }
+      }
+      const finishes = messages
+        .flatMap((message) => message.parts)
+        .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "finish")
+      expect(finishes).toHaveLength(3)
+      expect(finishes.map((part) => part.state.status)).toEqual(["error", "error", "error"])
+      for (const finish of finishes) {
+        if (finish.state.status === "error") expect(finish.state.error).toContain("Review finish rejected")
+      }
+      const nudges = messages.filter(
+        (msg) =>
+          msg.info.role === "user" &&
+          msg.parts.some((part) => part.type === "text" && part.synthetic && part.text.includes("finish")),
+      )
+      expect(nudges).toHaveLength(3)
+    }),
+  { timeout: 30_000 },
+)
+
 noLLMServer.instance(
   "loop exits without an LLM request when the finish tool already completed",
   () =>
