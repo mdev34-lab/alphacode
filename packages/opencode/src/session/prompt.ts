@@ -79,7 +79,8 @@ const decodeMessageInfo = Schema.decodeUnknownExit(SessionV1.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(SessionV1.Part)
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 // Agent step limits are optional; cap finish-tool recovery separately so a
-// model that ignores every reminder cannot keep one prompt alive forever.
+// model that ignores every reminder cannot keep one prompt alive forever. The
+// counter is per runLoop invocation and is not persisted across re-prompts.
 const MAX_FINISH_NUDGES = 3
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
@@ -1412,7 +1413,7 @@ const layer = Layer.effect(
               }
               if (finishNudges >= MAX_FINISH_NUDGES) {
                 const error = new NamedError.Unknown({
-                  message: `The assistant did not call the required finish tool after ${MAX_FINISH_NUDGES} reminders. The turn was stopped to prevent an unbounded continuation loop.`,
+                  message: `The assistant did not complete the required finish tool after ${MAX_FINISH_NUDGES} reminders. The turn was stopped to prevent an unbounded continuation loop. Set agent.<name>.finishTool to false for agents that must end turns without finish.`,
                 }).toObject()
                 yield* sessions.updateMessage({
                   ...lastAssistant,
@@ -1421,11 +1422,14 @@ const layer = Layer.effect(
                   time: { ...lastAssistant.time, completed: lastAssistant.time.completed ?? Date.now() },
                 })
                 yield* events.publish(Session.Event.Error, { sessionID, error })
-                yield* Effect.logWarning("assistant omitted the finish tool after the nudge limit; ending loop", {
-                  "session.id": sessionID,
-                  messageID: lastAssistant.id,
-                  nudges: finishNudges,
-                })
+                yield* Effect.logWarning(
+                  "assistant did not complete the finish tool after the nudge limit; ending loop",
+                  {
+                    "session.id": sessionID,
+                    messageID: lastAssistant.id,
+                    nudges: finishNudges,
+                  },
+                )
                 break
               }
               if (stagnated) {
@@ -1460,6 +1464,25 @@ const layer = Layer.effect(
                 synthetic: true,
               } satisfies SessionV1.TextPart)
               continue
+            }
+            if (
+              finishRequired &&
+              activeAgent?.steps !== undefined &&
+              !completedFinish &&
+              orphan === undefined &&
+              lastAssistant.error === undefined &&
+              step >= activeAgent.steps
+            ) {
+              yield* Effect.logWarning(
+                "assistant reached the agent step cap without completing the finish tool; ending loop",
+                {
+                  "session.id": sessionID,
+                  messageID: lastAssistant.id,
+                  step,
+                  maxSteps: activeAgent.steps,
+                  nudges: finishNudges,
+                },
+              )
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
