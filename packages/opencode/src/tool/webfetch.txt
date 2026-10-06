@@ -13,3 +13,8 @@ Usage notes:
   - Large results are windowed by line: use "offset" (1-indexed line to start from) and "limit" (maximum lines to return, defaults to 2000) to page through the converted content
   - Windowed output ends with a notice showing the returned line range and the next offset to continue from
   - When the converted body exceeds the output caps it is saved and the saved path is appended after the notice, so it does not need to be fetched again
+
+HTML pages carry heavy navigation/footer chrome. For structured data, prefer
+API endpoints or raw file URLs (raw.githubusercontent.com, api.github.com)
+over rendered pages. A 404 from an API endpoint usually means authentication
+is required — do not retry variants of the same unauthenticated request.

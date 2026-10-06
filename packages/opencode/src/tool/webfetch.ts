@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { Parser } from "htmlparser2"
+import { DomUtils, Parser, parseDocument } from "htmlparser2"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { ToolFailure } from "@opencode-ai/llm"
 import * as Tool from "./tool"
@@ -17,6 +17,16 @@ const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
+
+// Boilerplate chrome that never carries the answer. These cover the equivalent
+// of `nav, header, footer, aside, [role='navigation'], [role='banner'],
+// [role='contentinfo'], [class*='cookie'], [class*='footer']`. htmlparser2's DOM
+// has no selector engine of its own (`querySelectorAll` is provided by
+// css-select, which is not a dependency), so each selector is matched
+// structurally against the parsed tree instead.
+const BOILERPLATE_TAGS = ["nav", "header", "footer", "aside"]
+const BOILERPLATE_ROLES = ["navigation", "banner", "contentinfo"]
+const BOILERPLATE_CLASSES = ["cookie", "footer"]
 
 export const Parameters = Schema.Struct({
   url: Schema.String.annotate({ description: "The URL to fetch content from" }),
@@ -151,11 +161,11 @@ export const WebFetchTool = Tool.define<typeof Parameters, Metadata, HttpClient.
       const converted = (() => {
         switch (params.format) {
           case "markdown":
-            if (contentType.includes("text/html")) return convertHTMLToMarkdown(content)
+            if (contentType.includes("text/html")) return convertHTMLToMarkdown(stripBoilerplate(content))
             return content
 
           case "text":
-            if (contentType.includes("text/html")) return extractTextFromHTML(content)
+            if (contentType.includes("text/html")) return extractTextFromHTML(stripBoilerplate(content))
             return content
 
           default:
@@ -247,6 +257,19 @@ function windowContent(content: string, rawOffset: number, rawLimit: number) {
       : `(End of file - total ${count} lines)`
 
   return { ok: true as const, output: `${page.join("\n")}\n\n${notice}`, cut, more, truncated: cut || more }
+}
+
+function stripBoilerplate(html: string) {
+  const doc = parseDocument(html)
+  const boilerplate = DomUtils.findAll(
+    (element) =>
+      BOILERPLATE_TAGS.includes(element.name) ||
+      BOILERPLATE_ROLES.includes((element.attribs["role"] ?? "").toLowerCase()) ||
+      BOILERPLATE_CLASSES.some((name) => (element.attribs["class"] ?? "").toLowerCase().includes(name)),
+    doc.children,
+  )
+  for (const element of boilerplate) DomUtils.removeElement(element)
+  return DomUtils.getOuterHTML(doc.children)
 }
 
 function extractTextFromHTML(html: string) {
