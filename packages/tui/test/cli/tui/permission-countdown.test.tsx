@@ -66,9 +66,10 @@ test("permission countdown renders the time left before the prompt is auto-denie
   try {
     setExpiresAt(Date.now() + 42_000)
     // The label updates through the reactive graph, which the renderer commits on a later
-    // frame, so this polls instead of rendering once.
-    await wait(() => frame().includes("auto-deny in 42s"), "the countdown never rendered the time left")
-    expect(frame()).toContain("auto-deny in 42s")
+    // frame, so this polls instead of rendering once. Rendering that first frame can take
+    // long enough for the countdown to tick, so either of the first two seconds counts.
+    await wait(() => /auto-deny in 4[12]s/.test(frame()), "the countdown never rendered the time left")
+    expect(frame()).toMatch(/auto-deny in 4[12]s/)
   } finally {
     app.renderer.destroy()
   }
