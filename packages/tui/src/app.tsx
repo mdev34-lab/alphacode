@@ -820,7 +820,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         name: "docs.open",
         title: "Open repository",
         run: () => {
-          open("https://github.com/mdev34-lab/silvercode").catch(() => {})
+          open("https://github.com/mdev34-lab/alphacode").catch(() => {})
           dialog.clear()
         },
         category: "System",

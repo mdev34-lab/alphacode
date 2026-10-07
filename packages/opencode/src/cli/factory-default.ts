@@ -31,7 +31,7 @@ export interface FactoryDefaultResult {
   failed: Array<{ path: string; error: string }>
 }
 
-const DOCS_URL = "https://github.com/mdev34-lab/silvercode#readme"
+const DOCS_URL = "https://github.com/mdev34-lab/alphacode#readme"
 
 export function planFactoryDefault(input: { cwd: string; roots?: FactoryDefaultTarget[] }): FactoryDefaultPlan {
   const roots: FactoryDefaultTarget[] = input.roots ?? [

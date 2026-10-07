@@ -77,7 +77,7 @@ describe("installation", () => {
       Effect.gen(function* () {
         const result = yield* Installation.use.latest()
         expect(result).toBe("1.2.3")
-        expect(urls).toEqual(["https://api.github.com/repos/mdev34-lab/silvercode/releases/latest"])
+        expect(urls).toEqual(["https://api.github.com/repos/mdev34-lab/alphacode/releases/latest"])
       }),
     )
 
@@ -97,7 +97,7 @@ describe("installation", () => {
         const error = yield* Effect.flip(Installation.use.upgrade("npm", "9.9.9"))
         expect(error).toBeInstanceOf(Installation.UpgradeFailedError)
         expect(error.stderr).toBe(
-          "SilverCode is distributed via GitHub Releases. Reinstall: curl -fsSL https://github.com/mdev34-lab/silvercode/releases/latest/download/install | bash",
+          "SilverCode is distributed via GitHub Releases. Reinstall: curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/install | bash",
         )
       }),
     )
@@ -119,7 +119,7 @@ describe("installation", () => {
       Effect.gen(function* () {
         const error = yield* Effect.flip(Installation.use.upgrade("curl", "9.9.9"))
         expect(urls).toEqual([
-          "https://github.com/mdev34-lab/silvercode/releases/download/v9.9.9/install",
+          "https://github.com/mdev34-lab/alphacode/releases/download/v9.9.9/install",
         ])
         expect(error).toBeInstanceOf(Installation.UpgradeFailedError)
         expect(error.stderr).toBe("Upgrade failed for curl (exit code 1).")

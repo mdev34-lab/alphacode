@@ -90,9 +90,6 @@
     "packages/core": {
       "name": "@opencode-ai/core",
       "version": "0.1.0",
-      "bin": {
-        "silvercode": "./bin/silvercode",
-      },
       "dependencies": {
         "@ai-sdk/alibaba": "1.0.17",
         "@ai-sdk/amazon-bedrock": "4.0.112",

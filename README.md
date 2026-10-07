@@ -2,8 +2,8 @@
 
 The open source AI coding agent.
 
-[![Discord](https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord)](https://github.com/mdev34-lab/silvercode)
-[![Build status](https://img.shields.io/github/actions/workflow/status/mdev34-lab/silvercode/publish.yml?style=flat-square&branch=dev)](https://github.com/mdev34-lab/silvercode/actions/workflows/publish.yml)
+[![Discord](https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord)](https://github.com/mdev34-lab/alphacode)
+[![Build status](https://img.shields.io/github/actions/workflow/status/mdev34-lab/alphacode/publish.yml?style=flat-square&branch=dev)](https://github.com/mdev34-lab/alphacode/actions/workflows/publish.yml)
 
 ## Installation
 
@@ -11,13 +11,13 @@ The open source AI coding agent.
 > **This is the SilverCode fork.** It is distributed through this repository's GitHub Releases and the install script only; it is not published to npm or other package registries.
 
 ```bash
-curl -fsSL https://github.com/mdev34-lab/silvercode/releases/latest/download/install | bash
+curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/install | bash
 ```
 
 To build from source:
 
 ```bash
-git clone https://github.com/mdev34-lab/silvercode.git
+git clone https://github.com/mdev34-lab/alphacode.git
 cd silvercode
 bun install
 ./packages/opencode/script/build.ts --single

@@ -262,7 +262,7 @@ const TIPS: Tip[] = [
   "Permission {highlight}doom_loop{/highlight} prevents infinite tool call loops",
   "Permission {highlight}external_directory{/highlight} protects files outside project",
   "Run {highlight}silvercode debug config{/highlight} to troubleshoot configuration",
-  "Run {highlight}docker run -it --rm ghcr.io/mdev34-lab/silvercode{/highlight} in a container",
+  "Run {highlight}docker run -it --rm ghcr.io/mdev34-lab/alphacode{/highlight} in a container",
   "Use {highlight}--print-logs{/highlight} flag to see detailed logs in stderr",
   (shortcuts) => `Use ${commandText("/timeline", shortcuts.sessionTimeline())} to jump to specific messages`,
   (shortcuts) => press(shortcuts.messagesToggleConceal(), "to toggle code block visibility in messages"),

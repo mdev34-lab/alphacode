@@ -6,7 +6,7 @@ import { formatNotes, Script, toChange } from "@opencode-ai/script"
 
 if (Script.preview) throw new Error("publish workflow only supports release builds")
 
-const repo = process.env.GH_REPO ?? "mdev34-lab/silvercode"
+const repo = process.env.GH_REPO ?? "mdev34-lab/alphacode"
 const sha = process.env.GITHUB_SHA ?? "HEAD"
 const bump = process.env.OPENCODE_BUMP?.trim().toLowerCase() || "auto"
 const previousTag = await Script.previousTag
