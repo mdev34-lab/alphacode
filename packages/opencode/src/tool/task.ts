@@ -1,5 +1,5 @@
 import * as Tool from "./tool"
-import { FinishTool, readTermination, type TerminationReason } from "@/tool/finish"
+import { FinishTool, deliveredReason, readTermination, type TerminationReason } from "@/tool/finish"
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ReviewReport } from "@opencode-ai/core/review-report"
@@ -29,16 +29,24 @@ const BACKGROUND_DESCRIPTION = [
   "You will be notified automatically when it finishes; do not sleep, poll, or ask it for status.",
   "Use background=false for synchronous execution only when you need the result before continuing.",
 ].join(" ")
+// The yield instruction is scoped to a parent that has not finished: delivering
+// a completed result while a task keeps running is still the normal ending, and
+// this task's notification wakes the session when its run ends. It is also
+// limited to the main session, because the wait is refused for a session that is
+// itself a subagent: a child's run ends at its yield, so a yield from a child
+// would deliver a provisional result and nothing else.
 const BACKGROUND_STARTED = [
-  "The task is running in the background. You will be notified automatically when it finishes.",
+  "The task is running in the background. You will be notified automatically when its run ends.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
-  "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
+  'Work on non-overlapping tasks. If your own task is complete, call finish with reason "success" as usual: a task still running in the background does not hold your result back.',
+  'If it is not finished and you have no independent work left, the main session can call finish with reason "waiting_for_subagent" to yield — this task\'s notification wakes it. A subagent cannot yield this way: its run ends at the yield, so it must deliver with "success" or "failure" instead.',
 ].join("\n")
 const BACKGROUND_UPDATED = [
   "Additional context sent to the running background task.",
-  "The task is still working in the background. You will be notified automatically when it finishes.",
+  "The task is still working in the background. You will be notified automatically when its run ends.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
-  "Work on non-overlapping tasks, or briefly tell the user what you sent and end your response.",
+  'Work on non-overlapping tasks. If your own task is complete, call finish with reason "success" as usual: a task still running in the background does not hold your result back.',
+  'If it is not finished and you have no independent work left, the main session can call finish with reason "waiting_for_subagent" to yield — this task\'s notification wakes it. A subagent cannot yield this way: its run ends at the yield, so it must deliver with "success" or "failure" instead.',
 ].join("\n")
 
 const BaseParameterFields = {
@@ -68,6 +76,13 @@ export const Parameters = Schema.Struct({
  * waiting run as a fire-and-forget task it should wait on. `success` carries no
  * note: the reason is the signal, and the result text already says the work is
  * done.
+ *
+ * `TERMINATION_NOTE` is keyed by the delivered reasons, and a declared
+ * `waiting_for_subagent` is not one of them: it is dropped by
+ * {@link deliveredReason} before it reaches an envelope. The finish tool
+ * refuses the wait for a session that is itself a subagent, and a provisional
+ * result must not be delivered as a terminal one (#222 gives a nested yield a
+ * termination of its own).
  */
 const TERMINATION_NOTE: Record<TerminationReason, string> = {
   success: "",
@@ -306,9 +321,11 @@ export const TaskTool = Tool.define(
       // The child declares why it stopped on the finish tool input. Capture it
       // once, where the reply is already in hand, so the background and the
       // foreground delivery paths below report the same value without either
-      // one re-reading the child transcript. A cancelled run never made a
-      // finish call; that path records `cancelled` itself, so this ref holds the
-      // whole termination contract rather than only the declared subset.
+      // one re-reading the child transcript. The declared reason is mapped to
+      // the delivered one here, in one place, so a declared yield can never
+      // reach an envelope. A cancelled run never made a finish call; that path
+      // records `cancelled` itself, so this ref holds the whole delivered
+      // contract rather than the declared subset.
       const termination = yield* Ref.make<TerminationReason | undefined>(undefined)
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
@@ -329,7 +346,7 @@ export const TaskTool = Tool.define(
           (item): item is SessionV1.ToolPart =>
             item.type === "tool" && item.tool === FinishTool.id && item.state.status === "completed",
         )
-        yield* Ref.set(termination, finish ? readTermination(finish) : undefined)
+        yield* Ref.set(termination, finish ? deliveredReason(readTermination(finish)) : undefined)
 
         // The review subagent delivers its canonical result through a tagged
         // report envelope. Extract it from the complete child output — every

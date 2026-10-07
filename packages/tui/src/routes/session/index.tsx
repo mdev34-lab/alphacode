@@ -2171,7 +2171,7 @@ function Finish(props: ToolProps) {
     ),
   )
   const visible = createMemo(() => (expanded() || !collapsed().overflow ? result() : collapsed().output))
-  const view = createMemo(() => finishToolView(props.part.state.status, visible()))
+  const view = createMemo(() => finishToolViewForPart(props.part, visible()))
   const content = createMemo(() => {
     if (!collapsed().overflow) return view().children
     return `${view().children}
@@ -2203,11 +2203,32 @@ function Finish(props: ToolProps) {
 
 type FinishToolStatus = ToolPart["state"]["status"]
 
+const WAITING_LABEL = "Waiting for subagent execution..."
+const WAITING_ICON = "◌"
+
 export function finishResult(input: Record<string, unknown>, output?: string) {
   return (output?.trim() || stringValue(input.result)?.trim() || undefined) ?? undefined
 }
 
-export function finishToolView(status: FinishToolStatus, result?: string) {
+/**
+ * The part-to-view mapping, kept separate from the component so the wiring is
+ * testable without mounting the route. The wait flag only exists on a completed
+ * part: the tool returns it as the call's metadata, so it is stamped when the
+ * tool part settles and there is no earlier status that can carry it.
+ */
+export function finishToolViewForPart(part: ToolPart, result?: string) {
+  return finishToolView(
+    part.state.status,
+    result,
+    part.state.status === "completed" && "metadata" in part.state && part.state.metadata?.waiting === true,
+  )
+}
+
+export function finishToolView(status: FinishToolStatus, result?: string, waiting = false) {
+  // A wait is not a completion: the agent yielded the turn while the background
+  // subagents it launched still run, so the block must not read as done — a
+  // paused icon, not the check the completed finish uses.
+  const completed = waiting ? WAITING_LABEL : "Task completed"
   if (status === "pending") {
     return {
       icon: "✓",
@@ -2229,12 +2250,12 @@ export function finishToolView(status: FinishToolStatus, result?: string) {
     }
   }
   return {
-    icon: "✓",
+    icon: waiting ? WAITING_ICON : "✓",
     pending: "Completing task...",
     complete: status === "completed",
     spinner: false,
     failure: "Finish failed",
-    children: result ? `Task completed\n↳ ${result}` : "Task completed",
+    children: result ? `${completed}\n↳ ${result}` : completed,
   }
 }
 

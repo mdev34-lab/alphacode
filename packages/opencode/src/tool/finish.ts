@@ -7,10 +7,11 @@ import { Todo } from "../session/todo"
 import { Session } from "../session/session"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
+import { BackgroundJob } from "@/background/job"
 import { finishGateError, reviewLoopState } from "../session/review-loop"
 import { isReviewAgent } from "../agent/review-agents"
 
-const DeclaredReasons = ["success", "subagent_wait", "failure"] as const
+const DeclaredReasons = ["success", "waiting_for_subagent", "subagent_wait", "failure"] as const
 
 export const Reason = Schema.Literals(DeclaredReasons)
 
@@ -24,15 +25,21 @@ export type Reason = Schema.Schema.Type<typeof Reason>
  * cannot be declared there. A cancelled subagent never reaches a finish call —
  * the user stops it mid-run — so the runtime records the cancellation itself
  * instead of forcing the reason through a tool input the model never supplied.
+ *
+ * The delivered set is deliberately narrower than the declared one:
+ * `waiting_for_subagent` is not in it. A child's run ends at its yield, so an
+ * envelope naming that reason would present a provisional result as a terminal
+ * one. {@link deliveredReason} drops it, and #222 replaces the gap with a
+ * nested yield that has a delivery of its own.
  */
-export const TerminationReason = Schema.Literals([...DeclaredReasons, "cancelled"])
+export const TerminationReason = Schema.Literals(["success", "subagent_wait", "failure", "cancelled"])
 
 export type TerminationReason = Schema.Schema.Type<typeof TerminationReason>
 
 export const Parameters = Schema.Struct({
   reason: Reason.annotate({
     description:
-      "Why the agent is ending this turn: success when the task is complete, subagent_wait when progress depends on another subagent, or failure when the task could not be completed.",
+      "Why the agent is ending this turn: success when the task is complete, waiting_for_subagent when yielding the turn while background subagents you launched are still running (main session only — a subagent's run ends at its yield, so it must deliver its own result), subagent_wait when progress depends on a subagent that will not report back on its own, or failure when the task could not be completed.",
   }),
   result: Schema.String.annotate({
     description:
@@ -64,17 +71,53 @@ export function readTermination(part: SessionV1.ToolPart): Reason | undefined {
   return Option.getOrUndefined(Schema.decodeUnknownOption(Reason)(declared))
 }
 
+/**
+ * The declared reason as it is delivered to a parent.
+ *
+ * A declared `waiting_for_subagent` has no delivered counterpart. The finish
+ * tool refuses the wait for a session that is itself a subagent, so a task child
+ * cannot declare it, and a transcript that still does must not put a provisional
+ * envelope on the wire as a terminal one: it delivers like a legacy record with
+ * no declared reason — a plain result with no `<termination>` element. #222
+ * gives a nested yield a termination of its own.
+ */
+export function deliveredReason(reason: Reason | undefined): TerminationReason | undefined {
+  if (reason === "waiting_for_subagent") return undefined
+  return reason
+}
+
 export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
     const todo = yield* Todo.Service
     const sessions = yield* Session.Service
     const config = yield* Config.Service
+    const background = yield* BackgroundJob.Service
 
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+      // A yield and a terminal result are two success shapes. Naming the fields
+      // the tool can return keeps `metadata` checked for consumers instead of
+      // widening it to the index signature, while still letting inference see a
+      // single contract rather than collapsing both branches into one shape
+      // whose every field is optional.
+      execute: (
+        params: Schema.Schema.Type<typeof Parameters>,
+        ctx: Tool.Context,
+      ): Effect.Effect<
+        Tool.ExecuteResult<{
+          waiting?: boolean
+          termination?: { reason: Reason }
+          review?: {
+            verdict: string
+            reviews: number
+            maxIterations: number
+            termination: string
+          }
+        }>,
+        ToolFailure
+      > =>
         Effect.gen(function* () {
           yield* ctx.waitForOtherTools ?? Effect.void
           const messages = yield* sessions
@@ -107,6 +150,76 @@ export const FinishTool = Tool.define(
               )
             }
           }
+          // Yielding for background work is not a termination. The turn ends so
+          // the model stops polling for the subagents it launched, but the
+          // session is woken by their notification, so a wait must leave
+          // everything the real finish depends on untouched: the review nudge
+          // (consumed once per unit of work), the plan, and the terminal
+          // metadata the review loop reads as a delivered outcome.
+          //
+          if (params.reason === "waiting_for_subagent") {
+            const jobs = yield* background.list()
+            // A subagent cannot yield. `runTask` is a single prompt, so a
+            // child's run ends at its yield and this provisional result would
+            // be the parent's only delivery: the work the child waits on would
+            // never reach it, and a child's job that has ended cannot be waited
+            // on again. Only a session that is not itself a task can yield;
+            // #222 tracks keeping a child's job alive so a nested yield works.
+            const session = yield* sessions
+              .get(ctx.sessionID)
+              .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
+            const isSubagentRun =
+              session.parentID !== undefined ||
+              jobs.some(
+                (job) =>
+                  job.type === "task" && job.status === "running" && BackgroundJob.runsSession(job, ctx.sessionID),
+              )
+            if (isSubagentRun) {
+              yield* Effect.logWarning("finish declined: a subagent session cannot yield for its own subagents", {
+                sessionID: ctx.sessionID,
+              })
+              return yield* Effect.fail(
+                new ToolFailure({
+                  message:
+                    "Cannot wait: this session is itself a subagent, and a subagent's run ends at its yield — " +
+                    "the parent would receive this provisional result as the run's only delivery, and whatever " +
+                    "this session waits on would never reach it. " +
+                    'Deliver your own result with reason: "success", or "failure" if the task could not be completed.',
+                }),
+              )
+            }
+            // The filter below is a snapshot, not a reservation (#222): a job
+            // whose cancellation is already in flight still reads `running`
+            // here, so a wait can be accepted whose child never notifies.
+            // The same ownership relation the cancellation walks use, narrowed
+            // to the jobs a wait can actually be woken by: a task this session
+            // launched. A session's own run job is not work it can wait for.
+            const running = jobs.filter(
+              (job) =>
+                job.type === "task" && job.status === "running" && BackgroundJob.isSubagentOf(job, ctx.sessionID),
+            )
+            if (running.length === 0) {
+              return yield* Effect.fail(
+                new ToolFailure({
+                  message:
+                    "Cannot wait: no running background subagents found for this session. " +
+                    "Wait only for a task you launched that is still running — a subagent whose run " +
+                    "already ended will not report again. " +
+                    'If your work is complete, call finish with reason: "success".',
+                }),
+              )
+            }
+            yield* Effect.logInfo("finish yielded while background subagents run", {
+              sessionID: ctx.sessionID,
+              subagents: running.length,
+            })
+            return {
+              title: `Waiting for ${running.length} background subagent(s)`,
+              output: params.result,
+              metadata: { waiting: true },
+            }
+          }
+
           const cfg = yield* config.get()
           const maxIterations = cfg.review_loop?.max_iterations ?? 5
           const reviewState = reviewLoopState(messages, maxIterations)

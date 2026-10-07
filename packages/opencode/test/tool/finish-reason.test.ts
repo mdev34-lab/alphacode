@@ -16,7 +16,7 @@ function finishPart(input: unknown, status: SessionV1.ToolState["status"] = "com
 }
 
 describe("tool.finish termination reason", () => {
-  test.each(["success", "subagent_wait", "failure"] as const)("accepts %s", (reason) => {
+  test.each(["success", "subagent_wait", "waiting_for_subagent", "failure"] as const)("accepts %s", (reason) => {
     expect(Schema.decodeUnknownSync(Parameters)({ reason, result: "done" })).toEqual({ reason, result: "done" })
   })
 
@@ -38,9 +38,12 @@ describe("tool.finish termination reason", () => {
 })
 
 describe("readTermination", () => {
-  test.each(["success", "subagent_wait", "failure"] as const)("reads the declared %s", (reason) => {
-    expect(readTermination(finishPart({ reason, result: "done" }))).toBe(reason)
-  })
+  test.each(["success", "subagent_wait", "waiting_for_subagent", "failure"] as const)(
+    "reads the declared %s",
+    (reason) => {
+      expect(readTermination(finishPart({ reason, result: "done" }))).toBe(reason)
+    },
+  )
 
   // Transcripts written before the field existed had no reason to read. Those
   // turns were successes, so absence resolves to success rather than to

@@ -12,6 +12,7 @@ import {
   inlineToolState,
   finishResult,
   finishToolView,
+  finishToolViewForPart,
   parseApplyPatchFiles,
   parseAttachmentItems,
   parseDiagnostics,
@@ -224,8 +225,27 @@ function InterruptedToolFixture() {
   )
 }
 
-function FinishToolFixture(props: { status: "pending" | "running" | "completed" | "error"; result?: string }) {
-  const view = finishToolView(props.status, props.result)
+function finishPart(status: "pending" | "running" | "completed" | "error", metadata: Record<string, unknown>) {
+  return {
+    id: "prt_finish",
+    sessionID: "ses_finish",
+    messageID: "msg_finish",
+    type: "tool",
+    callID: "call_finish",
+    tool: "finish",
+    state: { status, input: {}, metadata, time: { start: 1, end: 2 } },
+  } as unknown as Parameters<typeof finishToolViewForPart>[0]
+}
+
+function FinishToolFixture(props: {
+  status?: "pending" | "running" | "completed" | "error"
+  result?: string
+  waiting?: boolean
+  part?: Parameters<typeof finishToolViewForPart>[0]
+}) {
+  const view = props.part
+    ? finishToolViewForPart(props.part, props.result)
+    : finishToolView(props.status!, props.result, props.waiting)
   return (
     <InlineToolRow
       icon={view.icon}
@@ -317,6 +337,51 @@ describe("TUI inline tool wrapping", () => {
     )
     expect(frame).toContain("✓ Task completed")
     expect(frame).toContain("↳ Implemented the feature and verified tests.")
+  })
+
+  // Yielding for a background subagent is not completion: the block must not
+  // tell the user the task is done while the child it launched keeps running, so
+  // it does not use the check a completed finish uses.
+  test("renders a waiting finish distinctly from a completed one", async () => {
+    const frame = await renderFrame(
+      () => <FinishToolFixture status="completed" result="Waiting on the delegated review." waiting />,
+      { width: 72, height: 4 },
+    )
+    expect(frame).toContain("◌ Waiting for subagent execution...")
+    expect(frame).not.toContain("✓")
+    expect(frame).toContain("↳ Waiting on the delegated review.")
+    expect(frame).not.toContain("Task completed")
+  })
+
+  // The wiring the route uses: the label comes from the part's own metadata, so
+  // a completed wait and a completed finish differ only by that flag. The flag
+  // is only read on a completed part - the tool returns it as the call's
+  // metadata, so a pending or running part cannot carry it.
+  test("derives the waiting view from the finish part metadata", async () => {
+    const result = "Waiting on the delegated review."
+    const waitingPart = finishPart("completed", { waiting: true })
+    const completedPart = finishPart("completed", {})
+
+    expect(finishToolViewForPart(waitingPart, result).children).toBe(`Waiting for subagent execution...\n↳ ${result}`)
+    expect(finishToolViewForPart(waitingPart, result).icon).toBe("◌")
+    expect(finishToolViewForPart(waitingPart, result).complete).toBe(true)
+    expect(finishToolViewForPart(completedPart, result).children).toBe(`Task completed\n↳ ${result}`)
+    expect(finishToolViewForPart(completedPart, result).icon).toBe("✓")
+    // Pending and running parts with the flag set are not waits either: the flag
+    // is unreachable before the call settles, so it changes neither the label
+    // nor the icon there.
+    expect(finishToolViewForPart(finishPart("running", { waiting: true })).children).toBe("Completing task...")
+    expect(finishToolViewForPart(finishPart("running", { waiting: true })).icon).toBe("✓")
+    expect(finishToolViewForPart(finishPart("running", {})).children).toBe("Completing task...")
+    expect(finishToolViewForPart(finishPart("pending", { waiting: true })).children).toBe("Task completion")
+    expect(finishToolViewForPart(finishPart("pending", { waiting: true })).icon).toBe("✓")
+    expect(finishToolViewForPart(finishPart("pending", {})).children).toBe("Task completion")
+
+    const frame = await renderFrame(() => <FinishToolFixture part={waitingPart} result={result} />, {
+      width: 72,
+      height: 4,
+    })
+    expect(frame).toContain("◌ Waiting for subagent execution...")
   })
 
   test("renders pending and failed finish states distinctly", async () => {

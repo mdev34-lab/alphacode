@@ -71,6 +71,28 @@ function finishNudgeMessage() {
   } as unknown as SessionV1.WithParts
 }
 
+function waitingFinishMessage() {
+  return finishPart({ reason: "waiting_for_subagent", result: "Waiting on the children." }, { waiting: true })
+}
+
+function finishPart(input: Record<string, unknown>, metadata: Record<string, unknown>) {
+  return {
+    info: { role: "assistant" },
+    parts: [
+      {
+        type: "tool",
+        tool: "finish",
+        state: {
+          status: "completed",
+          input,
+          output: "done",
+          metadata,
+        },
+      },
+    ],
+  } as unknown as SessionV1.WithParts
+}
+
 function toolMessage(tool: string, options?: { writesFiles?: boolean }) {
   return {
     info: { role: "assistant" },
@@ -266,6 +288,32 @@ describe("runtime review gate", () => {
       expect(finishGateError(state)).toBeInstanceOf(Error)
       expect(finishGateError(state)?.message).toContain("call finish again to skip review")
     }
+  })
+
+  // Yielding for a background subagent is not a terminal result: the run is
+  // still in flight through its children, so the transcript must not record a
+  // termination and the nudge stays armed for the finish that really ends it.
+  //
+  // These are evaluator fixtures, not a live wait: they pin what the loop reads
+  // out of a transcript that contains a waiting finish part. That such a part
+  // can exist at all, and what the tool returns for it, is guaranteed by
+  // `test/tool/finish.test.ts`; here the counter-case keeps the fixture honest
+  // by showing the evaluator does read a terminal finish's metadata.
+  test("a waiting finish leaves no termination and keeps the review gate armed", () => {
+    const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), waitingFinishMessage()])
+
+    expect(state.termination).toBeUndefined()
+    expect(state.nudged).toBe(false)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+
+    const terminal = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      finishPart({ reason: "success", result: "done" }, { review: { termination: "approved" } }),
+    ])
+    expect(terminal.termination).toBe("approved")
+    expect(terminal.nudged).toBe(false)
   })
 
   test("lets a second finish call skip review after a nudge", () => {

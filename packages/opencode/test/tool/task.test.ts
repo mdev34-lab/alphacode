@@ -804,6 +804,55 @@ describe("tool.task", () => {
     }),
   )
 
+  // The parent has no way to end its turn while a background child runs unless
+  // it is told which finish reason yields instead of terminating. The launch
+  // result is where that instruction has to land, because it is the only text
+  // the model reads back from the call that started the child.
+  it.instance("background launch tells the parent how to yield while the child runs", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          extra: {
+            promptOps: {
+              ...stubOps(),
+              prompt: () => Effect.never,
+            } satisfies TaskPromptOps,
+          },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.output).toContain('state="running"')
+      expect(result.output).toContain('call finish with reason "waiting_for_subagent"')
+      // Scoped to a parent that has not finished: delivering a completed result
+      // while a background task keeps running is still the normal ending, and
+      // nothing may read the new reason as the only way out.
+      expect(result.output).toContain('If your own task is complete, call finish with reason "success" as usual')
+      expect(result.output).toContain("does not hold your result back")
+      // Scoped to the main session: the wait is refused for a session that is
+      // itself a subagent, so the instruction must not send one to try it.
+      expect(result.output).toContain("the main session can call finish")
+      expect(result.output).toContain("A subagent cannot yield this way")
+      expect(result.output).toContain('it must deliver with "success" or "failure" instead')
+    }),
+  )
+
   const runReview = (promptOps: TaskPromptOps) =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
@@ -1868,7 +1917,7 @@ describe("tool.task", () => {
     }),
   )
 
-  it.instance("a waiting subagent delivers the same termination in the background and the foreground", () =>
+  it.instance("a declared terminal reason delivers the same termination in the background and the foreground", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const tool = yield* TaskTool
@@ -1924,6 +1973,62 @@ describe("tool.task", () => {
           expect(terminationOf(delivered)).toContain("not in flight")
         }
       }
+    }),
+  )
+
+  // A declared yield has no delivered counterpart: the finish tool refuses the
+  // wait for a session that is itself a subagent, so a child should not declare
+  // it at all, and a transcript that still does must not put a provisional
+  // result on the wire as a terminal one. The result text still arrives - what
+  // is dropped is the termination element and its metadata.
+  it.instance("a declared yield delivers no termination to the parent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const { chat, assistant } = yield* seed("Yield drop")
+      const injected = defer<SessionPrompt.PromptInput>()
+      const child = finishRunOps("waiting_for_subagent", "child yielded")
+      const context = (promptOps: TaskPromptOps) => ({
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "work",
+        abort: new AbortController().signal,
+        extra: { promptOps },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      })
+      const params = {
+        description: "inspect bug",
+        prompt: "look into the cache key path",
+        subagent_type: "general",
+      }
+
+      const foreground = yield* def.execute({ ...params, background: false }, context(child))
+      expect(foreground.output).toContain("child yielded")
+      expect(terminationOf(foreground.output)).toBeUndefined()
+      expect(foreground.metadata.termination).toBeUndefined()
+
+      const background = yield* def.execute(
+        { ...params, background: true },
+        context({
+          ...child,
+          prompt: (input) =>
+            input.sessionID === chat.id
+              ? Effect.sync(() => {
+                  injected.resolve(input)
+                  return reply(input, "notified")
+                })
+              : child.prompt(input),
+        }),
+      )
+      yield* jobs.wait({ id: background.metadata.sessionId, timeout: 1_000 })
+      const notification = yield* Effect.promise(() => injected.promise)
+      const delivered = notification.parts[0]?.type === "text" ? notification.parts[0].text : ""
+
+      expect(delivered).toContain("child yielded")
+      expect(terminationOf(delivered)).toBeUndefined()
     }),
   )
 })
