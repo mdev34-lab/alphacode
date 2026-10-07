@@ -1,6 +1,6 @@
 // Entry and exit splash banners for direct interactive mode scrollback.
 //
-// Renders the compact "a" brand badge for both the entry and exit banners, plus
+// Renders the compact "s" brand badge for both the entry and exit banners, plus
 // session metadata and the resume command. These are scrollback snapshots, so
 // they become immutable terminal history once committed.
 //
