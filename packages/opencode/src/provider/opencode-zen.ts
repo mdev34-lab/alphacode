@@ -117,7 +117,7 @@ export type ModelCost = Cost & {
   readonly experimentalOver200K?: Cost
 }
 
-function zeroCost(cost: ModelCost) {
+export function zeroCost(cost: ModelCost) {
   const entries = [cost, ...(cost.tiers ?? []), ...(cost.experimentalOver200K ? [cost.experimentalOver200K] : [])]
   return entries.every(
     (entry) => entry.input === 0 && entry.output === 0 && entry.cache.read === 0 && entry.cache.write === 0,
@@ -333,8 +333,31 @@ async function aggregate(response: Response, input: AggregateInput) {
   )
 }
 
+function pathname(url: string) {
+  try {
+    return new URL(url, "http://localhost").pathname
+  } catch {
+    return url
+  }
+}
+
+/**
+ * Chat completion endpoints follow the OpenAI protocol. Anthropic native
+ * requests (e.g. on `/messages` or with Anthropic headers) also contain a
+ * `messages` array, but must be left untouched so the adapter does not inject
+ * an invalid tool schema or fail their streaming events.
+ */
+function isChatCompletion(url: string, headers: Headers) {
+  const path = pathname(url)
+  if (path.endsWith("/messages") || headers.has("anthropic-version") || headers.has("anthropic-beta")) {
+    return false
+  }
+  return path.endsWith("/chat/completions")
+}
+
 /** Chat completion payloads are the only Zen requests the adapter rewrites. */
-function chatRequest(body: string | undefined): Record<string, unknown> | undefined {
+function chatRequest(url: string, headers: Headers, body: string | undefined): Record<string, unknown> | undefined {
+  if (!isChatCompletion(url, headers)) return undefined
   if (body === undefined) return undefined
   let value: unknown
   try {
@@ -429,7 +452,7 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     headers.set("x-opencode-request", headers.get("x-opencode-request") ?? requestID(uuid))
 
     const body = await bodyText(requestInput, init)
-    const payload = chatRequest(body)
+    const payload = chatRequest(url, headers, body)
     // Anything that is not a chat completion keeps the caller's method, body,
     // signal, and Request options.
     if (!payload) return upstream(requestInput, { ...options, headers })

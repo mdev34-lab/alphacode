@@ -195,7 +195,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
 
       if (!ok) {
         for (const [key, value] of Object.entries(input.models)) {
-          if (value.cost.input === 0) continue
+          if (OpenCodeZen.zeroCost(value.cost)) continue
           delete input.models[key]
         }
       }
@@ -1562,6 +1562,21 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
+                ...(existingModel?.cost?.tiers ? { tiers: existingModel.cost.tiers } : {}),
+                ...(model?.cost?.context_over_200k
+                  ? {
+                      experimentalOver200K: {
+                        input: model.cost.context_over_200k.input,
+                        output: model.cost.context_over_200k.output,
+                        cache: {
+                          read: model.cost.context_over_200k.cache_read ?? 0,
+                          write: model.cost.context_over_200k.cache_write ?? 0,
+                        },
+                      },
+                    }
+                  : existingModel?.cost?.experimentalOver200K
+                    ? { experimentalOver200K: existingModel.cost.experimentalOver200K }
+                    : {}),
               },
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {

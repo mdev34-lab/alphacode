@@ -19,6 +19,7 @@ import {
   freeTier,
   requestID,
   sessionID,
+  zeroCost,
   type ZenFetch,
 } from "@/provider/opencode-zen"
 
@@ -142,6 +143,20 @@ describe("OpenCodeZen", () => {
           ]),
         ].sort(),
       ).toEqual(["wire/free", "wire/free-alias"])
+    })
+
+    test("zeroCost checks base pricing, tiers, and experimentalOver200K", () => {
+      const costs = { input: 0, output: 0, cache: { read: 0, write: 0 } }
+      expect(zeroCost(costs)).toBe(true)
+      expect(zeroCost({ ...costs, output: 1 })).toBe(false)
+      expect(zeroCost({ ...costs, cache: { read: 0.1, write: 0 } })).toBe(false)
+      expect(zeroCost({ ...costs, tiers: [{ input: 1, output: 0, cache: { read: 0, write: 0 } }] })).toBe(false)
+      expect(
+        zeroCost({
+          ...costs,
+          experimentalOver200K: { input: 2, output: 4, cache: { read: 0, write: 0 } },
+        }),
+      ).toBe(false)
     })
 
     test("regenerates request ids", () => {
@@ -270,6 +285,44 @@ describe("OpenCodeZen", () => {
       expect(calls[1].method).toBe("GET")
       expect(calls[1].body).toBeUndefined()
       expect(calls[1].headers.get("x-opencode-session")).toMatch(/^ses_/)
+    })
+
+    test("leaves native Anthropic requests untouched and passes through streams without OpenAI aggregation", async () => {
+      const anthropicBody = {
+        model: "claude-sonnet-4",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: "hello" }],
+      }
+      const ssePayload = [
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant"}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ].join("")
+      const { calls, upstream } = recorder(
+        () =>
+          new Response(ssePayload, {
+            headers: { "content-type": "text/event-stream" },
+          }),
+      )
+      const zen = createFetch({ upstream })
+
+      const response = await zen("https://opencode.ai/zen/v1/messages", {
+        method: "POST",
+        headers: { "anthropic-version": "2023-06-01", authorization: "Bearer sk-anthropic" },
+        body: JSON.stringify(anthropicBody),
+      })
+
+      expect(calls).toHaveLength(1)
+      expect(calls[0].url).toBe("https://opencode.ai/zen/v1/messages")
+      expect(calls[0].headers.get("user-agent")).toBe(ZEN_USER_AGENT)
+      expect(calls[0].headers.get("x-opencode-client")).toBe("cli")
+      expect(calls[0].headers.get("authorization")).toBe("Bearer sk-anthropic")
+      expect(calls[0].body).toEqual(anthropicBody)
+      expect(calls[0].body?.stream).toBeUndefined()
+      expect(calls[0].body?.tools).toBeUndefined()
+      // Anthropic SSE stream is passed through without triggering OpenAI completion aggregation.
+      expect(response.headers.get("content-type")).toBe("text/event-stream")
+      expect(await response.text()).toBe(ssePayload)
     })
 
     test("forwards a non-JSON body untouched", async () => {
@@ -593,15 +646,17 @@ describe("OpenCodeZen", () => {
         signal: controller.signal,
       })
 
-      const outcome = await Promise.race([
-        zen(request).then(
-          () => "resolved" as const,
-          (error: unknown) => error,
-        ),
-        // Bounds the wait so an implementation that hangs fails here instead of
-        // timing the whole test out.
-        Bun.sleep(500).then(() => "still reading" as const),
-      ])
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timeout = new Promise<"still reading">((resolve) => {
+        timer = setTimeout(() => resolve("still reading"), 5_000)
+      })
+      const call = zen(request).then(
+        () => "resolved" as const,
+        (error: unknown) => error,
+      )
+      const outcome = await Promise.race([call, timeout]).finally(() => {
+        if (timer) clearTimeout(timer)
+      })
 
       expect(outcome).toBeInstanceOf(Error)
       expect((outcome as Error).message).toBe("caller cancelled")
@@ -704,7 +759,14 @@ it.live("keeps the Zen headers in front of model or plugin headers", () =>
           model: { providerID: "opencode", modelID: "deepseek-v4-flash-free" },
         } as any,
         sessionID: SESSION_ID,
-        model: { ...model, headers: { "x-opencode-session": "ses_stale", "User-Agent": "stale" } },
+        model: {
+          ...model,
+          headers: {
+            "X-OpenCode-Session": "ses_stale",
+            "X-OPENCODE-REQUEST": "msg_stale",
+            "USER-AGENT": "stale",
+          },
+        },
         agent: { name: "test", mode: "primary", options: {}, permission: [] } as any,
         system: [],
         messages: [{ role: "user", content: "hello" }],
@@ -713,7 +775,11 @@ it.live("keeps the Zen headers in front of model or plugin headers", () =>
         auth: undefined,
         plugin: {
           trigger: (_name: string, _input: unknown, output: Record<string, any>) => {
-            const headers = { ...output["headers"], "x-opencode-request": "msg_stale" }
+            const headers = {
+              ...output["headers"],
+              "X-OpenCode-Session": "ses_plugin",
+              "X-OpenCode-Client": "web",
+            }
             return Effect.succeed({ ...output, headers })
           },
         } as any,
@@ -723,11 +789,82 @@ it.live("keeps the Zen headers in front of model or plugin headers", () =>
 
       const headers = prepared.headers as Record<string, string | undefined>
       expect(headers["x-opencode-session"]).toBe(SESSION_ID)
+      expect(headers["X-OpenCode-Session"]).toBeUndefined()
       expect(headers["x-opencode-request"]).toMatch(/^msg_/)
       expect(headers["x-opencode-request"]).not.toBe("msg_stale")
+      expect(headers["X-OPENCODE-REQUEST"]).toBeUndefined()
+      expect(headers["x-opencode-client"]).toBe("cli")
+      expect(headers["X-OpenCode-Client"]).toBeUndefined()
       expect(headers["User-Agent"]).not.toBe("stale")
+      expect(headers["USER-AGENT"]).toBeUndefined()
     }),
   ),
+)
+
+it.live("preserves the session id on the wire when model headers use mixed-case reserved headers", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => zenServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
+          const prepared = yield* LLMRequestPrep.prepare({
+            user: {
+              id: "msg_turn",
+              sessionID: SESSION_ID,
+              role: "user",
+              time: { created: Date.now() },
+              agent: "test",
+              model: { providerID: "opencode", modelID: "deepseek-v4-flash-free" },
+            } as any,
+            sessionID: SESSION_ID,
+            model: {
+              ...model,
+              headers: {
+                "X-OpenCode-Session": "ses_stale",
+                "X-OPENCODE-REQUEST": "msg_stale",
+                "USER-AGENT": "stale",
+              },
+            },
+            agent: { name: "test", mode: "primary", options: {}, permission: [] } as any,
+            system: [],
+            messages: [{ role: "user", content: "hello" }],
+            tools: {},
+            provider: { id: "opencode", options: {} } as any,
+            auth: undefined,
+            plugin: {
+              trigger: (_name: string, _input: unknown, output: Record<string, any>) =>
+                Effect.succeed({ ...output, headers: { ...output["headers"], "X-OpenCode-Client": "web" } }),
+            } as any,
+            flags: { outputTokenMax: 32_000, client: "cli" } as any,
+            isWorkflow: false,
+          })
+
+          const language = yield* provider.getLanguage(model)
+          yield* Effect.promise(() =>
+            generateText({
+              model: language,
+              messages: [{ role: "user", content: "hello" }],
+              headers: prepared.headers,
+            }),
+          )
+
+          expect(server.requests).toHaveLength(1)
+          const wire = server.requests[0].headers
+          expect(wire.get("x-opencode-session")).toBe(SESSION_ID)
+          expect(wire.get("x-opencode-request")).toMatch(/^msg_/)
+          expect(wire.get("x-opencode-request")).not.toContain("msg_stale")
+          expect(wire.get("x-opencode-client")).toBe("cli")
+          expect(wire.get("user-agent")).toBe(ZEN_USER_AGENT)
+        }),
+      { config: zenProviderConfig(server.url) },
+    )
+  }),
 )
 
 it.live("runs a non-streaming free-tier request through the opencode provider", () =>
@@ -806,6 +943,61 @@ it.live("never authenticates a zero-input model with priced output as free", () 
   }),
 )
 
+it.live("keeps the caller API key for models with zero base price but priced context tiers", () =>
+  Effect.gen(function* () {
+    const request = yield* zenRequest("tier-priced")
+
+    expect(request.body?.model).toBe("tier-priced")
+    expect(request.headers.get("authorization")).toBe("Bearer sk-secret")
+  }),
+)
+
+it.live("prunes non-free models when credentials are missing and authenticates free models as public", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => zenServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    const baseConfig = zenProviderConfig(server.url)
+    const noKeyConfig = {
+      ...baseConfig,
+      provider: {
+        opencode: {
+          options: { baseURL: server.url },
+          models: baseConfig.provider.opencode.models,
+        },
+      },
+    }
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const providers = yield* provider.list()
+          const opencode = providers[ProviderV2.ID.opencode]
+          const modelIDs = new Set(Object.keys(opencode?.models ?? {}))
+
+          expect(modelIDs.has("deepseek-v4-flash-free")).toBe(true)
+          expect(modelIDs.has("big-pickle")).toBe(true)
+          expect(modelIDs.has("free-alias")).toBe(true)
+          // Models with non-zero output, cache, or context tiers must be pruned when credentials are missing.
+          expect(modelIDs.has("zero-input-paid")).toBe(false)
+          expect(modelIDs.has("tier-priced")).toBe(false)
+          expect(modelIDs.has("paid-sonnet")).toBe(false)
+
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
+          const language = yield* provider.getLanguage(model)
+          yield* Effect.promise(() => generateText({ model: language, messages: [{ role: "user", content: "hello" }] }))
+
+          expect(server.requests).toHaveLength(1)
+          expect(server.requests[0].headers.get("authorization")).toBe(ZEN_PUBLIC_AUTHENTICATION)
+        }),
+      { config: noKeyConfig },
+    )
+  }),
+)
+
 it.live("authenticates a free model through its wire model id", () =>
   Effect.gen(function* () {
     // The config alias is not a Zen model id, and no model is configured under
@@ -880,6 +1072,16 @@ function zenProviderConfig(url: string) {
             tool_call: true,
             cost: { input: 3, output: 15 },
             limit: { context: 100_000, output: 10_000 },
+          },
+          "tier-priced": {
+            name: "Tier Priced",
+            tool_call: true,
+            cost: {
+              input: 0,
+              output: 0,
+              context_over_200k: { input: 5, output: 10 },
+            },
+            limit: { context: 300_000, output: 10_000 },
           },
         },
       },

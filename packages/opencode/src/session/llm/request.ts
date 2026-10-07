@@ -55,6 +55,24 @@ export type Prepared = {
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
 
+const RESERVED_HEADERS = new Set([
+  "x-opencode-project",
+  "x-opencode-session",
+  "x-opencode-request",
+  "x-opencode-client",
+  "x-session-affinity",
+  "x-session-id",
+  "x-parent-session-id",
+  "user-agent",
+])
+
+function stripReservedHeaders(headers: Record<string, string | undefined> | undefined) {
+  if (!headers) return {}
+  return Object.fromEntries(
+    Object.entries(headers).filter(([key, value]) => value !== undefined && !RESERVED_HEADERS.has(key.toLowerCase())),
+  )
+}
+
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
   const system = [
@@ -192,6 +210,15 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       }
     : undefined
 
+  const nonOpencode = {
+    "x-session-affinity": input.sessionID,
+    "X-Session-Id": input.sessionID,
+    ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+    "User-Agent": USER_AGENT,
+  }
+
+  const authoritative = opencode ?? nonOpencode
+
   return {
     system,
     messages,
@@ -199,17 +226,11 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     params,
     messageTransformOptions: options,
     headers: {
-      ...(opencode ?? {
-        "x-session-affinity": input.sessionID,
-        "X-Session-Id": input.sessionID,
-        ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-        "User-Agent": USER_AGENT,
-      }),
-      ...input.model.headers,
-      ...headers,
-      // Zen verifies these headers, so neither model config nor plugin headers
-      // may override them.
-      ...opencode,
+      ...stripReservedHeaders(input.model.headers),
+      ...stripReservedHeaders(headers),
+      // Zen and session tracking verify these headers, so model config or plugin
+      // headers cannot override or pollute them via mixed-case duplicates.
+      ...authoritative,
     },
   }
 })
