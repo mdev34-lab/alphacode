@@ -1917,12 +1917,12 @@ describe("tool.task", () => {
     }),
   )
 
-  it.instance("a waiting subagent delivers the same termination in the background and the foreground", () =>
+  it.instance("a declared terminal reason delivers the same termination in the background and the foreground", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const tool = yield* TaskTool
       const def = yield* tool.init()
-      for (const reason of ["subagent_wait", "waiting_for_subagent", "failure", "success"] as const) {
+      for (const reason of ["subagent_wait", "failure", "success"] as const) {
         const { chat, assistant } = yield* seed(`Parity ${reason}`)
         const injected = defer<SessionPrompt.PromptInput>()
         const child = finishRunOps(reason, "child done")
@@ -1972,16 +1972,63 @@ describe("tool.task", () => {
         if (reason === "subagent_wait") {
           expect(terminationOf(delivered)).toContain("not in flight")
         }
-        if (reason === "waiting_for_subagent") {
-          // Defensive wording only: the wait is refused for a session that is
-          // itself a subagent, so a task child should never deliver this
-          // reason. If a transcript or an older path does, the envelope must
-          // not promise a report the settled run can no longer send.
-          expect(terminationOf(delivered)).toContain("still running")
-          expect(terminationOf(delivered)).toContain("no later report follows this one")
-          expect(terminationOf(delivered)).not.toContain("until it reports back")
-        }
       }
+    }),
+  )
+
+  // A declared yield has no delivered counterpart: the finish tool refuses the
+  // wait for a session that is itself a subagent, so a child should not declare
+  // it at all, and a transcript that still does must not put a provisional
+  // result on the wire as a terminal one. The result text still arrives - what
+  // is dropped is the termination element and its metadata.
+  it.instance("a declared yield delivers no termination to the parent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const { chat, assistant } = yield* seed("Yield drop")
+      const injected = defer<SessionPrompt.PromptInput>()
+      const child = finishRunOps("waiting_for_subagent", "child yielded")
+      const context = (promptOps: TaskPromptOps) => ({
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "work",
+        abort: new AbortController().signal,
+        extra: { promptOps },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      })
+      const params = {
+        description: "inspect bug",
+        prompt: "look into the cache key path",
+        subagent_type: "general",
+      }
+
+      const foreground = yield* def.execute({ ...params, background: false }, context(child))
+      expect(foreground.output).toContain("child yielded")
+      expect(terminationOf(foreground.output)).toBeUndefined()
+      expect(foreground.metadata.termination).toBeUndefined()
+
+      const background = yield* def.execute(
+        { ...params, background: true },
+        context({
+          ...child,
+          prompt: (input) =>
+            input.sessionID === chat.id
+              ? Effect.sync(() => {
+                  injected.resolve(input)
+                  return reply(input, "notified")
+                })
+              : child.prompt(input),
+        }),
+      )
+      yield* jobs.wait({ id: background.metadata.sessionId, timeout: 1_000 })
+      const notification = yield* Effect.promise(() => injected.promise)
+      const delivered = notification.parts[0]?.type === "text" ? notification.parts[0].text : ""
+
+      expect(delivered).toContain("child yielded")
+      expect(terminationOf(delivered)).toBeUndefined()
     }),
   )
 })

@@ -25,8 +25,14 @@ export type Reason = Schema.Schema.Type<typeof Reason>
  * cannot be declared there. A cancelled subagent never reaches a finish call —
  * the user stops it mid-run — so the runtime records the cancellation itself
  * instead of forcing the reason through a tool input the model never supplied.
+ *
+ * The delivered set is deliberately narrower than the declared one:
+ * `waiting_for_subagent` is not in it. A child's run ends at its yield, so an
+ * envelope naming that reason would present a provisional result as a terminal
+ * one. {@link deliveredReason} drops it, and #222 replaces the gap with a
+ * nested yield that has a delivery of its own.
  */
-export const TerminationReason = Schema.Literals([...DeclaredReasons, "cancelled"])
+export const TerminationReason = Schema.Literals(["success", "subagent_wait", "failure", "cancelled"])
 
 export type TerminationReason = Schema.Schema.Type<typeof TerminationReason>
 
@@ -63,6 +69,21 @@ export function readTermination(part: SessionV1.ToolPart): Reason | undefined {
   const declared = (input as { reason?: unknown }).reason
   if (declared === undefined) return "success"
   return Option.getOrUndefined(Schema.decodeUnknownOption(Reason)(declared))
+}
+
+/**
+ * The declared reason as it is delivered to a parent.
+ *
+ * A declared `waiting_for_subagent` has no delivered counterpart. The finish
+ * tool refuses the wait for a session that is itself a subagent, so a task child
+ * cannot declare it, and a transcript that still does must not put a provisional
+ * envelope on the wire as a terminal one: it delivers like a legacy record with
+ * no declared reason — a plain result with no `<termination>` element. #222
+ * gives a nested yield a termination of its own.
+ */
+export function deliveredReason(reason: Reason | undefined): TerminationReason | undefined {
+  if (reason === "waiting_for_subagent") return undefined
+  return reason
 }
 
 export const FinishTool = Tool.define(

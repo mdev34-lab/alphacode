@@ -141,6 +141,11 @@ function taskTerminationReason(part: ReviewHistoryPart) {
  * its report is provisional and its run ending now means nothing further will
  * be delivered for it. Counting it would let a review that keeps working after
  * its envelope - and whose final result is then dropped - satisfy the gate.
+ *
+ * That arm is now defensive: the finish tool refuses the yield for a session
+ * that is itself a subagent, and the task envelope never carries the reason, so
+ * only a transcript written before that guard reads as yielded. It stays
+ * because the failure it prevents is silent.
  */
 function isUnreportedReviewTask(part: ReviewHistoryPart) {
   if (!isSynchronousReviewTask(part)) return false

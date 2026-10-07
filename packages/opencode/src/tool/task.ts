@@ -1,5 +1,5 @@
 import * as Tool from "./tool"
-import { FinishTool, readTermination, type TerminationReason } from "@/tool/finish"
+import { FinishTool, deliveredReason, readTermination, type TerminationReason } from "@/tool/finish"
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ReviewReport } from "@opencode-ai/core/review-report"
@@ -77,17 +77,16 @@ export const Parameters = Schema.Struct({
  * note: the reason is the signal, and the result text already says the work is
  * done.
  *
- * `waiting_for_subagent` is defensive. The finish tool refuses a wait from a
- * session that is itself a subagent, so a task child should never reach this
- * entry; it is kept for a transcript or a path that predates that guard (#222
- * makes a nested yield real). If one arrives, the honest reading is the one the
- * note gives: the yield ended the child's run, so no report follows this one.
+ * `TERMINATION_NOTE` is keyed by the delivered reasons, and a declared
+ * `waiting_for_subagent` is not one of them: it is dropped by
+ * {@link deliveredReason} before it reaches an envelope. The finish tool
+ * refuses the wait for a session that is itself a subagent, and a provisional
+ * result must not be delivered as a terminal one (#222 gives a nested yield a
+ * termination of its own).
  */
 const TERMINATION_NOTE: Record<TerminationReason, string> = {
   success: "",
   subagent_wait: "Subagent stopped on a dependency and is not in flight; it will not report back on its own.",
-  waiting_for_subagent:
-    "Subagent yielded its turn while the background subagents it launched are still running; its run ends there, so no later report follows this one.",
   failure: "Subagent stopped because the task could not be completed.",
   cancelled: "Subagent stopped because the user cancelled it; it did not complete and its result was not delivered.",
 }
@@ -322,9 +321,11 @@ export const TaskTool = Tool.define(
       // The child declares why it stopped on the finish tool input. Capture it
       // once, where the reply is already in hand, so the background and the
       // foreground delivery paths below report the same value without either
-      // one re-reading the child transcript. A cancelled run never made a
-      // finish call; that path records `cancelled` itself, so this ref holds the
-      // whole termination contract rather than only the declared subset.
+      // one re-reading the child transcript. The declared reason is mapped to
+      // the delivered one here, in one place, so a declared yield can never
+      // reach an envelope. A cancelled run never made a finish call; that path
+      // records `cancelled` itself, so this ref holds the whole delivered
+      // contract rather than the declared subset.
       const termination = yield* Ref.make<TerminationReason | undefined>(undefined)
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
@@ -345,7 +346,7 @@ export const TaskTool = Tool.define(
           (item): item is SessionV1.ToolPart =>
             item.type === "tool" && item.tool === FinishTool.id && item.state.status === "completed",
         )
-        yield* Ref.set(termination, finish ? readTermination(finish) : undefined)
+        yield* Ref.set(termination, finish ? deliveredReason(readTermination(finish)) : undefined)
 
         // The review subagent delivers its canonical result through a tagged
         // report envelope. Extract it from the complete child output — every

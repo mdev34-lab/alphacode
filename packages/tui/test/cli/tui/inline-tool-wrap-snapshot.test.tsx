@@ -367,11 +367,14 @@ describe("TUI inline tool wrapping", () => {
     expect(finishToolViewForPart(waitingPart, result).complete).toBe(true)
     expect(finishToolViewForPart(completedPart, result).children).toBe(`Task completed\n↳ ${result}`)
     expect(finishToolViewForPart(completedPart, result).icon).toBe("✓")
-    // A running part with the flag set is not a wait: the flag is unreachable
-    // there, the label stays the running one, and the check is not shown.
+    // Pending and running parts with the flag set are not waits either: the flag
+    // is unreachable before the call settles, so it changes neither the label
+    // nor the icon there.
     expect(finishToolViewForPart(finishPart("running", { waiting: true })).children).toBe("Completing task...")
     expect(finishToolViewForPart(finishPart("running", { waiting: true })).icon).toBe("✓")
     expect(finishToolViewForPart(finishPart("running", {})).children).toBe("Completing task...")
+    expect(finishToolViewForPart(finishPart("pending", { waiting: true })).children).toBe("Task completion")
+    expect(finishToolViewForPart(finishPart("pending", { waiting: true })).icon).toBe("✓")
     expect(finishToolViewForPart(finishPart("pending", {})).children).toBe("Task completion")
 
     const frame = await renderFrame(() => <FinishToolFixture part={waitingPart} result={result} />, {
