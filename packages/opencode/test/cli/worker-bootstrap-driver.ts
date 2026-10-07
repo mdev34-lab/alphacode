@@ -30,7 +30,14 @@ worker.addEventListener("error", (event) => {
 let requestId = 0
 const deadline = Date.now() + windowMs
 while (Date.now() < deadline && !sawSnapshot && !error) {
-  worker.postMessage(JSON.stringify({ type: "rpc.request", id: ++requestId, method: "snapshot", input: undefined }))
+  try {
+    worker.postMessage(JSON.stringify({ type: "rpc.request", id: ++requestId, method: "snapshot", input: undefined }))
+  } catch (cause) {
+    // A worker that does not recognize the launch marker exits without
+    // registering RPC, so later probes can race with its normal termination.
+    if (cause instanceof Error && cause.name === "InvalidStateError") break
+    throw cause
+  }
   // Wait for the thread to handle the request and write the snapshot file.
   for (let i = 0; i < 20; i++) {
     await new Promise((resolve) => setTimeout(resolve, 100))

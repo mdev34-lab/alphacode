@@ -8,10 +8,15 @@
       "dependsOn": [],
       "outputs": ["dist/**"]
     },
-    "opencode#test": {
+    "alphacode#test": {
       "dependsOn": ["^build"],
       "outputs": [],
       "passThroughEnv": ["*"]
+    },
+    "@opencode-ai/tui#test": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "@opencode-ai/core#test": {
       "dependsOn": ["^build"],

@@ -302,7 +302,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "background": {
-      "description": "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      "description": "Run the agent asynchronously (default: true). The tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Set to false to run synchronously and wait for the result.",
       "type": "boolean",
     },
     "command": {

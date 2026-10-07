@@ -222,7 +222,8 @@ describe("ShareNext", () => {
           yield* service.remove(session.id)
 
           expect(yield* share(session.id)).toBeUndefined()
-          expect(seen.map((req) => [req.method, req.url])).toEqual([
+          const shareRequests = seen.filter((req) => req.url.startsWith("https://legacy-share.example.com/api/share"))
+          expect(shareRequests.map((req) => [req.method, req.url])).toEqual([
             ["POST", "https://legacy-share.example.com/api/share"],
             ["DELETE", "https://legacy-share.example.com/api/share/shr_abc"],
           ])

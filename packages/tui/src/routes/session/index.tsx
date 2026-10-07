@@ -75,7 +75,13 @@ import { sessionEpilogue } from "../../util/presentation"
 import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
-import { nextThinkingMode, reasoningOpen, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
+import {
+  nextThinkingMode,
+  reasoningOpen,
+  reasoningSummary,
+  useThinkingMode,
+  type ThinkingMode,
+} from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { capOutputLines } from "../../util/cap-lines"
@@ -1835,7 +1841,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
           <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
             <code
               filetype="markdown"
-              drawUnstyledText={false}
+              drawUnstyledText={true}
               streaming={true}
               syntaxStyle={syntax()}
               content={summary().body}

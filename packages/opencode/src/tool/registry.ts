@@ -307,7 +307,7 @@ const layer = Layer.effect(
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
-        if (tool.id === FinishTool.id) return true
+        if (tool.id === FinishTool.id) return input.agent.finishTool !== false
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }
@@ -321,8 +321,8 @@ const layer = Layer.effect(
       })
 
       // Tool visibility is the same permission boundary used at execution:
-      // a blanket deny hides the tool from the model, while Finish remains
-      // available so every agent can terminate cleanly.
+      // a blanket deny hides the tool from the model. Finish bypasses ordinary
+      // permissions only when this agent requires the finish gate.
       const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
       const disabled = Permission.disabled(
         filtered.map((t) => t.id),
