@@ -148,50 +148,12 @@ jobs:
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/script' --summarize -- --reporter=junit --reporter-outfile=ci-script-test-results.xml || status=$?
+          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/script' --summarize -- --reporter=junit --reporter-outfile=ci-script-test-results.xml 2>&1 | tee packages/script/ci-script-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::@opencode-ai/script#test ${elapsed}s (exit ${status})"
           echo "| @opencode-ai/script#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
-          python3 - <<'PY'
-          import os
-          import xml.etree.ElementTree as ET
-
-          report = "packages/script/ci-script-test-results.xml"
-          if not os.path.exists(report):
-              print("::warning::Bun did not produce the @opencode-ai/script JUnit report")
-              raise SystemExit(0)
-
-          repo = os.getcwd()
-          escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
-          root = ET.parse(report).getroot()
-          for case in root.iter("testcase"):
-              failure = case.find("failure")
-              if failure is None:
-                  failure = case.find("error")
-              if failure is None:
-                  continue
-              path = case.get("file", "")
-              if os.path.isabs(path):
-                  path = os.path.relpath(path, repo)
-              path = path.replace("\\", "/")
-              if not path.startswith("packages/"):
-                  path = f"packages/script/{path}"
-              line = case.get("line", "1")
-              name = case.get("name", "unknown test")
-              detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
-              message = f"{name}: {detail}"[:3000]
-              print(f"::error file={escape(path)},line={line},title=@opencode-ai/script failure::{escape(message)}")
-          PY
+          python3 .github/scripts/annotate-junit.py packages/script/ci-script-test-results.xml packages/script "@opencode-ai/script" packages/script/ci-script-test.log "$status"
           exit "$status"
-
-      - name: Upload Windows script JUnit report
-        if: ${{ always() && runner.os == 'Windows' && steps.script_tests.outcome == 'failure' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: windows-script-junit-${{ github.run_id }}-${{ github.run_attempt }}
-          path: packages/script/ci-script-test-results.xml
-          if-no-files-found: warn
-          retention-days: 7
 
       # Windows alphacode#test hit its 25m cap (Linux CI: 12m07). Local Turbo
       # splits maxed at 4m46; keep the prompt isolated and cap each group at 12m
@@ -202,101 +164,71 @@ jobs:
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo run test:ci:cli --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-cli-test-results.xml || status=$?
+          GITHUB_ACTIONS=false bun turbo run test:ci:cli --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-cli-test-results.xml 2>&1 | tee packages/opencode/ci-cli-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:cli ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:cli | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
-          python3 - <<'PY'
-          import os
-          import xml.etree.ElementTree as ET
-
-          report = "packages/opencode/ci-cli-test-results.xml"
-          if not os.path.exists(report):
-              print("::warning::Bun did not produce the alphacode CLI JUnit report")
-              raise SystemExit(0)
-
-          repo = os.getcwd()
-          escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
-          root = ET.parse(report).getroot()
-          for case in root.iter("testcase"):
-              failure = case.find("failure")
-              if failure is None:
-                  failure = case.find("error")
-              if failure is None:
-                  continue
-              path = case.get("file", "")
-              if os.path.isabs(path):
-                  path = os.path.relpath(path, repo)
-              path = path.replace("\\", "/")
-              if not path.startswith("packages/"):
-                  path = f"packages/opencode/{path}"
-              line = case.get("line", "1")
-              name = case.get("name", "unknown test")
-              detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
-              message = f"{name}: {detail}"[:3000]
-              print(f"::error file={escape(path)},line={line},title=Alphacode CLI failure::{escape(message)}")
-          PY
+          python3 .github/scripts/annotate-junit.py packages/opencode/ci-cli-test-results.xml packages/opencode "Alphacode CLI" packages/opencode/ci-cli-test.log "$status"
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
-      - name: Upload Windows CLI JUnit report
-        if: ${{ always() && runner.os == 'Windows' && steps.cli_tests.outcome == 'failure' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: windows-cli-junit-${{ github.run_id }}-${{ github.run_attempt }}
-          path: packages/opencode/ci-cli-test-results.xml
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: Run alphacode server tests
+        id: server_tests
         timeout-minutes: 12
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo run test:ci:server --filter=alphacode --summarize || status=$?
+          GITHUB_ACTIONS=false bun turbo run test:ci:server --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-server-test-results.xml 2>&1 | tee packages/opencode/ci-server-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:server ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:server | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/annotate-junit.py packages/opencode/ci-server-test-results.xml packages/opencode "Alphacode server" packages/opencode/ci-server-test.log "$status"
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
       - name: Run alphacode session tests
+        id: session_tests
         timeout-minutes: 12
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo run test:ci:session --filter=alphacode --summarize || status=$?
+          GITHUB_ACTIONS=false bun turbo run test:ci:session --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-session-test-results.xml 2>&1 | tee packages/opencode/ci-session-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:session ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:session | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/annotate-junit.py packages/opencode/ci-session-test-results.xml packages/opencode "Alphacode session" packages/opencode/ci-session-test.log "$status"
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
       - name: Run remaining alphacode tests
+        id: rest_tests
         timeout-minutes: 12
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo run test:ci:rest --filter=alphacode --summarize || status=$?
+          GITHUB_ACTIONS=false bun turbo run test:ci:rest --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-rest-test-results.xml 2>&1 | tee packages/opencode/ci-rest-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:rest ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:rest | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/annotate-junit.py packages/opencode/ci-rest-test-results.xml packages/opencode "Alphacode remaining tests" packages/opencode/ci-rest-test.log "$status"
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
       - name: Run @opencode-ai/tui tests
+        id: tui_tests
         timeout-minutes: 8
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/tui' --summarize || status=$?
+          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/tui' --summarize -- --reporter=junit --reporter-outfile=ci-tui-test-results.xml 2>&1 | tee packages/tui/ci-tui-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::@opencode-ai/tui#test ${elapsed}s (exit ${status})"
           echo "| @opencode-ai/tui#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/annotate-junit.py packages/tui/ci-tui-test-results.xml packages/tui "@opencode-ai/tui" packages/tui/ci-tui-test.log "$status"
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
@@ -310,3 +242,24 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: packages/opencode
         run: bun run test:httpapi
+
+      - name: Upload Windows unit JUnit reports
+        if: ${{ always() && runner.os == 'Windows' && (steps.script_tests.outcome == 'failure' || steps.cli_tests.outcome == 'failure' || steps.server_tests.outcome == 'failure' || steps.session_tests.outcome == 'failure' || steps.rest_tests.outcome == 'failure' || steps.tui_tests.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-unit-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            packages/script/ci-script-test-results.xml
+            packages/script/ci-script-test.log
+            packages/opencode/ci-cli-test-results.xml
+            packages/opencode/ci-cli-test.log
+            packages/opencode/ci-server-test-results.xml
+            packages/opencode/ci-server-test.log
+            packages/opencode/ci-session-test-results.xml
+            packages/opencode/ci-session-test.log
+            packages/opencode/ci-rest-test-results.xml
+            packages/opencode/ci-rest-test.log
+            packages/tui/ci-tui-test-results.xml
+            packages/tui/ci-tui-test.log
+          if-no-files-found: warn
+          retention-days: 7
