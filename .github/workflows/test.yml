@@ -177,14 +177,18 @@ jobs:
 
       # Windows alphacode#test hit its 25m cap (Linux CI: 12m07). Local Turbo
       # splits maxed at 4m46; keep the prompt isolated and cap each group at 12m
-      # with its own Windows timing for further adjustment if needed.
+      # with its own Windows timing for further adjustment if needed. Bound the
+      # process-heavy CLI/server groups to 4 workers while verifying the
+      # intermittent Windows ACP stdin-EOF timeout.
       - name: Run alphacode CLI tests
         id: cli_tests
         timeout-minutes: 12
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo run test:ci:cli --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-cli-test-results.xml 2>&1 | tee packages/opencode/ci-cli-test.log || status=${PIPESTATUS[0]}
+          cli_concurrency=20
+          if [ "$RUNNER_OS" = "Windows" ]; then cli_concurrency=4; fi
+          GITHUB_ACTIONS=false bun turbo run test:ci:cli --filter=alphacode --summarize -- --max-concurrency="$cli_concurrency" --reporter=junit --reporter-outfile=ci-cli-test-results.xml 2>&1 | tee packages/opencode/ci-cli-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:cli ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:cli | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
