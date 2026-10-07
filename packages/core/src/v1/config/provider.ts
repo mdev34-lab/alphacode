@@ -34,6 +34,7 @@ export const Model = Schema.Struct({
       output: Schema.Finite,
       cache_read: Schema.optional(Schema.Finite),
       cache_write: Schema.optional(Schema.Finite),
+      tiers: Schema.optional(Schema.Array(Schema.Any)),
       context_over_200k: Schema.optional(
         Schema.Struct({
           input: Schema.Finite,

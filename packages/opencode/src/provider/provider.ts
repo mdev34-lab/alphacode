@@ -1073,6 +1073,33 @@ const ProviderCost = Schema.Struct({
   ),
 })
 
+function normalizeCostTier(item: unknown): Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> | undefined {
+  if (!isRecord(item)) return undefined
+  if (typeof item["input"] !== "number" || typeof item["output"] !== "number") return undefined
+  const cache = isRecord(item["cache"])
+    ? {
+        read: typeof item["cache"]["read"] === "number" ? item["cache"]["read"] : 0,
+        write: typeof item["cache"]["write"] === "number" ? item["cache"]["write"] : 0,
+      }
+    : {
+        read: typeof item["cache_read"] === "number" ? item["cache_read"] : 0,
+        write: typeof item["cache_write"] === "number" ? item["cache_write"] : 0,
+      }
+  const tier =
+    isRecord(item["tier"]) && typeof item["tier"]["size"] === "number"
+      ? { type: "context" as const, size: item["tier"]["size"] }
+      : typeof item["tier"] === "number"
+        ? { type: "context" as const, size: item["tier"] }
+        : undefined
+  if (!tier) return undefined
+  return {
+    input: item["input"],
+    output: item["output"],
+    cache,
+    tier,
+  }
+}
+
 const ProviderLimit = Schema.Struct({
   context: Schema.Finite,
   input: optional(Schema.Finite),
@@ -1516,6 +1543,27 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
+            const mergedTiers = iife(() => {
+              const rawTiers = model?.cost?.tiers
+              if (Array.isArray(rawTiers) && rawTiers.length === 0) return []
+              const configured = Array.isArray(rawTiers)
+                ? (rawTiers as unknown[])
+                    .map(normalizeCostTier)
+                    .filter((t): t is Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> => t !== undefined)
+                : undefined
+              const existing = existingModel?.cost?.tiers
+              if (!configured || configured.length === 0) return existing
+              if (!existing || existing.length === 0) return configured
+              const tierMap = new Map<number, Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>>()
+              for (const tier of existing) {
+                tierMap.set(tier.tier.size, tier)
+              }
+              for (const tier of configured) {
+                tierMap.set(tier.tier.size, tier)
+              }
+              return [...tierMap.values()]
+            })
+
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
               api: {
@@ -1562,7 +1610,7 @@ const layer = Layer.effect(
                   read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
                   write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
                 },
-                ...(existingModel?.cost?.tiers ? { tiers: existingModel.cost.tiers } : {}),
+                ...(mergedTiers && mergedTiers.length > 0 ? { tiers: mergedTiers } : {}),
                 ...(model?.cost?.context_over_200k
                   ? {
                       experimentalOver200K: {

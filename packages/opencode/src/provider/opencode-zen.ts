@@ -29,12 +29,16 @@ import { isRecord } from "@/util/record"
 import { ProviderError } from "./error"
 
 /**
- * User agent the gateway accepts. Anything else is treated as an untrusted
- * client, so this is pinned to the versions the CLI ships with rather than
- * derived from the build: the workspace version does not identify a released
- * CLI (dev builds report `opencode/local`) and the AI SDK and runtime tokens
- * would drift with whatever is installed. Update this string as a contract
- * change, together with a check against the gateway, not automatically.
+ * Exact User-Agent wire contract required by the OpenCode Zen free-tier gateway.
+ *
+ * The Zen gateway strictly inspects client identity on free tier calls and
+ * responds with 403 FreeTierError when presented with SDK library user agents,
+ * arbitrary custom user agents, or dynamically-derived local development versions
+ * (such as `opencode/local`). It is therefore pinned to the canonical release string
+ * `opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14` rather than
+ * computed dynamically at runtime from local package versions. Any change to
+ * this string constitutes an external wire protocol contract change that must be
+ * coordinated with and validated against the gateway.
  */
 export const ZEN_USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
 
@@ -68,8 +72,9 @@ const WORKSPACE_SESSION_PATTERN = /^[0-9a-f]{12}[0-9a-zA-Z]{14}$/
  *
  * Zen documents the header as `ses_<uuid>`, while a conversation id generated
  * by this workspace is `ses_` plus an identifier, not a UUID, so both shapes
- * are accepted. Anything else (`ses_invalid`, an unrelated string) is replaced
- * with a generated id instead of being forwarded.
+ * are accepted. Any malformed value (including bare invalid tokens or pre-prefixed
+ * strings like `ses_invalid` that fail both UUID and workspace session validation)
+ * is rejected and replaced with a fresh `ses_<uuid>`.
  */
 export function sessionID(value: string | undefined, uuid: UUID = randomUUID) {
   const id = value?.startsWith("ses_") ? value.slice("ses_".length) : value

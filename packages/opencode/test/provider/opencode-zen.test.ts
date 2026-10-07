@@ -952,6 +952,65 @@ it.live("keeps the caller API key for models with zero base price but priced con
   }),
 )
 
+it.live("keeps the caller API key for models with zero base price but configured cost tiers", () =>
+  Effect.gen(function* () {
+    const request = yield* zenRequest("configured-tier-priced")
+
+    expect(request.body?.model).toBe("configured-tier-priced")
+    expect(request.headers.get("authorization")).toBe("Bearer sk-secret")
+  }),
+)
+
+it.live("merges configured model.cost.tiers with existing model tiers through Provider.Service", () =>
+  Effect.gen(function* () {
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("configured-tier-priced"))
+          expect(model.cost?.tiers).toBeDefined()
+          expect(model.cost?.tiers).toEqual([
+            {
+              input: 2,
+              output: 4,
+              cache: { read: 0, write: 0 },
+              tier: { type: "context", size: 128_000 },
+            },
+          ])
+        }),
+      {
+        config: {
+          formatter: false,
+          lsp: false,
+          provider: {
+            opencode: {
+              options: { baseURL: "http://127.0.0.1:9999", apiKey: "sk-secret" },
+              models: {
+                "configured-tier-priced": {
+                  name: "Configured Tier Priced",
+                  tool_call: true,
+                  cost: {
+                    input: 0,
+                    output: 0,
+                    tiers: [
+                      {
+                        input: 2,
+                        output: 4,
+                        tier: { type: "context", size: 128_000 },
+                      },
+                    ],
+                  },
+                  limit: { context: 300_000, output: 10_000 },
+                },
+              },
+            },
+          },
+        },
+      },
+    )
+  }),
+)
+
 it.live("prunes non-free models when credentials are missing and authenticates free models as public", () =>
   Effect.gen(function* () {
     const server = yield* Effect.acquireRelease(
@@ -984,6 +1043,7 @@ it.live("prunes non-free models when credentials are missing and authenticates f
           // Models with non-zero output, cache, or context tiers must be pruned when credentials are missing.
           expect(modelIDs.has("zero-input-paid")).toBe(false)
           expect(modelIDs.has("tier-priced")).toBe(false)
+          expect(modelIDs.has("configured-tier-priced")).toBe(false)
           expect(modelIDs.has("paid-sonnet")).toBe(false)
 
           const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
@@ -1080,6 +1140,22 @@ function zenProviderConfig(url: string) {
               input: 0,
               output: 0,
               context_over_200k: { input: 5, output: 10 },
+            },
+            limit: { context: 300_000, output: 10_000 },
+          },
+          "configured-tier-priced": {
+            name: "Configured Tier Priced",
+            tool_call: true,
+            cost: {
+              input: 0,
+              output: 0,
+              tiers: [
+                {
+                  input: 2,
+                  output: 4,
+                  tier: { type: "context", size: 128_000 },
+                },
+              ],
             },
             limit: { context: 300_000, output: 10_000 },
           },
