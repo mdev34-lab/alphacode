@@ -15,6 +15,7 @@ jobs:
   tui:
     name: Windows TUI test diagnostics
     runs-on: windows-latest
+    timeout-minutes: 10
     defaults:
       run:
         shell: bash
@@ -26,6 +27,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Run TUI suite and annotate failures
+        timeout-minutes: 8
         working-directory: packages/tui
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "true"

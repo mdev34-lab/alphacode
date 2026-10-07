@@ -10,40 +10,50 @@
     },
     "alphacode#test": {
       "dependsOn": ["^build"],
+      "cache": false,
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "alphacode#test:ci:cli": {
       "dependsOn": ["^build"],
+      "cache": false,
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "alphacode#test:ci:server": {
       "dependsOn": ["^build"],
+      "cache": false,
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "alphacode#test:ci:session": {
       "dependsOn": ["^build"],
+      "cache": false,
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "alphacode#test:ci:rest": {
       "dependsOn": ["^build"],
+      "cache": false,
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "@opencode-ai/tui#test": {
       "dependsOn": ["^build"],
+      "cache": false,
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "@opencode-ai/core#test": {
       "dependsOn": ["^build"],
-      "outputs": []
+      "cache": false,
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "@opencode-ai/script#test": {
-      "outputs": []
+      "cache": false,
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     }
   }
 }

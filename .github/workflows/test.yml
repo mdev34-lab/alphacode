@@ -69,25 +69,23 @@ jobs:
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/core' --summarize || status=$?
+          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/core' --summarize -- --reporter=junit --reporter-outfile=core-test-results-primary.xml || status=$?
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::@opencode-ai/core#test ${elapsed}s (exit ${status})"
           echo "| @opencode-ai/core#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
       # Windows core failed once in 107s and passed in 90s on the next run.
-      # Repeat with JUnit to capture a test name if it recurs; never mask failure.
+      # Keep primary and rerun JUnit reports so any recurrence names the test.
       - name: Repeat Windows core tests with JUnit diagnostics
-        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        id: core_diagnostics
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.core_tests.outcome == 'failure' }}
         timeout-minutes: 10
         working-directory: packages/core
-        env:
-          CORE_TEST_OUTCOME: ${{ steps.core_tests.outcome }}
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "true"
         run: |
           test_status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun test --reporter=junit --reporter-outfile=core-test-results.xml || test_status=$?
+          GITHUB_ACTIONS=false bun test --reporter=junit --reporter-outfile=core-test-results-rerun.xml || test_status=$?
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Windows core diagnostic duration::@opencode-ai/core#test rerun ${elapsed}s (exit ${test_status})"
           echo "| @opencode-ai/core#test rerun | ${elapsed}s | ${test_status} |" >> "$GITHUB_STEP_SUMMARY"
@@ -95,37 +93,54 @@ jobs:
           import os
           import xml.etree.ElementTree as ET
 
-          report = "core-test-results.xml"
-          if not os.path.exists(report):
-              print("::warning::Bun did not produce the core JUnit report")
+          reports = (
+              "core-test-results-primary.xml",
+              "core-test-results-rerun.xml",
+          )
+          existing = [report for report in reports if os.path.exists(report)]
+          if not existing:
+              print("::warning::Bun did not produce a core JUnit report")
               raise SystemExit(0)
 
-          root = ET.parse(report).getroot()
           repo = os.path.abspath(os.path.join(os.getcwd(), "..", ".."))
-          for case in root.iter("testcase"):
-              failure = case.find("failure")
-              if failure is None:
-                  failure = case.find("error")
-              if failure is None:
-                  continue
-              path = case.get("file", "")
-              if os.path.isabs(path):
-                  path = os.path.relpath(path, repo)
-              path = path.replace("\\", "/")
-              if not path.startswith("packages/"):
-                  path = f"packages/core/{path}"
-              line = case.get("line", "1")
-              name = case.get("name", "unknown test")
-              detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
-              message = f"{name}: {detail}"[:3000]
-              escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
-              print(f"::error file={escape(path)},line={line},title=Windows core failure::{escape(message)}")
+          escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
+          for report in existing:
+              root = ET.parse(report).getroot()
+              for case in root.iter("testcase"):
+                  failure = case.find("failure")
+                  if failure is None:
+                      failure = case.find("error")
+                  if failure is None:
+                      continue
+                  path = case.get("file", "")
+                  if os.path.isabs(path):
+                      path = os.path.relpath(path, repo)
+                  path = path.replace("\\", "/")
+                  if not path.startswith("packages/"):
+                      path = f"packages/core/{path}"
+                  line = case.get("line", "1")
+                  name = case.get("name", "unknown test")
+                  detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
+                  message = f"{report}: {name}: {detail}"[:3000]
+                  title = "Windows core failure (primary)" if report.endswith("primary.xml") else "Windows core failure (rerun)"
+                  print(f"::error file={escape(path)},line={line},title={title}::{escape(message)}")
           PY
-          if [ "$test_status" -eq 0 ] && [ "$CORE_TEST_OUTCOME" = "failure" ]; then
-            echo "::warning title=Windows core diagnostic::The core test failure did not reproduce on the diagnostic rerun"
-          elif [ "$test_status" -ne 0 ] && [ "$CORE_TEST_OUTCOME" = "success" ]; then
+          if [ "$test_status" -eq 0 ]; then
+            echo "::warning title=Windows core diagnostic::The failed core test did not reproduce on the diagnostic rerun"
+          else
             exit "$test_status"
           fi
+
+      - name: Upload Windows core JUnit reports
+        if: ${{ always() && runner.os == 'Windows' && (steps.core_tests.outcome == 'failure' || steps.core_diagnostics.outcome == 'failure') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-core-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            packages/core/core-test-results-primary.xml
+            packages/core/core-test-results-rerun.xml
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Run @opencode-ai/script tests
         timeout-minutes: 5
@@ -142,17 +157,57 @@ jobs:
       # splits maxed at 4m46; keep the prompt isolated and cap each group at 12m
       # with its own Windows timing for further adjustment if needed.
       - name: Run alphacode CLI tests
+        id: cli_tests
         timeout-minutes: 12
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo run test:ci:cli --filter=alphacode --summarize || status=$?
+          GITHUB_ACTIONS=false bun turbo run test:ci:cli --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-cli-test-results.xml || status=$?
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:cli ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:cli | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report = "packages/opencode/ci-cli-test-results.xml"
+          if not os.path.exists(report):
+              print("::warning::Bun did not produce the alphacode CLI JUnit report")
+              raise SystemExit(0)
+
+          repo = os.getcwd()
+          escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
+          root = ET.parse(report).getroot()
+          for case in root.iter("testcase"):
+              failure = case.find("failure")
+              if failure is None:
+                  failure = case.find("error")
+              if failure is None:
+                  continue
+              path = case.get("file", "")
+              if os.path.isabs(path):
+                  path = os.path.relpath(path, repo)
+              path = path.replace("\\", "/")
+              if not path.startswith("packages/"):
+                  path = f"packages/opencode/{path}"
+              line = case.get("line", "1")
+              name = case.get("name", "unknown test")
+              detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
+              message = f"{name}: {detail}"[:3000]
+              print(f"::error file={escape(path)},line={line},title=Alphacode CLI failure::{escape(message)}")
+          PY
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+
+      - name: Upload Windows CLI JUnit report
+        if: ${{ always() && runner.os == 'Windows' && steps.cli_tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-cli-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/opencode/ci-cli-test-results.xml
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Run alphacode server tests
         timeout-minutes: 12
