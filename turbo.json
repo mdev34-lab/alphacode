@@ -32,6 +32,12 @@
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
+    "alphacode#test:ci:session:prompt": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
+    },
     "alphacode#test:ci:rest": {
       "dependsOn": ["^build"],
       "cache": false,

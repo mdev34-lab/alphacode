@@ -15,16 +15,19 @@ def log_lines(log_path: str) -> list[str]:
         return log.read().splitlines()
 
 
-def failure_excerpt(lines: list[str], name: str, path: str) -> str:
-    markers = [index for index, line in enumerate(lines) if name in line]
-    if not markers:
-        file_name = os.path.basename(path)
-        markers = [index for index, line in enumerate(lines) if file_name and file_name in line]
-    if not markers:
+def failure_excerpt(lines: list[str], name: str, classname: str) -> str:
+    if not classname:
         return ""
 
-    end = markers[-1]
-    return chr(10).join(lines[max(0, end - 20) : min(len(lines), end + 4)])
+    expected = f"(fail) {classname} > {name}"
+    for line in lines:
+        candidate = line.lstrip()
+        if not candidate.startswith(expected):
+            continue
+        suffix = candidate[len(expected) :]
+        if not suffix or suffix[0].isspace() or suffix.startswith("["):
+            return candidate
+    return ""
 
 
 def annotate(title: str, message: str, path: str = "") -> None:
@@ -46,7 +49,10 @@ def main() -> int:
     if not os.path.exists(report):
         print(f"::warning::Bun did not produce the JUnit report: {report}")
         if status:
-            annotate(f"{title} test command failed without JUnit", chr(10).join(lines[-80:]))
+            annotate(
+                f"{title} test command failed without JUnit",
+                f"Bun exited with status {status}; captured log: {log_path}",
+            )
         return 0
 
     repo = os.path.abspath(os.environ.get("GITHUB_WORKSPACE", os.getcwd()))
@@ -70,11 +76,16 @@ def main() -> int:
         line = case.get("line", "1")
         name = case.get("name", "unknown test")
         detail = " ".join(((failure.get("message") or "") + " " + (failure.text or "")).split())
-        excerpt = failure_excerpt(lines, name, path)
-        annotate(title, f"{name}: {detail}{chr(10)}{excerpt}", f"{path},line={line}")
+        excerpt = failure_excerpt(lines, name, case.get("classname", ""))
+        summary = f"{name}: {detail}" if detail else name
+        message = chr(10).join(part for part in (summary, excerpt) if part)
+        annotate(title, message, f"{path},line={line}")
 
     if status and not failures:
-        annotate(f"{title} test command failed without a JUnit failure", chr(10).join(lines[-80:]))
+        annotate(
+            f"{title} test command failed without a JUnit failure",
+            f"Bun exited with status {status}; captured log: {log_path}",
+        )
 
     return 0
 

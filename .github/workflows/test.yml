@@ -199,7 +199,9 @@ jobs:
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo run test:ci:server --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-server-test-results.xml 2>&1 | tee packages/opencode/ci-server-test.log || status=${PIPESTATUS[0]}
+          server_concurrency=20
+          if [ "$RUNNER_OS" = "Windows" ]; then server_concurrency=4; fi
+          GITHUB_ACTIONS=false bun turbo run test:ci:server --filter=alphacode --summarize -- --max-concurrency="$server_concurrency" --reporter=junit --reporter-outfile=ci-server-test-results.xml 2>&1 | tee packages/opencode/ci-server-test.log || status=${PIPESTATUS[0]}
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:server ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:server | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
@@ -219,6 +221,22 @@ jobs:
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:session ${elapsed}s (exit ${status})"
           echo "| alphacode#test:ci:session | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
           python3 .github/scripts/annotate-junit.py packages/opencode/ci-session-test-results.xml packages/opencode "Alphacode session" packages/opencode/ci-session-test.log "$status"
+          exit "$status"
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+
+      - name: Run alphacode session prompt tests
+        id: session_prompt_tests
+        if: ${{ always() && !cancelled() && steps.session_tests.outcome != 'skipped' }}
+        timeout-minutes: 12
+        run: |
+          status=0
+          start=$SECONDS
+          GITHUB_ACTIONS=false bun turbo run test:ci:session:prompt --filter=alphacode --summarize -- --reporter=junit --reporter-outfile=ci-session-prompt-test-results.xml 2>&1 | tee packages/opencode/ci-session-prompt-test.log || status=${PIPESTATUS[0]}
+          elapsed=$((SECONDS - start))
+          echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:session:prompt ${elapsed}s (exit ${status})"
+          echo "| alphacode#test:ci:session:prompt | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/annotate-junit.py packages/opencode/ci-session-prompt-test-results.xml packages/opencode "Alphacode session prompt" packages/opencode/ci-session-prompt-test.log "$status"
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
@@ -264,7 +282,7 @@ jobs:
         run: bun run test:httpapi
 
       - name: Upload Windows unit JUnit reports
-        if: ${{ always() && runner.os == 'Windows' && (steps.script_tests.outcome == 'failure' || steps.cli_tests.outcome == 'failure' || steps.server_tests.outcome == 'failure' || steps.session_tests.outcome == 'failure' || steps.rest_tests.outcome == 'failure' || steps.tui_tests.outcome == 'failure') }}
+        if: ${{ always() && runner.os == 'Windows' && (steps.script_tests.outcome == 'failure' || steps.cli_tests.outcome == 'failure' || steps.server_tests.outcome == 'failure' || steps.session_tests.outcome == 'failure' || steps.session_prompt_tests.outcome == 'failure' || steps.rest_tests.outcome == 'failure' || steps.tui_tests.outcome == 'failure') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-unit-junit-${{ github.run_id }}-${{ github.run_attempt }}
@@ -277,6 +295,8 @@ jobs:
             packages/opencode/ci-server-test.log
             packages/opencode/ci-session-test-results.xml
             packages/opencode/ci-session-test.log
+            packages/opencode/ci-session-prompt-test-results.xml
+            packages/opencode/ci-session-prompt-test.log
             packages/opencode/ci-rest-test-results.xml
             packages/opencode/ci-rest-test.log
             packages/tui/ci-tui-test-results.xml
