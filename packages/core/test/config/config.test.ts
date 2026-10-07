@@ -139,6 +139,16 @@ describe("Config", () => {
                       output: 6,
                       tier: 200_000,
                     },
+                    {
+                      input: 7,
+                      output: 8,
+                      tier: { size: 300_000 },
+                    },
+                    {
+                      input: 9,
+                      output: 10,
+                      tier: {} as any, // missing size must be ignored rather than producing NaN
+                    },
                   ],
                 },
               },
@@ -163,6 +173,12 @@ describe("Config", () => {
           tier: { type: "context", size: 200_000 },
           input: 5,
           output: 6,
+          cache: { read: undefined, write: undefined },
+        },
+        {
+          tier: { type: "context", size: 300_000 },
+          input: 7,
+          output: 8,
           cache: { read: undefined, write: undefined },
         },
       ])

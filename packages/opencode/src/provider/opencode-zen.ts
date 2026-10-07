@@ -46,8 +46,14 @@ import { ProviderError } from "./error"
  * runtime package versions, because dynamic derivation would drift with local Bun or SDK
  * upgrades and break free-tier access in customer environments. Updating this string
  * requires a coordinated gateway contract update and live gateway verification.
+ *
+ * Configurable via `OPENCODE_ZEN_USER_AGENT` or `ZEN_USER_AGENT` environment variables,
+ * or per-fetch `userAgent` option if the gateway wire contract is revised.
  */
-export const ZEN_USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+export const DEFAULT_ZEN_USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
+
+export const ZEN_USER_AGENT =
+  process.env.OPENCODE_ZEN_USER_AGENT ?? process.env.ZEN_USER_AGENT ?? DEFAULT_ZEN_USER_AGENT
 
 /** The free tier authenticates as the public client; paid keys require a billing account. */
 export const ZEN_PUBLIC_AUTHENTICATION = "Bearer public"
@@ -428,6 +434,8 @@ export type FetchInput = {
   readonly upstream?: ZenFetch
   /** UUID source; injected by tests. */
   readonly uuid?: UUID
+  /** Custom User-Agent to send if the gateway wire contract changes. */
+  readonly userAgent?: string
 }
 
 /**
@@ -437,6 +445,7 @@ export type FetchInput = {
 export function createFetch(input: FetchInput = {}): ZenFetch {
   const upstream = input.upstream ?? globalThis.fetch
   const uuid = input.uuid ?? randomUUID
+  const userAgent = input.userAgent ?? ZEN_USER_AGENT
 
   return async (requestInput, init) => {
     const request = requestInput instanceof Request ? requestInput : undefined
@@ -453,7 +462,7 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     // Request's headers only apply when init has none. Merging them would keep
     // a header the caller deliberately dropped, e.g. an Authorization key.
     const headers = new Headers(init?.headers ?? request?.headers)
-    headers.set("user-agent", ZEN_USER_AGENT)
+    headers.set("user-agent", userAgent)
     headers.set("x-opencode-client", headers.get("x-opencode-client") ?? "cli")
     headers.set("x-opencode-project", headers.get("x-opencode-project") ?? "global")
     // Zen rejects a request without a session header, but callers that carry no

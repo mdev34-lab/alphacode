@@ -189,39 +189,83 @@ function migrateProvider(info: ConfigProviderV1.Info) {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: string) {
   const packageID = info.provider?.npm ?? packageName
   const lowerer = ConfigProviderOptionsV1.get(packageID)
   const request = info.options && lowerer.request(info.options)
-  const costs = info.cost && [
-    {
-      input: info.cost.input,
-      output: info.cost.output,
-      cache: { read: info.cost.cache_read, write: info.cost.cache_write },
-    },
-    ...(info.cost.tiers?.map((t) => ({
-      tier:
-        typeof t.tier === "number"
-          ? { type: "context" as const, size: int(t.tier) }
-          : { type: "context" as const, size: int(t.tier.size) },
-      input: t.input,
-      output: t.output,
-      cache: {
-        read: t.cache?.read ?? t.cache_read,
-        write: t.cache?.write ?? t.cache_write,
-      },
-    })) ?? []),
-    ...(info.cost.context_over_200k
-      ? [
-          {
-            tier: { type: "context" as const, size: 200_000 },
-            input: info.cost.context_over_200k.input,
-            output: info.cost.context_over_200k.output,
-            cache: { read: info.cost.context_over_200k.cache_read, write: info.cost.context_over_200k.cache_write },
+  const rawCost = info.cost
+  const costs = (() => {
+    if (!rawCost) return undefined
+    if (Array.isArray(rawCost)) {
+      return (rawCost as readonly (typeof ConfigProviderV1.CostTier.Type)[]).map((t) => {
+        const rawSize =
+          typeof t.tier === "number"
+            ? t.tier
+            : isRecord(t.tier) && typeof t.tier.size === "number"
+              ? t.tier.size
+              : undefined
+        return {
+          ...(rawSize !== undefined && Number.isFinite(rawSize)
+            ? { tier: { type: "context" as const, size: int(rawSize) } }
+            : {}),
+          input: t.input,
+          output: t.output,
+          cache: {
+            read: t.cache?.read ?? t.cache_read,
+            write: t.cache?.write ?? t.cache_write,
           },
-        ]
-      : []),
-  ]
+        }
+      })
+    }
+    const struct = rawCost as Exclude<typeof rawCost, readonly any[]>
+    return [
+      {
+        input: struct.input,
+        output: struct.output,
+        cache: {
+          read: struct.cache?.read ?? struct.cache_read,
+          write: struct.cache?.write ?? struct.cache_write,
+        },
+      },
+      ...(struct.tiers
+        ?.map((t) => {
+          const rawSize =
+            typeof t.tier === "number"
+              ? t.tier
+              : isRecord(t.tier) && typeof t.tier.size === "number"
+                ? t.tier.size
+                : undefined
+          if (typeof rawSize !== "number" || !Number.isFinite(rawSize)) return undefined
+          return {
+            tier: { type: "context" as const, size: int(rawSize) },
+            input: t.input,
+            output: t.output,
+            cache: {
+              read: t.cache?.read ?? t.cache_read,
+              write: t.cache?.write ?? t.cache_write,
+            },
+          }
+        })
+        .filter((t): t is NonNullable<typeof t> => t !== undefined) ?? []),
+      ...(struct.context_over_200k
+        ? [
+            {
+              tier: { type: "context" as const, size: 200_000 },
+              input: struct.context_over_200k.input,
+              output: struct.context_over_200k.output,
+              cache: {
+                read: struct.context_over_200k.cache_read,
+                write: struct.context_over_200k.cache_write,
+              },
+            },
+          ]
+        : []),
+    ]
+  })()
   const capabilities =
     info.tool_call !== undefined || info.modalities?.input !== undefined || info.modalities?.output !== undefined
       ? { tools: info.tool_call ?? false, input: info.modalities?.input ?? [], output: info.modalities?.output ?? [] }

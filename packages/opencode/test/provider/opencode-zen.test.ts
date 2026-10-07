@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createServer, type Server } from "node:http"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Effect } from "effect"
@@ -237,6 +238,116 @@ describe("OpenCodeZen", () => {
         },
       ])
       expect(zeroCost({ input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: withMalformed })).toBe(false)
+
+      // Malformed configured tiers with existing tiers preserves existing tiers and adds sentinel
+      const withExisting = Provider.mergeCostTiers([{ input: 2, output: 4 /* missing tier */ }], existing)
+      expect(withExisting).toEqual([
+        existing[0],
+        {
+          input: 1,
+          output: 1,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context", size: 0 },
+        },
+      ])
+
+      // Malformed configured tiers does not overwrite existing tier at size 0
+      const existingWithZero = [
+        {
+          input: 9,
+          output: 9,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context" as const, size: 0 },
+        },
+      ]
+      const withZeroPreserved = Provider.mergeCostTiers([{ input: 2, output: 4 /* missing tier */ }], existingWithZero)
+      expect(withZeroPreserved).toEqual(existingWithZero)
+    })
+
+    test("parseConfigCost handles both v1 and v2 formats including context_over_200k", () => {
+      // v1 format
+      const v1Cost = {
+        input: 1,
+        output: 2,
+        cache_read: 0.1,
+        cache_write: 0.2,
+        tiers: [{ input: 3, output: 4, tier: 100_000 }],
+        context_over_200k: { input: 5, output: 6, cache_read: 0.5, cache_write: 0.6 },
+      }
+      expect(Provider.parseConfigCost(v1Cost)).toEqual({
+        input: 1,
+        output: 2,
+        cache: { read: 0.1, write: 0.2 },
+        tiers: [
+          {
+            input: 3,
+            output: 4,
+            cache: { read: 0, write: 0 },
+            tier: { type: "context", size: 100_000 },
+          },
+        ],
+        experimentalOver200K: {
+          input: 5,
+          output: 6,
+          cache: { read: 0.5, write: 0.6 },
+        },
+      })
+
+      // v2 array format (from migration or direct v2 config)
+      const v2ArrayCost = [
+        {
+          input: 1,
+          output: 2,
+          cache: { read: 0.1, write: 0.2 },
+        },
+        {
+          input: 3,
+          output: 4,
+          tier: { type: "context" as const, size: 100_000 },
+        },
+        {
+          input: 5,
+          output: 6,
+          cache: { read: 0.5, write: 0.6 },
+          tier: { type: "context" as const, size: 200_000 },
+        },
+      ]
+      expect(Provider.parseConfigCost(v2ArrayCost)).toEqual({
+        input: 1,
+        output: 2,
+        cache: { read: 0.1, write: 0.2 },
+        tiers: [
+          {
+            input: 3,
+            output: 4,
+            cache: { read: 0, write: 0 },
+            tier: { type: "context", size: 100_000 },
+          },
+          {
+            input: 5,
+            output: 6,
+            cache: { read: 0.5, write: 0.6 },
+            tier: { type: "context", size: 200_000 },
+          },
+        ],
+        experimentalOver200K: {
+          input: 5,
+          output: 6,
+          cache: { read: 0.5, write: 0.6 },
+        },
+      })
+
+      // v2 single Cost object format
+      const v2SingleCost = {
+        input: 2,
+        output: 4,
+        cache: { read: 0.2, write: 0.4 },
+      }
+      expect(Provider.parseConfigCost(v2SingleCost)).toEqual({
+        input: 2,
+        output: 4,
+        cache: { read: 0.2, write: 0.4 },
+      })
     })
 
     test("regenerates request ids", () => {
@@ -1084,7 +1195,7 @@ it.live("merges configured model.cost.tiers with existing model tiers through Pr
                         input: 5,
                         output: 20,
                         cache: { read: 0.5, write: 5 },
-                        tier: { type: "context", size: 200_000 },
+                        tier: { type: "context" as const, size: 200_000 },
                       },
                       {
                         input: 10,
@@ -1093,6 +1204,94 @@ it.live("merges configured model.cost.tiers with existing model tiers through Pr
                       },
                     ],
                   },
+                },
+              },
+            },
+          },
+        },
+      },
+    )
+  }),
+)
+
+it.live("parses v2 array cost format and migrated v1 config through Provider.Service", () =>
+  Effect.gen(function* () {
+    // 1. Test actual migration of a v1 config with base cost, tiers, and context_over_200k
+    const migratedV2 = ConfigMigrateV1.migrate({
+      provider: {
+        opencode: {
+          models: {
+            "v2-migrated-model": {
+              name: "V2 Migrated Model",
+              cost: {
+                input: 1.5,
+                output: 3.5,
+                cache_read: 0.15,
+                cache_write: 0.35,
+                tiers: [
+                  {
+                    input: 4,
+                    output: 8,
+                    tier: 128_000,
+                  },
+                ],
+                context_over_200k: {
+                  input: 6,
+                  output: 12,
+                  cache_read: 0.6,
+                  cache_write: 1.2,
+                },
+              },
+            },
+          },
+        },
+      },
+    })
+
+    const migratedModel = migratedV2.providers?.["opencode"]?.models?.["v2-migrated-model"]
+    expect(migratedModel?.cost).toBeDefined()
+    expect(Array.isArray(migratedModel?.cost)).toBe(true)
+
+    // 2. Test loading through Provider.Service with v2 array cost structure
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("v2-tiered-model"))
+          expect(model.cost.input).toBe(1.5)
+          expect(model.cost.output).toBe(3.5)
+          expect(model.cost.cache).toEqual({ read: 0.15, write: 0.35 })
+          expect(model.cost.tiers).toEqual([
+            {
+              input: 4,
+              output: 8,
+              cache: { read: 0, write: 0 },
+              tier: { type: "context", size: 128_000 },
+            },
+            {
+              input: 6,
+              output: 12,
+              cache: { read: 0.6, write: 1.2 },
+              tier: { type: "context", size: 200_000 },
+            },
+          ])
+          expect(model.cost.experimentalOver200K).toEqual({
+            input: 6,
+            output: 12,
+            cache: { read: 0.6, write: 1.2 },
+          })
+        }),
+      {
+        config: {
+          formatter: false,
+          lsp: false,
+          provider: {
+            opencode: {
+              options: { baseURL: "http://127.0.0.1:9999", apiKey: "sk-secret" },
+              models: {
+                "v2-tiered-model": {
+                  name: "V2 Tiered Model",
+                  cost: migratedModel?.cost as any,
                 },
               },
             },
@@ -1245,7 +1444,7 @@ function zenProviderConfig(url: string) {
                 {
                   input: 2,
                   output: 4,
-                  tier: { type: "context", size: 128_000 },
+                  tier: { type: "context" as const, size: 128_000 },
                 },
               ],
             },

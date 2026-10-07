@@ -216,21 +216,26 @@ function withoutCredentials(body: Readonly<Record<string, unknown>> | undefined)
 }
 
 function remoteCost(input: NonNullable<(typeof ConfigProviderV1.Model.Type)["cost"]>) {
+  if (Array.isArray(input)) return input
+  const struct = input as Exclude<typeof input, readonly any[]>
   const base = {
-    input: input.input,
-    output: input.output,
-    cache: { read: input.cache_read ?? 0, write: input.cache_write ?? 0 },
+    input: struct.input,
+    output: struct.output,
+    cache: {
+      read: struct.cache?.read ?? struct.cache_read ?? 0,
+      write: struct.cache?.write ?? struct.cache_write ?? 0,
+    },
   }
-  if (!input.context_over_200k) return [base]
+  if (!struct.context_over_200k) return [base]
   return [
     base,
     {
       tier: { type: "context" as const, size: 200_000 },
-      input: input.context_over_200k.input,
-      output: input.context_over_200k.output,
+      input: struct.context_over_200k.input,
+      output: struct.context_over_200k.output,
       cache: {
-        read: input.context_over_200k.cache_read ?? 0,
-        write: input.context_over_200k.cache_write ?? 0,
+        read: struct.context_over_200k.cache_read ?? 0,
+        write: struct.context_over_200k.cache_write ?? 0,
       },
     },
   ]

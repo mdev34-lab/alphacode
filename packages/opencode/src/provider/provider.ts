@@ -205,6 +205,8 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       // The set is keyed by wire model id and requires fully zero cost metadata.
       const free = OpenCodeZen.freeTier(Object.values(input.models))
       const chunkTimeout = config.provider?.["opencode"]?.options?.chunkTimeout
+      const userAgent =
+        config.provider?.["opencode"]?.options?.userAgent ?? (config.provider?.["opencode"]?.options as any)?.user_agent
 
       return {
         autoload: Object.keys(input.models).length > 0,
@@ -213,6 +215,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           fetch: OpenCodeZen.createFetch({
             free,
             chunkTimeout: typeof chunkTimeout === "number" ? chunkTimeout : undefined,
+            userAgent: typeof userAgent === "string" ? userAgent : undefined,
           }),
         },
       }
@@ -1114,6 +1117,11 @@ export function mergeCostTiers(
   // If configured tiers were provided but entries failed normalization, ensure invalid pricing
   // cannot cause a paid model to be classified as free. Retain a non-zero placeholder tier.
   const hasInvalidTiers = configured.length < rawTiers.length
+
+  // Sentinel non-zero fallback tier used when configured tiers fail normalization.
+  // Context size 0 is chosen as a sentinel to ensure it never collides with real
+  // positive context thresholds (e.g. 128k, 200k) while input: 1, output: 1 guarantees
+  // zeroCost returns false so paid models are not misclassified as free-tier.
   const invalidFallback: Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> = {
     input: 1,
     output: 1,
@@ -1129,10 +1137,141 @@ export function mergeCostTiers(
   for (const tier of configured) {
     tierMap.set(tier.tier.size, tier)
   }
-  if (hasInvalidTiers && (configured.length === 0 || !tierMap.has(0))) {
+  if (hasInvalidTiers && !tierMap.has(0)) {
     tierMap.set(0, invalidFallback)
   }
   return [...tierMap.values()]
+}
+
+export function parseConfigCost(rawCost: unknown, existingCost?: Model["cost"]): Model["cost"] {
+  if (rawCost === undefined) {
+    return (
+      existingCost ?? {
+        input: 0,
+        output: 0,
+        cache: { read: 0, write: 0 },
+      }
+    )
+  }
+
+  // Handle v2 array format: Cost[]
+  if (Array.isArray(rawCost)) {
+    if (rawCost.length === 0) {
+      return {
+        input: 0,
+        output: 0,
+        cache: { read: 0, write: 0 },
+        tiers: [],
+      }
+    }
+
+    const baseEntry =
+      rawCost.find((c) => isRecord(c) && c["tier"] === undefined) ?? (isRecord(rawCost[0]) ? rawCost[0] : undefined)
+    const rawTiers = rawCost.filter((c) => isRecord(c) && c["tier"] !== undefined)
+
+    const input = baseEntry && typeof baseEntry["input"] === "number" ? baseEntry["input"] : (existingCost?.input ?? 0)
+    const output =
+      baseEntry && typeof baseEntry["output"] === "number" ? baseEntry["output"] : (existingCost?.output ?? 0)
+
+    const cacheRead = baseEntry
+      ? isRecord(baseEntry["cache"])
+        ? baseEntry["cache"]["read"]
+        : baseEntry["cache_read"]
+      : undefined
+    const cacheWrite = baseEntry
+      ? isRecord(baseEntry["cache"])
+        ? baseEntry["cache"]["write"]
+        : baseEntry["cache_write"]
+      : undefined
+
+    const cache = {
+      read: typeof cacheRead === "number" ? cacheRead : (existingCost?.cache.read ?? 0),
+      write: typeof cacheWrite === "number" ? cacheWrite : (existingCost?.cache.write ?? 0),
+    }
+
+    const over200k = rawTiers.find((t) => {
+      const size = isRecord(t["tier"]) ? t["tier"]["size"] : t["tier"]
+      return size === 200_000
+    })
+
+    const experimentalOver200K = over200k
+      ? {
+          input: typeof over200k["input"] === "number" ? over200k["input"] : 0,
+          output: typeof over200k["output"] === "number" ? over200k["output"] : 0,
+          cache: {
+            read: isRecord(over200k["cache"])
+              ? typeof over200k["cache"]["read"] === "number"
+                ? over200k["cache"]["read"]
+                : 0
+              : typeof over200k["cache_read"] === "number"
+                ? over200k["cache_read"]
+                : 0,
+            write: isRecord(over200k["cache"])
+              ? typeof over200k["cache"]["write"] === "number"
+                ? over200k["cache"]["write"]
+                : 0
+              : typeof over200k["cache_write"] === "number"
+                ? over200k["cache_write"]
+                : 0,
+          },
+        }
+      : existingCost?.experimentalOver200K
+
+    const mergedTiers = mergeCostTiers(rawTiers, existingCost?.tiers)
+
+    return {
+      input,
+      output,
+      cache,
+      ...(mergedTiers && mergedTiers.length > 0 ? { tiers: mergedTiers } : {}),
+      ...(experimentalOver200K ? { experimentalOver200K } : {}),
+    }
+  }
+
+  // Handle single object (v1 format or v2 single Cost object)
+  if (isRecord(rawCost)) {
+    const input = typeof rawCost["input"] === "number" ? rawCost["input"] : (existingCost?.input ?? 0)
+    const output = typeof rawCost["output"] === "number" ? rawCost["output"] : (existingCost?.output ?? 0)
+
+    const cacheRead = isRecord(rawCost["cache"]) ? rawCost["cache"]["read"] : rawCost["cache_read"]
+    const cacheWrite = isRecord(rawCost["cache"]) ? rawCost["cache"]["write"] : rawCost["cache_write"]
+
+    const cache = {
+      read: typeof cacheRead === "number" ? cacheRead : (existingCost?.cache.read ?? 0),
+      write: typeof cacheWrite === "number" ? cacheWrite : (existingCost?.cache.write ?? 0),
+    }
+
+    const mergedTiers = mergeCostTiers(rawCost["tiers"], existingCost?.tiers)
+
+    let experimentalOver200K = existingCost?.experimentalOver200K
+    if (isRecord(rawCost["context_over_200k"])) {
+      const co200 = rawCost["context_over_200k"]
+      experimentalOver200K = {
+        input: typeof co200["input"] === "number" ? co200["input"] : 0,
+        output: typeof co200["output"] === "number" ? co200["output"] : 0,
+        cache: {
+          read: typeof co200["cache_read"] === "number" ? co200["cache_read"] : 0,
+          write: typeof co200["cache_write"] === "number" ? co200["cache_write"] : 0,
+        },
+      }
+    }
+
+    return {
+      input,
+      output,
+      cache,
+      ...(mergedTiers && mergedTiers.length > 0 ? { tiers: mergedTiers } : {}),
+      ...(experimentalOver200K ? { experimentalOver200K } : {}),
+    }
+  }
+
+  return (
+    existingCost ?? {
+      input: 0,
+      output: 0,
+      cache: { read: 0, write: 0 },
+    }
+  )
 }
 
 const ProviderLimit = Schema.Struct({
@@ -1578,7 +1717,6 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
-            const mergedTiers = mergeCostTiers(model?.cost?.tiers, existingModel?.cost?.tiers)
 
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
@@ -1619,29 +1757,7 @@ const layer = Layer.effect(
                     ? { field: "reasoning_content" }
                     : false),
               },
-              cost: {
-                input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
-                output: model?.cost?.output ?? existingModel?.cost?.output ?? 0,
-                cache: {
-                  read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
-                  write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
-                },
-                ...(mergedTiers && mergedTiers.length > 0 ? { tiers: mergedTiers } : {}),
-                ...(model?.cost?.context_over_200k
-                  ? {
-                      experimentalOver200K: {
-                        input: model.cost.context_over_200k.input,
-                        output: model.cost.context_over_200k.output,
-                        cache: {
-                          read: model.cost.context_over_200k.cache_read ?? 0,
-                          write: model.cost.context_over_200k.cache_write ?? 0,
-                        },
-                      },
-                    }
-                  : existingModel?.cost?.experimentalOver200K
-                    ? { experimentalOver200K: existingModel.cost.experimentalOver200K }
-                    : {}),
-              },
+              cost: parseConfigCost(model?.cost, existingModel?.cost),
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {
                 context: model.limit?.context ?? existingModel?.limit?.context ?? 0,
