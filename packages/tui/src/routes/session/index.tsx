@@ -2190,6 +2190,7 @@ function Finish(props: ToolProps) {
 type FinishToolStatus = ToolPart["state"]["status"]
 
 const WAITING_LABEL = "Waiting for subagent execution..."
+const WAITING_ICON = "◌"
 
 export function finishResult(input: Record<string, unknown>, output?: string) {
   return (output?.trim() || stringValue(input.result)?.trim() || undefined) ?? undefined
@@ -2197,18 +2198,22 @@ export function finishResult(input: Record<string, unknown>, output?: string) {
 
 /**
  * The part-to-view mapping, kept separate from the component so the wiring is
- * testable without mounting the route. The wait flag is read from the part's
- * metadata for every status rather than only the completed branch: a finished
- * wait carries `metadata.waiting`, and the pending and running branches render
- * it too instead of that flag becoming unreachable there.
+ * testable without mounting the route. The wait flag only exists on a completed
+ * part: the tool returns it as the call's metadata, so it is stamped when the
+ * tool part settles and there is no earlier status that can carry it.
  */
 export function finishToolViewForPart(part: ToolPart, result?: string) {
-  return finishToolView(part.state.status, result, "metadata" in part.state && part.state.metadata?.waiting === true)
+  return finishToolView(
+    part.state.status,
+    result,
+    part.state.status === "completed" && "metadata" in part.state && part.state.metadata?.waiting === true,
+  )
 }
 
 export function finishToolView(status: FinishToolStatus, result?: string, waiting = false) {
   // A wait is not a completion: the agent yielded the turn while the background
-  // subagents it launched still run, so the block must not read as done.
+  // subagents it launched still run, so the block must not read as done — a
+  // paused icon, not the check the completed finish uses.
   const completed = waiting ? WAITING_LABEL : "Task completed"
   if (status === "pending") {
     return {
@@ -2217,7 +2222,7 @@ export function finishToolView(status: FinishToolStatus, result?: string, waitin
       complete: false,
       spinner: false,
       failure: "Finish failed",
-      children: waiting ? WAITING_LABEL : "Task completion",
+      children: "Task completion",
     }
   }
   if (status === "running") {
@@ -2227,11 +2232,11 @@ export function finishToolView(status: FinishToolStatus, result?: string, waitin
       complete: false,
       spinner: true,
       failure: "Finish failed",
-      children: waiting ? WAITING_LABEL : "Completing task...",
+      children: "Completing task...",
     }
   }
   return {
-    icon: "✓",
+    icon: waiting ? WAITING_ICON : "✓",
     pending: "Completing task...",
     complete: status === "completed",
     spinner: false,

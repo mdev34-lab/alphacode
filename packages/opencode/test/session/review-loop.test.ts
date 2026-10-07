@@ -294,9 +294,11 @@ describe("runtime review gate", () => {
   // still in flight through its children, so the transcript must not record a
   // termination and the nudge stays armed for the finish that really ends it.
   //
-  // The counter-case is what makes this discriminating: the evaluator does read
-  // a terminal finish's review metadata, so the assertions above are about the
-  // wait being non-terminal rather than about finish parts being ignored.
+  // These are evaluator fixtures, not a live wait: they pin what the loop reads
+  // out of a transcript that contains a waiting finish part. That such a part
+  // can exist at all, and what the tool returns for it, is guaranteed by
+  // `test/tool/finish.test.ts`; here the counter-case keeps the fixture honest
+  // by showing the evaluator does read a terminal finish's metadata.
   test("a waiting finish leaves no termination and keeps the review gate armed", () => {
     const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), waitingFinishMessage()])
 

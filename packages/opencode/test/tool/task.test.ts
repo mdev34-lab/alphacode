@@ -843,9 +843,13 @@ describe("tool.task", () => {
       // Scoped to a parent that has not finished: delivering a completed result
       // while a background task keeps running is still the normal ending, and
       // nothing may read the new reason as the only way out.
-      expect(result.output).toContain("If your own task is not finished")
       expect(result.output).toContain('If your own task is complete, call finish with reason "success" as usual')
       expect(result.output).toContain("does not hold your result back")
+      // Scoped to the main session: the wait is refused for a session that is
+      // itself a subagent, so the instruction must not send one to try it.
+      expect(result.output).toContain("the main session can call finish")
+      expect(result.output).toContain("A subagent cannot yield this way")
+      expect(result.output).toContain('it must deliver with "success" or "failure" instead')
     }),
   )
 
@@ -1969,11 +1973,12 @@ describe("tool.task", () => {
           expect(terminationOf(delivered)).toContain("not in flight")
         }
         if (reason === "waiting_for_subagent") {
-          // The yielded child is the one termination whose envelope must not
-          // promise another delivery: its run has already settled the parent's
-          // job, so no report follows the one carrying this note.
+          // Defensive wording only: the wait is refused for a session that is
+          // itself a subagent, so a task child should never deliver this
+          // reason. If a transcript or an older path does, the envelope must
+          // not promise a report the settled run can no longer send.
           expect(terminationOf(delivered)).toContain("still running")
-          expect(terminationOf(delivered)).toContain("no further report")
+          expect(terminationOf(delivered)).toContain("no later report follows this one")
           expect(terminationOf(delivered)).not.toContain("until it reports back")
         }
       }

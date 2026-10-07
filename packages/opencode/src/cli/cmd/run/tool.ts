@@ -588,7 +588,10 @@ function runExecute(p: ToolProps): ToolInline {
 }
 
 function runFinish(p: ToolProps): ToolInline {
-  const result = Locale.truncate(stripAnsi(text(p.frame.state.output).trim() || text(p.frame.input.result).trim()), 2000)
+  const result = Locale.truncate(
+    stripAnsi(text(p.frame.state.output).trim() || text(p.frame.input.result).trim()),
+    2000,
+  )
   if (p.frame.status === "error") {
     const error = toolError(p.frame)
     return {
@@ -598,10 +601,12 @@ function runFinish(p: ToolProps): ToolInline {
     }
   }
   // A wait is not a completion: the agent yielded the turn while the background
-  // subagents it launched still run, so the block must not read as done.
+  // subagents it launched still run, so the block must not read as done — a
+  // paused icon, not the check a completed finish uses.
+  const waiting = p.frame.meta.waiting === true
   return {
-    icon: "✓",
-    title: p.frame.meta.waiting === true ? "Waiting for subagent execution..." : "Task completed",
+    icon: waiting ? "◌" : "✓",
+    title: waiting ? "Waiting for subagent execution..." : "Task completed",
     ...(result && { mode: "block" as const, body: result }),
   }
 }

@@ -33,7 +33,7 @@ export type TerminationReason = Schema.Schema.Type<typeof TerminationReason>
 export const Parameters = Schema.Struct({
   reason: Reason.annotate({
     description:
-      "Why the agent is ending this turn: success when the task is complete, waiting_for_subagent when yielding the turn while background subagents you launched are still running, subagent_wait when progress depends on a subagent that will not report back on its own, or failure when the task could not be completed.",
+      "Why the agent is ending this turn: success when the task is complete, waiting_for_subagent when yielding the turn while background subagents you launched are still running (main session only — a subagent's run ends at its yield, so it must deliver its own result), subagent_wait when progress depends on a subagent that will not report back on its own, or failure when the task could not be completed.",
   }),
   result: Schema.String.annotate({
     description:
@@ -136,21 +136,44 @@ export const FinishTool = Tool.define(
           // (consumed once per unit of work), the plan, and the terminal
           // metadata the review loop reads as a delivered outcome.
           //
-          // The check below is a snapshot, not a reservation. A job whose
-          // cancellation is already in flight still reads `running` here, and a
-          // cancellation records its delivery (or its decision to drop one) as
-          // it settles, so a race can accept a wait whose child never notifies.
-          // Nothing can close that window from inside the tool: the wait is
-          // what makes `running` true, and a job that has ended is not one the
-          // waiter can hold open. The cost is bounded - the wait still never
-          // consumes the review nudge, the plan, or the result metadata, and
-          // the session is idle, not blocked - so it is left observable through
-          // the log line below rather than papered over.
           if (params.reason === "waiting_for_subagent") {
+            const jobs = yield* background.list()
+            // A subagent cannot yield. `runTask` is a single prompt, so a
+            // child's run ends at its yield and this provisional result would
+            // be the parent's only delivery: the work the child waits on would
+            // never reach it, and a child's job that has ended cannot be waited
+            // on again. Only a session that is not itself a task can yield;
+            // #222 tracks keeping a child's job alive so a nested yield works.
+            const session = yield* sessions
+              .get(ctx.sessionID)
+              .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))
+            const isSubagentRun =
+              session.parentID !== undefined ||
+              jobs.some(
+                (job) =>
+                  job.type === "task" && job.status === "running" && BackgroundJob.runsSession(job, ctx.sessionID),
+              )
+            if (isSubagentRun) {
+              yield* Effect.logWarning("finish declined: a subagent session cannot yield for its own subagents", {
+                sessionID: ctx.sessionID,
+              })
+              return yield* Effect.fail(
+                new ToolFailure({
+                  message:
+                    "Cannot wait: this session is itself a subagent, and a subagent's run ends at its yield — " +
+                    "the parent would receive this provisional result as the run's only delivery, and whatever " +
+                    "this session waits on would never reach it. " +
+                    'Deliver your own result with reason: "success", or "failure" if the task could not be completed.',
+                }),
+              )
+            }
+            // The filter below is a snapshot, not a reservation (#222): a job
+            // whose cancellation is already in flight still reads `running`
+            // here, so a wait can be accepted whose child never notifies.
             // The same ownership relation the cancellation walks use, narrowed
             // to the jobs a wait can actually be woken by: a task this session
             // launched. A session's own run job is not work it can wait for.
-            const running = (yield* background.list()).filter(
+            const running = jobs.filter(
               (job) =>
                 job.type === "task" && job.status === "running" && BackgroundJob.isSubagentOf(job, ctx.sessionID),
             )

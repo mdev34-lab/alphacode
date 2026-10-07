@@ -843,6 +843,8 @@ describe("run entry body", () => {
       }),
     )
     expect(waitingFinish.title).toBe("Waiting for subagent execution...")
+    // A wait is not a completion: it must not carry the completed check.
+    expect(waitingFinish.icon).toBe("◌")
     expect(waitingFinish.body).toBe("Waiting on the delegated review.")
   })
 })

@@ -340,30 +340,37 @@ describe("TUI inline tool wrapping", () => {
   })
 
   // Yielding for a background subagent is not completion: the block must not
-  // tell the user the task is done while the child it launched keeps running.
+  // tell the user the task is done while the child it launched keeps running, so
+  // it does not use the check a completed finish uses.
   test("renders a waiting finish distinctly from a completed one", async () => {
     const frame = await renderFrame(
       () => <FinishToolFixture status="completed" result="Waiting on the delegated review." waiting />,
       { width: 72, height: 4 },
     )
-    expect(frame).toContain("✓ Waiting for subagent execution...")
+    expect(frame).toContain("◌ Waiting for subagent execution...")
+    expect(frame).not.toContain("✓")
     expect(frame).toContain("↳ Waiting on the delegated review.")
     expect(frame).not.toContain("Task completed")
   })
 
   // The wiring the route uses: the label comes from the part's own metadata, so
-  // a completed wait and a completed finish differ only by that flag.
+  // a completed wait and a completed finish differ only by that flag. The flag
+  // is only read on a completed part - the tool returns it as the call's
+  // metadata, so a pending or running part cannot carry it.
   test("derives the waiting view from the finish part metadata", async () => {
     const result = "Waiting on the delegated review."
     const waitingPart = finishPart("completed", { waiting: true })
     const completedPart = finishPart("completed", {})
 
     expect(finishToolViewForPart(waitingPart, result).children).toBe(`Waiting for subagent execution...\n↳ ${result}`)
+    expect(finishToolViewForPart(waitingPart, result).icon).toBe("◌")
     expect(finishToolViewForPart(waitingPart, result).complete).toBe(true)
     expect(finishToolViewForPart(completedPart, result).children).toBe(`Task completed\n↳ ${result}`)
-    expect(finishToolViewForPart(finishPart("running", { waiting: true })).children).toBe(
-      "Waiting for subagent execution...",
-    )
+    expect(finishToolViewForPart(completedPart, result).icon).toBe("✓")
+    // A running part with the flag set is not a wait: the flag is unreachable
+    // there, the label stays the running one, and the check is not shown.
+    expect(finishToolViewForPart(finishPart("running", { waiting: true })).children).toBe("Completing task...")
+    expect(finishToolViewForPart(finishPart("running", { waiting: true })).icon).toBe("✓")
     expect(finishToolViewForPart(finishPart("running", {})).children).toBe("Completing task...")
     expect(finishToolViewForPart(finishPart("pending", {})).children).toBe("Task completion")
 
@@ -371,7 +378,7 @@ describe("TUI inline tool wrapping", () => {
       width: 72,
       height: 4,
     })
-    expect(frame).toContain("✓ Waiting for subagent execution...")
+    expect(frame).toContain("◌ Waiting for subagent execution...")
   })
 
   test("renders pending and failed finish states distinctly", async () => {
