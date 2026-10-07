@@ -4,6 +4,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import type { Event, Message, OpencodeClient, Part, SessionMessageResponse, ToolPart } from "@opencode-ai/sdk/v2"
 import { Effect, ManagedRuntime } from "effect"
 import { ACPEvent } from "@/acp/event"
+import { ACPRequests } from "@/acp/requests"
 import * as ACPService from "@/acp/service"
 import { Directory } from "@/acp/directory"
 import { ACPSession } from "@/acp/session"
@@ -108,7 +109,8 @@ function createHarness(messages: Record<string, SessionMessageResponse> = {}) {
     },
   } satisfies Pick<AgentSideConnection, "sessionUpdate">
   const session = makeSessionService()
-  const subscription = new ACPEvent.Subscription({ sdk, connection, session })
+  // No stream is observed here, so this subscription never learns a request id to cancel by.
+  const subscription = new ACPEvent.Subscription({ sdk, connection, session, requests: ACPRequests.make() })
 
   return { calls, connection, events, sdk, session, subscription, updates }
 }
@@ -358,6 +360,7 @@ describe("acp event routing", () => {
     const service = ACPService.make({
       sdk: harness.sdk,
       connection: harness.connection,
+      requests: ACPRequests.make(),
       directory: {
         get: () =>
           Effect.succeed(
@@ -463,6 +466,7 @@ describe("acp event routing", () => {
         },
       } as unknown as OpencodeClient,
       connection,
+      requests: ACPRequests.make(),
       directory: {
         get: () =>
           Effect.succeed(

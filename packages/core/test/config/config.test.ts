@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
@@ -84,6 +84,31 @@ describe("Config", () => {
         }),
         { numRuns: 100 },
       )
+    }),
+  )
+
+  it.effect("bounds the permission timeout countdown to what one timer can express", () =>
+    Effect.sync(() => {
+      const decode = Schema.decodeUnknownOption(ConfigV1.Info)
+      const timeout = (seconds: number, enabled = true) => decode({ permission_timeout: { enabled, seconds } })
+      // The countdown is one `Effect.sleep`, and its timer takes a 32-bit millisecond
+      // timeout: past 2^31 - 1 ms it never resumes, so an unanswered prompt would hang its
+      // session forever instead of being denied. Rejecting the value at the schema keeps
+      // that out of reach rather than silently clamping it.
+      const maximum = Math.floor((2 ** 31 - 1) / 1000)
+      expect(Option.isSome(timeout(maximum))).toBe(true)
+      expect(Option.isNone(timeout(maximum + 1))).toBe(true)
+      expect(Option.isSome(timeout(45))).toBe(true)
+      expect(Option.isNone(timeout(0))).toBe(true)
+      // And with the timeout switched off, which is deliberate: the field is validated where
+      // it is written, like every other value in this schema (`PositiveInt` has rejected a
+      // non-positive `seconds` regardless of `enabled` since the key was added), and the
+      // value goes live the moment `enabled` flips. Accepting an unusable countdown while it
+      // is off would only hand that hang to whoever switches it back on. Depending on a
+      // sibling field would also make this the only cross-field refinement in the schema.
+      expect(Option.isNone(timeout(maximum + 1, false))).toBe(true)
+      expect(Option.isSome(timeout(maximum, false))).toBe(true)
+      expect(Option.isNone(timeout(0, false))).toBe(true)
     }),
   )
 

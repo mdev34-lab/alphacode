@@ -1,4 +1,5 @@
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -225,6 +226,33 @@ const fragmentFailureLLM = Layer.succeed(
 )
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
+
+// One tool call whose execution fails with `error`: the shape the processor sees when a
+// permission ask inside a tool is rejected or left unanswered until the countdown expires.
+const failedToolCallEnv = (error: Error) =>
+  LayerNode.compile(root, [
+    ...replacements,
+    [
+      LLM.node,
+      Layer.succeed(
+        LLM.Service,
+        LLM.Service.of({
+          stream: () =>
+            Stream.make(
+              LLMEvent.stepStart({ index: 0 }),
+              LLMEvent.toolInputStart({ id: "call-1", name: "bash" }),
+              LLMEvent.toolInputEnd({ id: "call-1", name: "bash" }),
+              LLMEvent.toolCall({ id: "call-1", name: "bash", input: { command: "rm -rf /" } }),
+              LLMEvent.toolError({ id: "call-1", name: "bash", message: error.message, error }),
+              LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+              LLMEvent.finish({ reason: "stop" }),
+            ),
+        }),
+      ),
+    ],
+  ])
+const itPermissionTimeout = testEffect(failedToolCallEnv(new PermissionV1.TimedOutError({ seconds: 45 })))
+const itPermissionRejected = testEffect(failedToolCallEnv(new PermissionV1.RejectedError()))
 
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
@@ -1058,6 +1086,59 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
       }),
     { config: cfg },
   ),
+)
+
+// Shared body for the two permission failures: the only difference is whether the turn
+// survives the failed tool call.
+const permissionFailureTurn = (expected: SessionProcessor.Result, error: string) =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "permission failure")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "permission failure" }],
+          tools: {},
+        })
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
+
+        expect(value).toBe(expected)
+        expect(handle.message.error).toBeUndefined()
+        expect(call?.state.status).toBe("error")
+        if (call?.state.status !== "error") return
+        expect(call.state.error).toContain(error)
+      }),
+    { config: cfg },
+  )
+
+itPermissionTimeout.live("session.processor effect tests continue the turn when a permission prompt times out", () =>
+  // An expired countdown only fails the tool call, so `ctx.blocked` stays false and the
+  // model gets to pick another approach.
+  permissionFailureTurn("continue", "automatically denied"),
+)
+
+itPermissionRejected.live("session.processor effect tests stop the turn when permission is rejected", () =>
+  permissionFailureTurn("stop", "The user rejected permission"),
 )
 
 itFragmentFailure.live("session.processor effect tests retain partial legacy parts without v2 events", () =>
