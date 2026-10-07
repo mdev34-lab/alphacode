@@ -64,6 +64,7 @@ jobs:
             turbo-${{ runner.os }}-
 
       - name: Run @opencode-ai/core tests
+        id: core_tests
         timeout-minutes: 10
         run: |
           set +e
@@ -76,6 +77,48 @@ jobs:
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+
+      - name: Report Windows core test failures
+        if: ${{ failure() && runner.os == 'Windows' && steps.core_tests.outcome == 'failure' }}
+        working-directory: packages/core
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "true"
+        run: |
+          test_status=0
+          GITHUB_ACTIONS=false bun test --reporter=junit --reporter-outfile=core-test-results.xml || test_status=$?
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report = "core-test-results.xml"
+          if not os.path.exists(report):
+              print("::warning::Bun did not produce the core JUnit report")
+              raise SystemExit(0)
+
+          root = ET.parse(report).getroot()
+          repo = os.path.abspath(os.path.join(os.getcwd(), "..", ".."))
+          for case in root.iter("testcase"):
+              failure = case.find("failure")
+              if failure is None:
+                  failure = case.find("error")
+              if failure is None:
+                  continue
+              path = case.get("file", "")
+              if os.path.isabs(path):
+                  path = os.path.relpath(path, repo)
+              path = path.replace("\\", "/")
+              if not path.startswith("packages/"):
+                  path = f"packages/core/{path}"
+              line = case.get("line", "1")
+              name = case.get("name", "unknown test")
+              detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
+              message = f"{name}: {detail}"[:3000]
+              escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
+              print(f"::error file={escape(path)},line={line},title=Windows core failure::{escape(message)}")
+          PY
+          if [ "$test_status" -eq 0 ]; then
+            echo "::warning title=Windows core diagnostic::The core test failure did not reproduce on the diagnostic rerun"
+          fi
 
       - name: Run @opencode-ai/script tests
         timeout-minutes: 5
@@ -91,9 +134,9 @@ jobs:
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
-      # CI-like local timing put alphacode#test at 16m04; the prior Windows
-      # aggregate step hit its 20m08 cap. Give the isolated long-pole task a
-      # 25-minute cap and report its actual duration on both matrix legs.
+      # Latest Linux CI measured alphacode#test at 10m06 (16m04 locally); the
+      # prior Windows aggregate step hit its 20m08 cap. Isolate that long pole,
+      # allow 25 minutes, and report its actual duration on both matrix legs.
       - name: Run alphacode tests
         timeout-minutes: 25
         run: |
