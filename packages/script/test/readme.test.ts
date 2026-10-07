@@ -11,10 +11,12 @@ import { join } from "node:path"
 const root = join(import.meta.dir, "..", "..", "..")
 const read = (path: string) => readFileSync(join(root, path), "utf8")
 
+// Windows CI checks the repository out with CRLF line endings, so every
+// newline in the fence and the snippets has to tolerate a preceding `\r`.
 function bashBlocks(markdown: string): string[][] {
-  return [...markdown.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g)].map((match) =>
+  return [...markdown.matchAll(/```(?:bash|sh)\r?\n([\s\S]*?)```/g)].map((match) =>
     match[1]!
-      .split("\n")
+      .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && !line.startsWith("#")),
   )
@@ -45,6 +47,14 @@ describe("README shell snippets", () => {
       }
     }
     expect(clones).toBeGreaterThan(0)
+  })
+
+  test("the snippet parser works on CRLF checkouts", () => {
+    // This is how the README arrives on Windows runners; a fence regex that
+    // requires a bare `\n` right after the language tag finds no blocks there.
+    const crlf = "```bash\r\ngit clone https://example.com/thing.git\r\ncd thing\r\n```\r\n"
+    const blocks = bashBlocks(crlf)
+    expect(blocks).toEqual([["git clone https://example.com/thing.git", "cd thing"]])
   })
 
   test("the install one-liner points at the live repository", () => {
