@@ -69,40 +69,6 @@ jobs:
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
-      - name: Report Windows TUI failures
-        if: ${{ failure() && runner.os == 'Windows' }}
-        working-directory: packages/tui
-        env:
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "true"
-        run: |
-          GITHUB_ACTIONS=false bun test --timeout 30000 --reporter=junit --reporter-outfile=tui-test-results.xml || true
-          python3 - <<'PY'
-          import os
-          import xml.etree.ElementTree as ET
-
-          report = "tui-test-results.xml"
-          if not os.path.exists(report):
-              print("::warning::Bun did not produce the TUI JUnit report")
-              raise SystemExit(0)
-
-          root = ET.parse(report).getroot()
-          for case in root.iter("testcase"):
-              failure = case.find("failure")
-              if failure is None:
-                  failure = case.find("error")
-              if failure is None:
-                  continue
-              path = case.get("file", "")
-              if not path.startswith("packages/"):
-                  path = f"packages/tui/{path}"
-              line = case.get("line", "1")
-              name = case.get("name", "unknown test")
-              detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
-              message = f"{name}: {detail}"[:3000]
-              escape = lambda value: value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-              print(f"::error file={escape(path)},line={line},title=Windows TUI failure::{escape(message)}")
-          PY
-
       - name: Check generated client
         if: runner.os == 'Linux'
         working-directory: packages/client
