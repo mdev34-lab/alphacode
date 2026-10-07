@@ -13,6 +13,7 @@ function git(cwd: string, ...args: string[]) {
 }
 
 describe("git release metadata", () => {
+  // The Windows fixture creates and merges several commits and can exceed Bun's 5s default.
   test("selects stable version tags and reads only first-parent commits", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-test-"))
     try {
@@ -54,5 +55,5 @@ describe("git release metadata", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }
-  })
+  }, 10_000)
 })
