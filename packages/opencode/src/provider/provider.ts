@@ -1181,12 +1181,21 @@ export function parseConfigCost(rawCost: unknown, existingCost?: Model["cost"]):
   // Handle v2 array format: Cost[]
   if (Array.isArray(rawCost)) {
     if (rawCost.length === 0) {
-      return {
-        input: 0,
-        output: 0,
-        cache: { read: 0, write: 0 },
-        tiers: [],
-      }
+      return (
+        existingCost ?? {
+          input: 1,
+          output: 1,
+          cache: { read: 0, write: 0 },
+          tiers: [
+            {
+              input: 1,
+              output: 1,
+              cache: { read: 0, write: 0 },
+              tier: { type: "context", size: 0 },
+            },
+          ],
+        }
+      )
     }
 
     const baseIndex = rawCost.findIndex((c) => isRecord(c) && c["tier"] === undefined)
@@ -1260,7 +1269,11 @@ export function parseConfigCost(rawCost: unknown, existingCost?: Model["cost"]):
         }
       : existingCost?.experimentalOver200K
 
-    const mergedTiers = mergeCostTiers(rawTiers, existingCost?.tiers, hasInvalidBase || hasInvalidCache)
+    const mergedTiers = mergeCostTiers(
+      rawTiers.length > 0 ? rawTiers : undefined,
+      existingCost?.tiers,
+      hasInvalidBase || hasInvalidCache,
+    )
 
     return {
       input,

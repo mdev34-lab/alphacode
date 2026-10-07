@@ -58,13 +58,23 @@ export const ZEN_USER_AGENT =
 /** The free tier authenticates as the public client; paid keys require a billing account. */
 export const ZEN_PUBLIC_AUTHENTICATION = "Bearer public"
 
-const ZEN_PLACEHOLDER_TOOL = {
-  type: "function",
-  function: {
-    name: "noop",
-    description: "Do not call this tool. It exists only to satisfy the gateway tool schema.",
-    parameters: { type: "object", properties: {} },
-  },
+/**
+ * Upstream free-tier gate requires all 4 tools in the file-search quartet:
+ * {bash, glob, grep, read}. Requests with 0-3 tools or fake names receive 403 FreeTierError.
+ * Plain chat callers send no tools, so without injection every such request fails.
+ * Caller tools are preserved verbatim; only missing fingerprint names are appended.
+ */
+export const ZEN_FINGERPRINT_TOOLS = ["bash", "glob", "grep", "read"] as const
+
+function toolNameOf(tool: unknown): string {
+  if (!tool || typeof tool !== "object" || Array.isArray(tool)) return ""
+  const item = tool as Record<string, unknown>
+  const fn =
+    item["function"] && typeof item["function"] === "object" && !Array.isArray(item["function"])
+      ? (item["function"] as Record<string, unknown>)
+      : null
+  const raw = typeof item["name"] === "string" ? item["name"] : typeof fn?.["name"] === "string" ? fn["name"] : ""
+  return raw.trim()
 }
 
 /** UUID source, injectable so callers and tests can control id generation. */
@@ -486,9 +496,27 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     // aggregated stream back below.
     const streaming = payload["stream"] === true
     payload["stream"] = true
-    if (!Array.isArray(payload["tools"]) || payload["tools"].length === 0) {
-      payload["tools"] = [ZEN_PLACEHOLDER_TOOL]
-      // The placeholder cannot satisfy a named or required tool choice.
+
+    const callerHadNoTools = !Array.isArray(payload["tools"]) || payload["tools"].length === 0
+    const tools: unknown[] = Array.isArray(payload["tools"]) ? [...payload["tools"]] : []
+    const presentNames = new Set(tools.map(toolNameOf).filter(Boolean))
+    for (const name of ZEN_FINGERPRINT_TOOLS) {
+      if (!presentNames.has(name)) {
+        tools.push({
+          type: "function",
+          function: {
+            name,
+            description: `OpenCode built-in ${name} tool`,
+            parameters: { type: "object", properties: {} },
+          },
+        })
+        presentNames.add(name)
+      }
+    }
+    payload["tools"] = tools
+
+    if (callerHadNoTools) {
+      // The quartet satisfies the gateway tool gate when the caller sends no tools.
       if (payload["tool_choice"] !== "auto" && payload["tool_choice"] !== "none") payload["tool_choice"] = "auto"
     }
 

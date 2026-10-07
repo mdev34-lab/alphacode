@@ -321,6 +321,44 @@ describe("OpenCodeZen", () => {
       )
       expect(zeroCost(withInvalidBase)).toBe(false)
       expect(withInvalidBase.tiers?.find((t) => t.tier.size === 0)).toEqual(existingZeroCostTier[0])
+
+      // Base-only v1 cost override (and migrated v2 array without tier entries) preserves existing paid catalog tiers
+      const existingPaidWithTiers = {
+        input: 3,
+        output: 15,
+        cache: { read: 0.3, write: 3.75 },
+        tiers: [
+          {
+            input: 6,
+            output: 30,
+            cache: { read: 0.6, write: 7.5 },
+            tier: { type: "context" as const, size: 200_000 },
+          },
+        ],
+      }
+      // Direct v1 base-only override preserves existing tiers
+      const parsedV1BaseOnly = Provider.parseConfigCost({ input: 3.5, output: 16 }, existingPaidWithTiers)
+      expect(parsedV1BaseOnly.input).toBe(3.5)
+      expect(parsedV1BaseOnly.output).toBe(16)
+      expect(parsedV1BaseOnly.tiers).toEqual(existingPaidWithTiers.tiers)
+
+      // Migrated v2 array with only base entry preserves existing tiers
+      const parsedMigratedBaseOnly = Provider.parseConfigCost(
+        [{ input: 3.5, output: 16, cache: { read: 0.3, write: 3.75 } }],
+        existingPaidWithTiers,
+      )
+      expect(parsedMigratedBaseOnly.input).toBe(3.5)
+      expect(parsedMigratedBaseOnly.output).toBe(16)
+      expect(parsedMigratedBaseOnly.tiers).toEqual(existingPaidWithTiers.tiers)
+
+      // Empty cost: [] preserves existing cost and does NOT become free
+      const parsedEmptyCostWithExisting = Provider.parseConfigCost([], existingPaidWithTiers)
+      expect(parsedEmptyCostWithExisting).toEqual(existingPaidWithTiers)
+      expect(zeroCost(parsedEmptyCostWithExisting)).toBe(false)
+
+      // Empty cost: [] without existing cost does NOT become free (triggers non-zero fallback)
+      const parsedEmptyCostWithoutExisting = Provider.parseConfigCost([])
+      expect(zeroCost(parsedEmptyCostWithoutExisting)).toBe(false)
     })
 
     test("parseConfigCost handles both v1 and v2 formats including context_over_200k", () => {
@@ -494,32 +532,59 @@ describe("OpenCodeZen", () => {
       expect(calls[1].headers.get("authorization")).toBe("Bearer sk")
     })
 
-    test("enforces streaming and a normalized tool definition", async () => {
+    test("enforces streaming and satisfies the bash/glob/grep/read tool quartet wiregate", async () => {
       const { calls, upstream } = recorder(() => sse())
       const zen = createFetch({ upstream })
 
       await zen(zenURL, { method: "POST", body: JSON.stringify({ model: "big-pickle", messages: [] }) })
 
       expect(calls[0].body?.stream).toBe(true)
-      expect(calls[0].body?.tools).toHaveLength(1)
+      expect(calls[0].body?.tools).toHaveLength(4)
+      expect(calls[0].body?.tools.map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
       expect(calls[0].body?.tool_choice).toBe("auto")
 
-      // A tool choice that the placeholder cannot satisfy would be rejected.
+      // A tool choice that caller passes with empty tools is normalized to auto to satisfy the gate.
       await zen(zenURL, {
         method: "POST",
         body: JSON.stringify({ model: "big-pickle", messages: [], tools: [], tool_choice: "required" }),
       })
 
-      expect(calls[1].body?.tools).toHaveLength(1)
+      expect(calls[1].body?.tools).toHaveLength(4)
+      expect(calls[1].body?.tools.map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
       expect(calls[1].body?.tool_choice).toBe("auto")
 
+      // Caller tools are preserved verbatim at index 0 and missing quartet tools are appended
       await zen(zenURL, {
         method: "POST",
-        body: JSON.stringify({ model: "big-pickle", messages: [], tools: [{ type: "function" }] }),
+        body: JSON.stringify({
+          model: "big-pickle",
+          messages: [],
+          tools: [{ type: "function", function: { name: "my_custom_tool", description: "custom", parameters: {} } }],
+          tool_choice: { type: "function", function: { name: "my_custom_tool" } },
+        }),
       })
 
-      expect(calls[2].body?.tools).toEqual([{ type: "function" }])
-      expect(calls[2].body?.tool_choice).toBeUndefined()
+      expect(calls[2].body?.tools).toHaveLength(5)
+      expect(calls[2].body?.tools[0]).toEqual({
+        type: "function",
+        function: { name: "my_custom_tool", description: "custom", parameters: {} },
+      })
+      expect(calls[2].body?.tools.slice(1).map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
+      expect(calls[2].body?.tool_choice).toEqual({ type: "function", function: { name: "my_custom_tool" } })
+
+      // If caller already provides bash, it is not duplicated
+      await zen(zenURL, {
+        method: "POST",
+        body: JSON.stringify({
+          model: "big-pickle",
+          messages: [],
+          tools: [{ type: "function", function: { name: "bash", description: "caller bash" } }],
+        }),
+      })
+
+      expect(calls[3].body?.tools).toHaveLength(4)
+      expect(calls[3].body?.tools.map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
+      expect(calls[3].body?.tools[0].function.description).toBe("caller bash")
     })
 
     test("leaves non-completion requests alone", async () => {
@@ -599,7 +664,8 @@ describe("OpenCodeZen", () => {
       })
 
       expect(calls[0].body?.stream).toBe(true)
-      expect(calls[0].body?.tools).toHaveLength(1)
+      expect(calls[0].body?.tools).toHaveLength(4)
+      expect(calls[0].body?.tools.map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
     })
 
     test("honors an init body override over a Request body", async () => {
@@ -1148,7 +1214,8 @@ it.live("runs a non-streaming free-tier request through the opencode provider", 
           expect(request.headers.get("x-opencode-request")).toBe("msg_turn")
           expect(request.headers.get("authorization")).toBe(ZEN_PUBLIC_AUTHENTICATION)
           expect(request.body?.stream).toBe(true)
-          expect(request.body?.tools).toHaveLength(1)
+          expect(request.body?.tools).toHaveLength(4)
+          expect(request.body?.tools?.map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
           expect(request.body?.model).toBe("deepseek-v4-flash-free")
         }),
       { config: zenProviderConfig(server.url) },
@@ -1468,6 +1535,109 @@ it.live("rejects extra untiered paid cost entries and invalid pricing after migr
   }),
 )
 
+it.live("preserves tiered catalog pricing and auth after migration of base-only v1 override and empty cost[]", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => zenServer()),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    // 1. Migrate a v1 config with:
+    //    - claude-sonnet-4: base-only cost override (input: 3.5, output: 16.5)
+    const migratedV2 = ConfigMigrateV1.migrate({
+      provider: {
+        opencode: {
+          options: { baseURL: server.url, apiKey: "sk-user-key" },
+          models: {
+            "claude-sonnet-4": {
+              name: "Claude Sonnet 4 Base Override",
+              cost: { input: 3.5, output: 16.5 },
+            },
+          },
+        },
+      },
+    })
+    const baseOverrideCost = migratedV2.providers?.["opencode"]?.models?.["claude-sonnet-4"]?.cost
+    expect(baseOverrideCost).toEqual([{ input: 3.5, output: 16.5, cache: { read: undefined, write: undefined } }])
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const modelBaseOverride = yield* provider.getModel(
+            ProviderV2.ID.opencode,
+            ModelV2.ID.make("claude-sonnet-4"),
+          )
+          const modelEmptyCost = yield* provider.getModel(
+            ProviderV2.ID.opencode,
+            ModelV2.ID.make("gpt-empty-cost"),
+          )
+
+          // Base-only override must update input/output rates while PRESERVING catalog tiers
+          expect(modelBaseOverride.cost.input).toBe(3.5)
+          expect(modelBaseOverride.cost.output).toBe(16.5)
+          expect(modelBaseOverride.cost.tiers).toBeDefined()
+          expect(modelBaseOverride.cost.tiers?.length).toBeGreaterThan(0)
+          const tier200k = modelBaseOverride.cost.tiers?.find((t) => t.tier.size === 200_000)
+          expect(tier200k).toBeDefined()
+          expect(tier200k?.input).toBe(6)
+          expect(tier200k?.output).toBe(22.5)
+
+          // Model is non-free
+          expect(zeroCost(modelBaseOverride.cost)).toBe(false)
+          expect(freeTier([modelBaseOverride]).has("claude-sonnet-4")).toBe(false)
+
+          // Empty cost: [] must NOT become free; it preserves catalog cost
+          expect(zeroCost(modelEmptyCost.cost)).toBe(false)
+          expect(modelEmptyCost.cost.input).toBe(1.07)
+          expect(modelEmptyCost.cost.output).toBe(8.5)
+          expect(freeTier([modelEmptyCost]).has("gpt-empty-cost")).toBe(false)
+
+          // Auth regression: paid models retain the caller's API key and must NEVER authenticate as Bearer public
+          const language = yield* provider.getLanguage(modelBaseOverride)
+          yield* Effect.promise(() =>
+            generateText({ model: language, messages: [{ role: "user", content: "hello" }] }),
+          )
+
+          expect(server.requests).toHaveLength(1)
+          expect(server.requests[0].headers.get("x-api-key")).toBe("sk-user-key")
+          expect(server.requests[0].headers.get("authorization")).not.toBe(ZEN_PUBLIC_AUTHENTICATION)
+
+          const languageGPT = yield* provider.getLanguage(modelEmptyCost)
+          yield* Effect.promise(() =>
+            generateText({ model: languageGPT, messages: [{ role: "user", content: "hello" }] }),
+          )
+
+          expect(server.requests).toHaveLength(2)
+          expect(server.requests[1].headers.get("authorization")).toBe("Bearer sk-user-key")
+          expect(server.requests[1].headers.get("authorization")).not.toBe(ZEN_PUBLIC_AUTHENTICATION)
+        }),
+      {
+        config: {
+          formatter: false,
+          lsp: false,
+          provider: {
+            opencode: {
+              options: { baseURL: server.url, apiKey: "sk-user-key" },
+              models: {
+                "claude-sonnet-4": {
+                  name: "Claude Sonnet 4 Base Override",
+                  cost: baseOverrideCost as any,
+                },
+                "gpt-empty-cost": {
+                  name: "GPT Empty Cost",
+                  id: "gpt-5",
+                  cost: [] as any,
+                },
+              },
+            },
+          },
+        },
+      },
+    )
+  }),
+)
+
 it.live("prunes non-free models when credentials are missing and authenticates free models as public", () =>
   Effect.gen(function* () {
     const server = yield* Effect.acquireRelease(
@@ -1640,6 +1810,42 @@ async function zenServer(): Promise<{ server: Server; url: string; requests: Cap
         raw: chunks.length === 0 ? undefined : Buffer.concat(chunks),
         init: undefined,
       })
+      if (request.url?.includes("/messages")) {
+        response.writeHead(200, { "content-type": "application/json" })
+        response.end(
+          JSON.stringify({
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "Hello world" }],
+            model: "claude-sonnet-4",
+            stop_reason: "end_turn",
+            usage: { input_tokens: 1, output_tokens: 2 },
+          }),
+        )
+        return
+      }
+      if (request.url?.includes("/responses")) {
+        response.writeHead(200, { "content-type": "application/json" })
+        response.end(
+          JSON.stringify({
+            id: "resp_1",
+            object: "response",
+            status: "completed",
+            created_at: Math.floor(Date.now() / 1000),
+            output: [
+              {
+                id: "out_1",
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "Hello world", annotations: [] }],
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 2 },
+          }),
+        )
+        return
+      }
       response.writeHead(200, { "content-type": "text/event-stream" })
       response.end(completionStream)
     })
