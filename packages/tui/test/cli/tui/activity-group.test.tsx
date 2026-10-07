@@ -123,8 +123,20 @@ function reseedParts(sync: Sync, partsByMessage: Record<string, Part[]>) {
   for (const [messageID, parts] of Object.entries(partsByMessage)) sync.set("part", messageID, parts)
 }
 
+function normalizePathSeparators(frame: string) {
+  return frame.replace(/\\/g, "/")
+}
+
 function frameOf(app: Awaited<ReturnType<typeof testRender>>) {
-  return app.captureCharFrame().split("\n").map((line) => line.trimEnd()).join("\n")
+  // Tool titles use the host's native path separator; compare with a stable one.
+  return normalizePathSeparators(app.captureCharFrame())
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+}
+
+function waitForPathFrame(app: Awaited<ReturnType<typeof testRender>>, predicate: (frame: string) => boolean) {
+  return app.waitForFrame((frame: string) => predicate(normalizePathSeparators(frame)))
 }
 
 function rowOf(frame: string, needle: string): number {
@@ -389,11 +401,11 @@ describe("activity group TUI", () => {
 
       const row = rowOf(frameOf(app), "Working... 2 tool calls")
       await app.mockMouse.click(5, row)
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts") && frame.includes('Grep "todo"'))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts") && frame.includes('Grep "todo"'))
       expect(frameOf(app)).toContain("▾")
 
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => !frame.includes("Read src/a.ts"))
       expect(frameOf(app)).toContain("▸")
     } finally {
       app.renderer.destroy()
@@ -464,11 +476,11 @@ describe("activity group TUI", () => {
       expect(frameOf(app)).not.toContain("Read src/a.ts")
 
       app.mockInput.pressKey("o", { ctrl: true })
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       expect(frameOf(app)).toContain("▾")
 
       app.mockInput.pressKey("o", { ctrl: true })
-      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => !frame.includes("Read src/a.ts"))
       expect(frameOf(app)).toContain("▸")
     } finally {
       app.renderer.destroy()
@@ -500,17 +512,18 @@ describe("activity group TUI", () => {
       // Expand only the first group, individually.
       const firstRow = rowOf(frameOf(app), "Working... 2 tool calls")
       await app.mockMouse.click(5, firstRow)
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       expect(frameOf(app)).not.toContain("Read src/c.ts")
 
       // Toggle the global state on...
       app.mockInput.pressKey("o", { ctrl: true })
-      await app.waitForFrame((frame: string) => frame.includes("Read src/c.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/c.ts"))
 
       // ...and off again: everything must end up collapsed, including the
       // group that was expanded individually.
       app.mockInput.pressKey("o", { ctrl: true })
-      await app.waitForFrame(
+      await waitForPathFrame(
+        app,
         (frame: string) => !frame.includes("Read src/a.ts") && !frame.includes("Read src/c.ts"),
       )
       const frame = frameOf(app)
@@ -551,7 +564,7 @@ describe("activity group TUI", () => {
       // Expand only the first group.
       const firstRow = rowOf(frame, "Working... 2 tool calls")
       await app.mockMouse.click(5, firstRow)
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       const expanded = frameOf(app)
       expect(expanded).toContain("Read src/a.ts")
       expect(expanded).toContain("Read src/b.ts")
@@ -631,9 +644,8 @@ describe("activity group TUI", () => {
           parts: [textPart(m6.id, " \n"), settledTool(m6.id, "read", { filePath: "src/g.ts" }, 1900, 2000)],
         },
       ])
-      // Tool titles render platform path separators; normalize so the
-      // membership assertions below read the same everywhere.
-      const frame = () => frameOf(app).replace(/\\/g, "/")
+      // frameOf normalizes platform path separators for membership assertions.
+      const frame = () => frameOf(app)
       // One container for the whole sequence, not one per batch.
       await app.waitForFrame((f: string) => f.includes("7 tool calls"))
       expect(countOf(frame(), "tool calls")).toBe(1)
@@ -648,7 +660,7 @@ describe("activity group TUI", () => {
 
       // Expanding nests the whole sequence under that container...
       app.mockInput.pressKey("o", { ctrl: true })
-      await app.waitForFrame((f: string) => f.replace(/\\/g, "/").includes("Read src/g.ts"))
+      await waitForPathFrame(app, (f: string) => f.includes("Read src/g.ts"))
       const expanded = frame()
       for (const title of [
         "Read src/a.ts",
@@ -726,7 +738,7 @@ describe("activity group TUI", () => {
       const m1 = assistant("m1", at(1))
       const t1 = running(m1.id, "read", { filePath: "src/a.ts" }, 1000)
       seed(sync, [{ message: m1, parts: [textPart(m1.id, "One file."), t1] }])
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       const frame = frameOf(app)
       expect(frame).not.toContain("Working...")
       expect(frame).not.toContain("Worked for")
@@ -764,7 +776,7 @@ describe("activity group TUI", () => {
       // Expanding reveals only the included tools inside the group; the
       // orchestration rows remain separate and visible.
       await app.mockMouse.click(5, rowOf(frame, "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       const expanded = frameOf(app)
       expect(expanded).toContain("bun test")
       expect(expanded).toContain("Read src/a.ts")
@@ -1032,7 +1044,7 @@ describe("activity group TUI", () => {
       // Expanding the first block reveals only its own rows, and the to-do
       // block stays a top-level sibling below them instead of being nested.
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       const expanded = frameOf(app)
       expect(expanded).toContain('Grep "alpha"')
       expect(expanded).not.toContain("bun test")
@@ -1046,7 +1058,7 @@ describe("activity group TUI", () => {
       // Collapsing the first block leaves the second one open: the blocks own
       // separate activity state because they are separate groups.
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => !frame.includes("Read src/a.ts"))
       const final = frameOf(app)
       expect(final).not.toContain("Read src/a.ts")
       expect(final).toContain("bun test")
@@ -1093,11 +1105,11 @@ describe("activity group TUI", () => {
 
       const row = rowOf(frameOf(app), "Working... 6 tool calls")
       await app.mockMouse.click(5, row)
-      await app.waitForFrame((frame: string) => frame.includes("Read src/file0.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/file0.ts"))
       expect(box.scrollTop).toBe(before)
 
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 6 tool calls"))
-      await app.waitForFrame((frame: string) => !frame.includes("Read src/file0.ts"))
+      await waitForPathFrame(app, (frame: string) => !frame.includes("Read src/file0.ts"))
       expect(box.scrollTop).toBe(before)
     } finally {
       app.renderer.destroy()
@@ -1292,12 +1304,12 @@ describe("activity group TUI", () => {
 
       // collapsed -> expanded
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       expect(frameOf(app)).toContain("▾")
 
       // expanded -> collapsed
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => !frame.includes("Read src/a.ts"))
       expect(frameOf(app)).toContain("▸")
 
       // Live updates must not reopen a collapsed group.
@@ -1312,7 +1324,7 @@ describe("activity group TUI", () => {
 
       // The toggle still works after updates.
       await app.mockMouse.click(5, rowOf(collapsed, "Working... 3 tool calls"))
-      await app.waitForFrame((frame: string) => frame.includes("bun test") && frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("bun test") && frame.includes("Read src/a.ts"))
       expect(frameOf(app)).toContain("▾")
     } finally {
       app.renderer.destroy()
@@ -1342,7 +1354,7 @@ describe("activity group TUI", () => {
 
       // Expand only the first group.
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts"))
       expect(frameOf(app)).not.toContain("Read src/c.ts")
 
       // Updates to both groups preserve each toggle state.
@@ -1357,12 +1369,12 @@ describe("activity group TUI", () => {
 
       // Expanding the second group leaves the first expanded.
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 3 tool calls"))
-      await app.waitForFrame((frame: string) => frame.includes("Read src/c.ts") && frame.includes("Read src/e.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/c.ts") && frame.includes("Read src/e.ts"))
       expect(frameOf(app)).toContain("Read src/a.ts")
 
       // Collapsing the first group leaves the second expanded.
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => !frame.includes("Read src/a.ts"))
       const final = frameOf(app)
       expect(final).not.toContain("Read src/b.ts")
       expect(final).toContain("Read src/c.ts")
@@ -1395,12 +1407,12 @@ describe("activity group TUI", () => {
 
       // Expand everything globally.
       app.mockInput.pressKey("o", { ctrl: true })
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts") && frame.includes("Read src/c.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts") && frame.includes("Read src/c.ts"))
       expect(frameOf(app).match(/▾/g)?.length).toBe(2)
 
       // Clicking one group collapses only that group.
       await app.mockMouse.click(5, rowOf(frameOf(app), "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => !frame.includes("Read src/a.ts"))
+      await waitForPathFrame(app, (frame: string) => !frame.includes("Read src/a.ts"))
       const oneCollapsed = frameOf(app)
       expect(oneCollapsed).not.toContain("Read src/b.ts")
       expect(oneCollapsed).toContain("Read src/c.ts")
@@ -1410,7 +1422,7 @@ describe("activity group TUI", () => {
 
       // Clicking it again re-expands it.
       await app.mockMouse.click(5, rowOf(oneCollapsed, "Working... 2 tool calls"))
-      await app.waitForFrame((frame: string) => frame.includes("Read src/a.ts") && frame.includes("Read src/c.ts"))
+      await waitForPathFrame(app, (frame: string) => frame.includes("Read src/a.ts") && frame.includes("Read src/c.ts"))
       expect(frameOf(app).match(/▾/g)?.length).toBe(2)
     } finally {
       app.renderer.destroy()
