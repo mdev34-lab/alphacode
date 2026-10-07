@@ -28,14 +28,30 @@ function syntheticNudge() {
   } as unknown as SessionV1.WithParts
 }
 
+/**
+ * A persisted `task(review)` part.
+ *
+ * The two axes have to be settable separately, because since synchronous
+ * execution became a per-agent opt-in they can disagree: `background` is what the
+ * caller asked for, and `delivery` is what the tool recorded as the mode it ran in
+ * (`false` foreground, `true` background). Leaving `delivery` out builds the older
+ * transcript shape, which carries no recorded mode and is judged on the request
+ * alone - so a fixture that only ever sets `background` cannot express a request
+ * that was overridden, nor a foreground review nobody asked to wait for.
+ */
 function reviewMessage(
   output: string,
   options?: {
     status?: "completed" | "running"
-    background?: boolean
+    background?: boolean | "omitted"
+    delivery?: boolean
     metadata?: Record<string, unknown>
   },
 ) {
+  const input =
+    options?.background === "omitted"
+      ? { subagent_type: "review" }
+      : { subagent_type: "review", background: options?.background ?? false }
   return {
     info: { role: "assistant" },
     parts: [
@@ -44,9 +60,12 @@ function reviewMessage(
         tool: "task",
         state: {
           status: options?.status ?? "completed",
-          input: { subagent_type: "review", background: options?.background ?? false },
+          input,
           output,
-          ...(options?.metadata ? { metadata: options.metadata } : {}),
+          metadata: {
+            ...(options?.delivery === undefined ? {} : { background: options.delivery }),
+            ...options?.metadata,
+          },
         },
       },
     ],
@@ -354,9 +373,7 @@ describe("runtime review gate", () => {
     // "wait", and the outcome says otherwise. Synchronous execution is a per-agent
     // opt-in, so a `background: false` request that the agent did not opt into
     // comes back as a launch, and the gate has to judge the effective mode.
-    const launched = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", {
-      metadata: { background: true, jobId: "ses_review" },
-    })
+    const launched = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", { delivery: true })
 
     expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), background]).verdict).toBe(
       "pending",
@@ -381,7 +398,7 @@ describe("runtime review gate", () => {
   ].join("\n")
 
   const launch = (output = LAUNCH_ENVELOPE, metadata: Record<string, unknown> = {}) =>
-    reviewMessage(output, { metadata: { background: true, jobId: "ses_review", ...metadata } })
+    reviewMessage(output, { delivery: true, metadata: { jobId: "ses_review", ...metadata } })
 
   test("a review launched instead of awaited is not a delivered review", () => {
     const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), launch()])
@@ -435,15 +452,29 @@ describe("runtime review gate", () => {
     expect(finishGateError(state)).toBeInstanceOf(Error)
   })
 
-  test("the same report delivered in the foreground still counts", () => {
+  // A completed part carrying a real report, i.e. the delivery a foreground review
+  // produces; only the two mode axes vary between the arms below.
+  const WITH_REPORT = {
+    metadata: {
+      sessionId: "ses_review",
+      review: { report: { version: 1, assessment: "approved", summary: "Clean.", findings: [] } },
+    },
+  }
+
+  // The recorded mode is the authority, which has to hold in both directions. An
+  // omitted argument on an opted-in agent is the shape the opt-in exists to
+  // produce: the model dispatches `review`, says nothing about waiting, and the
+  // configured reviewer hands the verdict back in this turn. Losing that would
+  // leave a real, configured, foreground review uncounted - an armed gate over
+  // work that was in fact reviewed.
+  test("counts a configured foreground review whose caller omitted the argument", () => {
     const state = reviewLoopState([
       userMessage(),
       toolMessage("edit", { writesFiles: true }),
-      reviewMessage(LAUNCH_ENVELOPE.replace('state="running"', 'state="completed"'), {
-        metadata: {
-          sessionId: "ses_review",
-          review: { report: { version: 1, assessment: "approved", summary: "Clean.", findings: [] } },
-        },
+      reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", {
+        background: "omitted",
+        delivery: false,
+        ...WITH_REPORT,
       }),
     ])
 
@@ -451,6 +482,51 @@ describe("runtime review gate", () => {
     expect(state.verdict).toBe("approved")
     expect(state.workSinceReview).toBe(false)
     expect(finishGateError(state)).toBeUndefined()
+  })
+
+  test("an omitted request that ran in the background is not a delivered review", () => {
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      reviewMessage(LAUNCH_ENVELOPE, { background: "omitted", delivery: true }),
+    ])
+
+    expect(state.reviews).toBe(0)
+    expect(state.workSinceReview).toBe(true)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("the same report delivered in the foreground still counts", () => {
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      reviewMessage(LAUNCH_ENVELOPE.replace('state="running"', 'state="completed"'), {
+        delivery: false,
+        ...WITH_REPORT,
+      }),
+    ])
+
+    expect(state.reviews).toBe(1)
+    expect(state.verdict).toBe("approved")
+    expect(state.workSinceReview).toBe(false)
+    expect(finishGateError(state)).toBeUndefined()
+  })
+
+  // A transcript from before the mode was recorded carries only the request, and
+  // back then the request was the outcome: this is why the fallback is safe
+  // rather than merely tolerant.
+  test("a transcript with no recorded mode is judged on its request", () => {
+    const asked = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", WITH_REPORT)
+    const silent = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", {
+      background: "omitted",
+      ...WITH_REPORT,
+    })
+
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), asked]).reviews).toBe(1)
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), asked]).verdict).toBe("approved")
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), silent]).reviews).toBe(0)
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), silent]).verdict).toBe("pending")
   })
 
   test("does not treat a synthetic continuation nudge as a new turn", () => {

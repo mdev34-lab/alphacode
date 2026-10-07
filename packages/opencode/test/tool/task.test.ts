@@ -1113,17 +1113,19 @@ describe("tool.task", () => {
 
         // While the child is still running the job must be foreground and the
         // parent must still be blocked; background-only jobs immediately set
-        // metadata.background=true.
+        // metadata.background=true, and a foreground one records the opposite rather
+        // than nothing, which is what lets the review loop read the outcome instead of
+        // inferring it from the request.
         const sessionID = yield* Effect.promise(() => started.promise)
         const job = yield* jobs.get(sessionID)
         expect(job?.status).toBe("running")
-        expect(job?.metadata?.background).toBeUndefined()
+        expect(job?.metadata?.background).toBe(false)
 
         done.resolve()
         const exit = yield* Fiber.await(fiber)
         expect(Exit.isSuccess(exit)).toBe(true)
         if (Exit.isSuccess(exit)) {
-          expect(exit.value.metadata.background).toBeUndefined()
+          expect(exit.value.metadata.background).toBe(false)
           expect(exit.value.output).toContain(`state="completed"`)
           expect(exit.value.output).toContain("foreground done")
         }
@@ -2060,8 +2062,10 @@ describe("tool.task", () => {
         )
 
         // No `background` request: the agent's own configuration decides, and the
-        // result is delivered in this call rather than by a later notification.
-        expect(result.metadata.background).toBeUndefined()
+        // result is delivered in this call rather than by a later notification. The
+        // part records that outcome, so a reader never has to guess it from the
+        // missing argument.
+        expect(result.metadata.background).toBe(false)
         expect(result.output).toContain(`state="completed"`)
         expect(result.output).toContain("opted in")
         expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("completed")
@@ -2153,7 +2157,7 @@ describe("tool.task", () => {
         )
 
         // The reviewer was opted in, so its report came back in the tool result.
-        expect(review.metadata.background).toBeUndefined()
+        expect(review.metadata.background).toBe(false)
         expect(review.output).toContain("<alphacode-review>")
         expect(review.metadata.review.report).toEqual(REVIEW_REPORT)
         // `general` was not, so the same synchronous request became a launch.
@@ -2246,8 +2250,9 @@ describe("tool.task", () => {
         )
 
         // Nothing was requested about execution mode, and the name the caller
-        // used is not configured at all: the runner's own opt-in is enough.
-        expect(result.metadata.background).toBeUndefined()
+        // used is not configured at all: the runner's own opt-in is enough, and it is
+        // recorded as a foreground delivery rather than left implied.
+        expect(result.metadata.background).toBe(false)
         expect(result.output).toContain(`state="completed"`)
         expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
         expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("completed")

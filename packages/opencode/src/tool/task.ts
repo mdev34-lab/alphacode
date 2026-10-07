@@ -308,7 +308,15 @@ export const TaskTool = Tool.define(
         parentSessionId: ctx.sessionID,
         sessionId: nextSession.id,
         model,
-        ...(runInBackground ? { background: true } : {}),
+        // The mode this call actually ran in, recorded on every outcome rather
+        // than only the background ones. `params.background` is the request, and
+        // since the per-agent opt-in a request no longer predicts the outcome in
+        // either direction; anything downstream that needs to know whether a result
+        // landed here - the review loop's finish gate, the run CLI's pending-task
+        // bookkeeping - reads this field instead of re-deriving the rule. The
+        // launch and promotion paths below overwrite it, because those change the
+        // answer after this point.
+        background: runInBackground,
       }
 
       yield* ctx.metadata({
