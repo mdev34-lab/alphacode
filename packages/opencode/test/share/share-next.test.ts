@@ -227,6 +227,7 @@ describe("ShareNext", () => {
             "POST https://legacy-share.example.com/api/share",
             "DELETE https://legacy-share.example.com/api/share/shr_abc",
           ]
+          // Share initialization may fetch the Models.dev catalog once, outside the share endpoints.
           const knownModelCatalogRequest = "GET https://models.opencode.ai/api.json"
           const unexpectedRequests = requests.filter(
             (request) => !expectedShareRequests.includes(request) && request !== knownModelCatalogRequest,

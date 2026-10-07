@@ -67,25 +67,30 @@ jobs:
         id: core_tests
         timeout-minutes: 10
         run: |
-          set +e
+          status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/core' --summarize
-          status=$?
+          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/core' --summarize || status=$?
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::@opencode-ai/core#test ${elapsed}s (exit ${status})"
           echo "| @opencode-ai/core#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
-        env:
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
-      - name: Report Windows core test failures
-        if: ${{ failure() && runner.os == 'Windows' && steps.core_tests.outcome == 'failure' }}
+      # Windows core failed once in 107s and passed in 90s on the next run.
+      # Repeat with JUnit to capture a test name if it recurs; never mask failure.
+      - name: Repeat Windows core tests with JUnit diagnostics
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        timeout-minutes: 10
         working-directory: packages/core
         env:
+          CORE_TEST_OUTCOME: ${{ steps.core_tests.outcome }}
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "true"
         run: |
           test_status=0
+          start=$SECONDS
           GITHUB_ACTIONS=false bun test --reporter=junit --reporter-outfile=core-test-results.xml || test_status=$?
+          elapsed=$((SECONDS - start))
+          echo "::notice file=.github/workflows/test.yml,line=1,title=Windows core diagnostic duration::@opencode-ai/core#test rerun ${elapsed}s (exit ${test_status})"
+          echo "| @opencode-ai/core#test rerun | ${elapsed}s | ${test_status} |" >> "$GITHUB_STEP_SUMMARY"
           python3 - <<'PY'
           import os
           import xml.etree.ElementTree as ET
@@ -116,37 +121,74 @@ jobs:
               escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
               print(f"::error file={escape(path)},line={line},title=Windows core failure::{escape(message)}")
           PY
-          if [ "$test_status" -eq 0 ]; then
+          if [ "$test_status" -eq 0 ] && [ "$CORE_TEST_OUTCOME" = "failure" ]; then
             echo "::warning title=Windows core diagnostic::The core test failure did not reproduce on the diagnostic rerun"
+          elif [ "$test_status" -ne 0 ] && [ "$CORE_TEST_OUTCOME" = "success" ]; then
+            exit "$test_status"
           fi
 
       - name: Run @opencode-ai/script tests
         timeout-minutes: 5
         run: |
-          set +e
+          status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/script' --summarize
-          status=$?
+          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/script' --summarize || status=$?
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::@opencode-ai/script#test ${elapsed}s (exit ${status})"
           echo "| @opencode-ai/script#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+
+      # Windows alphacode#test hit its 25m cap (Linux CI: 12m07). Local Turbo
+      # splits maxed at 4m46; keep the prompt isolated and cap each group at 12m
+      # with its own Windows timing for further adjustment if needed.
+      - name: Run alphacode CLI tests
+        timeout-minutes: 12
+        run: |
+          status=0
+          start=$SECONDS
+          GITHUB_ACTIONS=false bun turbo run test:ci:cli --filter=alphacode --summarize || status=$?
+          elapsed=$((SECONDS - start))
+          echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:cli ${elapsed}s (exit ${status})"
+          echo "| alphacode#test:ci:cli | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
 
-      # Latest Linux CI measured alphacode#test at 10m06 (16m04 locally); the
-      # prior Windows aggregate step hit its 20m08 cap. Isolate that long pole,
-      # allow 25 minutes, and report its actual duration on both matrix legs.
-      - name: Run alphacode tests
-        timeout-minutes: 25
+      - name: Run alphacode server tests
+        timeout-minutes: 12
         run: |
-          set +e
+          status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter=alphacode --summarize
-          status=$?
+          GITHUB_ACTIONS=false bun turbo run test:ci:server --filter=alphacode --summarize || status=$?
           elapsed=$((SECONDS - start))
-          echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test ${elapsed}s (exit ${status})"
-          echo "| alphacode#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:server ${elapsed}s (exit ${status})"
+          echo "| alphacode#test:ci:server | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+
+      - name: Run alphacode session tests
+        timeout-minutes: 12
+        run: |
+          status=0
+          start=$SECONDS
+          GITHUB_ACTIONS=false bun turbo run test:ci:session --filter=alphacode --summarize || status=$?
+          elapsed=$((SECONDS - start))
+          echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:session ${elapsed}s (exit ${status})"
+          echo "| alphacode#test:ci:session | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+        env:
+          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
+
+      - name: Run remaining alphacode tests
+        timeout-minutes: 12
+        run: |
+          status=0
+          start=$SECONDS
+          GITHUB_ACTIONS=false bun turbo run test:ci:rest --filter=alphacode --summarize || status=$?
+          elapsed=$((SECONDS - start))
+          echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::alphacode#test:ci:rest ${elapsed}s (exit ${status})"
+          echo "| alphacode#test:ci:rest | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
         env:
           OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
@@ -154,10 +196,9 @@ jobs:
       - name: Run @opencode-ai/tui tests
         timeout-minutes: 8
         run: |
-          set +e
+          status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/tui' --summarize
-          status=$?
+          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/tui' --summarize || status=$?
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::@opencode-ai/tui#test ${elapsed}s (exit ${status})"
           echo "| @opencode-ai/tui#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"

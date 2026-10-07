@@ -84,7 +84,8 @@ const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 // after real progress without weakening the generic finish gate.
 const MAX_FINISH_NUDGES = 3
 const MAX_REVIEW_RECOVERY_NUDGES = 3
-// Synthetic review completion has no model-stream cancellation to inherit.
+// Synthetic review completion has no model stream to cancel; the empty input is
+// intentional, so this signal never aborts.
 const NO_ABORT_SIGNAL = AbortSignal.any([])
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",

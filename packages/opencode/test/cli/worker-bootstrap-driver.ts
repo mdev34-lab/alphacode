@@ -52,9 +52,9 @@ while (Date.now() < deadline && !sawSnapshot && !error && !workerClosed) {
   }
 }
 
-// A postMessage that races with normal worker termination can be accepted
-// before the final poll; probe once more so a closed worker is never reported
-// as a healthy worker with no RPC listener.
+// A postMessage racing normal termination can be accepted before the first
+// follow-up poll sees either its snapshot or the worker close; probe again so
+// a closed worker is not mistaken for a live worker with no RPC listener.
 if (!marker && !sawSnapshot && !error && !workerClosed) {
   try {
     worker.postMessage(JSON.stringify({ type: "rpc.request", id: ++requestId, method: "snapshot", input: undefined }))

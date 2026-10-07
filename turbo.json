@@ -13,6 +13,26 @@
       "outputs": [],
       "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
+    "alphacode#test:ci:cli": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
+    },
+    "alphacode#test:ci:server": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
+    },
+    "alphacode#test:ci:session": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
+    },
+    "alphacode#test:ci:rest": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
+    },
     "@opencode-ai/tui#test": {
       "dependsOn": ["^build"],
       "outputs": [],
