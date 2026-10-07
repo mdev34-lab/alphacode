@@ -143,15 +143,55 @@ jobs:
           retention-days: 7
 
       - name: Run @opencode-ai/script tests
+        id: script_tests
         timeout-minutes: 5
         run: |
           status=0
           start=$SECONDS
-          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/script' --summarize || status=$?
+          GITHUB_ACTIONS=false bun turbo test --filter='@opencode-ai/script' --summarize -- --reporter=junit --reporter-outfile=ci-script-test-results.xml || status=$?
           elapsed=$((SECONDS - start))
           echo "::notice file=.github/workflows/test.yml,line=1,title=Package test duration::@opencode-ai/script#test ${elapsed}s (exit ${status})"
           echo "| @opencode-ai/script#test | ${elapsed}s | ${status} |" >> "$GITHUB_STEP_SUMMARY"
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          report = "packages/script/ci-script-test-results.xml"
+          if not os.path.exists(report):
+              print("::warning::Bun did not produce the @opencode-ai/script JUnit report")
+              raise SystemExit(0)
+
+          repo = os.getcwd()
+          escape = lambda value: value.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
+          root = ET.parse(report).getroot()
+          for case in root.iter("testcase"):
+              failure = case.find("failure")
+              if failure is None:
+                  failure = case.find("error")
+              if failure is None:
+                  continue
+              path = case.get("file", "")
+              if os.path.isabs(path):
+                  path = os.path.relpath(path, repo)
+              path = path.replace("\\", "/")
+              if not path.startswith("packages/"):
+                  path = f"packages/script/{path}"
+              line = case.get("line", "1")
+              name = case.get("name", "unknown test")
+              detail = " ".join((failure.get("message", "") + " " + (failure.text or "")).split())
+              message = f"{name}: {detail}"[:3000]
+              print(f"::error file={escape(path)},line={line},title=@opencode-ai/script failure::{escape(message)}")
+          PY
           exit "$status"
+
+      - name: Upload Windows script JUnit report
+        if: ${{ always() && runner.os == 'Windows' && steps.script_tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-script-junit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packages/script/ci-script-test-results.xml
+          if-no-files-found: warn
+          retention-days: 7
 
       # Windows alphacode#test hit its 25m cap (Linux CI: 12m07). Local Turbo
       # splits maxed at 4m46; keep the prompt isolated and cap each group at 12m
