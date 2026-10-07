@@ -152,8 +152,7 @@ describe("silvercode command hints", () => {
         for (const [index, result] of sub.entries()) {
           if (result.exitCode !== 0) failures.push(`silvercode ${parents[index]} --help exited ${result.exitCode}`)
         }
-        const subPaths = sub
-          .flatMap((result) => (result.exitCode === 0 ? documented(result.stderr) : []))
+        const subPaths = sub.flatMap((result) => (result.exitCode === 0 ? documented(result.stderr) : []))
         void subFailures
 
         const all = [...paths, ...subPaths]

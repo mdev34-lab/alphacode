@@ -23,7 +23,10 @@ function bashBlocks(markdown: string): string[][] {
 }
 
 const DIRECTORY = (url: string) => {
-  const base = url.replace(/\.git$/, "").split("/").pop()
+  const base = url
+    .replace(/\.git$/, "")
+    .split("/")
+    .pop()
   if (!base) throw new Error(`cannot derive a directory from ${url}`)
   return base
 }
