@@ -251,7 +251,7 @@ describe("OpenCodeZen", () => {
         },
       ])
 
-      // Malformed configured tiers does not overwrite existing tier at size 0
+      // Malformed configured tiers does not overwrite existing tier at size 0 if it is paid
       const existingWithZero = [
         {
           input: 9,
@@ -262,6 +262,59 @@ describe("OpenCodeZen", () => {
       ]
       const withZeroPreserved = Provider.mergeCostTiers([{ input: 2, output: 4 /* missing tier */ }], existingWithZero)
       expect(withZeroPreserved).toEqual(existingWithZero)
+
+      // Malformed configured tiers overwrites existing tier at size 0 if it has zero cost
+      const existingZeroCostTier = [
+        {
+          input: 0,
+          output: 0,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context" as const, size: 0 },
+        },
+      ]
+      const withZeroOverwritten = Provider.mergeCostTiers(
+        [{ input: 2, output: 4 /* missing tier */ }],
+        existingZeroCostTier,
+      )
+      expect(withZeroOverwritten).toEqual([
+        {
+          input: 1,
+          output: 1,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context", size: 0 },
+        },
+      ])
+      expect(zeroCost({ input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: withZeroOverwritten })).toBe(false)
+
+      // Extra untiered paid cost entry in v2 array format is rejected and triggers invalidFallback
+      const withExtraUntiered = Provider.parseConfigCost(
+        [
+          { input: 0, output: 0, cache: { read: 0, write: 0 } },
+          { input: 10, output: 20 }, // extra untiered paid cost entry
+        ],
+        { input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: existingZeroCostTier },
+      )
+      expect(zeroCost(withExtraUntiered)).toBe(false)
+      expect(withExtraUntiered.tiers).toEqual([
+        {
+          input: 1,
+          output: 1,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context", size: 0 },
+        },
+      ])
+
+      // Invalid base pricing is rejected even if tiers are empty
+      const withInvalidBase = Provider.parseConfigCost(
+        { input: NaN, output: 0 },
+        {
+          input: 0,
+          output: 0,
+          cache: { read: 0, write: 0 },
+          tiers: existingZeroCostTier,
+        },
+      )
+      expect(zeroCost(withInvalidBase)).toBe(false)
     })
 
     test("parseConfigCost handles both v1 and v2 formats including context_over_200k", () => {
@@ -1292,6 +1345,113 @@ it.live("parses v2 array cost format and migrated v1 config through Provider.Ser
                 "v2-tiered-model": {
                   name: "V2 Tiered Model",
                   cost: migratedModel?.cost as any,
+                },
+              },
+            },
+          },
+        },
+      },
+    )
+  }),
+)
+
+it.live("rejects extra untiered paid cost entries and invalid pricing after migration through Provider.Service", () =>
+  Effect.gen(function* () {
+    // 1. Migrate v1 config containing:
+    //    - Model A: base zero cost, but has an untiered paid cost entry in tiers (no tier size)
+    //    - Model B: base zero cost, but has an invalid tier with missing size
+    const migratedV2 = ConfigMigrateV1.migrate({
+      provider: {
+        opencode: {
+          models: {
+            "migrated-untiered-paid": {
+              name: "Migrated Untiered Paid",
+              cost: {
+                input: 0,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+                tiers: [
+                  {
+                    input: 10,
+                    output: 20,
+                  },
+                ],
+              },
+            },
+            "migrated-invalid-tier": {
+              name: "Migrated Invalid Tier",
+              cost: {
+                input: 0,
+                output: 0,
+                cache_read: 0,
+                cache_write: 0,
+                tiers: [
+                  {
+                    input: 5,
+                    output: 10,
+                    tier: {} as any,
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    })
+
+    const modelA = migratedV2.providers?.["opencode"]?.models?.["migrated-untiered-paid"]
+    const modelB = migratedV2.providers?.["opencode"]?.models?.["migrated-invalid-tier"]
+    expect(modelA?.cost).toBeDefined()
+    expect(modelB?.cost).toBeDefined()
+
+    // 2. Load models into Provider.Service with an existing size 0 tier that has zero cost
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const loadedA = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("migrated-untiered-paid"))
+          const loadedB = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("migrated-invalid-tier"))
+
+          // Extra untiered paid cost entry must trigger invalid fallback even when existing size 0 tier was zero
+          expect(zeroCost(loadedA.cost)).toBe(false)
+          expect(loadedA.cost.tiers).toEqual([
+            {
+              input: 1,
+              output: 1,
+              cache: { read: 0, write: 0 },
+              tier: { type: "context", size: 0 },
+            },
+          ])
+          expect(freeTier([loadedA]).has("migrated-untiered-paid")).toBe(false)
+
+          // Invalid tier pricing must also trigger invalid fallback
+          expect(zeroCost(loadedB.cost)).toBe(false)
+          expect(loadedB.cost.tiers).toEqual([
+            {
+              input: 1,
+              output: 1,
+              cache: { read: 0, write: 0 },
+              tier: { type: "context", size: 0 },
+            },
+          ])
+          expect(freeTier([loadedB]).has("migrated-invalid-tier")).toBe(false)
+        }),
+      {
+        config: {
+          formatter: false,
+          lsp: false,
+          provider: {
+            opencode: {
+              options: { baseURL: "http://127.0.0.1:9999", apiKey: "sk-secret" },
+              models: {
+                "migrated-untiered-paid": {
+                  name: "Migrated Untiered Paid",
+                  cost: modelA?.cost as any,
+                },
+                "migrated-invalid-tier": {
+                  name: "Migrated Invalid Tier",
+                  cost: modelB?.cost as any,
                 },
               },
             },

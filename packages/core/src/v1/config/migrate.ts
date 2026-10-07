@@ -231,26 +231,25 @@ function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: st
           write: struct.cache?.write ?? struct.cache_write,
         },
       },
-      ...(struct.tiers
-        ?.map((t) => {
-          const rawSize =
-            typeof t.tier === "number"
-              ? t.tier
-              : isRecord(t.tier) && typeof t.tier.size === "number"
-                ? t.tier.size
-                : undefined
-          if (typeof rawSize !== "number" || !Number.isFinite(rawSize)) return undefined
-          return {
-            tier: { type: "context" as const, size: int(rawSize) },
-            input: t.input,
-            output: t.output,
-            cache: {
-              read: t.cache?.read ?? t.cache_read,
-              write: t.cache?.write ?? t.cache_write,
-            },
-          }
-        })
-        .filter((t): t is NonNullable<typeof t> => t !== undefined) ?? []),
+      ...(struct.tiers?.map((t) => {
+        const rawSize =
+          typeof t.tier === "number"
+            ? t.tier
+            : isRecord(t.tier) && typeof t.tier.size === "number"
+              ? t.tier.size
+              : undefined
+        return {
+          ...(rawSize !== undefined && Number.isFinite(rawSize)
+            ? { tier: { type: "context" as const, size: int(rawSize) } }
+            : {}),
+          input: t.input,
+          output: t.output,
+          cache: {
+            read: t.cache?.read ?? t.cache_read,
+            write: t.cache?.write ?? t.cache_write,
+          },
+        }
+      }) ?? []),
       ...(struct.context_over_200k
         ? [
             {

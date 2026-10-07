@@ -181,6 +181,11 @@ describe("Config", () => {
           output: 8,
           cache: { read: undefined, write: undefined },
         },
+        {
+          input: 9,
+          output: 10,
+          cache: { read: undefined, write: undefined },
+        },
       ])
     }),
   )

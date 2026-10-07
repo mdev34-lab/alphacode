@@ -1105,18 +1105,20 @@ export function normalizeCostTier(
 export function mergeCostTiers(
   rawTiers: unknown,
   existingTiers?: readonly Schema.Schema.Type<typeof ProviderCostTier>[],
+  hasInvalidBase?: boolean,
 ): Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>[] | undefined {
-  if (Array.isArray(rawTiers) && rawTiers.length === 0) return []
-  if (!Array.isArray(rawTiers))
+  if (Array.isArray(rawTiers) && rawTiers.length === 0 && !hasInvalidBase) return []
+  if (!Array.isArray(rawTiers) && !hasInvalidBase)
     return existingTiers as Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>[] | undefined
 
-  const configured = rawTiers
+  const rawArray = Array.isArray(rawTiers) ? rawTiers : []
+  const configured = rawArray
     .map(normalizeCostTier)
     .filter((t): t is Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> => t !== undefined)
 
   // If configured tiers were provided but entries failed normalization, ensure invalid pricing
   // cannot cause a paid model to be classified as free. Retain a non-zero placeholder tier.
-  const hasInvalidTiers = configured.length < rawTiers.length
+  const hasInvalidTiers = Boolean(hasInvalidBase) || configured.length < rawArray.length
 
   // Sentinel non-zero fallback tier used when configured tiers fail normalization.
   // Context size 0 is chosen as a sentinel to ensure it never collides with real
@@ -1137,8 +1139,17 @@ export function mergeCostTiers(
   for (const tier of configured) {
     tierMap.set(tier.tier.size, tier)
   }
-  if (hasInvalidTiers && !tierMap.has(0)) {
-    tierMap.set(0, invalidFallback)
+  if (hasInvalidTiers) {
+    const existingZero = tierMap.get(0)
+    const isZeroTier =
+      !existingZero ||
+      (existingZero.input === 0 &&
+        existingZero.output === 0 &&
+        (existingZero.cache?.read ?? 0) === 0 &&
+        (existingZero.cache?.write ?? 0) === 0)
+    if (isZeroTier) {
+      tierMap.set(0, invalidFallback)
+    }
   }
   return [...tierMap.values()]
 }
@@ -1165,59 +1176,78 @@ export function parseConfigCost(rawCost: unknown, existingCost?: Model["cost"]):
       }
     }
 
-    const baseEntry =
-      rawCost.find((c) => isRecord(c) && c["tier"] === undefined) ?? (isRecord(rawCost[0]) ? rawCost[0] : undefined)
-    const rawTiers = rawCost.filter((c) => isRecord(c) && c["tier"] !== undefined)
+    const baseIndex = rawCost.findIndex((c) => isRecord(c) && c["tier"] === undefined)
+    const baseEntry = baseIndex !== -1 ? rawCost[baseIndex] : isRecord(rawCost[0]) ? rawCost[0] : undefined
+    const rawTiers = rawCost.filter((_, i) => i !== (baseIndex !== -1 ? baseIndex : -1))
 
-    const input = baseEntry && typeof baseEntry["input"] === "number" ? baseEntry["input"] : (existingCost?.input ?? 0)
-    const output =
-      baseEntry && typeof baseEntry["output"] === "number" ? baseEntry["output"] : (existingCost?.output ?? 0)
+    const hasValidInput =
+      isRecord(baseEntry) && typeof baseEntry["input"] === "number" && Number.isFinite(baseEntry["input"])
+    const hasValidOutput =
+      isRecord(baseEntry) && typeof baseEntry["output"] === "number" && Number.isFinite(baseEntry["output"])
+    const hasInvalidBase = baseEntry !== undefined && (!hasValidInput || !hasValidOutput)
 
-    const cacheRead = baseEntry
+    const input = hasValidInput ? (baseEntry["input"] as number) : (existingCost?.input ?? 0)
+    const output = hasValidOutput ? (baseEntry["output"] as number) : (existingCost?.output ?? 0)
+
+    const rawCacheRead = baseEntry
       ? isRecord(baseEntry["cache"])
         ? baseEntry["cache"]["read"]
         : baseEntry["cache_read"]
       : undefined
-    const cacheWrite = baseEntry
+    const rawCacheWrite = baseEntry
       ? isRecord(baseEntry["cache"])
         ? baseEntry["cache"]["write"]
         : baseEntry["cache_write"]
       : undefined
 
+    const hasValidCacheRead =
+      rawCacheRead === undefined || (typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead))
+    const hasValidCacheWrite =
+      rawCacheWrite === undefined || (typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite))
+    const hasInvalidCache = !hasValidCacheRead || !hasValidCacheWrite
+
     const cache = {
-      read: typeof cacheRead === "number" ? cacheRead : (existingCost?.cache.read ?? 0),
-      write: typeof cacheWrite === "number" ? cacheWrite : (existingCost?.cache.write ?? 0),
+      read:
+        typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead)
+          ? rawCacheRead
+          : (existingCost?.cache.read ?? 0),
+      write:
+        typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite)
+          ? rawCacheWrite
+          : (existingCost?.cache.write ?? 0),
     }
 
     const over200k = rawTiers.find((t) => {
+      if (!isRecord(t)) return false
       const size = isRecord(t["tier"]) ? t["tier"]["size"] : t["tier"]
       return size === 200_000
     })
 
     const experimentalOver200K = over200k
       ? {
-          input: typeof over200k["input"] === "number" ? over200k["input"] : 0,
-          output: typeof over200k["output"] === "number" ? over200k["output"] : 0,
+          input: typeof over200k["input"] === "number" && Number.isFinite(over200k["input"]) ? over200k["input"] : 0,
+          output:
+            typeof over200k["output"] === "number" && Number.isFinite(over200k["output"]) ? over200k["output"] : 0,
           cache: {
             read: isRecord(over200k["cache"])
-              ? typeof over200k["cache"]["read"] === "number"
+              ? typeof over200k["cache"]["read"] === "number" && Number.isFinite(over200k["cache"]["read"])
                 ? over200k["cache"]["read"]
                 : 0
-              : typeof over200k["cache_read"] === "number"
+              : typeof over200k["cache_read"] === "number" && Number.isFinite(over200k["cache_read"])
                 ? over200k["cache_read"]
                 : 0,
             write: isRecord(over200k["cache"])
-              ? typeof over200k["cache"]["write"] === "number"
+              ? typeof over200k["cache"]["write"] === "number" && Number.isFinite(over200k["cache"]["write"])
                 ? over200k["cache"]["write"]
                 : 0
-              : typeof over200k["cache_write"] === "number"
+              : typeof over200k["cache_write"] === "number" && Number.isFinite(over200k["cache_write"])
                 ? over200k["cache_write"]
                 : 0,
           },
         }
       : existingCost?.experimentalOver200K
 
-    const mergedTiers = mergeCostTiers(rawTiers, existingCost?.tiers)
+    const mergedTiers = mergeCostTiers(rawTiers, existingCost?.tiers, hasInvalidBase || hasInvalidCache)
 
     return {
       input,
@@ -1230,28 +1260,48 @@ export function parseConfigCost(rawCost: unknown, existingCost?: Model["cost"]):
 
   // Handle single object (v1 format or v2 single Cost object)
   if (isRecord(rawCost)) {
-    const input = typeof rawCost["input"] === "number" ? rawCost["input"] : (existingCost?.input ?? 0)
-    const output = typeof rawCost["output"] === "number" ? rawCost["output"] : (existingCost?.output ?? 0)
+    const hasValidInput = typeof rawCost["input"] === "number" && Number.isFinite(rawCost["input"])
+    const hasValidOutput = typeof rawCost["output"] === "number" && Number.isFinite(rawCost["output"])
+    const hasInvalidBase =
+      (rawCost["input"] !== undefined && !hasValidInput) || (rawCost["output"] !== undefined && !hasValidOutput)
 
-    const cacheRead = isRecord(rawCost["cache"]) ? rawCost["cache"]["read"] : rawCost["cache_read"]
-    const cacheWrite = isRecord(rawCost["cache"]) ? rawCost["cache"]["write"] : rawCost["cache_write"]
+    const input = hasValidInput ? (rawCost["input"] as number) : (existingCost?.input ?? 0)
+    const output = hasValidOutput ? (rawCost["output"] as number) : (existingCost?.output ?? 0)
+
+    const rawCacheRead = isRecord(rawCost["cache"]) ? rawCost["cache"]["read"] : rawCost["cache_read"]
+    const rawCacheWrite = isRecord(rawCost["cache"]) ? rawCost["cache"]["write"] : rawCost["cache_write"]
+    const hasValidCacheRead =
+      rawCacheRead === undefined || (typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead))
+    const hasValidCacheWrite =
+      rawCacheWrite === undefined || (typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite))
+    const hasInvalidCache = !hasValidCacheRead || !hasValidCacheWrite
 
     const cache = {
-      read: typeof cacheRead === "number" ? cacheRead : (existingCost?.cache.read ?? 0),
-      write: typeof cacheWrite === "number" ? cacheWrite : (existingCost?.cache.write ?? 0),
+      read:
+        typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead)
+          ? rawCacheRead
+          : (existingCost?.cache.read ?? 0),
+      write:
+        typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite)
+          ? rawCacheWrite
+          : (existingCost?.cache.write ?? 0),
     }
 
-    const mergedTiers = mergeCostTiers(rawCost["tiers"], existingCost?.tiers)
+    const mergedTiers = mergeCostTiers(rawCost["tiers"], existingCost?.tiers, hasInvalidBase || hasInvalidCache)
 
     let experimentalOver200K = existingCost?.experimentalOver200K
     if (isRecord(rawCost["context_over_200k"])) {
       const co200 = rawCost["context_over_200k"]
       experimentalOver200K = {
-        input: typeof co200["input"] === "number" ? co200["input"] : 0,
-        output: typeof co200["output"] === "number" ? co200["output"] : 0,
+        input: typeof co200["input"] === "number" && Number.isFinite(co200["input"]) ? co200["input"] : 0,
+        output: typeof co200["output"] === "number" && Number.isFinite(co200["output"]) ? co200["output"] : 0,
         cache: {
-          read: typeof co200["cache_read"] === "number" ? co200["cache_read"] : 0,
-          write: typeof co200["cache_write"] === "number" ? co200["cache_write"] : 0,
+          read:
+            typeof co200["cache_read"] === "number" && Number.isFinite(co200["cache_read"]) ? co200["cache_read"] : 0,
+          write:
+            typeof co200["cache_write"] === "number" && Number.isFinite(co200["cache_write"])
+              ? co200["cache_write"]
+              : 0,
         },
       }
     }
