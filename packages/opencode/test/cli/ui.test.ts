@@ -12,11 +12,14 @@ test("plain wordmark is derived from the shared logo art", () => {
     const expected = clean(logo.left[index] + " " + (logo.right[index] ?? ""))
       .replaceAll("^", "▀")
       .replaceAll(/[_~,]/g, " ")
-    // The plain renderer emits the whole wordmark through `trimEnd`, which only
-    // ever strips trailing blank cells from the last row (shadow marks in the
-    // body rows are no longer whitespace once expanded).
-    expect(row).toBe(index === rows.length - 1 ? expected.trimEnd() : expected)
+    // The plain renderer drops the rectangular template's trailing blanks, so
+    // captured help/log output never carries trailing whitespace.
+    expect(row).toBe(expected.trimEnd())
   }
+})
+
+test("plain wordmark has no trailing whitespace", () => {
+  expect(UI.logo()).not.toMatch(/[ \t]+$/m)
 })
 
 test("plain wordmark expands every shadow mark", () => {
@@ -29,4 +32,26 @@ test("plain wordmark honours the pad", () => {
       .split("\n")
       .every((row) => row.startsWith("  ")),
   ).toBe(true)
+})
+
+test("colored wordmark keeps the highlighted half on one column", () => {
+  // The colored renderer pads the muted half so the highlighted half lines up
+  // on every row; trimming the left half (rather than only line ends) would
+  // slide `code` left on the rows that end in blanks.
+  const plain = (row: string) => row.replaceAll("^", "▀").replaceAll(/[_~,]/g, " ")
+  const stdout = Object.getOwnPropertyDescriptor(process.stdout, "isTTY")
+  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true })
+  try {
+    const rows = UI.logo().split("\n")
+    expect(rows).toHaveLength(logo.left.length)
+    for (const [index, row] of rows.entries()) {
+      const left = plain(logo.left[index]!)
+      const visible = row.replace(/\x1b\[[0-9;]*m/g, "")
+      expect(visible.startsWith(left + " ")).toBe(true)
+      expect(visible.slice(left.length + 1)).toBe(plain(logo.right[index]!).trimEnd())
+    }
+  } finally {
+    if (stdout) Object.defineProperty(process.stdout, "isTTY", stdout)
+    else delete (process.stdout as { isTTY?: boolean }).isTTY
+  }
 })

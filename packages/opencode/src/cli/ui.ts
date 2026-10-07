@@ -50,7 +50,10 @@ export function logo(pad?: string) {
     const result = []
     for (const row of wordmark) {
       if (pad) result.push(pad)
-      result.push(row)
+      // The art is a rectangular template, so every row carries trailing
+      // blanks up to the widest glyph. Non-TTY output (help text, logs) should
+      // not, or the art leaves trailing whitespace in captured output.
+      result.push(row.trimEnd())
       result.push(EOL)
     }
     return result.join("").trimEnd()
@@ -94,10 +97,12 @@ export function logo(pad?: string) {
   }
   glyphs.left.forEach((row, index) => {
     if (pad) result.push(pad)
+    // Only the trailing side may be trimmed: the left half is padded to a
+    // fixed column so the highlighted half starts at the same x on every row.
     result.push(draw(row, left.fg, left.shadow, left.bg))
     result.push(gap)
     const other = glyphs.right[index] ?? ""
-    result.push(draw(other, right.fg, right.shadow, right.bg))
+    result.push(draw(other.trimEnd(), right.fg, right.shadow, right.bg))
     result.push(EOL)
   })
   return result.join("").trimEnd()

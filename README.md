@@ -17,7 +17,7 @@ curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/inst
 To build from source:
 
 ```bash
-git clone https://github.com/mdev34-lab/alphacode.git
+git clone https://github.com/mdev34-lab/alphacode.git silvercode
 cd silvercode
 bun install
 ./packages/opencode/script/build.ts --single
