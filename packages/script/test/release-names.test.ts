@@ -32,6 +32,26 @@ describe("release surface", () => {
     expect(Object.keys(pkg.bin)).toEqual(["silvercode"])
   })
 
+  test("installer target suffixes mirror the build's artifact matrix", () => {
+    // build.ts names a target `pkg.name-os-arch[-baseline][-abi]`; the
+    // installer has to append the same qualifiers in the same order or it
+    // requests an archive that was never produced.
+    const install = read("install")
+    expect(install).toContain('target="$os-$arch"')
+    const baseline = install.indexOf('target="$target-baseline"')
+    const musl = install.indexOf('target="$target-musl"')
+    expect(baseline).toBeGreaterThan(-1)
+    expect(musl).toBeGreaterThan(baseline)
+
+    const build = read("packages/opencode/script/build.ts")
+    const avx2 = build.indexOf('item.avx2 === false ? "baseline" : undefined')
+    const abi = build.indexOf("item.abi === undefined ? undefined : item.abi")
+    expect(avx2).toBeGreaterThan(-1)
+    expect(abi).toBeGreaterThan(avx2)
+    expect(build).toContain("const name = [")
+    expect(build).toContain('item.os === "win32" ? "windows" : item.os')
+  })
+
   test("installer and updater point at the repository that actually exists", () => {
     const install = read("install")
     expect(install).toContain(`https://github.com/${REPO}/releases/latest/download/install`)
