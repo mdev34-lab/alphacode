@@ -17,7 +17,8 @@ const REPO = "mdev34-lab/alphacode"
 describe("release surface", () => {
   test("installer requests the artifact names that the build publishes", () => {
     const install = read("install")
-    const app = install.match(/^APP=(.+)$/m)?.[1]
+    // `.trim()` keeps this honest on Windows checkouts, which are CRLF.
+    const app = install.match(/^APP=(.+)$/m)?.[1]?.trim()
     expect(app).toBeDefined()
 
     const pkg = JSON.parse(read("packages/opencode/package.json")) as { name: string; bin: Record<string, string> }
