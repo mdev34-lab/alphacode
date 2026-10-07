@@ -49,6 +49,26 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
+      - name: Install ripgrep for Windows tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "15.1.0"
+          $archive = Join-Path $env:RUNNER_TEMP "ripgrep-$version.zip"
+          $installDir = Join-Path $env:RUNNER_TEMP "ripgrep-$version"
+          $url = "https://github.com/BurntSushi/ripgrep/releases/download/$version/ripgrep-$version-x86_64-pc-windows-msvc.zip"
+          & curl.exe --fail --location --retry 3 --retry-delay 2 --output $archive $url
+          if ($LASTEXITCODE -ne 0) { throw "Failed to download ripgrep $version" }
+          Expand-Archive -Path $archive -DestinationPath $installDir -Force
+          $binaryDir = Join-Path $installDir "ripgrep-$version-x86_64-pc-windows-msvc"
+          $binary = Join-Path $binaryDir "rg.exe"
+          if (-not (Test-Path $binary)) { throw "Ripgrep archive did not contain rg.exe: $binary" }
+          [System.IO.File]::AppendAllText($env:GITHUB_PATH, "$binaryDir`n")
+          $env:PATH = "$binaryDir;$env:PATH"
+          $resolved = Get-Command rg.exe -ErrorAction Stop
+          & $resolved.Source --version
+
       - name: Configure git identity
         run: |
           git config --global user.email "bot@opencode.ai"
