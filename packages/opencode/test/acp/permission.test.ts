@@ -15,6 +15,8 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { ACPEvent } from "@/acp/event"
+import { ACPRequests } from "@/acp/requests"
+import * as ACPService from "@/acp/service"
 import { ACPSession } from "@/acp/session"
 
 type PermissionEvent = Extract<Event, { type: "permission.asked" }>
@@ -40,6 +42,13 @@ const pollUntil = async (
   }
 }
 
+/**
+ * Lets a cancel that was asked for reach the wire. The SDK writes `$/cancel_request` through
+ * the same stream as the request, which is asynchronous, so asserting straight after an event
+ * would pass even with a cancel already on its way.
+ */
+const settleWire = () => Bun.sleep(20)
+
 function makeSessionService() {
   return ManagedRuntime.make(LayerNode.compile(ACPSession.node)).runSync(
     ACPSession.Service.use((service) => Effect.succeed(service)),
@@ -47,28 +56,69 @@ function makeSessionService() {
 }
 
 /**
- * A real SDK connection over an in-memory stream, so a test can assert on the JSON-RPC ids
- * the SDK actually puts on the wire rather than on a fake that mimics how it allocates them.
- * Nothing is ever written back: requests are left unanswered on purpose.
+ * A real SDK connection over an in-memory stream, with the far end played by this harness: a
+ * `session/request_permission` read off the wire is answered back on it, and every message is
+ * recorded. The JSON-RPC id of a request exists only on that wire, so this is what a cancel has
+ * to be asserted against — no part of the SDK's internals is faked or reached into.
  */
-function realConnection() {
+function wireEditor(requestPermission: (params: RequestPermissionRequest) => Promise<RequestPermissionResponse>) {
+  const asked: RequestPermissionRequest[] = []
+  const cancellations: Array<{ method: string; params: Record<string, unknown> }> = []
   const sent: Array<Record<string, unknown>> = []
   const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
   let buffer = ""
-  const incoming = new ReadableStream<Uint8Array>({ start() {} })
+  let inbound: ReadableStreamDefaultController<Uint8Array> | undefined
+  const incoming = new ReadableStream<Uint8Array>({
+    start(controller) {
+      inbound = controller
+    },
+  })
+  const send = (message: Record<string, unknown>) => inbound?.enqueue(encoder.encode(`${JSON.stringify(message)}\n`))
   const outgoing = new WritableStream<Uint8Array>({
     write(chunk) {
       buffer += decoder.decode(chunk, { stream: true })
       const lines = buffer.split("\n")
       buffer = lines.pop() ?? ""
       for (const line of lines) {
-        if (line.trim()) sent.push(JSON.parse(line) as Record<string, unknown>)
+        if (!line.trim()) continue
+        const message = JSON.parse(line) as Record<string, unknown>
+        sent.push(message)
+        if (message["method"] === "$/cancel_request") {
+          cancellations.push({ method: "$/cancel_request", params: message["params"] as Record<string, unknown> })
+        }
+        if (message["method"] !== "session/request_permission") continue
+        const params = message["params"] as RequestPermissionRequest
+        asked.push(params)
+        // Answered the way a real editor answers, so the SDK resolves the request it sent — or
+        // rejects it, when the test has the editor fail.
+        void requestPermission(params).then(
+          (result) => send({ jsonrpc: "2.0", id: message["id"], result }),
+          (error: unknown) =>
+            send({
+              jsonrpc: "2.0",
+              id: message["id"],
+              error: { code: -32603, message: error instanceof Error ? error.message : String(error) },
+            }),
+        )
       }
     },
   })
-  // The agent side is never exercised here: only the outgoing direction matters.
-  const connection = new AgentSideConnection(() => ({}) as Agent, ndJsonStream(outgoing, incoming))
-  return { connection, sent }
+  const tracker = ACPRequests.make()
+  // Nothing is ever dispatched to an agent here: only the outgoing direction matters.
+  const connection = new AgentSideConnection(() => ({}) as Agent, tracker.stream(ndJsonStream(outgoing, incoming)))
+  return { asked, cancellations, connection, sent, tracker }
+}
+
+/** The JSON-RPC id the SDK gave the `session/request_permission` that carried `toolCallId`. */
+function askedOnTheWire(sent: Array<Record<string, unknown>>, toolCallId: string) {
+  const message = sent.find((candidate) => {
+    if (candidate["method"] !== "session/request_permission") return false
+    const params = candidate["params"] as { toolCall?: { toolCallId?: string } } | undefined
+    return params?.toolCall?.toolCallId === toolCallId
+  })
+  if (!message) throw new Error(`no permission request for ${toolCallId} reached the wire`)
+  return message["id"]
 }
 
 /**
@@ -110,12 +160,10 @@ function createHarness(
     // Leaves `requestPermission` off the connection, as an editor that does not implement it
     // would: prompts are then rejected back to the server instead of being asked.
     readonly noRequestPermission?: boolean
-    // Substitutes a real SDK connection for the fake one below.
-    readonly connection?: AgentSideConnection
-    // Stands in for the SDK's private transport, which is where the JSON-RPC id of an
-    // outgoing request comes from. Left out by default: a SDK that hides those fields must
-    // degrade to not cancelling rather than to guessing an id.
-    readonly transport?: boolean
+    // Puts a real SDK connection on an in-memory wire in place of the fake below, which is
+    // where a JSON-RPC id to cancel by comes from. Left out by default: with no wire there is
+    // no id, and the handler must degrade to not cancelling rather than to guessing one.
+    readonly wire?: boolean
   } = {},
 ) {
   const replies: PermissionReplyParams[] = []
@@ -134,8 +182,6 @@ function createHarness(
           }),
       }
     : sessions
-  // The real SDK allocates the id for an outgoing request from this counter, inside the call.
-  const transport = { nextRequestId: 41 }
   const sdk = {
     permission: {
       reply: (params: PermissionReplyParams) => {
@@ -149,14 +195,13 @@ function createHarness(
       message: () => Promise.resolve({ data: undefined }),
     },
   } as unknown as OpencodeClient
-  // `satisfies` below keeps the fake honest about the shapes the handler relies on,
-  // including the private transport the JSON-RPC id is read from.
-  const connection = {
+  const wire = options.wire ? wireEditor(requestPermission) : undefined
+  // `satisfies` below keeps the fake honest about the shapes the handler relies on.
+  const fake = {
     ...(options.noRequestPermission
       ? {}
       : {
           requestPermission: (params: RequestPermissionRequest) => {
-            transport.nextRequestId += 1
             requests.push(params)
             return requestPermission(params)
           },
@@ -169,13 +214,27 @@ function createHarness(
       cancellations.push({ method, params })
       return Promise.resolve()
     },
-    ...(options.transport ? { connection: transport } : {}),
-  } satisfies Partial<Pick<AgentSideConnection, "requestPermission" | "sessionUpdate" | "extNotification">> & {
-    readonly connection?: { nextRequestId: number }
-  }
-  const subscription = new ACPEvent.Subscription({ sdk, connection: options.connection ?? connection, session })
+  } satisfies Partial<Pick<AgentSideConnection, "requestPermission" | "sessionUpdate" | "extNotification">>
+  const connection = wire ? wire.connection : fake
+  // Without a wire there is nothing to read a JSON-RPC id off, so the tracker cancels nothing.
+  const subscription = new ACPEvent.Subscription({
+    sdk,
+    connection,
+    session,
+    requests: wire ? wire.tracker : ACPRequests.make(),
+  })
 
-  return { cancellations, connection, replies, requests, sdk, session, subscription, updates }
+  return {
+    cancellations: wire ? wire.cancellations : cancellations,
+    connection,
+    replies,
+    requests: wire ? wire.asked : requests,
+    sdk,
+    sent: wire?.sent ?? [],
+    session,
+    subscription,
+    updates,
+  }
 }
 
 async function createSession(session: ACPSession.Interface, sessionId: string, cwd = "/workspace") {
@@ -540,8 +599,8 @@ describe("acp permissions", () => {
     answers[1]?.({ outcome: { outcome: "selected", optionId: "always" } })
     await pollUntil(() => harness.replies.length === 1, "the live prompt was never replied")
     expect(harness.replies).toEqual([{ requestID: "perm_next", reply: "always", directory: "/workspace" }])
-    // No transport in this harness, so there is no request id to aim a cancel at: the wait
-    // is still released, which is what frees OpenCode.
+    // No wire in this harness, so there is no request id to aim a cancel at. What frees
+    // OpenCode is the wait being released, and that is the part under test here.
     expect(harness.cancellations).toEqual([])
   })
 
@@ -663,7 +722,7 @@ describe("acp permissions", () => {
   })
 
   it("cancels the editor dialog when the server settles an open prompt", async () => {
-    const harness = createHarness(() => new Promise<RequestPermissionResponse>(() => {}), { transport: true })
+    const harness = createHarness(() => new Promise<RequestPermissionResponse>(() => {}), { wire: true })
     await createSession(harness.session, "ses_a")
 
     harness.subscription.handle(
@@ -673,11 +732,14 @@ describe("acp permissions", () => {
 
     harness.subscription.handle(permissionReplied("ses_a", "perm_open", "timeout"))
 
-    await pollUntil(() => harness.cancellations.length === 1, "the editor was never told to close the dialog")
-    // 41 is the id the transport hands out for the first request: the handler reads that
-    // counter immediately before the call, which is what makes the cancel aim at the open
-    // request rather than at the next one.
-    expect(harness.cancellations).toEqual([{ method: "$/cancel_request", params: { requestId: 41 } }])
+    await pollUntil(() => harness.cancellations.length >= 1, "the editor was never told to close the dialog")
+    await settleWire()
+    // Aimed by the JSON-RPC id the SDK gave that request on the wire, read back off it rather
+    // than out of the SDK: an id that no longer lines up with the request fails right here, and
+    // so does a second cancel for a dialog that is already closed.
+    expect(harness.cancellations).toEqual([
+      { method: "$/cancel_request", params: { requestId: askedOnTheWire(harness.sent, "call_1") } },
+    ])
   })
 
   it("does not cancel a dialog the editor has just answered", async () => {
@@ -685,7 +747,7 @@ describe("acp permissions", () => {
     const hold = new Promise<void>((resolve) => {
       posted = resolve
     })
-    const harness = createHarness(undefined, { transport: true, replyHold: hold })
+    const harness = createHarness(undefined, { wire: true, replyHold: hold })
     await createSession(harness.session, "ses_a")
 
     harness.subscription.handle(
@@ -695,8 +757,8 @@ describe("acp permissions", () => {
     // the `permission.replied` event it caused reaches the handler.
     await pollUntil(() => harness.replies.length === 1, "the editor answer was never posted")
     harness.subscription.handle(permissionReplied("ses_a", "perm_answered", "once"))
-    // Cancelling is synchronous, so this needs no wait: a dialog the editor completed must
-    // not be told to close.
+    await settleWire()
+    // A dialog the editor completed must not be told to close.
     expect(harness.cancellations).toEqual([])
 
     posted?.()
@@ -704,16 +766,17 @@ describe("acp permissions", () => {
       permissionAsked("ses_a", "perm_next", { tool: { messageID: "msg_1", callID: "call_2" } }),
     )
     await pollUntil(() => harness.requests.length === 2, "the queue never reached the next prompt")
+    await settleWire()
     expect(harness.cancellations).toEqual([])
   })
 
-  it("does not cancel a prompt whose request never reached the editor", async () => {
+  it("does not cancel a prompt whose request the editor failed", async () => {
     let posted: (() => void) | undefined
     const hold = new Promise<void>((resolve) => {
       posted = resolve
     })
     const harness = createHarness(() => Promise.reject(new Error("editor went away")), {
-      transport: true,
+      wire: true,
       replyHold: hold,
     })
     await createSession(harness.session, "ses_a")
@@ -725,41 +788,86 @@ describe("acp permissions", () => {
     // that post causes arrives while it is still in flight.
     await pollUntil(() => harness.replies.length === 1, "the rejection was never posted")
     harness.subscription.handle(permissionReplied("ses_a", "perm_failed", "reject"))
+    await settleWire()
+    // The request already failed, so there is no dialog to close: a cancel here would be aimed
+    // at an id the editor has finished with.
     expect(harness.cancellations).toEqual([])
     expect(harness.replies).toEqual([{ requestID: "perm_failed", reply: "reject", directory: "/workspace" }])
 
     posted?.()
   })
 
-  it("cancels by the request id the real SDK puts on the wire", async () => {
-    const { connection, sent } = realConnection()
-    const harness = createHarness(undefined, { connection })
-    await createSession(harness.session, "ses_a")
-    // One request ahead of the prompt, so the id under test is not the counter's initial
-    // value. Only its id allocation matters, so it is left unanswered.
-    void connection.writeTextFile({ sessionId: "ses_a", path: "/workspace/a.ts", content: "a\n" }).catch(() => {})
-    const wire = (method: string) => sent.find((message) => message["method"] === method)
-
-    harness.subscription.handle(
-      permissionAsked("ses_a", "perm_wire", { tool: { messageID: "msg_1", callID: "call_1" } }),
-    )
-    await pollUntil(() => wire("session/request_permission") !== undefined, "the editor was never asked")
-
-    harness.subscription.handle(permissionReplied("ses_a", "perm_wire", "timeout"))
-
-    await pollUntil(() => wire("$/cancel_request") !== undefined, "the editor was never told to close the dialog")
-    // Aimed at the request the SDK really sent. The id comes from the connection's private
-    // counter, read immediately before the call that allocates from it, so an SDK that moves
-    // or hides that counter yields no id, no notification, and a failure here — which is the
-    // point: the pinned version is 0.21.0 and this is what says so out loud.
-    expect(wire("$/cancel_request")).toMatchObject({
-      params: { requestId: wire("session/request_permission")?.["id"] },
+  it("cancels through the tracker the service was handed", async () => {
+    // Built the way `opencode acp` builds it — the service creates the event subscription and
+    // starts it — so this is the wiring that has to carry the tracker from `ACPService.make`
+    // down to the handler that cancels. A tracker lost on the way would leave every dialog
+    // open and nothing else would fail.
+    const editor = wireEditor(() => new Promise<RequestPermissionResponse>(() => {}))
+    const session = makeSessionService()
+    // The subscription reads events from the server; this one never yields, so the test drives
+    // the handler through the subscription the service reports back instead.
+    const idle = new Promise<void>(() => {})
+    const sdk = {
+      global: {
+        event: () =>
+          Promise.resolve({
+            stream: (async function* () {
+              await idle
+            })(),
+          }),
+      },
+      permission: { reply: () => Promise.resolve({ data: true }) },
+    } as unknown as OpencodeClient
+    let subscription: ACPEvent.Subscription | undefined
+    ACPService.make({
+      sdk,
+      connection: editor.connection,
+      session,
+      requests: editor.tracker,
+      eventSubscription: (created) => {
+        subscription = created
+      },
     })
-    expect(wire("session/request_permission")?.["id"]).toBe(1)
+    if (!subscription) throw new Error("the service never reported its event subscription")
+    await createSession(session, "ses_a")
+
+    subscription.handle(permissionAsked("ses_a", "perm_service", { tool: { messageID: "msg_1", callID: "call_1" } }))
+    await pollUntil(() => editor.asked.length === 1, "the editor was never asked")
+
+    subscription.handle(permissionReplied("ses_a", "perm_service", "timeout"))
+
+    await pollUntil(() => editor.cancellations.length >= 1, "the editor was never told to close the dialog")
+    await settleWire()
+    expect(editor.cancellations).toEqual([
+      { method: "$/cancel_request", params: { requestId: askedOnTheWire(editor.sent, "call_1") } },
+    ])
+  })
+
+  it("cancels the request that belongs to the settled prompt, not the other one open", async () => {
+    const harness = createHarness(() => new Promise<RequestPermissionResponse>(() => {}), { wire: true })
+    await createSession(harness.session, "ses_a")
+    await createSession(harness.session, "ses_b")
+
+    // Prompts for different sessions are not serialized, so both dialogs are open at once and
+    // the cancel has to pick the request that belongs to the prompt the server settled.
+    harness.subscription.handle(permissionAsked("ses_a", "perm_a", { tool: { messageID: "msg_1", callID: "call_a" } }))
+    harness.subscription.handle(permissionAsked("ses_b", "perm_b", { tool: { messageID: "msg_1", callID: "call_b" } }))
+    await pollUntil(() => harness.requests.length === 2, "both editors were never asked")
+
+    harness.subscription.handle(permissionReplied("ses_a", "perm_a", "timeout"))
+
+    await pollUntil(() => harness.cancellations.length >= 1, "the editor was never told to close the dialog")
+    await settleWire()
+    expect(harness.cancellations).toEqual([
+      { method: "$/cancel_request", params: { requestId: askedOnTheWire(harness.sent, "call_a") } },
+    ])
+    expect(harness.cancellations[0]?.params["requestId"]).not.toBe(askedOnTheWire(harness.sent, "call_b"))
+    // The other dialog is still open, and still owed an answer by its editor.
+    expect(harness.requests[1]).toMatchObject({ toolCall: { toolCallId: "call_b" } })
   })
 
   it("stops tracking a prompt whose handling throws", async () => {
-    const harness = createHarness(undefined, { replyError: new Error("reply failed"), transport: true })
+    const harness = createHarness(undefined, { replyError: new Error("reply failed"), wire: true })
     await createSession(harness.session, "ses_a")
 
     harness.subscription.handle(
@@ -775,7 +883,7 @@ describe("acp permissions", () => {
     // were still tracked would be cancelled here, aiming at a dialog the editor already
     // closed when it answered.
     harness.subscription.handle(permissionReplied("ses_a", "perm_throw", "once"))
-    await Bun.sleep(20)
+    await settleWire()
     expect(harness.cancellations).toEqual([])
 
     // And the session queue is not stuck behind the prompt that threw.

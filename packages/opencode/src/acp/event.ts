@@ -10,6 +10,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import { Effect } from "effect"
 import { signal } from "@/util/signal"
+import { ACPRequests } from "./requests"
 import { ACPSession } from "./session"
 import { ACPPermission } from "./permission"
 import { isInternalContextPart } from "@opencode-ai/schema/v1/session"
@@ -32,7 +33,12 @@ type GlobalEventStream = {
   stream: AsyncIterable<GlobalEventEnvelope>
 }
 
-export function start(input: { sdk: OpencodeClient; connection: Connection; session: ACPSession.Interface }) {
+export function start(input: {
+  sdk: OpencodeClient
+  connection: Connection
+  session: ACPSession.Interface
+  requests: ACPRequests.Interface
+}) {
   const subscription = new Subscription(input)
   subscription.start()
   return subscription
@@ -53,6 +59,12 @@ export class Subscription {
       sdk: OpencodeClient
       connection: Connection
       session: ACPSession.Interface
+      /**
+       * Where the JSON-RPC ids of outgoing requests come from, which is what lets a permission
+       * dialog be cancelled. A tracker whose stream was never wrapped around the connection
+       * learns no ids and so cancels nothing, which is what a caller without a wire wants.
+       */
+      requests: ACPRequests.Interface
     },
   ) {
     this.permission = new ACPPermission.Handler(input)

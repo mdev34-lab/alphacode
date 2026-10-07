@@ -15,17 +15,30 @@ import {
   type SetSessionConfigOptionRequest,
   type SetSessionModelRequest,
   type SetSessionModeRequest,
+  type Stream,
 } from "@agentclientprotocol/sdk"
 import { Effect } from "effect"
 import type { OpencodeClient } from "@opencode-ai/sdk/v2"
 import * as ACPError from "./error"
+import { ACPRequests } from "./requests"
 import * as ACPService from "./service"
 
 export function init({ sdk: _sdk }: { sdk: OpencodeClient }) {
+  // One tracker for the process, shared by the stream below and the handler that cancels
+  // through it: the ids it reads off the wire are the ids the handler aims its cancels by. Both
+  // halves have to be the same instance, or a dialog is never closed and nothing fails loudly —
+  // which is why the tracker is part of what is returned here.
+  const requests = ACPRequests.make()
   return {
+    requests,
     create: (connection: AgentSideConnection) => {
-      return new Agent(ACPService.make({ sdk: _sdk, connection }))
+      return new Agent(ACPService.make({ sdk: _sdk, connection, requests }))
     },
+    /**
+     * The stream to build the connection on: `inner` with every outgoing message observed, so
+     * a request's JSON-RPC id becomes known. Without it there is no id to cancel by.
+     */
+    stream: (inner: Stream) => requests.stream(inner),
   }
 }
 
