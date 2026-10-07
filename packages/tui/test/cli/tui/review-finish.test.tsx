@@ -26,6 +26,7 @@ import { LocationProvider } from "../../../src/context/location"
 import { OpencodeKeymapProvider, registerOpencodeKeymap } from "../../../src/keymap"
 import { computeActivityGroups, type ActivityGroups } from "../../../src/util/activity"
 import { SessionContext, parseReviewReport, reviewFindingLocation, sortReviewFindings, toolRenderer } from "../../../src/routes/session"
+import { ReviewReport } from "@opencode-ai/core/review-report"
 import type { Provider, ToolPart } from "@opencode-ai/sdk/v2"
 
 const SESSION = "ses_review_finish"
@@ -384,16 +385,16 @@ describe("review finish rendering", () => {
     // visible without scrolling.
     const { app } = await mountSession(finishPart({ status: "completed", result: reviewResult() }), { height: 56 })
     await app.waitForFrame((frame: string) => frame.includes("Raw review report"))
-    expect(frameOf(app)).not.toContain("alphacode-review")
+    expect(frameOf(app)).not.toContain(ReviewReport.TAG)
 
     await app.mockMouse.click(5, rowOf(frameOf(app), "Raw review report"))
-    await app.waitForFrame((frame: string) => frame.includes("alphacode-review"))
+    await app.waitForFrame((frame: string) => frame.includes(ReviewReport.TAG))
     const frame = frameOf(app)
-    expect(frame).toContain("<alphacode-review>")
+    expect(frame).toContain(`<${ReviewReport.TAG}>`)
     expect(frame).toContain('"assessment": "needs-fixes"')
 
     await app.mockMouse.click(5, rowOf(frame, "Click to hide the raw report"))
-    await app.waitForFrame((frame: string) => !frame.includes("alphacode-review"))
+    await app.waitForFrame((frame: string) => !frame.includes(ReviewReport.TAG))
     expect(frameOf(app)).toContain("Raw review report")
   })
 
