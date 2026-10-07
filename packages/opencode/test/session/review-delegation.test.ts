@@ -170,6 +170,11 @@ const cfg = {
     general: { finishTool: false },
     plan: { finishTool: false },
     custom: { finishTool: false, mode: "primary" as const },
+    // Waiting on a subagent is opt-in per agent (#173), and every arm below
+    // asserts the blocking handoff, so the reviewer is opted in. It is configured
+    // under the requested name because a `review` request is routed to the
+    // parent's specialist reviewer (`work-review` for the default primary here).
+    review: { background: false },
   },
   provider: {
     test: {

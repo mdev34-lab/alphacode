@@ -118,8 +118,30 @@ function isReviewTask(part: ReviewHistoryPart) {
   return part.type === "tool" && part.tool === "task" && inputRecord(part)?.subagent_type === "review"
 }
 
-function isSynchronousReviewTask(part: ReviewHistoryPart) {
-  return isReviewTask(part) && inputRecord(part)?.background === false
+/**
+ * Whether this review ran - and so delivers its verdict - in the parent's own
+ * turn, as opposed to being handed to the background registry.
+ *
+ * The mode the tool recorded on its result decides, because the mode the caller
+ * *asked for* stopped being a reliable record of it: synchronous execution is a
+ * per-agent opt-in, so a `background: false` request can come back as a launch,
+ * and a caller who said nothing can get a foreground run. `background: false` in
+ * the input and `background: true` on the metadata therefore describe the same
+ * call from two sides, and only the second one is the outcome. The flag is also
+ * what a promotion leaves behind - `BackgroundJob.promote` sets it when a wait
+ * that started in the foreground is detached mid-run - so a lost wait reads as
+ * what it is: no verdict here.
+ *
+ * A transcript from before the field existed carries no recorded mode at all. For
+ * those the request is the only record, and it was a faithful one: the tool
+ * waited exactly when it was told to, so `background: false` in the input means a
+ * delivered review, and anything else means it was never meant to be counted.
+ */
+function isForegroundReviewTask(part: ReviewHistoryPart) {
+  if (!isReviewTask(part)) return false
+  const metadata = isRecord(part.state?.metadata) ? part.state.metadata : undefined
+  if (typeof metadata?.background === "boolean") return !metadata.background
+  return inputRecord(part)?.background === false
 }
 
 function taskTerminationReason(part: ReviewHistoryPart) {
@@ -135,7 +157,7 @@ function taskTerminationReason(part: ReviewHistoryPart) {
  * to the iteration cap and disable the review gate entirely.
  */
 function isCancelledReviewTask(part: ReviewHistoryPart) {
-  if (!isSynchronousReviewTask(part)) return false
+  if (!isForegroundReviewTask(part)) return false
   if (part.state?.status === "cancelled") return true
   return taskTerminationReason(part) === "cancelled"
 }
@@ -216,7 +238,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
 
   for (const part of current.flatMap((message) => message.parts)) {
     if (isReviewTask(part)) {
-      if (!isSynchronousReviewTask(part)) continue
+      if (!isForegroundReviewTask(part)) continue
       // A cancelled review is a non-event: it never delivered a verdict, so it
       // neither counts toward the cap nor disturbs the verdict already on
       // record.
@@ -230,6 +252,13 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
         termination = undefined
         continue
       }
+
+      // Reaching here means the verdict landed in this turn: a part that was
+      // routed to the background, or promoted out of a wait mid-run, recorded
+      // `background: true` and was excluded above. Counting one of those would
+      // advance the review cap and clear `workSinceReview` with no reviewer ever
+      // having seen the work - the failure this file already refuses for cancelled
+      // reviews.
 
       reviews++
       latest =
