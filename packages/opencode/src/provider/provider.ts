@@ -1073,31 +1073,66 @@ const ProviderCost = Schema.Struct({
   ),
 })
 
-function normalizeCostTier(item: unknown): Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> | undefined {
+export function normalizeCostTier(
+  item: unknown,
+): Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> | undefined {
   if (!isRecord(item)) return undefined
-  if (typeof item["input"] !== "number" || typeof item["output"] !== "number") return undefined
-  const cache = isRecord(item["cache"])
-    ? {
-        read: typeof item["cache"]["read"] === "number" ? item["cache"]["read"] : 0,
-        write: typeof item["cache"]["write"] === "number" ? item["cache"]["write"] : 0,
-      }
-    : {
-        read: typeof item["cache_read"] === "number" ? item["cache_read"] : 0,
-        write: typeof item["cache_write"] === "number" ? item["cache_write"] : 0,
-      }
-  const tier =
-    isRecord(item["tier"]) && typeof item["tier"]["size"] === "number"
-      ? { type: "context" as const, size: item["tier"]["size"] }
-      : typeof item["tier"] === "number"
-        ? { type: "context" as const, size: item["tier"] }
-        : undefined
-  if (!tier) return undefined
-  return {
-    input: item["input"],
-    output: item["output"],
-    cache,
-    tier,
+  if (!Number.isFinite(item["input"]) || !Number.isFinite(item["output"])) return undefined
+  const cacheRead = isRecord(item["cache"]) ? item["cache"]["read"] : item["cache_read"]
+  const cacheWrite = isRecord(item["cache"]) ? item["cache"]["write"] : item["cache_write"]
+  if (cacheRead !== undefined && !Number.isFinite(cacheRead)) return undefined
+  if (cacheWrite !== undefined && !Number.isFinite(cacheWrite)) return undefined
+  const cache = {
+    read: typeof cacheRead === "number" ? cacheRead : 0,
+    write: typeof cacheWrite === "number" ? cacheWrite : 0,
   }
+  const rawSize = isRecord(item["tier"]) && item["tier"]["size"] !== undefined ? item["tier"]["size"] : item["tier"]
+  if (!Number.isFinite(rawSize)) return undefined
+  return {
+    input: item["input"] as number,
+    output: item["output"] as number,
+    cache,
+    tier: {
+      type: "context" as const,
+      size: rawSize as number,
+    },
+  }
+}
+
+export function mergeCostTiers(
+  rawTiers: unknown,
+  existingTiers?: readonly Schema.Schema.Type<typeof ProviderCostTier>[],
+): Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>[] | undefined {
+  if (Array.isArray(rawTiers) && rawTiers.length === 0) return []
+  if (!Array.isArray(rawTiers))
+    return existingTiers as Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>[] | undefined
+
+  const configured = rawTiers
+    .map(normalizeCostTier)
+    .filter((t): t is Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> => t !== undefined)
+
+  // If configured tiers were provided but entries failed normalization, ensure invalid pricing
+  // cannot cause a paid model to be classified as free. Retain a non-zero placeholder tier.
+  const hasInvalidTiers = configured.length < rawTiers.length
+  const invalidFallback: Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> = {
+    input: 1,
+    output: 1,
+    cache: { read: 0, write: 0 },
+    tier: { type: "context", size: 0 },
+  }
+
+  const existing = existingTiers ?? []
+  const tierMap = new Map<number, Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>>()
+  for (const tier of existing) {
+    tierMap.set(tier.tier.size, tier)
+  }
+  for (const tier of configured) {
+    tierMap.set(tier.tier.size, tier)
+  }
+  if (hasInvalidTiers && (configured.length === 0 || !tierMap.has(0))) {
+    tierMap.set(0, invalidFallback)
+  }
+  return [...tierMap.values()]
 }
 
 const ProviderLimit = Schema.Struct({
@@ -1543,26 +1578,7 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
-            const mergedTiers = iife(() => {
-              const rawTiers = model?.cost?.tiers
-              if (Array.isArray(rawTiers) && rawTiers.length === 0) return []
-              const configured = Array.isArray(rawTiers)
-                ? (rawTiers as unknown[])
-                    .map(normalizeCostTier)
-                    .filter((t): t is Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> => t !== undefined)
-                : undefined
-              const existing = existingModel?.cost?.tiers
-              if (!configured || configured.length === 0) return existing
-              if (!existing || existing.length === 0) return configured
-              const tierMap = new Map<number, Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>>()
-              for (const tier of existing) {
-                tierMap.set(tier.tier.size, tier)
-              }
-              for (const tier of configured) {
-                tierMap.set(tier.tier.size, tier)
-              }
-              return [...tierMap.values()]
-            })
+            const mergedTiers = mergeCostTiers(model?.cost?.tiers, existingModel?.cost?.tiers)
 
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),

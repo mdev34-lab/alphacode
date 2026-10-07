@@ -10,6 +10,26 @@ const InterleavedField = Schema.Union([
   Schema.String,
 ])
 
+export const CostTier = Schema.Struct({
+  input: Schema.Finite,
+  output: Schema.Finite,
+  cache_read: Schema.optional(Schema.Finite),
+  cache_write: Schema.optional(Schema.Finite),
+  cache: Schema.optional(
+    Schema.Struct({
+      read: Schema.optional(Schema.Finite),
+      write: Schema.optional(Schema.Finite),
+    }),
+  ),
+  tier: Schema.Union([
+    Schema.Struct({
+      type: Schema.optional(Schema.String),
+      size: Schema.Finite,
+    }),
+    Schema.Finite,
+  ]),
+})
+
 export const Model = Schema.Struct({
   id: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
@@ -34,7 +54,7 @@ export const Model = Schema.Struct({
       output: Schema.Finite,
       cache_read: Schema.optional(Schema.Finite),
       cache_write: Schema.optional(Schema.Finite),
-      tiers: Schema.optional(Schema.Array(Schema.Any)),
+      tiers: Schema.optional(Schema.Array(CostTier)),
       context_over_200k: Schema.optional(
         Schema.Struct({
           input: Schema.Finite,

@@ -31,14 +31,21 @@ import { ProviderError } from "./error"
 /**
  * Exact User-Agent wire contract required by the OpenCode Zen free-tier gateway.
  *
- * The Zen gateway strictly inspects client identity on free tier calls and
- * responds with 403 FreeTierError when presented with SDK library user agents,
- * arbitrary custom user agents, or dynamically-derived local development versions
- * (such as `opencode/local`). It is therefore pinned to the canonical release string
- * `opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14` rather than
- * computed dynamically at runtime from local package versions. Any change to
- * this string constitutes an external wire protocol contract change that must be
- * coordinated with and validated against the gateway.
+ * Evidence & Wire Specification (GitHub Issue #200):
+ * The Zen free-tier gateway (`https://opencode.ai/zen/v1`) enforces client identity checks
+ * on free-tier models (`deepseek-v4-flash-free`, `big-pickle`, `mimo-v2.5-free`, etc.).
+ * Standard AI SDK library user agents (e.g. `@ai-sdk/openai-compatible`), raw HTTP clients,
+ * and drifted local development strings (such as `opencode/local`) fail gateway verification
+ * with `403 FreeTierError` before any model execution starts.
+ *
+ * The protocol requires the exact client user agent tuple:
+ * `opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14`
+ * together with `x-opencode-client: cli` and `Authorization: Bearer public`.
+ *
+ * This value is deliberately pinned as a protocol wire contract rather than computed from
+ * runtime package versions, because dynamic derivation would drift with local Bun or SDK
+ * upgrades and break free-tier access in customer environments. Updating this string
+ * requires a coordinated gateway contract update and live gateway verification.
  */
 export const ZEN_USER_AGENT = "opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"
 
@@ -125,7 +132,8 @@ export type ModelCost = Cost & {
 export function zeroCost(cost: ModelCost) {
   const entries = [cost, ...(cost.tiers ?? []), ...(cost.experimentalOver200K ? [cost.experimentalOver200K] : [])]
   return entries.every(
-    (entry) => entry.input === 0 && entry.output === 0 && entry.cache.read === 0 && entry.cache.write === 0,
+    (entry) =>
+      entry.input === 0 && entry.output === 0 && (entry.cache?.read ?? 0) === 0 && (entry.cache?.write ?? 0) === 0,
   )
 }
 

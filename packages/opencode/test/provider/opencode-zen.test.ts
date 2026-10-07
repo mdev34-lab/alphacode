@@ -159,6 +159,86 @@ describe("OpenCodeZen", () => {
       ).toBe(false)
     })
 
+    test("normalizeCostTier enforces finite numbers and rejects non-finite values", () => {
+      expect(
+        Provider.normalizeCostTier({
+          input: 1,
+          output: 2,
+          cache: { read: 0.1, write: 0.2 },
+          tier: { type: "context", size: 128_000 },
+        }),
+      ).toEqual({
+        input: 1,
+        output: 2,
+        cache: { read: 0.1, write: 0.2 },
+        tier: { type: "context", size: 128_000 },
+      })
+
+      // Non-finite values (NaN, Infinity) must be rejected
+      expect(Provider.normalizeCostTier({ input: NaN, output: 2, tier: 100_000 })).toBeUndefined()
+      expect(Provider.normalizeCostTier({ input: 1, output: Infinity, tier: 100_000 })).toBeUndefined()
+      expect(Provider.normalizeCostTier({ input: 1, output: 2, tier: Number.POSITIVE_INFINITY })).toBeUndefined()
+      expect(Provider.normalizeCostTier({ input: 1, output: 2, tier: { size: NaN } })).toBeUndefined()
+      expect(
+        Provider.normalizeCostTier({ input: 1, output: 2, cache: { read: Infinity, write: 0 }, tier: 100_000 }),
+      ).toBeUndefined()
+      expect(Provider.normalizeCostTier({ input: 1, output: 2, cache_read: NaN, tier: 100_000 })).toBeUndefined()
+      expect(Provider.normalizeCostTier({ input: 1, output: 2 })).toBeUndefined()
+      expect(Provider.normalizeCostTier("invalid")).toBeUndefined()
+    })
+
+    test("mergeCostTiers merges tiers and ensures malformed tiers cannot make model free", () => {
+      const existing = [
+        {
+          input: 3,
+          output: 15,
+          cache: { read: 0.3, write: 3.75 },
+          tier: { type: "context" as const, size: 200_000 },
+        },
+      ]
+
+      // Undefined raw tiers returns existing tiers
+      expect(Provider.mergeCostTiers(undefined, existing)).toEqual(existing)
+
+      // Empty array explicitly clears tiers
+      expect(Provider.mergeCostTiers([], existing)).toEqual([])
+
+      // Valid tiers override matching size and union new sizes
+      const merged = Provider.mergeCostTiers(
+        [
+          { input: 2, output: 10, tier: 200_000 },
+          { input: 5, output: 25, tier: 500_000 },
+        ],
+        existing,
+      )
+      expect(merged).toEqual([
+        {
+          input: 2,
+          output: 10,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context", size: 200_000 },
+        },
+        {
+          input: 5,
+          output: 25,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context", size: 500_000 },
+        },
+      ])
+
+      // Malformed configured tiers insert non-zero fallback tier so zeroCost returns false
+      const withMalformed = Provider.mergeCostTiers([{ input: 2, output: 4 /* missing tier */ }])
+      expect(withMalformed).toEqual([
+        {
+          input: 1,
+          output: 1,
+          cache: { read: 0, write: 0 },
+          tier: { type: "context", size: 0 },
+        },
+      ])
+      expect(zeroCost({ input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: withMalformed })).toBe(false)
+    })
+
     test("regenerates request ids", () => {
       expect(requestID(() => ZEN_UUID)).toBe(`msg_${ZEN_UUID}`)
       expect(requestID()).toMatch(/^msg_[0-9a-f-]{36}$/)
@@ -967,14 +1047,22 @@ it.live("merges configured model.cost.tiers with existing model tiers through Pr
       () =>
         Effect.gen(function* () {
           const provider = yield* Provider.Service
-          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("configured-tier-priced"))
+          // claude-sonnet-4 is in the opencode catalog with a tier at size 200_000.
+          // Config overrides size 200_000 and adds a new tier at size 500_000.
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("claude-sonnet-4"))
           expect(model.cost?.tiers).toBeDefined()
           expect(model.cost?.tiers).toEqual([
             {
-              input: 2,
-              output: 4,
+              input: 5,
+              output: 20,
+              cache: { read: 0.5, write: 5 },
+              tier: { type: "context", size: 200_000 },
+            },
+            {
+              input: 10,
+              output: 35,
               cache: { read: 0, write: 0 },
-              tier: { type: "context", size: 128_000 },
+              tier: { type: "context", size: 500_000 },
             },
           ])
         }),
@@ -986,21 +1074,25 @@ it.live("merges configured model.cost.tiers with existing model tiers through Pr
             opencode: {
               options: { baseURL: "http://127.0.0.1:9999", apiKey: "sk-secret" },
               models: {
-                "configured-tier-priced": {
-                  name: "Configured Tier Priced",
-                  tool_call: true,
+                "claude-sonnet-4": {
+                  name: "Claude Sonnet 4 Custom Tiers",
                   cost: {
-                    input: 0,
-                    output: 0,
+                    input: 3,
+                    output: 15,
                     tiers: [
                       {
-                        input: 2,
-                        output: 4,
-                        tier: { type: "context", size: 128_000 },
+                        input: 5,
+                        output: 20,
+                        cache: { read: 0.5, write: 5 },
+                        tier: { type: "context", size: 200_000 },
+                      },
+                      {
+                        input: 10,
+                        output: 35,
+                        tier: { type: "context", size: 500_000 },
                       },
                     ],
                   },
-                  limit: { context: 300_000, output: 10_000 },
                 },
               },
             },

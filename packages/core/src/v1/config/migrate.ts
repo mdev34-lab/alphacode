@@ -199,6 +199,18 @@ function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: st
       output: info.cost.output,
       cache: { read: info.cost.cache_read, write: info.cost.cache_write },
     },
+    ...(info.cost.tiers?.map((t) => ({
+      tier:
+        typeof t.tier === "number"
+          ? { type: "context" as const, size: int(t.tier) }
+          : { type: "context" as const, size: int(t.tier.size) },
+      input: t.input,
+      output: t.output,
+      cache: {
+        read: t.cache?.read ?? t.cache_read,
+        write: t.cache?.write ?? t.cache_write,
+      },
+    })) ?? []),
     ...(info.cost.context_over_200k
       ? [
           {
