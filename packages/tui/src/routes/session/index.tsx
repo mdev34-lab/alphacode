@@ -38,6 +38,7 @@ import type {
   ReasoningPart,
   SessionStatus,
 } from "@opencode-ai/sdk/v2"
+import { ReviewReport } from "@opencode-ai/core/review-report"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
@@ -2155,6 +2156,12 @@ function Invalid(props: ToolProps) {
 function Finish(props: ToolProps) {
   const ctx = use()
   const result = createMemo(() => finishResult(props.input, props.output))
+  // A completed review subagent delivers its report through a tagged
+  // `<alphacode-review>` envelope in the finish result. Render that
+  // structurally instead of dumping the raw JSON; only a completed part
+  // qualifies, since a running finish can still be declined by the review
+  // gate and must not pre-announce its verdict.
+  const review = createMemo(() => (props.part.state.status === "completed" ? parseReviewReport(result()) : undefined))
   const [expanded, setExpanded] = createSignal(false)
   const collapsed = createMemo(() =>
     collapseToolOutput(
@@ -2172,18 +2179,25 @@ function Finish(props: ToolProps) {
   })
 
   return (
-    <InlineTool
-      icon={view().icon}
-      pending={view().pending}
-      complete={view().complete}
-      spinner={view().spinner}
-      failure={view().failure}
-      separate={true}
-      part={props.part}
-      onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+    <Show
+      when={review()}
+      fallback={
+        <InlineTool
+          icon={view().icon}
+          pending={view().pending}
+          complete={view().complete}
+          spinner={view().spinner}
+          failure={view().failure}
+          separate={true}
+          part={props.part}
+          onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+        >
+          {content()}
+        </InlineTool>
+      }
     >
-      {content()}
-    </InlineTool>
+      {(item) => <ReviewFinish review={item()} part={props.part} />}
+    </Show>
   )
 }
 
@@ -2222,6 +2236,154 @@ export function finishToolView(status: FinishToolStatus, result?: string) {
     failure: "Finish failed",
     children: result ? `Task completed\n↳ ${result}` : "Task completed",
   }
+}
+
+/**
+ * Parse a finish result into the review report it carries, when it does.
+ * Detection reuses the runtime's canonical extractor (`ReviewReport.extract`)
+ * instead of re-parsing the envelope ad hoc, so the display cannot drift from
+ * the delivery protocol: only a complete, version-1 `<alphacode-review>`
+ * envelope resolves to a report, and the surrounding text is returned as the
+ * human-readable analysis. Anything else — a plain finish, a truncated or
+ * malformed envelope — stays a plain finish result.
+ */
+export function parseReviewReport(result: string | undefined) {
+  if (!result) return undefined
+  const delivery = ReviewReport.extract([result])
+  return delivery.ok ? { report: delivery.report, analysis: delivery.analysis } : undefined
+}
+
+const REVIEW_SEVERITY_ORDER: Record<ReviewReport.Finding["severity"], number> = {
+  critical: 0,
+  important: 1,
+  minor: 2,
+}
+
+/** Review findings ordered by severity (critical, important, minor), stably. */
+export function sortReviewFindings(findings: readonly ReviewReport.Finding[]) {
+  return findings
+    .map((finding, index) => ({ finding, index }))
+    .sort(
+      (a, b) =>
+        REVIEW_SEVERITY_ORDER[a.finding.severity] - REVIEW_SEVERITY_ORDER[b.finding.severity] || a.index - b.index,
+    )
+    .map((entry) => entry.finding)
+}
+
+/**
+ * The `file:line` locator for a finding, when the report names a file.
+ * A line without a file would render as a bare `:42`, so it is dropped.
+ */
+export function reviewFindingLocation(finding: ReviewReport.Finding): string | undefined {
+  const file = finding.file?.trim()
+  if (!file) return undefined
+  const line =
+    finding.line !== undefined && Number.isInteger(finding.line) && finding.line > 0 ? `:${finding.line}` : ""
+  return file + line
+}
+
+function ReviewFinish(props: { review: { report: ReviewReport.Info; analysis: string }; part: ToolPart }) {
+  const { theme } = useTheme()
+  const ctx = use()
+  const [expanded, setExpanded] = createSignal(false)
+  const [rawOpen, setRawOpen] = createSignal(false)
+
+  // Read props.review through memos: the finish result (and therefore the
+  // extracted report) can change while the component stays mounted, e.g.
+  // when the part is updated in place. Plain consts would capture the first
+  // report and keep rendering stale data under the unkeyed <Show> in Finish.
+  const report = createMemo(() => props.review.report)
+  const approved = createMemo(() => report().assessment === "approved")
+  const findings = createMemo(() => sortReviewFindings(report().findings))
+  const analysis = createMemo(() => props.review.analysis.trim())
+  const analysisCollapsed = createMemo(() =>
+    collapseToolOutput(
+      analysis(),
+      COLLAPSED_TOOL_PREVIEW_LINES,
+      COLLAPSED_TOOL_PREVIEW_LINES * Math.max(20, ctx.width - 6),
+    ),
+  )
+  const expandable = createMemo(() =>
+    analysisCollapsed().overflow || findings().some((finding) => (finding.detail ?? "").trim() !== ""),
+  )
+  // The envelope is stripped from the default view; the exact canonical
+  // JSON stays reachable on demand, re-serialized the same way the runtime
+  // delivers it to the parent agent.
+  const rawReport = createMemo(() => capOutputLines(ReviewReport.envelope(report())))
+  const revision = createMemo(() => (report().revision ? Locale.truncateMiddle(report().revision, 24) : undefined))
+
+  const severityColor = (severity: ReviewReport.Finding["severity"]) =>
+    severity === "critical" ? theme.error : severity === "important" ? theme.warning : theme.textMuted
+
+  return (
+    <>
+      <BlockTool
+        title={"# Review" + (revision() ? ` · ${revision()}` : "")}
+        part={props.part}
+        onClick={expandable() ? () => setExpanded((prev) => !prev) : undefined}
+      >
+        <box gap={1}>
+          <text fg={theme.text}>
+            <span style={{ fg: approved() ? theme.success : theme.error, bold: true }}>
+              {approved() ? "✓ Approved" : "✗ Needs fixes"}
+            </span>
+            <Show when={findings().length > 0}>
+              <span style={{ fg: theme.textMuted }}>
+                {" · "}{findings().length} finding{findings().length === 1 ? "" : "s"}
+              </span>
+            </Show>
+          </text>
+          <text fg={theme.text}>{report().summary}</text>
+          <Show when={analysis()}>
+            <text fg={theme.text}>
+              {expanded() || !analysisCollapsed().overflow ? analysis() : analysisCollapsed().output}
+            </text>
+          </Show>
+          <Show when={findings().length > 0}>
+            <box>
+              <For each={findings()}>
+                {(finding) => {
+                  const loc = reviewFindingLocation(finding)
+                  return (
+                    <>
+                      <text fg={theme.text}>
+                        {"↳ "}
+                        <span style={{ fg: severityColor(finding.severity), bold: true }}>{finding.severity}</span>
+                        {" · "}{finding.title}
+                        {loc ? ` (${loc})` : ""}
+                      </text>
+                      <Show when={expanded() && (finding.detail ?? "").trim() !== ""}>
+                        <text fg={theme.text}>
+                          {"   ↳ "}{finding.detail}
+                        </text>
+                      </Show>
+                    </>
+                  )
+                }}
+              </For>
+            </box>
+          </Show>
+          <Show when={expandable()}>
+            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
+          </Show>
+        </box>
+      </BlockTool>
+      <InlineTool
+        icon="⚙"
+        pending="Preparing review report..."
+        complete={true}
+        part={props.part}
+        onClick={() => setRawOpen((prev) => !prev)}
+      >
+        {rawOpen() ? "Click to hide the raw report" : "Raw review report"}
+      </InlineTool>
+      <Show when={rawOpen()}>
+        <box paddingLeft={5}>
+          <text fg={theme.textMuted}>{rawReport()}</text>
+        </box>
+      </Show>
+    </>
+  )
 }
 
 function InlineTool(props: {
