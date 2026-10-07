@@ -1142,13 +1142,26 @@ export function mergeCostTiers(
   if (hasInvalidTiers) {
     const existingZero = tierMap.get(0)
     const isZeroTier =
-      !existingZero ||
-      (existingZero.input === 0 &&
-        existingZero.output === 0 &&
-        (existingZero.cache?.read ?? 0) === 0 &&
-        (existingZero.cache?.write ?? 0) === 0)
-    if (isZeroTier) {
+      existingZero &&
+      existingZero.input === 0 &&
+      existingZero.output === 0 &&
+      (existingZero.cache?.read ?? 0) === 0 &&
+      (existingZero.cache?.write ?? 0) === 0
+
+    if (!existingZero) {
       tierMap.set(0, invalidFallback)
+    } else if (isZeroTier) {
+      // Existing valid zero-cost tier at size 0 must remain intact.
+      // Place the non-zero sentinel tier at a non-colliding context threshold so invalid
+      // pricing remains non-free without overwriting the existing valid zero-cost tier.
+      let sentinelSize = Number.MAX_SAFE_INTEGER
+      while (tierMap.has(sentinelSize)) {
+        sentinelSize--
+      }
+      tierMap.set(sentinelSize, {
+        ...invalidFallback,
+        tier: { type: "context", size: sentinelSize },
+      })
     }
   }
   return [...tierMap.values()]

@@ -263,7 +263,7 @@ describe("OpenCodeZen", () => {
       const withZeroPreserved = Provider.mergeCostTiers([{ input: 2, output: 4 /* missing tier */ }], existingWithZero)
       expect(withZeroPreserved).toEqual(existingWithZero)
 
-      // Malformed configured tiers overwrites existing tier at size 0 if it has zero cost
+      // Malformed configured tiers preserves existing tier at size 0 intact while invalid pricing is nonfree
       const existingZeroCostTier = [
         {
           input: 0,
@@ -272,21 +272,27 @@ describe("OpenCodeZen", () => {
           tier: { type: "context" as const, size: 0 },
         },
       ]
-      const withZeroOverwritten = Provider.mergeCostTiers(
+      const withZeroPreservedAndNonfree = Provider.mergeCostTiers(
         [{ input: 2, output: 4 /* missing tier */ }],
         existingZeroCostTier,
       )
-      expect(withZeroOverwritten).toEqual([
+      expect(withZeroPreservedAndNonfree).toEqual([
+        existingZeroCostTier[0],
         {
           input: 1,
           output: 1,
           cache: { read: 0, write: 0 },
-          tier: { type: "context", size: 0 },
+          tier: { type: "context", size: Number.MAX_SAFE_INTEGER },
         },
       ])
-      expect(zeroCost({ input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: withZeroOverwritten })).toBe(false)
+      // Existing valid zero-cost tier at size 0 remains intact
+      expect(withZeroPreservedAndNonfree?.find((t) => t.tier.size === 0)).toEqual(existingZeroCostTier[0])
+      // Model with invalid configured pricing is non-free
+      expect(zeroCost({ input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: withZeroPreservedAndNonfree })).toBe(
+        false,
+      )
 
-      // Extra untiered paid cost entry in v2 array format is rejected and triggers invalidFallback
+      // Extra untiered paid cost entry in v2 array format is rejected and triggers invalidFallback while preserving existing size 0 tier
       const withExtraUntiered = Provider.parseConfigCost(
         [
           { input: 0, output: 0, cache: { read: 0, write: 0 } },
@@ -295,14 +301,13 @@ describe("OpenCodeZen", () => {
         { input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: existingZeroCostTier },
       )
       expect(zeroCost(withExtraUntiered)).toBe(false)
-      expect(withExtraUntiered.tiers).toEqual([
-        {
-          input: 1,
-          output: 1,
-          cache: { read: 0, write: 0 },
-          tier: { type: "context", size: 0 },
-        },
-      ])
+      expect(withExtraUntiered.tiers?.find((t) => t.tier.size === 0)).toEqual(existingZeroCostTier[0])
+      expect(withExtraUntiered.tiers?.find((t) => t.tier.size === Number.MAX_SAFE_INTEGER)).toEqual({
+        input: 1,
+        output: 1,
+        cache: { read: 0, write: 0 },
+        tier: { type: "context", size: Number.MAX_SAFE_INTEGER },
+      })
 
       // Invalid base pricing is rejected even if tiers are empty
       const withInvalidBase = Provider.parseConfigCost(
@@ -315,6 +320,7 @@ describe("OpenCodeZen", () => {
         },
       )
       expect(zeroCost(withInvalidBase)).toBe(false)
+      expect(withInvalidBase.tiers?.find((t) => t.tier.size === 0)).toEqual(existingZeroCostTier[0])
     })
 
     test("parseConfigCost handles both v1 and v2 formats including context_over_200k", () => {
