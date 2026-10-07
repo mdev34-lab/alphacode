@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Exit, Schema } from "effect"
+import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { ConfigAgentV1 } from "@opencode-ai/core/v1/config/agent"
 import { Config } from "@/config/config"
 import { ConfigParse } from "@/config/parse"
 import { Agent as AgentSvc } from "../../src/agent/agent"
+import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(LayerNode.group([Config.node, AgentSvc.node])))
@@ -33,6 +35,43 @@ describe("config agent background", () => {
         },
       },
     },
+  )
+
+  // The opt-in is read from `Agent.Info`, but it is declared on the shared agent
+  // config schema, which several loaders feed: `opencode.json`, an agent markdown
+  // file's frontmatter, and config blocks keyed by the pre-rename `build` id. A
+  // field that only reaches the runtime through one of them is a field users will
+  // write in the wrong place, so these arms pin the two loaders the task tool
+  // depends on but does not implement.
+  it.instance("background is read from an agent markdown file's frontmatter", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(test.directory, ".opencode", "agent", "strict-reviewer.md"),
+          `---\nmode: subagent\nbackground: false\n---\nReview strictly.`,
+        ),
+      )
+
+      const agent = yield* AgentSvc.Service
+      expect((yield* agent.get("strict-reviewer"))?.background).toBe(false)
+    }),
+  )
+
+  it.instance(
+    "background written under the legacy `build` id lands on the canonical agent",
+    () =>
+      Effect.gen(function* () {
+        const agent = yield* AgentSvc.Service
+        // `Agent.state` canonicalizes the config key before applying it and
+        // `Agent.get` resolves a legacy lookup the same way, so a pre-rename block
+        // still gates the agent that runs. The task tool reads both the resolved and
+        // the requested name through `Agent.get`, which is what makes an alias reach
+        // the execution-mode decision instead of configuring nothing.
+        expect((yield* agent.get("work"))?.background).toBe(false)
+        expect((yield* agent.get("build"))?.background).toBe(false)
+      }),
+    { config: { agent: { build: { background: false } } } },
   )
 
   test("background is a known agent key, not an option passthrough", () => {
