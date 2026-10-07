@@ -1,10 +1,10 @@
 name: diagnose-windows-tui
 
 on:
-  pull_request:
+  workflow_dispatch:
 
 concurrency:
-  group: diagnose-windows-tui-${{ github.event.pull_request.number }}
+  group: diagnose-windows-tui-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
