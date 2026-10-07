@@ -5818,22 +5818,6 @@
                   "permission": {
                     "$ref": "#/components/schemas/PermissionRuleset"
                   },
-                  "model": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string"
-                      },
-                      "providerID": {
-                        "type": "string"
-                      },
-                      "variant": {
-                        "type": "string"
-                      }
-                    },
-                    "required": ["id", "providerID"],
-                    "additionalProperties": false
-                  },
                   "time": {
                     "type": "object",
                     "properties": {
@@ -7396,87 +7380,6 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.prompt_async({\n  ...\n})"
-          }
-        ]
-      }
-    },
-    "/session/{sessionID}/resume": {
-      "post": {
-        "tags": ["session"],
-        "operationId": "session.resume",
-        "parameters": [
-          {
-            "name": "sessionID",
-            "in": "path",
-            "schema": {
-              "type": "string",
-              "pattern": "^ses"
-            },
-            "required": true
-          },
-          {
-            "name": "directory",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "required": false
-          },
-          {
-            "name": "workspace",
-            "in": "query",
-            "schema": {
-              "type": "string"
-            },
-            "required": false
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Whether the agent loop was driven",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "boolean",
-                  "description": "Whether the agent loop was driven"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "BadRequest | InvalidRequestError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
-                    },
-                    {
-                      "$ref": "#/components/schemas/InvalidRequestError"
-                    }
-                  ]
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "NotFoundError",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/NotFoundError"
-                }
-              }
-            }
-          }
-        },
-        "description": "Drive the session's pending/current state through the agent loop without adding a new user message. Returns false when the session has nothing to resume.",
-        "summary": "Resume session",
-        "x-codeSamples": [
-          {
-            "lang": "js",
-            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.resume({\n  ...\n})"
           }
         ]
       }
@@ -16600,14 +16503,6 @@
           },
           "finish": {
             "type": "string"
-          },
-          "ttft": {
-            "type": "number",
-            "minimum": 0
-          },
-          "tokensPerSecond": {
-            "type": "number",
-            "exclusiveMinimum": 0
           }
         },
         "required": [
@@ -20948,9 +20843,6 @@
             "type": "integer",
             "exclusiveMinimum": 0
           },
-          "finishTool": {
-            "type": "boolean"
-          },
           "permission": {
             "$ref": "#/components/schemas/PermissionConfig"
           }
@@ -21530,16 +21422,6 @@
             "type": "integer",
             "minimum": 0
           },
-          "review_loop": {
-            "type": "object",
-            "properties": {
-              "max_iterations": {
-                "type": "integer",
-                "exclusiveMinimum": 0
-              }
-            },
-            "additionalProperties": false
-          },
           "username": {
             "type": "string"
           },
@@ -21722,9 +21604,6 @@
               "type": "string"
             }
           },
-          "ste_lite": {
-            "type": "boolean"
-          },
           "layout": {
             "$ref": "#/components/schemas/LayoutConfig"
           },
@@ -21736,31 +21615,6 @@
             "additionalProperties": {
               "type": "boolean"
             }
-          },
-          "tool_search": {
-            "type": "object",
-            "properties": {
-              "enabled": {
-                "type": "boolean"
-              },
-              "always_load": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "defer": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "limit": {
-                "type": "integer",
-                "exclusiveMinimum": 0
-              }
-            },
-            "additionalProperties": false
           },
           "attachment": {
             "$ref": "#/components/schemas/AttachmentConfig"
@@ -22856,9 +22710,6 @@
           },
           "steps": {
             "type": "number"
-          },
-          "finishTool": {
-            "type": "boolean"
           }
         },
         "required": ["name", "mode", "permission", "options"],
@@ -24873,9 +24724,6 @@
       "PromptFileAttachment": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string"
-          },
           "uri": {
             "type": "string"
           },
@@ -24890,32 +24738,6 @@
           },
           "source": {
             "$ref": "#/components/schemas/PromptSource"
-          },
-          "path": {
-            "type": "string"
-          },
-          "size": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["NaN"]
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity"]
-              },
-              {
-                "type": "string",
-                "enum": ["-Infinity"]
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity", "-Infinity", "NaN"]
-              }
-            ]
           }
         },
         "required": ["uri", "mime"],
@@ -27647,9 +27469,6 @@
       "PromptInputFileAttachment": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string"
-          },
           "uri": {
             "type": "string"
           },
@@ -30066,53 +29885,6 @@
           }
         },
         "required": ["id", "type", "data"],
-        "additionalProperties": false
-      },
-      "PromptFileAttachment1": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "uri": {
-            "type": "string"
-          },
-          "mime": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "source": {
-            "$ref": "#/components/schemas/PromptSource"
-          },
-          "path": {
-            "type": "string"
-          },
-          "size": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["NaN"]
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity"]
-              },
-              {
-                "type": "string",
-                "enum": ["-Infinity"]
-              }
-            ]
-          }
-        },
-        "required": ["uri", "mime"],
         "additionalProperties": false
       },
       "ModelApi": {
@@ -34599,53 +34371,6 @@
           }
         },
         "required": ["id", "type", "properties"],
-        "additionalProperties": false
-      },
-      "PromptFileAttachment2": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "uri": {
-            "type": "string"
-          },
-          "mime": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "source": {
-            "$ref": "#/components/schemas/PromptSource"
-          },
-          "path": {
-            "type": "string"
-          },
-          "size": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "string",
-                "enum": ["NaN"]
-              },
-              {
-                "type": "string",
-                "enum": ["Infinity"]
-              },
-              {
-                "type": "string",
-                "enum": ["-Infinity"]
-              }
-            ]
-          }
-        },
-        "required": ["uri", "mime"],
         "additionalProperties": false
       },
       "EventSessionNextPrompted": {
