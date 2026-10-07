@@ -84,6 +84,8 @@ const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 // after real progress without weakening the generic finish gate.
 const MAX_FINISH_NUDGES = 3
 const MAX_REVIEW_RECOVERY_NUDGES = 3
+// Synthetic review completion has no model-stream cancellation to inherit.
+const NO_ABORT_SIGNAL = AbortSignal.any([])
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
   "image/gif",
@@ -1223,7 +1225,7 @@ const layer = Layer.effect(
           sessionID: input.sessionID,
           messageID: input.messageID,
           agent: input.agent,
-          abort: new AbortController().signal,
+          abort: NO_ABORT_SIGNAL,
           messages: input.messages,
           metadata: () => Effect.void,
           ask: () => Effect.void,
@@ -1433,7 +1435,8 @@ const layer = Layer.effect(
                   {
                     "session.id": sessionID,
                     messageID: lastAssistant.id,
-                    nudges,
+                    finishNudges,
+                    reviewRecoveryNudges,
                     recoveryNudge,
                   },
                 )
@@ -1479,7 +1482,8 @@ const layer = Layer.effect(
                 messageID: lastAssistant.id,
                 step,
                 maxSteps: activeAgent.steps,
-                nudges: finishNudges + reviewRecoveryNudges,
+                finishNudges,
+                reviewRecoveryNudges,
               })
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })

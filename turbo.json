@@ -11,7 +11,7 @@
     "alphacode#test": {
       "dependsOn": ["^build"],
       "outputs": [],
-      "passThroughEnv": ["*"]
+      "passThroughEnv": ["GITHUB_ACTIONS", "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER"]
     },
     "@opencode-ai/tui#test": {
       "dependsOn": ["^build"],

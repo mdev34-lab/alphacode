@@ -58,7 +58,9 @@ async function settle(app: Awaited<ReturnType<typeof testRender>>) {
 type Setup = Awaited<ReturnType<typeof testRender>>
 type Sync = ReturnType<typeof useSync>
 
-let setup: { app: Setup; dispose: () => Promise<void>; events: ReturnType<typeof createEventSource>; sync: Sync } | undefined
+let setup:
+  | { app: Setup; dispose: () => Promise<void>; events: ReturnType<typeof createEventSource>; sync: Sync }
+  | undefined
 
 afterEach(async () => {
   await setup?.dispose()
@@ -249,18 +251,21 @@ describe("reasoning streaming lifecycle", () => {
     await settle(app())
 
     // The streamed body is readable while reasoning is still active.
-    expect(frameOfSpans(app())).toContain("Let me investigate")
-    expect(frameOfSpans(app())).toContain("Thinking")
+    const streamingFrame = frameOfSpans(app())
+    expect(streamingFrame).toContain("Let me investigate")
+    expect(streamingFrame).toContain("Thinking")
 
     // Now the reasoning stream actually ends (terminal snapshot with time.end).
     setup!.events.emit(updatedEvent(SESSION, "m1", reasoningPart("m1", "Let me investigate", BASE + 5000), 3))
     await waitUntil(() => part.time.end !== undefined)
     await settle(app())
+    await waitUntil(() => !frameOfSpans(app()).includes("Let me investigate"))
 
     // Once done, hide mode collapses the body to a one-line summary.
     const frame = frameOfSpans(app())
     expect(frame).toContain("Thought")
     expect(frame).toContain("5.0s")
+    expect(frame).not.toContain("Let me investigate")
   })
 
   test("show mode: the Thinking body stays open even after the reasoning stream ends", async () => {
@@ -292,7 +297,10 @@ describe("reasoning streaming lifecycle", () => {
   test("normal assistant text parts still stream alongside a reasoning block", async () => {
     await mount({
       thinkingMode: "show",
-      parts: [reasoningPart("m1", BODY), { id: "prt_text", sessionID: SESSION, messageID: "m1", type: "text", text: "" } as TextPart],
+      parts: [
+        reasoningPart("m1", BODY),
+        { id: "prt_text", sessionID: SESSION, messageID: "m1", type: "text", text: "" } as TextPart,
+      ],
     })
 
     setup!.events.emit(deltaEvent(SESSION, "m1", "prt_text", "Here", 0))

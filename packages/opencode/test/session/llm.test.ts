@@ -63,7 +63,7 @@ const drain = (input: LLM.StreamInput) => LLM.Service.use((svc) => svc.stream(in
 
 // drainWith builds an isolated runtime so custom replacements fully own LLM and
 // its transitive deps.
-const runWith = <A, E>(layer: Layer.Layer<LLM.Service>, effect: Effect.Effect<A, E, LLM.Service>) =>
+const runIsolated = <A, E>(layer: Layer.Layer<LLM.Service>, effect: Effect.Effect<A, E, LLM.Service>) =>
   Effect.gen(function* () {
     const ctx = yield* InstanceRef
     if (!ctx) return yield* Effect.die("InstanceRef not provided")
@@ -74,7 +74,7 @@ const runWith = <A, E>(layer: Layer.Layer<LLM.Service>, effect: Effect.Effect<A,
 
 const drainWith = (layer: Layer.Layer<LLM.Service>, input: LLM.StreamInput) =>
   Effect.gen(function* () {
-    const exit = yield* runWith(
+    const exit = yield* runIsolated(
       layer,
       LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain)),
     )
@@ -1543,7 +1543,7 @@ describe("session.llm.stream", () => {
         // Run the injected layer in an isolated runtime, then unwrap the Exit
         // returned by Effect.flip so the expected generation-limit error keeps
         // its original identity.
-        const exit = yield* runWith(
+        const exit = yield* runIsolated(
           AppNodeBuilder.build(LLM.node, [
             [LayerNodePlatform.llmClient, runawayNativeClient],
             [

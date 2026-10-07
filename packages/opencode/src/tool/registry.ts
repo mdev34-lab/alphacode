@@ -307,7 +307,11 @@ const layer = Layer.effect(
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
-        if (tool.id === FinishTool.id) return input.agent.finishTool !== false
+        if (tool.id === FinishTool.id) {
+          // Only agents with the finish gate should see this tool; otherwise
+          // an opt-out agent could be prompted to call a tool it must not use.
+          return input.agent.finishTool !== false
+        }
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }
