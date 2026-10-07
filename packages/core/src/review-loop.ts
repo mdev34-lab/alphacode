@@ -118,8 +118,27 @@ function isReviewTask(part: ReviewHistoryPart) {
   return part.type === "tool" && part.tool === "task" && inputRecord(part)?.subagent_type === "review"
 }
 
+/**
+ * Whether the caller asked to wait for the verdict. This is the *request*, not the
+ * outcome: synchronous execution is a per-agent opt-in, so the task tool can
+ * answer `background: false` with a launch. Anything that decides on a delivery
+ * therefore has to consult `isBackgroundExecution` as well, which is what the
+ * counting branch below does.
+ */
 function isSynchronousReviewTask(part: ReviewHistoryPart) {
   return isReviewTask(part) && inputRecord(part)?.background === false
+}
+
+/**
+ * Whether the review ran detached from the parent, as recorded on the result
+ * metadata rather than the input. A launch and a review that was promoted
+ * mid-run both end up here: the tool call completes normally, with a running
+ * envelope and no verdict. `BackgroundJob.promote` writes the same flag, so a
+ * caller that started in the foreground and lost its wait is covered too.
+ */
+function isBackgroundExecution(part: ReviewHistoryPart) {
+  const metadata = isRecord(part.state?.metadata) ? part.state.metadata : undefined
+  return metadata?.background === true
 }
 
 function taskTerminationReason(part: ReviewHistoryPart) {
@@ -230,6 +249,18 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
         termination = undefined
         continue
       }
+
+      // A launch is not a delivery. The completed part above carries a running
+      // envelope because the agent's configuration routed this review to the
+      // background, or because the wait was promoted while the reviewer was still
+      // running - either way no verdict reached the parent. Counting it would
+      // advance the review cap and clear `workSinceReview`, disarming the gate on
+      // unreviewed work and minting a verdict out of the launch prose, which is
+      // the same failure this file already refuses for cancelled reviews. The
+      // verdict of a detached review arrives later, as a notification, and the
+      // gate is deliberately satisfied only by a foreground delivery: so a launch
+      // is a non-event here, exactly as an explicitly asynchronous review is.
+      if (isBackgroundExecution(part)) continue
 
       reviews++
       latest =

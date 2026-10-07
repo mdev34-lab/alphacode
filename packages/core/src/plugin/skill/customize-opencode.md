@@ -300,6 +300,12 @@ requested name (`review`) applies only when that agent says nothing, so
 `agent: { review: { background: false } }` covers every reviewer while
 `agent: { work-review: { background: true } }` cancels it for Work specifically.
 
+Reviewers also interact with the review loop's `finish` gate, which accepts only a
+verdict delivered in the foreground. A review that ran in the background never
+satisfies it, so the first `finish` for that work is declined with a nudge and the
+next is honoured as an explicit skip; set `background: false` on the reviewer to
+keep that gate enforceable.
+
 To disable a built-in agent: `agent: { work: { disable: true } }`, or in a
 file, `disable: true` in frontmatter.
 

@@ -350,6 +350,13 @@ describe("runtime review gate", () => {
   test("requires an explicit synchronous review", () => {
     const background = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", { background: true })
     const synchronous = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved")
+    // The third arm is the one the first two cannot express: the input still says
+    // "wait", and the outcome says otherwise. Synchronous execution is a per-agent
+    // opt-in, so a `background: false` request that the agent did not opt into
+    // comes back as a launch, and the gate has to judge the effective mode.
+    const launched = reviewMessage("### Assessment\n\n**Ready to proceed?** Approved", {
+      metadata: { background: true, jobId: "ses_review" },
+    })
 
     expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), background]).verdict).toBe(
       "pending",
@@ -357,6 +364,93 @@ describe("runtime review gate", () => {
     expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), synchronous]).verdict).toBe(
       "approved",
     )
+    expect(reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), launched]).verdict).toBe(
+      "pending",
+    )
+  })
+
+  // A review that ran detached from the parent - launched in the background by the
+  // agent's configuration, or promoted out of a wait that started in the foreground
+  // - persists as a *completed* tool part carrying a running envelope. Nothing was
+  // delivered, so it must neither count toward the review cap nor clear the
+  // unreviewed-work gate, and it must not mint a verdict.
+  const LAUNCH_ENVELOPE = [
+    '<task id="ses_review" state="running">',
+    "<summary>Background task started: review cache fix</summary>",
+    "</task>",
+  ].join("\n")
+
+  const launch = (output = LAUNCH_ENVELOPE, metadata: Record<string, unknown> = {}) =>
+    reviewMessage(output, { metadata: { background: true, jobId: "ses_review", ...metadata } })
+
+  test("a review launched instead of awaited is not a delivered review", () => {
+    const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), launch()])
+
+    expect(state.reviews).toBe(0)
+    expect(state.workSinceReview).toBe(true)
+    expect(state.phase).toBe("work")
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("launches do not walk the turn to the review cap", () => {
+    // The cap disarms the gate, so counting launches would let a model finish
+    // unreviewed work by asking for a verdict three times and never waiting for
+    // one - the failure the cancelled-review rule already refuses.
+    const state = reviewLoopState(
+      [userMessage(), toolMessage("edit", { writesFiles: true }), launch(), launch(), launch()],
+      2,
+    )
+
+    expect(state.reviews).toBe(0)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("a launch mints no verdict from its own envelope text", () => {
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      launch(`${LAUNCH_ENVELOPE}\n\n### Assessment\n\n**Ready to proceed?** Approved`),
+    ])
+
+    expect(state.reviews).toBe(0)
+    expect(state.verdict).toBe("pending")
+    expect(state.workSinceReview).toBe(true)
+  })
+
+  test("a report on a detached part does not satisfy the gate without a foreground delivery", () => {
+    // The verdict of a launched review reaches the parent as a later notification,
+    // not as this part's result; the gate stays a foreground contract.
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      launch(LAUNCH_ENVELOPE, {
+        review: { report: { version: 1, assessment: "approved", summary: "Clean.", findings: [] } },
+      }),
+    ])
+
+    expect(state.reviews).toBe(0)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("the same report delivered in the foreground still counts", () => {
+    const state = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      reviewMessage(LAUNCH_ENVELOPE.replace('state="running"', 'state="completed"'), {
+        metadata: {
+          sessionId: "ses_review",
+          review: { report: { version: 1, assessment: "approved", summary: "Clean.", findings: [] } },
+        },
+      }),
+    ])
+
+    expect(state.reviews).toBe(1)
+    expect(state.verdict).toBe("approved")
+    expect(state.workSinceReview).toBe(false)
+    expect(finishGateError(state)).toBeUndefined()
   })
 
   test("does not treat a synthetic continuation nudge as a new turn", () => {
