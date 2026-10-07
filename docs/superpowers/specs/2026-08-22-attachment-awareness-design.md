@@ -5,7 +5,7 @@
 
 ## Problem
 
-Today an attachment in AlphaCode's V2 session is only a `{ uri, mime, name? }` record:
+Today an attachment in SilverCode's V2 session is only a `{ uri, mime, name? }` record:
 
 1. The app builds `FilePartInput` with `url` = `data:…;base64,…` (pasted images) or `file:///abs/path` (mentions). (`packages/app/src/components/prompt-input/build-request-parts.ts`)
 2. `V2Session.resolvePrompt` (`packages/core/src/session.ts:460`) only guesses the `mime` from the URI. **Nothing is materialized.**

@@ -37,13 +37,13 @@ afterEach(async () => {
   await disposeAllInstances()
 })
 
-const report = `<alphacode-review>\n${JSON.stringify({
+const report = `<silvercode-review>\n${JSON.stringify({
   version: 1,
   revision: "uncommitted",
   assessment: "approved",
   summary: "Historical report",
   findings: [],
-})}\n</alphacode-review>`
+})}\n</silvercode-review>`
 
 describe("tool.finish – current review result", () => {
   it.instance("does not accept a report from an earlier assistant turn", () =>
@@ -114,7 +114,7 @@ describe("tool.finish – current review result", () => {
       if (!Exit.isFailure(exit)) return
       const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
       expect(failure).toBeInstanceOf(ToolFailure)
-      expect((failure as ToolFailure).message).toContain("no <alphacode-review> report envelope was found")
+      expect((failure as ToolFailure).message).toContain("no <silvercode-review> report envelope was found")
     }),
   )
 })

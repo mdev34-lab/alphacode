@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import { applyFactoryDefault, planFactoryDefault, type FactoryDefaultTarget } from "../../src/cli/factory-default"
 
 async function tmpRoot(label: string) {
-  return fs.mkdtemp(path.join(os.tmpdir(), `alphacode-factory-${label}-`))
+  return fs.mkdtemp(path.join(os.tmpdir(), `silvercode-factory-${label}-`))
 }
 
 function writeFile(file: string, content: string) {
@@ -79,7 +79,7 @@ test("apply removes directory-mode targets and skips missing paths", async () =>
 test("apply wipes cache contents but preserves the bin subtree", async () => {
   const tmp = await tmpRoot("apply-cache")
   const cache = path.join(tmp, "cache")
-  await writeFile(path.join(cache, "bin", "alphacode"), "binary")
+  await writeFile(path.join(cache, "bin", "silvercode"), "binary")
   await writeFile(path.join(cache, "log", "app.log"), "log")
   await writeFile(path.join(cache, "stale.txt"), "stale")
 
@@ -89,7 +89,7 @@ test("apply wipes cache contents but preserves the bin subtree", async () => {
   expect(result.removed.sort()).toEqual([path.join(cache, "log"), path.join(cache, "stale.txt")].sort())
 
   // The cache dir itself and the preserved bin subtree survive.
-  expect(await fs.readFile(path.join(cache, "bin", "alphacode"), "utf8")).toBe("binary")
+  expect(await fs.readFile(path.join(cache, "bin", "silvercode"), "utf8")).toBe("binary")
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
@@ -116,7 +116,7 @@ test("apply enforces the workspace-safety invariant even when handed a plan dire
   const cache = path.join(tmp, "cache")
   const workdir = path.join(cache, "workspace")
   await writeFile(path.join(cache, "log", "app.log"), "log")
-  await writeFile(path.join(cache, "bin", "alphacode"), "binary")
+  await writeFile(path.join(cache, "bin", "silvercode"), "binary")
   await writeFile(path.join(workdir, "keep.txt"), "keep")
 
   // Deliberately bypass planFactoryDefault and hand apply a plan that

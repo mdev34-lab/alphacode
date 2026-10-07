@@ -192,7 +192,7 @@ describe("QwenWebTransport.requestStream", () => {
     expect(fake.bindings.size).toBe(1)
     expect(await readAll(response.stream)).toBe("Hello world")
     // Events for unknown request ids are ignored.
-    fake.bindings.get("__alphacodeQwenStream")?.({}, "nope", { type: "chunk", data: "x" })
+    fake.bindings.get("__silvercodeQwenStream")?.({}, "nope", { type: "chunk", data: "x" })
   })
 
   test("passes non-200 statuses through to the caller", async () => {

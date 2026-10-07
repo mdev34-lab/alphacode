@@ -1,7 +1,7 @@
 /**
  * Qwen chat-session management.
  *
- * AlphaCode owns one persistent Qwen chat per thread (`ThreadStore`), and
+ * SilverCode owns one persistent Qwen chat per thread (`ThreadStore`), and
  * every generation is an incremental turn on that chat: it chains the new
  * user message to the previous assistant response via `parent_id`, so the
  * model sees the conversation in its server-side memory instead of a
@@ -601,7 +601,7 @@ export class QwenWebSession implements WebChatProvider {
     return thread
   }
 
-  /** Local threads are authoritative for AlphaCode's own turns; the upstream
+  /** Local threads are authoritative for SilverCode's own turns; the upstream
    * reconcile (`GET chat`) is a separate wire spike. */
   async readThread(input: { thread: WebChatThread }): Promise<WebChatThread> {
     return this.store.get(input.thread.id) ?? input.thread
@@ -706,7 +706,7 @@ async function readPreview(stream: ReadableStream<Uint8Array>, maxBytes: number)
 function readChatModeDefault(): QwenWebChatMode {
   const raw = process.env[QWEN_WEB_ENV.chatMode]?.toLowerCase()
   if (raw === "thread" || raw === "thread-explicit") {
-    debug("session", "THREAD MODE ENABLED — shares upstream Qwen conversation across turns. This can leak context between unrelated AlphaCode sessions using the same Qwen account. Use QWEN_WEB_CHAT_MODE=thread-explicit to acknowledge.")
+    debug("session", "THREAD MODE ENABLED — shares upstream Qwen conversation across turns. This can leak context between unrelated SilverCode sessions using the same Qwen account. Use QWEN_WEB_CHAT_MODE=thread-explicit to acknowledge.")
   }
   return raw === "thread-explicit" ? "thread" : "temp"
 }

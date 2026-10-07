@@ -19,7 +19,7 @@ const notes = previousTag
       { repo, prev: previousTag, next: `v${Script.version}` },
     )
   : "Initial tracked release."
-const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/alphacode-release-notes.txt`
+const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/silvercode-release-notes.txt`
 await Bun.write(notesFile, notes)
 
 const writeOutput = async (values: string[]) => {

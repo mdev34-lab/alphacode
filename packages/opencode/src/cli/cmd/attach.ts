@@ -6,7 +6,7 @@ import { ServerAuth } from "@/server/auth"
 
 export const AttachCommand = cmd({
   command: "attach <url>",
-  describe: "attach to a running alphacode server",
+  describe: "attach to a running silvercode server",
   builder: (yargs) =>
     yargs
       .positional("url", {

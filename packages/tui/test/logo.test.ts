@@ -49,6 +49,73 @@ test("no glyph rises above the ascender line", () => {
   expect(pixels[0]!.some(Boolean)).toBe(false)
 })
 
-test("wordmark renders alphacode with an even baseline", () => {
+test("wordmark renders silvercode with an even baseline", () => {
   expect(pixels.map((row) => row.map((on) => (on ? "#" : ".")).join("")).join("\n")).toMatchSnapshot()
+})
+
+// Independent expectation of the glyphs: the wordmark must actually spell
+// "silver" (muted half) + "code" (highlighted half). Each entry is the glyph on
+// the half-cell grid, pixel rows 1-6 (row 1 is the ascender line, row 6 the
+// baseline): "#" ink, "s" shadow counter, "." empty. If the art drifts back to
+// a different word these comparisons fail, unlike a snapshot taken from the art
+// itself.
+const GLYPH_WIDTH = 4
+const GLYPH_PITCH = GLYPH_WIDTH + 1
+
+const EXPECTED_GLYPHS: Record<string, string[]> = {
+  s: ["....", ".##.", "#...", ".##.", "...#", "###."],
+  i: [".#..", "....", ".#..", ".#..", ".#..", ".#.."],
+  l: [".#..", ".#..", ".#..", ".#..", ".#..", ".#.."],
+  v: ["....", "#..#", "#..#", "#..#", "#..#", ".##."],
+  e: ["....", ".##.", "#ss.", "####", "#ss.", ".##."],
+  r: ["....", "###.", "#..#", "#...", "#...", "#..."],
+  c: ["....", ".##.", "#ss.", "#ss.", "#ss.", ".##."],
+  o: ["....", ".##.", "#ss#", "#ss#", "#ss#", ".##."],
+  d: ["...#", ".###", "#ss#", "#ss#", "#ss#", ".###"],
+}
+
+const cellPixels = (char: string): [string, string] => {
+  if (char === "█") return ["#", "#"]
+  if (char === "▀") return ["#", "."]
+  if (char === "▄") return [".", "#"]
+  if (char === "_") return ["s", "s"]
+  if (char === "^") return ["#", "s"]
+  if (char === "~") return ["s", "."]
+  return [".", "."]
+}
+
+// Pixel rows 0-7 for each template row pair, i.e. the half-cell grid.
+const cellRows = (row: string) =>
+  row.split("").reduce<[string[], string[]]>(
+    ([top, bottom], char) => {
+      const [upper, lower] = cellPixels(char)
+      top.push(upper)
+      bottom.push(lower)
+      return [top, bottom]
+    },
+    [[], []],
+  )
+
+const pixelRows = (part: string[]) =>
+  part.flatMap((row) => {
+    const [top, bottom] = cellRows(row)
+    return [top, bottom]
+  })
+
+const glyphPixels = (part: string[], letter: number) =>
+  pixelRows(part).map((row) => row.slice(letter * GLYPH_PITCH, letter * GLYPH_PITCH + GLYPH_WIDTH).join(""))
+
+test("wordmark spells silver plus code, glyph by glyph", () => {
+  const word = "silvercode"
+  const left = word.slice(0, 6)
+  const right = word.slice(6)
+  expect(left).toBe("silver")
+  expect(right).toBe("code")
+  for (const [letter, index] of Array.from(left).map((char, i) => [char, i] as const)) {
+    // Pixel rows 1-6 are the letter body; row 0 is never drawn.
+    expect(glyphPixels(logo.left, index).slice(1, 7)).toEqual(EXPECTED_GLYPHS[letter])
+  }
+  for (const [letter, index] of Array.from(right).map((char, i) => [char, i] as const)) {
+    expect(glyphPixels(logo.right, index).slice(1, 7)).toEqual(EXPECTED_GLYPHS[letter])
+  }
 })

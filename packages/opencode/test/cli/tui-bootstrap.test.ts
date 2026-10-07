@@ -18,7 +18,7 @@ function runDriver(marker: boolean, windowMs: number) {
 
 describe("TUI worker bootstrap", () => {
   test("worker identity is the launch marker or process IPC, independently of transport", () => {
-    expect(resolveIsTuiWorker({ ALPHACODE_TUI_WORKER: "1" }, false)).toBe(true)
+    expect(resolveIsTuiWorker({ SILVERCODE_TUI_WORKER: "1" }, false)).toBe(true)
     expect(resolveIsTuiWorker({}, false)).toBe(false)
     expect(resolveIsTuiWorker({}, true)).toBe(true)
   })

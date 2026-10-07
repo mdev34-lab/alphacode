@@ -15,13 +15,13 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { DateTime } from "effect"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-test-project-"))
 
 const created = DateTime.makeUnsafe(0)
 const id = (value: string) => SessionMessage.ID.make(`msg_${value}`)
 const model = Model.make({ id: "model", provider: "provider", route: OpenAIChat.route })
 
-const fixtureDir = mkdtempSync(path.join(tmpdir(), "alphacode-llm-"))
+const fixtureDir = mkdtempSync(path.join(tmpdir(), "silvercode-llm-"))
 const fixtureFile = path.join(fixtureDir, "hello.png")
 writeFileSync(fixtureFile, "hello")
 

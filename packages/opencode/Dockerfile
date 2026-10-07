@@ -7,12 +7,12 @@ ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=${BUN_RUNTIME_TRANSPILER_CACHE_PATH}
 RUN apk add libgcc libstdc++ ripgrep
 
 FROM base AS build-amd64
-COPY dist/alphacode-linux-x64-baseline-musl/bin/alphacode /usr/local/bin/alphacode
+COPY dist/silvercode-ai-linux-x64-baseline-musl/bin/silvercode /usr/local/bin/silvercode
 
 FROM base AS build-arm64
-COPY dist/alphacode-linux-arm64-musl/bin/alphacode /usr/local/bin/alphacode
+COPY dist/silvercode-ai-linux-arm64-musl/bin/silvercode /usr/local/bin/silvercode
 
 ARG TARGETARCH
 FROM build-${TARGETARCH}
-RUN alphacode --version
-ENTRYPOINT ["alphacode"]
+RUN silvercode --version
+ENTRYPOINT ["silvercode"]

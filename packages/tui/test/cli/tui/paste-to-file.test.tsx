@@ -145,9 +145,9 @@ function sessionPayload() {
 /** A Wikipedia-like article: well past the 8000-char / 120-break thresholds. */
 function article() {
   const paragraphs = Array.from({ length: 400 }, (_, i) => {
-    return `Section ${i + 1}. AlphaCode paste to file marker ${i}. ${"This is a Wikipedia-like paragraph of prose that describes the topic in detail. ".repeat(4)}`
+    return `Section ${i + 1}. SilverCode paste to file marker ${i}. ${"This is a Wikipedia-like paragraph of prose that describes the topic in detail. ".repeat(4)}`
   })
-  return "AlphaCode Paste To File Article\n\n" + paragraphs.join("\n\n")
+  return "SilverCode Paste To File Article\n\n" + paragraphs.join("\n\n")
 }
 
 type CapturedPrompt = { sessionID: string; body: Record<string, any> }
@@ -313,8 +313,8 @@ describe("Paste to File (production TUI paste path)", () => {
       // The composer shows the compact placeholder, not the article.
       const frame = await untilFrame(app, (f) => f.includes("[Pasted file 1]"))
       expect(frame).toContain("Hello")
-      expect(frame).not.toContain("AlphaCode paste to file marker 10")
-      expect(frame).not.toContain("AlphaCode Paste To File Article")
+      expect(frame).not.toContain("SilverCode paste to file marker 10")
+      expect(frame).not.toContain("SilverCode Paste To File Article")
 
       app.mockInput.pressEnter()
       await until(() => captured.length === 1)

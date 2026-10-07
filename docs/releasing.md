@@ -1,4 +1,4 @@
-# Releasing AlphaCode
+# Releasing SilverCode
 
 Releases are GitHub Releases built from tags. No package version file is edited and no bot commits back to `dev`.
 

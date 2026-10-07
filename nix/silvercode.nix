@@ -14,7 +14,7 @@
   node_modules ? callPackage ./node-modules.nix { },
 }:
 stdenvNoCC.mkDerivation (finalAttrs: {
-  pname = "alphacode";
+  pname = "silvercode";
   inherit (node_modules) version src;
   inherit node_modules;
 
@@ -62,10 +62,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 dist/alphacode-*/bin/alphacode $out/bin/alphacode
-    install -Dm644 schema.json $out/share/alphacode/schema.json
+    install -Dm755 dist/silvercode-ai-*/bin/silvercode $out/bin/silvercode
+    install -Dm644 schema.json $out/share/silvercode/schema.json
 
-    wrapProgram $out/bin/alphacode \
+    wrapProgram $out/bin/silvercode \
       --prefix PATH : ${
         lib.makeBinPath (
           [
@@ -81,9 +81,9 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
   postInstall = lib.optionalString (stdenvNoCC.buildPlatform.canExecute stdenvNoCC.hostPlatform) ''
     # trick yargs into also generating zsh completions
-    installShellCompletion --cmd alphacode \
-      --bash <($out/bin/alphacode completion) \
-      --zsh <(SHELL=/bin/zsh $out/bin/alphacode completion)
+    installShellCompletion --cmd silvercode \
+      --bash <($out/bin/silvercode completion) \
+      --zsh <(SHELL=/bin/zsh $out/bin/silvercode completion)
   '';
 
   nativeInstallCheckInputs = [
@@ -95,7 +95,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   versionCheckProgramArg = "--version";
 
   passthru = {
-    jsonschema = "${placeholder "out"}/share/alphacode/schema.json";
+    jsonschema = "${placeholder "out"}/share/silvercode/schema.json";
     env = finalAttrs.env;
   };
 
@@ -103,7 +103,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     description = "The open source coding agent";
     homepage = "https://opencode.ai";
     license = lib.licenses.mit;
-    mainProgram = "alphacode";
+    mainProgram = "silvercode";
     inherit (node_modules.meta) platforms;
   };
 })

@@ -10,7 +10,7 @@
  *   model sees the same contract in history that it must emit,
  * - tool results become `Tool Response (<name>):` segments.
  *
- * AlphaCode stays the authoritative conversation history: every generation
+ * SilverCode stays the authoritative conversation history: every generation
  * sends the full transcript on a fresh Qwen chat, so no server-side thread
  * state can go stale or corrupt concurrent generations.
  */
@@ -264,7 +264,7 @@ export function buildToolReminder(tools: QwenWebToolDefinition[]): string {
   )
 }
 
-/** Provider-executed tools are never executed by AlphaCode; only `function` tools are supported. */
+/** Provider-executed tools are never executed by SilverCode; only `function` tools are supported. */
 export function functionTools(tools: QwenWebToolDefinition[] | undefined): LanguageModelV3FunctionTool[] {
   if (!tools) return []
   return tools.filter(isFunctionTool)

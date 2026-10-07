@@ -112,6 +112,6 @@ export const Script = {
   },
 }
 console.log(
-  `opencode script`,
+  `silvercode script`,
   JSON.stringify({ channel: CHANNEL, version: VERSION, preview: IS_PREVIEW, release: Script.release, team }, null, 2),
 )
