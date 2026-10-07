@@ -316,7 +316,7 @@ const layer = Layer.effect(
                 return events
                   .publish(TuiEvent.ToastShow, {
                     title: "MCP Authentication Required",
-                    message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
+                    message: `Server "${key}" requires authentication. Run: silvercode mcp auth ${key}`,
                     variant: "warning",
                     duration: 8000,
                   })

@@ -9,11 +9,13 @@ test("plain wordmark is derived from the shared logo art", () => {
   const rows = clean(UI.logo()).split("\n")
   expect(rows).toHaveLength(logo.left.length)
   for (const [index, row] of rows.entries()) {
-    expect(row).toBe(
-      clean(logo.left[index] + " " + (logo.right[index] ?? ""))
-        .replaceAll("^", "▀")
-        .replaceAll(/[_~,]/g, " "),
-    )
+    const expected = clean(logo.left[index] + " " + (logo.right[index] ?? ""))
+      .replaceAll("^", "▀")
+      .replaceAll(/[_~,]/g, " ")
+    // The plain renderer emits the whole wordmark through `trimEnd`, which only
+    // ever strips trailing blank cells from the last row (shadow marks in the
+    // body rows are no longer whitespace once expanded).
+    expect(row).toBe(index === rows.length - 1 ? expected.trimEnd() : expected)
   }
 })
 

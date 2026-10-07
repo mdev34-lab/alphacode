@@ -1,6 +1,6 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode acp --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode acp --help 1`] = `
 "silvercode acp
 
 start ACP (Agent Client Protocol) server
@@ -21,7 +21,7 @@ Options:
       --cwd          working directory [string] [default: "<HOME>"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp --help 1`] = `
 "silvercode mcp
 
 manage MCP (Model Context Protocol) servers
@@ -41,7 +41,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode attach --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode attach --help 1`] = `
 "silvercode attach <url>
 
 attach to a running silvercode server
@@ -67,7 +67,7 @@ Options:
       --replay-limit  cap visible mini replay to the newest N messages                      [number]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode run --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode run --help 1`] = `
 "silvercode run [message..]
 
 run silvercode with a message
@@ -107,7 +107,7 @@ Options:
                                                                           [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode debug --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode debug --help 1`] = `
 "silvercode debug
 
 debugging and troubleshooting tools
@@ -135,7 +135,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers --help 1`] = `
 "silvercode providers
 
 manage AI providers and credentials
@@ -153,7 +153,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode agent --help 1`] = `
 "silvercode agent
 
 manage agents
@@ -170,7 +170,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode upgrade --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode upgrade --help 1`] = `
 "silvercode upgrade [target]
 
 upgrade silvercode to the latest or a specific version
@@ -186,7 +186,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode uninstall --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode uninstall --help 1`] = `
 "silvercode uninstall
 
 uninstall silvercode and remove all related files
@@ -203,7 +203,7 @@ Options:
   -f, --force        skip confirmation prompts                            [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode serve --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode serve --help 1`] = `
 "silvercode serve
 
 starts a headless silvercode server
@@ -223,11 +223,11 @@ Options:
       --cors         additional domains to allow for CORS                      [array] [default: []]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode web --help 1`] = `
-"     ▄      ▄                      ▄     
- ▀▀█ █ █▀▀█ █▀▀▄  ▀▀█ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
-█▀▀█ █ █  █ █  █ █▀▀█ █    █  █ █  █ █▀▀▀
-▀▀▀▀ ▀ █▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode web --help 1`] = `
+"      ▄    ▄                               ▄     
+▄▀▀   ▄    █   █  █ ▄▀▀  █▀▀▄ ▄▀▀  ▄▀▀▄ ▄▀▀█ ▄▀▀ 
+ ▀▀▄  █    █   █  █ █▀▀▀ █    █    █  █ █  █ █▀▀▀
+▀▀▀   ▀    ▀    ▀▀   ▀▀  ▀     ▀▀   ▀▀   ▀▀▀  ▀▀
 
 Commands:
   silvercode completion          generate shell completion script
@@ -288,7 +288,7 @@ Options:
 "
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode models --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode models --help 1`] = `
 "silvercode models [provider]
 
 list all available models
@@ -306,7 +306,7 @@ Options:
       --refresh     refresh the models cache from models.dev                               [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode stats --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode stats --help 1`] = `
 "silvercode stats
 
 show token usage and cost statistics
@@ -324,7 +324,7 @@ Options:
       --project     filter by project (default: all projects, empty string: current project)[string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode export --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode export --help 1`] = `
 "silvercode export [sessionID]
 
 export session data as JSON
@@ -341,7 +341,7 @@ Options:
       --sanitize    redact sensitive transcript and file data                              [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode import --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode import --help 1`] = `
 "silvercode import <file>
 
 import session data from JSON file or URL
@@ -357,7 +357,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode github --help 1`] = `
 "silvercode github
 
 manage GitHub agent
@@ -374,7 +374,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode pr --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode pr --help 1`] = `
 "silvercode pr <number>
 
 fetch and checkout a GitHub PR branch, then run silvercode
@@ -390,7 +390,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode session --help 1`] = `
 "silvercode session
 
 manage sessions
@@ -407,7 +407,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode plugin --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode plugin --help 1`] = `
 "silvercode plugin <module>
 
 install plugin and update config
@@ -425,7 +425,7 @@ Options:
   -f, --force       replace existing plugin version                       [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode db --help 1`] = `
 "silvercode db
 
 database tools
@@ -446,7 +446,7 @@ Options:
       --format      Output format                 [string] [choices: "json", "tsv"] [default: "tsv"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp list --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp list --help 1`] = `
 "silvercode mcp list
 
 list MCP servers and their status
@@ -459,7 +459,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp add --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp add --help 1`] = `
 "silvercode mcp add [name]
 
 add an MCP server
@@ -478,7 +478,7 @@ Options:
       --header      HTTP header for a remote MCP server (KEY=VALUE)                          [array]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp auth --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp auth --help 1`] = `
 "silvercode mcp auth [name]
 
 authenticate with an OAuth-enabled MCP server
@@ -497,7 +497,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp logout --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp logout --help 1`] = `
 "silvercode mcp logout [name]
 
 remove OAuth credentials for an MCP server
@@ -513,7 +513,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers list --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers list --help 1`] = `
 "silvercode providers list
 
 list providers and credentials
@@ -526,7 +526,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers login --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers login --help 1`] = `
 "silvercode providers login [url]
 
 log in to a provider
@@ -544,7 +544,7 @@ Options:
   -m, --method      login method label (skips method selection)                             [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers logout --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers logout --help 1`] = `
 "silvercode providers logout [provider]
 
 log out from a configured provider
@@ -560,7 +560,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent create --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode agent create --help 1`] = `
 "silvercode agent create
 
 create a new agent
@@ -580,7 +580,7 @@ Options:
   -m, --model                 model to use in the format of provider/model                  [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent list --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode agent list --help 1`] = `
 "silvercode agent list
 
 list all available agents
@@ -593,7 +593,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session list --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode session list --help 1`] = `
 "silvercode session list
 
 list sessions
@@ -608,7 +608,7 @@ Options:
       --format      output format             [string] [choices: "table", "json"] [default: "table"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session delete --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode session delete --help 1`] = `
 "silvercode session delete <sessionID>
 
 delete a session
@@ -624,7 +624,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github install --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode github install --help 1`] = `
 "silvercode github install
 
 install the GitHub agent
@@ -637,7 +637,7 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github run --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode github run --help 1`] = `
 "silvercode github run
 
 run the GitHub agent
@@ -652,7 +652,7 @@ Options:
       --token       GitHub personal access token (github_pat_********)                      [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db path --help 1`] = `
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode db path --help 1`] = `
 "silvercode db path
 
 print the database path

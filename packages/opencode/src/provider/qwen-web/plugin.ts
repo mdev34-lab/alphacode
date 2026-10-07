@@ -33,7 +33,7 @@ export async function QwenWebAuthPlugin(_input: PluginInput): Promise<Hooks> {
               url: "https://chat.qwen.ai/auth",
               instructions: headed
                 ? "A Chromium window opens with the Qwen login page. Log in normally in that window (password, SSO, passkey, or scan — whichever Qwen offers). SilverCode never sees your credentials; it only detects the completed login. This window closes automatically."
-                : "No display was detected, so the login browser runs headless: if this machine already has a Qwen session saved from a previous login it will be reused automatically. Otherwise run `opencode auth login` on a machine with a display first — the saved session is stored under your SilverCode data directory.",
+                : "No display was detected, so the login browser runs headless: if this machine already has a Qwen session saved from a previous login it will be reused automatically. Otherwise run `silvercode auth login` on a machine with a display first — the saved session is stored under your SilverCode data directory.",
               method: "auto" as const,
               callback: async () => loginCallback(),
             }
