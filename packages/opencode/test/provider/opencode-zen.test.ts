@@ -6,7 +6,8 @@ import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Effect } from "effect"
-import { generateText, streamText } from "ai"
+import { generateText, streamText, tool } from "ai"
+import { z } from "zod"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { Env } from "@/env"
@@ -322,6 +323,31 @@ describe("OpenCodeZen", () => {
       expect(zeroCost(withInvalidBase)).toBe(false)
       expect(withInvalidBase.tiers?.find((t) => t.tier.size === 0)).toEqual(existingZeroCostTier[0])
 
+      // Collision test: when existing tiers already occupy MAX_SAFE_INTEGER and size 0 has a valid zero-cost tier,
+      // invalid pricing preserves both and allocates the non-zero sentinel at MAX_SAFE_INTEGER - 1 without collision.
+      const existingWithMaxSafe = [
+        existingZeroCostTier[0],
+        {
+          input: 5,
+          output: 25,
+          cache: { read: 0.5, write: 5 },
+          tier: { type: "context" as const, size: Number.MAX_SAFE_INTEGER },
+        },
+      ]
+      const mergedWithCollision = Provider.mergeCostTiers(
+        [{ input: Number.NaN, output: 10, tier: { size: 100_000 } }],
+        existingWithMaxSafe,
+        true,
+      )
+      expect(mergedWithCollision).toBeDefined()
+      expect(mergedWithCollision?.find((t) => t.tier.size === 0)).toEqual(existingZeroCostTier[0])
+      expect(mergedWithCollision?.find((t) => t.tier.size === Number.MAX_SAFE_INTEGER)).toEqual(existingWithMaxSafe[1])
+      const sentinelTier = mergedWithCollision?.find((t) => t.tier.size === Number.MAX_SAFE_INTEGER - 1)
+      expect(sentinelTier).toBeDefined()
+      expect(sentinelTier?.input).toBe(1)
+      expect(sentinelTier?.output).toBe(1)
+      expect(zeroCost({ input: 0, output: 0, cache: { read: 0, write: 0 }, tiers: mergedWithCollision })).toBe(false)
+
       // Base-only v1 cost override (and migrated v2 array without tier entries) preserves existing paid catalog tiers
       const existingPaidWithTiers = {
         input: 3,
@@ -541,9 +567,9 @@ describe("OpenCodeZen", () => {
       expect(calls[0].body?.stream).toBe(true)
       expect(calls[0].body?.tools).toHaveLength(4)
       expect(calls[0].body?.tools.map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
-      expect(calls[0].body?.tool_choice).toBe("auto")
+      expect(calls[0].body?.tool_choice).toBe("none")
 
-      // A tool choice that caller passes with empty tools is normalized to auto to satisfy the gate.
+      // Explicit caller tool_choice is preserved verbatim and not silently weakened to auto
       await zen(zenURL, {
         method: "POST",
         body: JSON.stringify({ model: "big-pickle", messages: [], tools: [], tool_choice: "required" }),
@@ -551,7 +577,7 @@ describe("OpenCodeZen", () => {
 
       expect(calls[1].body?.tools).toHaveLength(4)
       expect(calls[1].body?.tools.map((t: any) => t.function?.name)).toEqual(["bash", "glob", "grep", "read"])
-      expect(calls[1].body?.tool_choice).toBe("auto")
+      expect(calls[1].body?.tool_choice).toBe("required")
 
       // Caller tools are preserved verbatim at index 0 and missing quartet tools are appended
       await zen(zenURL, {
@@ -782,7 +808,11 @@ describe("OpenCodeZen", () => {
 
       const response = await zen(zenURL, {
         method: "POST",
-        body: JSON.stringify({ model: "big-pickle", messages: [] }),
+        body: JSON.stringify({
+          model: "big-pickle",
+          messages: [],
+          tools: [{ type: "function", function: { name: "bash" } }],
+        }),
       })
       const body = (await response.json()) as {
         choices: Array<{ message: { reasoning_content?: string; tool_calls?: unknown[] }; finish_reason?: string }>
@@ -814,7 +844,14 @@ describe("OpenCodeZen", () => {
 
       const response = await zen(zenURL, {
         method: "POST",
-        body: JSON.stringify({ model: "big-pickle", messages: [] }),
+        body: JSON.stringify({
+          model: "big-pickle",
+          messages: [],
+          tools: [
+            { type: "function", function: { name: "bash" } },
+            { type: "function", function: { name: "grep" } },
+          ],
+        }),
       })
       const body = (await response.json()) as { choices: Array<{ message: { tool_calls?: unknown[] } }> }
 
@@ -1724,6 +1761,152 @@ it.live("streams a free-tier response through the opencode provider", () =>
   }),
 )
 
+it.live(
+  "guards injected-only tool calls from AI SDK runtime when model selects injected tool with empty caller tools",
+  () =>
+    Effect.gen(function* () {
+      const bashStream = [
+        'data: {"id":"chatcmpl-1","created":1,"model":"deepseek-v4-flash-free","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}',
+        "",
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_bash_1","type":"function","function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}]},"finish_reason":null}]}',
+        "",
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n")
+
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(() => zenServer(() => bashStream)),
+        (server) => Effect.sync(() => server.server.close()),
+      )
+
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* Provider.Service
+            const model = yield* provider.getModel(
+              ProviderV2.ID.opencode,
+              ModelV2.ID.make("deepseek-v4-flash-free"),
+            )
+            const language = yield* provider.getLanguage(model)
+
+            // 1. generateText with empty caller tools (tools: {})
+            // The model returns an injected tool call (bash), which lacks an executor in tools: {}.
+            // The guarded adapter strips the injected call and normalizes finishReason to "stop",
+            // preventing AI SDK NoSuchToolError or unknown executor hang.
+            const genResult = yield* Effect.promise(() =>
+              generateText({
+                model: language,
+                tools: {},
+                messages: [{ role: "user", content: "summarize this conversation" }],
+              }),
+            )
+            expect(genResult.finishReason).toBe("stop")
+            expect(genResult.toolCalls).toHaveLength(0)
+
+            // 2. streamText with empty caller tools (tools: {})
+            const streamResult = yield* Effect.promise(async () => {
+              const stream = streamText({
+                model: language,
+                tools: {},
+                messages: [{ role: "user", content: "summarize this conversation" }],
+              })
+              const text = await stream.text
+              const finishReason = await stream.finishReason
+              const toolCalls = await stream.toolCalls
+              return { text, finishReason, toolCalls }
+            })
+            expect(streamResult.finishReason).toBe("stop")
+            expect(streamResult.toolCalls).toHaveLength(0)
+          }),
+        { config: zenProviderConfig(server.url) },
+      )
+    }),
+)
+
+it.live(
+  "guards injected-only tool calls while executing caller tools when model selects injected tool with partial caller tools",
+  () =>
+    Effect.gen(function* () {
+      const mixedStream = [
+        'data: {"id":"chatcmpl-2","created":1,"model":"deepseek-v4-flash-free","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}',
+        "",
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_custom_1","type":"function","function":{"name":"custom_lookup","arguments":"{\\"key\\":\\"test-val\\"}"}},{"index":1,"id":"call_bash_1","type":"function","function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}]},"finish_reason":null}]}',
+        "",
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n")
+
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(() => zenServer(() => mixedStream)),
+        (server) => Effect.sync(() => server.server.close()),
+      )
+
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* Provider.Service
+            const model = yield* provider.getModel(
+              ProviderV2.ID.opencode,
+              ModelV2.ID.make("deepseek-v4-flash-free"),
+            )
+            const language = yield* provider.getLanguage(model)
+
+            let executedQuery = ""
+            const customLookup = tool({
+              description: "Caller defined custom tool",
+              inputSchema: z.object({ key: z.string() }),
+              execute: async ({ key }: { key: string }) => {
+                executedQuery = key
+                return `found-${key}`
+              },
+            })
+
+            // 1. generateText with partial caller tools (caller provided custom_lookup, but not bash)
+            // Model emitted both custom_lookup and injected bash.
+            // Injected bash is filtered out; custom_lookup is preserved and executed without unknown executor / hang.
+            const genResult = yield* Effect.promise(() =>
+              generateText({
+                model: language,
+                tools: { custom_lookup: customLookup },
+                messages: [{ role: "user", content: "perform lookup" }],
+              }),
+            )
+            expect(genResult.finishReason).toBe("tool-calls")
+            expect(genResult.toolCalls).toHaveLength(1)
+            expect(genResult.toolCalls[0].toolName).toBe("custom_lookup")
+            expect(genResult.toolResults).toHaveLength(1)
+            expect(genResult.toolResults[0].output).toBe("found-test-val")
+            expect(executedQuery).toBe("test-val")
+
+            // 2. streamText with partial caller tools
+            executedQuery = ""
+            const streamResult = yield* Effect.promise(async () => {
+              const stream = streamText({
+                model: language,
+                tools: { custom_lookup: customLookup },
+                messages: [{ role: "user", content: "perform lookup" }],
+              })
+              const finishReason = await stream.finishReason
+              const toolCalls = await stream.toolCalls
+              const toolResults = await stream.toolResults
+              return { finishReason, toolCalls, toolResults }
+            })
+            expect(streamResult.finishReason).toBe("tool-calls")
+            expect(streamResult.toolCalls).toHaveLength(1)
+            expect(streamResult.toolCalls[0].toolName).toBe("custom_lookup")
+            expect(streamResult.toolResults).toHaveLength(1)
+            expect(streamResult.toolResults[0].output).toBe("found-test-val")
+            expect(executedQuery).toBe("test-val")
+          }),
+        { config: zenProviderConfig(server.url) },
+      )
+    }),
+)
+
 function zenProviderConfig(url: string) {
   return {
     formatter: false,
@@ -1792,13 +1975,15 @@ function zenProviderConfig(url: string) {
   }
 }
 
-async function zenServer(): Promise<{ server: Server; url: string; requests: Captured[] }> {
+async function zenServer(
+  streamFactory?: (req: Captured) => string | undefined,
+): Promise<{ server: Server; url: string; requests: Captured[] }> {
   const requests: Captured[] = []
   const server = createServer((request, response) => {
     const chunks: Buffer[] = []
     request.on("data", (chunk) => chunks.push(chunk))
     request.on("end", () => {
-      requests.push({
+      const captured: Captured = {
         url: request.url ?? "",
         method: request.method ?? "GET",
         headers: new Headers(
@@ -1809,7 +1994,8 @@ async function zenServer(): Promise<{ server: Server; url: string; requests: Cap
         body: chunks.length === 0 ? undefined : JSON.parse(Buffer.concat(chunks).toString()),
         raw: chunks.length === 0 ? undefined : Buffer.concat(chunks),
         init: undefined,
-      })
+      }
+      requests.push(captured)
       if (request.url?.includes("/messages")) {
         response.writeHead(200, { "content-type": "application/json" })
         response.end(
@@ -1845,6 +2031,14 @@ async function zenServer(): Promise<{ server: Server; url: string; requests: Cap
           }),
         )
         return
+      }
+      if (streamFactory) {
+        const custom = streamFactory(captured)
+        if (custom !== undefined) {
+          response.writeHead(200, { "content-type": "text/event-stream" })
+          response.end(custom)
+          return
+        }
       }
       response.writeHead(200, { "content-type": "text/event-stream" })
       response.end(completionStream)

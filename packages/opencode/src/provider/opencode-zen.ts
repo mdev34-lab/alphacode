@@ -287,6 +287,7 @@ export type AggregateInput = {
   readonly signal?: AbortSignal | null
   /** Milliseconds to wait for the next SSE chunk before failing the read. */
   readonly chunkTimeout?: number
+  readonly injectedOnly?: Set<string>
 }
 
 /** Re-assemble a streamed completion into the JSON response a non-streaming caller expects. */
@@ -344,9 +345,21 @@ async function aggregate(response: Response, input: AggregateInput) {
   if (state.reasoningContent) message["reasoning_content"] = state.reasoningContent
   if (state.reasoning) message["reasoning"] = state.reasoning
   if (state.calls.size > 0) {
-    message["tool_calls"] = [...state.calls.entries()]
+    const validCalls = [...state.calls.entries()]
+      .filter(([, call]) => !input.injectedOnly?.has(call.name))
       .toSorted(([a], [b]) => a - b)
       .map(([, call]) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }))
+
+    if (validCalls.length > 0) {
+      message["tool_calls"] = validCalls
+    } else {
+      if (state.finish === "tool_calls") {
+        state.finish = "stop"
+      }
+      if (!state.content) {
+        message["content"] = ""
+      }
+    }
   }
 
   return new Response(
@@ -360,6 +373,176 @@ async function aggregate(response: Response, input: AggregateInput) {
     }),
     { status: response.status, headers: { "content-type": "application/json" } },
   )
+}
+
+async function guardJsonResponse(response: Response, injectedOnly: Set<string>): Promise<Response> {
+  if (injectedOnly.size === 0) return response
+  try {
+    const text = await response.text()
+    const data = JSON.parse(text)
+    if (!isRecord(data) || !Array.isArray(data["choices"])) {
+      return new Response(text, response)
+    }
+    let modified = false
+    for (const choice of data["choices"] as Array<Record<string, unknown>>) {
+      if (!isRecord(choice) || !isRecord(choice["message"])) continue
+      const msg = choice["message"] as Record<string, unknown>
+      if (Array.isArray(msg["tool_calls"])) {
+        const remaining = (msg["tool_calls"] as Array<Record<string, unknown>>).filter((call) => {
+          if (!isRecord(call) || !isRecord(call["function"])) return false
+          const fn = call["function"] as Record<string, unknown>
+          const name = typeof fn["name"] === "string" ? fn["name"] : ""
+          return !injectedOnly.has(name)
+        })
+        if (remaining.length !== msg["tool_calls"].length) {
+          modified = true
+          if (remaining.length > 0) {
+            msg["tool_calls"] = remaining
+          } else {
+            delete msg["tool_calls"]
+            if (choice["finish_reason"] === "tool_calls") {
+              choice["finish_reason"] = "stop"
+            }
+            if (msg["content"] === null || msg["content"] === undefined) {
+              msg["content"] = ""
+            }
+          }
+        }
+      }
+    }
+    if (!modified) return new Response(text, response)
+    const newBody = JSON.stringify(data)
+    const headers = new Headers(response.headers)
+    headers.delete("content-length")
+    return new Response(newBody, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    })
+  } catch {
+    return response
+  }
+}
+
+function guardStream(response: Response, injectedOnly: Set<string>): Response {
+  if (injectedOnly.size === 0 || !response.body) return response
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+
+  const injectedIndices = new Set<number>()
+  const callerIndices = new Set<number>()
+  let emittedContent = false
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let buffer = ""
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            if (buffer.length > 0) {
+              processLine(buffer)
+            }
+            controller.close()
+            break
+          }
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split("\n")
+          buffer = lines.pop() ?? ""
+          for (const line of lines) {
+            processLine(line)
+          }
+        }
+      } catch (err) {
+        controller.error(err)
+      }
+
+      function processLine(line: string) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith("data:")) {
+          controller.enqueue(encoder.encode(line + "\n"))
+          return
+        }
+        const data = trimmed.slice("data:".length).trim()
+        if (data === "[DONE]") {
+          controller.enqueue(encoder.encode(line + "\n"))
+          return
+        }
+        if (injectedIndices.size === 0 && !data.includes('"tool_calls"')) {
+          controller.enqueue(encoder.encode(line + "\n"))
+          return
+        }
+
+        let chunk: unknown
+        try {
+          chunk = JSON.parse(data)
+        } catch {
+          controller.enqueue(encoder.encode(line + "\n"))
+          return
+        }
+        if (!isRecord(chunk) || !Array.isArray(chunk["choices"])) {
+          controller.enqueue(encoder.encode(line + "\n"))
+          return
+        }
+
+        for (const choice of chunk["choices"] as Array<Record<string, unknown>>) {
+          if (!isRecord(choice)) continue
+          const delta = choice["delta"]
+          if (isRecord(delta)) {
+            if (delta["content"]) emittedContent = true
+            if (Array.isArray(delta["tool_calls"])) {
+              for (const call of delta["tool_calls"] as Array<Record<string, unknown>>) {
+                if (!isRecord(call)) continue
+                const idx = typeof call["index"] === "number" ? call["index"] : 0
+                const fn = isRecord(call["function"]) ? (call["function"] as Record<string, unknown>) : null
+                const name = typeof fn?.["name"] === "string" ? fn["name"] : ""
+                if (name.length > 0) {
+                  if (injectedOnly.has(name)) {
+                    injectedIndices.add(idx)
+                  } else {
+                    callerIndices.add(idx)
+                  }
+                }
+              }
+              const remaining = (delta["tool_calls"] as Array<Record<string, unknown>>).filter((call) => {
+                const idx = isRecord(call) && typeof call["index"] === "number" ? call["index"] : 0
+                return !injectedIndices.has(idx)
+              })
+              if (remaining.length > 0) {
+                delta["tool_calls"] = remaining
+              } else {
+                delete delta["tool_calls"]
+              }
+            }
+          }
+          if (choice["finish_reason"] === "tool_calls") {
+            if (callerIndices.size === 0 && injectedIndices.size > 0) {
+              choice["finish_reason"] = "stop"
+              if (!emittedContent) {
+                if (isRecord(delta)) delta["content"] = ""
+                else choice["delta"] = { content: "" }
+                emittedContent = true
+              }
+            }
+          }
+        }
+
+        const out = `data: ${JSON.stringify(chunk)}\n`
+        controller.enqueue(encoder.encode(out))
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason)
+    },
+  })
+
+  return new Response(stream, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
 }
 
 function pathname(url: string) {
@@ -498,8 +681,12 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     payload["stream"] = true
 
     const callerHadNoTools = !Array.isArray(payload["tools"]) || payload["tools"].length === 0
-    const tools: unknown[] = Array.isArray(payload["tools"]) ? [...payload["tools"]] : []
-    const presentNames = new Set(tools.map(toolNameOf).filter(Boolean))
+    const callerTools: unknown[] = Array.isArray(payload["tools"]) ? [...payload["tools"]] : []
+    const callerToolNames = new Set(callerTools.map(toolNameOf).filter(Boolean))
+    const injectedOnlyNames = new Set(ZEN_FINGERPRINT_TOOLS.filter((name) => !callerToolNames.has(name)))
+
+    const tools: unknown[] = [...callerTools]
+    const presentNames = new Set(callerToolNames)
     for (const name of ZEN_FINGERPRINT_TOOLS) {
       if (!presentNames.has(name)) {
         tools.push({
@@ -516,8 +703,13 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     payload["tools"] = tools
 
     if (callerHadNoTools) {
-      // The quartet satisfies the gateway tool gate when the caller sends no tools.
-      if (payload["tool_choice"] !== "auto" && payload["tool_choice"] !== "none") payload["tool_choice"] = "auto"
+      // When the caller provides no tools (e.g. compaction or plain chat),
+      // default tool_choice to "none" so the injected quartet is not selectable
+      // by the model. If the caller explicitly passed tool_choice (such as
+      // "required" or "none"), preserve it verbatim.
+      if (payload["tool_choice"] === undefined) {
+        payload["tool_choice"] = "none"
+      }
     }
 
     // The rewritten body is a different length than whatever the caller
@@ -530,8 +722,17 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
       headers,
       body: JSON.stringify(payload),
     })
-    if (!streaming && response.ok && response.headers.get("content-type")?.includes("text/event-stream")) {
-      return aggregate(response, { signal, chunkTimeout: input.chunkTimeout })
+    if (response.ok) {
+      const contentType = response.headers.get("content-type") ?? ""
+      if (!streaming && contentType.includes("text/event-stream")) {
+        return aggregate(response, { signal, chunkTimeout: input.chunkTimeout, injectedOnly: injectedOnlyNames })
+      }
+      if (!streaming && contentType.includes("application/json")) {
+        return guardJsonResponse(response, injectedOnlyNames)
+      }
+      if (streaming && contentType.includes("text/event-stream")) {
+        return guardStream(response, injectedOnlyNames)
+      }
     }
     return response
   }
