@@ -107,14 +107,7 @@ export function extract(chunks: readonly (string | undefined)[]): Delivery {
         analysis,
         failure: { reason: "malformed", message: `the <${opened}> envelope has an opening tag but no closing tag` },
       }
-    return {
-      ok: false,
-      analysis,
-      failure: {
-        reason: "missing",
-        message: `no ${TAGS.map((tag) => `<${tag}>`).join(" or ")} report envelope was found`,
-      },
-    }
+    return { ok: false, analysis, failure: { reason: "missing", message: `no <${TAG}> report envelope was found` } }
   }
 
   const start = last.index ?? 0

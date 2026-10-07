@@ -59,13 +59,13 @@ describe("review report extraction", () => {
     )
   })
 
-  test("1c. the missing-envelope failure names both accepted tags", () => {
+  test("1c. the missing-envelope failure keeps naming the canonical tag", () => {
+    // The other suites assert this exact phrase; compatibility must not reword it.
     const delivery = ReviewReport.extract(["Looks good overall."])
     expect(delivery.ok).toBe(false)
     if (delivery.ok) return
     expect(delivery.failure.reason).toBe("missing")
-    expect(delivery.failure.message).toContain("<silvercode-review>")
-    expect(delivery.failure.message).toContain("<alphacode-review>")
+    expect(delivery.failure.message).toBe("no <silvercode-review> report envelope was found")
   })
 
   test("1d. a truncated legacy opening tag stays an explicit failure that names the tag", () => {
