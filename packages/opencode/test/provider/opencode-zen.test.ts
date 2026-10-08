@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { createServer, type Server } from "node:http"
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
@@ -1053,6 +1053,382 @@ describe("OpenCodeZen", () => {
       await cancelled.promise
     })
   })
+
+  describe("injected tool guard", () => {
+    const callerTools = [{ type: "function", function: { name: "custom_lookup" } }]
+    const bashCall = { id: "call_b", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } }
+    const customCall = {
+      id: "call_c",
+      type: "function",
+      function: { name: "custom_lookup", arguments: '{"key":"v"}' },
+    }
+
+    function frame(value: unknown) {
+      return `data: ${JSON.stringify(value)}`
+    }
+
+    function sseFrames(...chunks: unknown[]) {
+      const lines: string[] = []
+      for (const chunk of chunks) lines.push(frame(chunk), "")
+      lines.push("data: [DONE]", "")
+      return stream(...lines)
+    }
+
+    function completionJson(calls: unknown[], content: string | null, finish = "tool_calls") {
+      return JSON.stringify({
+        id: "chatcmpl-9",
+        object: "chat.completion",
+        created: 1,
+        model: "big-pickle",
+        choices: [{ index: 0, message: { role: "assistant", content, tool_calls: calls }, finish_reason: finish }],
+      })
+    }
+
+    function jsonGuard(body: Record<string, any>, response: Response) {
+      const { upstream } = recorder(() => response)
+      const zen = createFetch({ upstream })
+      return zen(zenURL, { method: "POST", body: JSON.stringify(body) })
+    }
+
+    function streamGuard(body: Record<string, any>, response: Response) {
+      const { upstream } = recorder(() => response)
+      const zen = createFetch({ upstream })
+      return zen(zenURL, { method: "POST", body: JSON.stringify(body) })
+    }
+
+    function dataLines(text: string) {
+      return text
+        .split("\n")
+        .filter((line) => line.startsWith("data:") && line.includes("{"))
+        .map((line) => JSON.parse(line.slice("data:".length).trim()) as any)
+    }
+
+    test("strips injected-only calls from a JSON response and drops stale transfer headers", async () => {
+      const response = await jsonGuard(
+        { model: "big-pickle", messages: [] },
+        new Response(completionJson([bashCall], null), {
+          headers: {
+            "content-type": "application/json",
+            "content-length": "999",
+            "content-encoding": "gzip",
+          },
+        }),
+      )
+
+      const body = JSON.parse(await response.text())
+      expect(body.choices[0].finish_reason).toBe("stop")
+      expect(body.choices[0].message.tool_calls).toBeUndefined()
+      expect(body.choices[0].message.content).toBe("")
+      // The guard re-encoded the body, so length and encoding metadata of the
+      // original response are stale for it and must not survive the rewrite.
+      expect(response.headers.get("content-length")).toBeNull()
+      expect(response.headers.get("content-encoding")).toBeNull()
+    })
+
+    test("keeps caller tool calls mixed with injected ones in a JSON response", async () => {
+      const response = await jsonGuard(
+        { model: "big-pickle", messages: [], tools: callerTools },
+        new Response(completionJson([customCall, bashCall], null), {
+          headers: { "content-type": "application/json" },
+        }),
+      )
+
+      const body = (await response.json()) as any
+      expect(body.choices[0].finish_reason).toBe("tool_calls")
+      expect(body.choices[0].message.tool_calls).toEqual([customCall])
+    })
+
+    test("fails an explicit required tool_choice when only injected calls would remain", async () => {
+      await expect(
+        jsonGuard(
+          { model: "big-pickle", messages: [], tools: callerTools, tool_choice: "required" },
+          new Response(completionJson([bashCall], null), { headers: { "content-type": "application/json" } }),
+        ),
+      ).rejects.toThrow("required tool_choice")
+    })
+
+    test("treats a forced function tool_choice as required", async () => {
+      await expect(
+        jsonGuard(
+          {
+            model: "big-pickle",
+            messages: [],
+            tools: callerTools,
+            tool_choice: { type: "function", function: { name: "custom_lookup" } },
+          },
+          new Response(completionJson([bashCall], null), { headers: { "content-type": "application/json" } }),
+        ),
+      ).rejects.toThrow("required tool_choice")
+    })
+
+    test("keeps mixed calls when a required tool_choice is satisfied by caller tools", async () => {
+      const response = await jsonGuard(
+        { model: "big-pickle", messages: [], tools: callerTools, tool_choice: "required" },
+        new Response(completionJson([bashCall, customCall], null), {
+          headers: { "content-type": "application/json" },
+        }),
+      )
+
+      const body = (await response.json()) as any
+      expect(body.choices[0].finish_reason).toBe("tool_calls")
+      expect(body.choices[0].message.tool_calls).toEqual([customCall])
+    })
+
+    test("honors an explicit none tool_choice with silent stripping", async () => {
+      const response = await jsonGuard(
+        { model: "big-pickle", messages: [], tool_choice: "none" },
+        new Response(completionJson([bashCall], "summarized"), { headers: { "content-type": "application/json" } }),
+      )
+
+      const body = (await response.json()) as any
+      expect(body.choices[0].finish_reason).toBe("stop")
+      expect(body.choices[0].message.content).toBe("summarized")
+      expect(body.choices[0].message.tool_calls).toBeUndefined()
+    })
+
+    test("returns a readable body when a guarded JSON response is malformed", async () => {
+      const text = '{"choices": [oops not json'
+      const response = await jsonGuard(
+        { model: "big-pickle", messages: [] },
+        new Response(text, {
+          status: 200,
+          headers: { "content-type": "application/json", "content-length": String(text.length + 40) },
+        }),
+      )
+
+      // The guard consumed the upstream body to inspect it, so it must hand
+      // back the buffered text instead of the drained original response.
+      expect(await response.text()).toBe(text)
+    })
+
+    test("passes through a JSON response without choices intact", async () => {
+      const text = JSON.stringify({ ok: true })
+      const response = await jsonGuard(
+        { model: "big-pickle", messages: [] },
+        new Response(text, { headers: { "content-type": "application/json" } }),
+      )
+
+      expect(await response.text()).toBe(text)
+    })
+
+    test("guards a JSON completion served to a streaming caller", async () => {
+      const response = await streamGuard(
+        { model: "big-pickle", messages: [], stream: true, tools: callerTools },
+        new Response(completionJson([customCall, bashCall], null), {
+          headers: { "content-type": "application/json" },
+        }),
+      )
+
+      // A gateway that answers even a streamed request with JSON must still
+      // go through the guard so injected-only calls cannot bypass it and
+      // reach the runtime as an unexecutable tool call.
+      const body = (await response.json()) as any
+      expect(body.choices[0].finish_reason).toBe("tool_calls")
+      expect(body.choices[0].message.tool_calls).toEqual([customCall])
+    })
+
+    test("fails an aggregated stream that only injected tools would satisfy under a required tool_choice", async () => {
+      const response = sseFrames({
+        choices: [
+          {
+            index: 0,
+            delta: { tool_calls: [{ index: 0, id: "call_b", function: { name: "bash", arguments: "{}" } }] },
+            finish_reason: "tool_calls",
+          },
+        ],
+      })
+
+      await expect(
+        streamGuard({ model: "big-pickle", messages: [], tools: callerTools, tool_choice: "required" }, response),
+      ).rejects.toThrow("required tool_choice")
+    })
+
+    test("keeps an index-less caller call separate from an injected index 0 when aggregating", async () => {
+      const response = sseFrames(
+        {
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ index: 0, id: "call_b", function: { name: "bash", arguments: '{"command":"ls"}' } }],
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ id: "call_c", function: { name: "custom_lookup", arguments: '{"key":"v"}' } }] },
+            },
+          ],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      )
+
+      const guarded = await streamGuard({ model: "big-pickle", messages: [], tools: callerTools }, response)
+      const body = (await guarded.json()) as any
+
+      expect(body.choices[0].message.tool_calls).toEqual([
+        { id: "call_c", type: "function", function: { name: "custom_lookup", arguments: '{"key":"v"}' } },
+      ])
+    })
+
+    test("keeps index-less caller tool call fragments next to an injected call at index 0", async () => {
+      const response = sseFrames(
+        {
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ index: 0, id: "call_b", function: { name: "bash", arguments: '{"comm' } }] },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [{ id: "call_c", function: { name: "custom_lookup", arguments: '{"key":"v"}' } }],
+              },
+            },
+          ],
+        },
+        { choices: [{ index: 0, delta: { tool_calls: [{ function: { arguments: "tail" } }] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      )
+
+      const guarded = await streamGuard(
+        { model: "big-pickle", messages: [], stream: true, tools: callerTools },
+        response,
+      )
+      const text = await guarded.text()
+      const chunks = dataLines(text)
+      const names = chunks.flatMap((chunk: any) => chunk.choices?.[0]?.delta?.tool_calls ?? [])
+
+      // The injected bash head is removed; the index-less caller head and its
+      // index-less argument continuation survive even though bash claimed 0.
+      expect(JSON.stringify(names)).not.toContain("bash")
+      expect(names).toEqual([
+        { id: "call_c", function: { name: "custom_lookup", arguments: '{"key":"v"}' } },
+        { function: { arguments: "tail" } },
+      ])
+      expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe("tool_calls")
+    })
+
+    test("strips injected-only fragments including continuations in a guarded stream", async () => {
+      const response = sseFrames(
+        {
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ index: 0, id: "call_b", function: { name: "bash", arguments: '{"comm' } }] },
+            },
+          ],
+        },
+        {
+          choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'mand":"ls"}' } }] } }],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      )
+
+      const guarded = await streamGuard({ model: "big-pickle", messages: [], stream: true }, response)
+      const text = await guarded.text()
+      expect(text).not.toContain("bash")
+      expect(text).not.toContain("call_b")
+
+      const chunks = dataLines(text)
+      // A caller that never demanded tool calls (the tool-less compaction
+      // request defaults to tool_choice "none") keeps the silent strip.
+      expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe("stop")
+      expect(chunks[chunks.length - 1].choices[0].delta.content).toBe("")
+    })
+
+    test("fails a guarded stream that would fake a required tool_choice with an empty stop", async () => {
+      const response = sseFrames(
+        {
+          choices: [
+            {
+              index: 0,
+              delta: { tool_calls: [{ index: 0, id: "call_b", function: { name: "bash", arguments: "{}" } }] },
+            },
+          ],
+        },
+        { choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+      )
+
+      const guarded = await streamGuard(
+        { model: "big-pickle", messages: [], stream: true, tools: callerTools, tool_choice: "required" },
+        response,
+      )
+      await expect(guarded.text()).rejects.toThrow("required tool_choice")
+    })
+
+    test("cancels a guarded stream when the caller aborts", async () => {
+      const controller = new AbortController()
+      const cancelled = Promise.withResolvers<void>()
+      const reading = Promise.withResolvers<void>()
+      const { upstream } = recorder(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(out) {
+                out.enqueue(encoder.encode(`${frame({ choices: [{ index: 0, delta: { content: "Hel" } }] })}\n`))
+              },
+              pull() {
+                reading.resolve()
+              },
+              // The upstream never reacts to the abort itself.
+              cancel() {
+                cancelled.resolve()
+              },
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      )
+      const zen = createFetch({ upstream })
+      const request = new Request(zenURL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "big-pickle", messages: [], stream: true }),
+        signal: controller.signal,
+      })
+
+      const response = await zen(request)
+      await reading.promise
+      controller.abort(new Error("caller stop"))
+
+      await expect(response.text()).rejects.toThrow("caller stop")
+      await cancelled.promise
+    })
+
+    test("rejects a pre-aborted caller on a guarded stream", async () => {
+      const controller = new AbortController()
+      controller.abort(new Error("caller cancelled"))
+      const { upstream } = recorder(
+        () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(out) {
+                out.enqueue(encoder.encode(`${frame({ choices: [{ index: 0, delta: { content: "Hel" } }] })}\n`))
+              },
+              // The stream never ends and never reacts to the abort.
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+      )
+      const zen = createFetch({ upstream })
+      const request = new Request(zenURL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "big-pickle", messages: [], stream: true }),
+        signal: controller.signal,
+      })
+
+      const response = await zen(request)
+      await expect(response.text()).rejects.toThrow("caller cancelled")
+    })
+  })
 })
 
 it.live("keeps the session header and regenerates the request header per turn", () =>
@@ -1601,14 +1977,8 @@ it.live("preserves tiered catalog pricing and auth after migration of base-only 
       () =>
         Effect.gen(function* () {
           const provider = yield* Provider.Service
-          const modelBaseOverride = yield* provider.getModel(
-            ProviderV2.ID.opencode,
-            ModelV2.ID.make("claude-sonnet-4"),
-          )
-          const modelEmptyCost = yield* provider.getModel(
-            ProviderV2.ID.opencode,
-            ModelV2.ID.make("gpt-empty-cost"),
-          )
+          const modelBaseOverride = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("claude-sonnet-4"))
+          const modelEmptyCost = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("gpt-empty-cost"))
 
           // Base-only override must update input/output rates while PRESERVING catalog tiers
           expect(modelBaseOverride.cost.input).toBe(3.5)
@@ -1632,9 +2002,7 @@ it.live("preserves tiered catalog pricing and auth after migration of base-only 
 
           // Auth regression: paid models retain the caller's API key and must NEVER authenticate as Bearer public
           const language = yield* provider.getLanguage(modelBaseOverride)
-          yield* Effect.promise(() =>
-            generateText({ model: language, messages: [{ role: "user", content: "hello" }] }),
-          )
+          yield* Effect.promise(() => generateText({ model: language, messages: [{ role: "user", content: "hello" }] }))
 
           expect(server.requests).toHaveLength(1)
           expect(server.requests[0].headers.get("x-api-key")).toBe("sk-user-key")
@@ -1785,10 +2153,7 @@ it.live(
         () =>
           Effect.gen(function* () {
             const provider = yield* Provider.Service
-            const model = yield* provider.getModel(
-              ProviderV2.ID.opencode,
-              ModelV2.ID.make("deepseek-v4-flash-free"),
-            )
+            const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
             const language = yield* provider.getLanguage(model)
 
             // 1. generateText with empty caller tools (tools: {})
@@ -1849,10 +2214,7 @@ it.live(
         () =>
           Effect.gen(function* () {
             const provider = yield* Provider.Service
-            const model = yield* provider.getModel(
-              ProviderV2.ID.opencode,
-              ModelV2.ID.make("deepseek-v4-flash-free"),
-            )
+            const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
             const language = yield* provider.getLanguage(model)
 
             let executedQuery = ""
@@ -1905,6 +2267,310 @@ it.live(
         { config: zenProviderConfig(server.url) },
       )
     }),
+)
+
+function collectErrorMessages(error: unknown, seen = new Set<unknown>()): string[] {
+  if (!error || (typeof error !== "object" && typeof error !== "function") || seen.has(error)) return []
+  seen.add(error)
+  const message = typeof (error as any).message === "string" ? [(error as any).message] : []
+  return [...message, ...collectErrorMessages((error as any).cause, seen)]
+}
+
+it.live("strips injected-only tool calls from a JSON completion served to the AI SDK", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() =>
+        zenServer(undefined, (_captured, _request, response) => {
+          response.writeHead(200, { "content-type": "application/json" })
+          response.end(
+            JSON.stringify({
+              id: "chatcmpl-json-1",
+              object: "chat.completion",
+              created: 1,
+              model: "deepseek-v4-flash-free",
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: "assistant",
+                    content: "Done.",
+                    tool_calls: [
+                      { id: "call_b", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } },
+                    ],
+                  },
+                  finish_reason: "tool_calls",
+                },
+              ],
+            }),
+          )
+        }),
+      ),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
+          const language = yield* provider.getLanguage(model)
+
+          // The gateway answered the AI SDK request with JSON instead of SSE;
+          // it must pass the same guard so the injected-only bash call never
+          // reaches the runtime as an unexecutable tool call.
+          const result = yield* Effect.promise(() =>
+            generateText({ model: language, tools: {}, messages: [{ role: "user", content: "wrap up" }] }),
+          )
+          expect(result.finishReason).toBe("stop")
+          expect(result.text).toBe("Done.")
+          expect(result.toolCalls).toHaveLength(0)
+        }),
+      { config: zenProviderConfig(server.url) },
+    )
+  }),
+)
+
+it.live("fails a required tool_choice that only injected tools would have answered", () =>
+  Effect.gen(function* () {
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() =>
+        zenServer(undefined, (_captured, _request, response) => {
+          response.writeHead(200, { "content-type": "application/json" })
+          response.end(
+            JSON.stringify({
+              id: "chatcmpl-json-2",
+              object: "chat.completion",
+              created: 1,
+              model: "deepseek-v4-flash-free",
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: "assistant",
+                    content: null,
+                    tool_calls: [
+                      { id: "call_b", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } },
+                    ],
+                  },
+                  finish_reason: "tool_calls",
+                },
+              ],
+            }),
+          )
+        }),
+      ),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
+          const language = yield* provider.getLanguage(model)
+
+          // The caller required a tool call; the only call the model produced
+          // belongs to the injected quartet. Reporting a normal stop after
+          // stripping it would falsely satisfy the required contract, so the
+          // guard must fail the request explicitly instead.
+          const messages = yield* Effect.promise(async () => {
+            try {
+              await generateText({
+                model: language,
+                tools: {
+                  custom_lookup: tool({
+                    inputSchema: z.object({ key: z.string() }),
+                    execute: async () => "unused",
+                  }),
+                },
+                toolChoice: "required",
+                messages: [{ role: "user", content: "run the lookup" }],
+              })
+              return ["<no error thrown>"]
+            } catch (error) {
+              return collectErrorMessages(error)
+            }
+          })
+          expect(messages.join(" | ")).toContain("required tool_choice")
+        }),
+      { config: zenProviderConfig(server.url) },
+    )
+  }),
+)
+
+it.live("executes an index-less caller tool call while stripping the injected one in a guarded stream", () =>
+  Effect.gen(function* () {
+    const indexlessCallerStream = [
+      'data: {"id":"chatcmpl-4","created":1,"model":"deepseek-v4-flash-free","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}',
+      "",
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_b","type":"function","function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}]},"finish_reason":null}]}',
+      "",
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_c","type":"function","function":{"name":"custom_lookup","arguments":"{\\"key\\":\\"indexed\\"}"}}]},"finish_reason":null}]}',
+      "",
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n")
+
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => zenServer(() => indexlessCallerStream)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
+          const language = yield* provider.getLanguage(model)
+
+          let executedKey = ""
+          const customLookup = tool({
+            description: "Caller defined custom tool",
+            inputSchema: z.object({ key: z.string() }),
+            execute: async ({ key }: { key: string }) => {
+              executedKey = key
+              return `found-${key}`
+            },
+          })
+
+          // The caller's tool call arrives without an `index`, which a naive
+          // index map folds onto 0 — exactly the slot the injected bash call
+          // owns — and drops both. The caller call has to survive so it can
+          // execute.
+          const streamResult = yield* Effect.promise(async () => {
+            const stream = streamText({
+              model: language,
+              tools: { custom_lookup: customLookup },
+              messages: [{ role: "user", content: "perform lookup" }],
+            })
+            const finishReason = await stream.finishReason
+            const toolCalls = await stream.toolCalls
+            const toolResults = await stream.toolResults
+            return { finishReason, toolCalls, toolResults }
+          })
+          expect(streamResult.finishReason).toBe("tool-calls")
+          expect(streamResult.toolCalls).toHaveLength(1)
+          expect(streamResult.toolCalls[0].toolName).toBe("custom_lookup")
+          expect(streamResult.toolResults).toHaveLength(1)
+          expect(streamResult.toolResults[0].output).toBe("found-indexed")
+          expect(executedKey).toBe("indexed")
+        }),
+      { config: zenProviderConfig(server.url) },
+    )
+  }),
+)
+
+it.live("surfaces the required-contract guard failure through a streamed AI SDK call", () =>
+  Effect.gen(function* () {
+    const bashOnlyStream = [
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_b","type":"function","function":{"name":"bash","arguments":"{\\"command\\":\\"ls\\"}"}}]},"finish_reason":null}]}',
+      "",
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n")
+
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() => zenServer(() => bashOnlyStream)),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
+          const language = yield* provider.getLanguage(model)
+
+          // A guarded stream that can only answer the required tool_choice
+          // with injected tools must error the stream, not rewrite the
+          // finish reason to a normal stop.
+          const outcome = yield* Effect.promise(async () => {
+            const stream = streamText({
+              model: language,
+              tools: {
+                custom_lookup: tool({
+                  inputSchema: z.object({ key: z.string() }),
+                  execute: async () => "unused",
+                }),
+              },
+              toolChoice: "required",
+              messages: [{ role: "user", content: "run the lookup" }],
+            })
+            const messages: string[] = []
+            try {
+              for await (const part of stream.fullStream) {
+                if (part.type === "error") messages.push(...collectErrorMessages((part as any).error))
+              }
+              messages.push(
+                ...collectErrorMessages(await Promise.resolve(stream.text).catch((error: unknown) => error)),
+              )
+            } catch (error) {
+              messages.push(...collectErrorMessages(error))
+            }
+            return messages
+          })
+          expect(outcome.join(" | ")).toContain("required tool_choice")
+        }),
+      { config: zenProviderConfig(server.url) },
+    )
+  }),
+)
+
+it.live("keeps a caller abort on a guarded stream from hanging the AI SDK consumer", () =>
+  Effect.gen(function* () {
+    const closed = Promise.withResolvers<void>()
+    const server = yield* Effect.acquireRelease(
+      Effect.promise(() =>
+        zenServer(undefined, (_captured, request, response) => {
+          response.writeHead(200, { "content-type": "text/event-stream" })
+          response.write('data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}\n\n')
+          // The response is deliberately never ended, so only a properly
+          // propagated abort can settle the consumer.
+          request.on("close", () => closed.resolve())
+        }),
+      ),
+      (server) => Effect.sync(() => server.server.close()),
+    )
+
+    yield* provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const model = yield* provider.getModel(ProviderV2.ID.opencode, ModelV2.ID.make("deepseek-v4-flash-free"))
+          const language = yield* provider.getLanguage(model)
+
+          const controller = new AbortController()
+          const settled = yield* Effect.promise(async () => {
+            const stream = streamText({
+              model: language,
+              abortSignal: controller.signal,
+              messages: [{ role: "user", content: "hello" }],
+            })
+            for await (const part of stream.fullStream) {
+              if (part.type === "text-delta") {
+                controller.abort()
+                break
+              }
+            }
+            return await Promise.race([
+              stream.text.then(
+                (value) => `resolved:${value}`,
+                (error) => `rejected:${collectErrorMessages(error).join(" ")}`,
+              ),
+              new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 10_000)),
+            ])
+          })
+
+          expect(settled).not.toBe("hung")
+          yield* Effect.promise(() => closed.promise)
+        }),
+      { config: zenProviderConfig(server.url) },
+    )
+  }),
 )
 
 function zenProviderConfig(url: string) {
@@ -1977,6 +2643,12 @@ function zenProviderConfig(url: string) {
 
 async function zenServer(
   streamFactory?: (req: Captured) => string | undefined,
+  /**
+   * Takes over chat completion requests entirely, so tests can answer them
+   * with a JSON completion instead of the default SSE, or hold a streamed
+   * response open to observe client aborts.
+   */
+  responder?: (req: Captured, request: IncomingMessage, response: ServerResponse) => void,
 ): Promise<{ server: Server; url: string; requests: Captured[] }> {
   const requests: Captured[] = []
   const server = createServer((request, response) => {
@@ -1996,6 +2668,10 @@ async function zenServer(
         init: undefined,
       }
       requests.push(captured)
+      if (responder && request.url?.includes("/chat/completions")) {
+        responder(captured, request, response)
+        return
+      }
       if (request.url?.includes("/messages")) {
         response.writeHead(200, { "content-type": "application/json" })
         response.end(

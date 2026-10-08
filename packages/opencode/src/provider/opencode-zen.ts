@@ -20,6 +20,15 @@
  * the SSE response re-assembled into the JSON completion the caller expected,
  * and an empty tool list gets a placeholder definition.
  *
+ * Stripping injected-only tool calls out of a response must never fake a
+ * caller contract: a completion whose only tool calls were adapter-injected
+ * ends as a normal stop only when the caller left tool choice on auto or
+ * disabled it; a caller that required a tool call gets an explicit stream
+ * error instead of a silently satisfied contract. Caller tool calls are
+ * always preserved and never dropped alongside an injected one, and JSON
+ * responses are guarded for streaming callers as well, because a gateway may
+ * answer even a streamed request with a single JSON completion.
+ *
  * Requests the adapter does not rewrite (anything without a chat completion
  * body) are forwarded untouched, including their body bytes, method, signal,
  * and Request options.
@@ -288,6 +297,38 @@ export type AggregateInput = {
   /** Milliseconds to wait for the next SSE chunk before failing the read. */
   readonly chunkTimeout?: number
   readonly injectedOnly?: Set<string>
+  /**
+   * The caller's request carried a `tool_choice` that requires a tool call
+   * (`"required"`, `"any"`, or a forced function). Stripping injected-only
+   * calls must not turn the response into a normal stop; it fails instead.
+   */
+  readonly required?: boolean
+}
+
+/**
+ * A response that only offered adapter-injected tools is not allowed to
+ * satisfy a required `tool_choice` after the guard removes them; the caller
+ * either gets the tool call it demanded or this explicit failure.
+ */
+function requiredContractError() {
+  return new ProviderError.ResponseStreamError(
+    "Zen response satisfied the caller's required tool_choice with adapter-injected tools only",
+  )
+}
+
+/**
+ * Streaming fragments address a call by `index`; providers that omit it can
+ * only be addressed by their position inside the delta. The two key spaces
+ * stay separate so an index-less caller fragment never merges into, or gets
+ * dropped with, an injected call that legitimately owns index 0.
+ */
+function callKey(index: number | null | undefined, position: number) {
+  return typeof index === "number" ? `i:${index}` : `a:${position}`
+}
+
+/** Sort order of a call key: explicit indexes first, in index order, then index-less arrivals. */
+function callOrder(key: string) {
+  return key.startsWith("i:") ? Number(key.slice(2)) : Number.MAX_SAFE_INTEGER
 }
 
 /** Re-assemble a streamed completion into the JSON response a non-streaming caller expects. */
@@ -301,7 +342,7 @@ async function aggregate(response: Response, input: AggregateInput) {
     content: "",
     reasoning: "",
     reasoningContent: "",
-    calls: new Map<number, { id: string | undefined; name: string; arguments: string }>(),
+    calls: new Map<string, { id: string | undefined; name: string; arguments: string }>(),
   }
 
   let completed = false
@@ -325,7 +366,7 @@ async function aggregate(response: Response, input: AggregateInput) {
     delta?.tool_calls?.forEach((call, position) => {
       // Streaming deltas address a call by `index`; fragments for two calls can
       // arrive interleaved, so the position inside one delta cannot key them.
-      const key = call.index ?? position
+      const key = callKey(call.index, position)
       const current = state.calls.get(key) ?? { id: undefined, name: "", arguments: "" }
       if (call.id) current.id = call.id
       if (call.function?.name) current.name += call.function.name
@@ -347,13 +388,14 @@ async function aggregate(response: Response, input: AggregateInput) {
   if (state.calls.size > 0) {
     const validCalls = [...state.calls.entries()]
       .filter(([, call]) => !input.injectedOnly?.has(call.name))
-      .toSorted(([a], [b]) => a - b)
+      .toSorted(([a], [b]) => callOrder(a) - callOrder(b))
       .map(([, call]) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }))
 
     if (validCalls.length > 0) {
       message["tool_calls"] = validCalls
     } else {
       if (state.finish === "tool_calls") {
+        if (input.required) throw requiredContractError()
         state.finish = "stop"
       }
       if (!state.content) {
@@ -375,91 +417,118 @@ async function aggregate(response: Response, input: AggregateInput) {
   )
 }
 
-async function guardJsonResponse(response: Response, injectedOnly: Set<string>): Promise<Response> {
-  if (injectedOnly.size === 0) return response
-  try {
-    const text = await response.text()
-    const data = JSON.parse(text)
-    if (!isRecord(data) || !Array.isArray(data["choices"])) {
-      return new Response(text, response)
-    }
-    let modified = false
-    for (const choice of data["choices"] as Array<Record<string, unknown>>) {
-      if (!isRecord(choice) || !isRecord(choice["message"])) continue
-      const msg = choice["message"] as Record<string, unknown>
-      if (Array.isArray(msg["tool_calls"])) {
-        const remaining = (msg["tool_calls"] as Array<Record<string, unknown>>).filter((call) => {
-          if (!isRecord(call) || !isRecord(call["function"])) return false
-          const fn = call["function"] as Record<string, unknown>
-          const name = typeof fn["name"] === "string" ? fn["name"] : ""
-          return !injectedOnly.has(name)
-        })
-        if (remaining.length !== msg["tool_calls"].length) {
-          modified = true
-          if (remaining.length > 0) {
-            msg["tool_calls"] = remaining
-          } else {
-            delete msg["tool_calls"]
-            if (choice["finish_reason"] === "tool_calls") {
-              choice["finish_reason"] = "stop"
-            }
-            if (msg["content"] === null || msg["content"] === undefined) {
-              msg["content"] = ""
-            }
-          }
-        }
-      }
-    }
-    if (!modified) return new Response(text, response)
-    const newBody = JSON.stringify(data)
-    const headers = new Headers(response.headers)
-    headers.delete("content-length")
-    return new Response(newBody, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    })
-  } catch {
-    return response
-  }
+/**
+ * Re-emit a consumed body as a fresh response. The guarded body is decoded
+ * text re-serialized by the adapter, so any transferred-length or
+ * content-encoding metadata of the original response is stale for it and has
+ * to be dropped to keep consumers from truncating on the old value.
+ */
+function rebuildResponse(response: Response, body: BodyInit | null) {
+  const headers = new Headers(response.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  headers.delete("transfer-encoding")
+  return new Response(body, { status: response.status, statusText: response.statusText, headers })
 }
 
-function guardStream(response: Response, injectedOnly: Set<string>): Response {
+/**
+ * Strip adapter-injected tool calls from a JSON completion. The body is
+ * buffered up front, so every outcome — including malformed JSON — hands the
+ * caller a readable response built from the buffered text instead of the
+ * already-consumed upstream response.
+ */
+async function guardJsonResponse(response: Response, injectedOnly: Set<string>, required: boolean) {
+  if (injectedOnly.size === 0) return response
+  let text: string
+  try {
+    text = await response.text()
+  } catch {
+    // The upstream body failed while being read; only the original response
+    // can surface that failure, there is no buffered text to rebuild from.
+    return response
+  }
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  } catch {
+    return rebuildResponse(response, text)
+  }
+  if (!isRecord(data) || !Array.isArray(data["choices"])) {
+    return rebuildResponse(response, text)
+  }
+  let modified = false
+  for (const choice of data["choices"] as Array<Record<string, unknown>>) {
+    if (!isRecord(choice) || !isRecord(choice["message"])) continue
+    const msg = choice["message"] as Record<string, unknown>
+    if (!Array.isArray(msg["tool_calls"])) continue
+    const remaining = (msg["tool_calls"] as Array<Record<string, unknown>>).filter((call) => {
+      if (!isRecord(call) || !isRecord(call["function"])) return false
+      const fn = call["function"] as Record<string, unknown>
+      const name = typeof fn["name"] === "string" ? fn["name"] : ""
+      return !injectedOnly.has(name)
+    })
+    if (remaining.length === msg["tool_calls"].length) continue
+    modified = true
+    if (remaining.length > 0) {
+      msg["tool_calls"] = remaining
+      continue
+    }
+    if (choice["finish_reason"] === "tool_calls" && required) throw requiredContractError()
+    delete msg["tool_calls"]
+    if (choice["finish_reason"] === "tool_calls") {
+      choice["finish_reason"] = "stop"
+    }
+    if (msg["content"] === null || msg["content"] === undefined) {
+      msg["content"] = ""
+    }
+  }
+  if (!modified) return rebuildResponse(response, text)
+  return rebuildResponse(response, JSON.stringify(data))
+}
+
+type StreamGuardInput = {
+  readonly signal?: AbortSignal | null
+  readonly required?: boolean
+}
+
+/**
+ * Strip adapter-injected tool calls out of a live SSE stream without ever
+ * dropping a caller tool that shares the stream with them.
+ *
+ * Fragments are classified per call slot: an explicit `index` owns its slot,
+ * and index-less fragments — malformed as far as addressing goes, which some
+ * gateways emit for the first call — own a separate anonymous slot. The two
+ * key spaces never overlap, so a caller fragment that merely lacks an index
+ * cannot collide with an injected call at index 0 and be stripped alongside
+ * it. A slot on which both an injected and a caller tool name appears counts
+ * as a caller slot: keeping a possibly noisy caller call is recoverable by
+ * the SDK, silently deleting a real tool call is not.
+ *
+ * The caller's abort signal is honored the same way the aggregation path
+ * honors it, so an upstream that ignores the abort cannot leave this stream
+ * hanging, and a required `tool_choice` that only injected calls answered
+ * fails the stream instead of faking a normal stop.
+ */
+function guardStream(response: Response, injectedOnly: Set<string>, input: StreamGuardInput = {}): Response {
   if (injectedOnly.size === 0 || !response.body) return response
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
 
-  const injectedIndices = new Set<number>()
-  const callerIndices = new Set<number>()
+  const slots = new Map<string, "injected" | "caller">()
+  let sawInjected = false
+  let sawCaller = false
   let emittedContent = false
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let buffer = ""
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) {
-            if (buffer.length > 0) {
-              processLine(buffer)
-            }
-            controller.close()
-            break
-          }
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split("\n")
-          buffer = lines.pop() ?? ""
-          for (const line of lines) {
-            processLine(line)
-          }
-        }
-      } catch (err) {
-        controller.error(err)
-      }
+      const signal = input.signal
+      const cancel = () => void reader.cancel(signal?.reason).catch(() => {})
+      const watch = signal ? abortWatch(signal) : undefined
+      signal?.addEventListener("abort", cancel, { once: true })
 
-      function processLine(line: string) {
+      const processLine = (line: string) => {
         const trimmed = line.trim()
         if (!trimmed.startsWith("data:")) {
           controller.enqueue(encoder.encode(line + "\n"))
@@ -470,7 +539,7 @@ function guardStream(response: Response, injectedOnly: Set<string>): Response {
           controller.enqueue(encoder.encode(line + "\n"))
           return
         }
-        if (injectedIndices.size === 0 && !data.includes('"tool_calls"')) {
+        if (slots.size === 0 && !data.includes('"tool_calls"')) {
           controller.enqueue(encoder.encode(line + "\n"))
           return
         }
@@ -490,41 +559,43 @@ function guardStream(response: Response, injectedOnly: Set<string>): Response {
         for (const choice of chunk["choices"] as Array<Record<string, unknown>>) {
           if (!isRecord(choice)) continue
           const delta = choice["delta"]
-          if (isRecord(delta)) {
-            if (delta["content"]) emittedContent = true
-            if (Array.isArray(delta["tool_calls"])) {
-              for (const call of delta["tool_calls"] as Array<Record<string, unknown>>) {
-                if (!isRecord(call)) continue
-                const idx = typeof call["index"] === "number" ? call["index"] : 0
-                const fn = isRecord(call["function"]) ? (call["function"] as Record<string, unknown>) : null
-                const name = typeof fn?.["name"] === "string" ? fn["name"] : ""
-                if (name.length > 0) {
-                  if (injectedOnly.has(name)) {
-                    injectedIndices.add(idx)
-                  } else {
-                    callerIndices.add(idx)
-                  }
-                }
+          if (isRecord(delta) && delta["content"]) emittedContent = true
+          if (isRecord(delta) && Array.isArray(delta["tool_calls"])) {
+            const fragments = delta["tool_calls"] as unknown[]
+            const kept: unknown[] = []
+            fragments.forEach((call, position) => {
+              if (!isRecord(call)) {
+                kept.push(call)
+                return
               }
-              const remaining = (delta["tool_calls"] as Array<Record<string, unknown>>).filter((call) => {
-                const idx = isRecord(call) && typeof call["index"] === "number" ? call["index"] : 0
-                return !injectedIndices.has(idx)
-              })
-              if (remaining.length > 0) {
-                delta["tool_calls"] = remaining
-              } else {
-                delete delta["tool_calls"]
+              const fn = isRecord(call["function"]) ? (call["function"] as Record<string, unknown>) : null
+              const name = typeof fn?.["name"] === "string" && fn["name"].length > 0 ? fn["name"] : undefined
+              const key = callKey(typeof call["index"] === "number" ? call["index"] : undefined, position)
+              let slot = slots.get(key)
+              if (name !== undefined) {
+                const named = injectedOnly.has(name) ? "injected" : "caller"
+                slot = slot === undefined || slot === named ? named : "caller"
+                slots.set(key, slot)
               }
+              if (slot === "injected") {
+                sawInjected = true
+                return
+              }
+              if (slot === "caller") sawCaller = true
+              kept.push(call)
+            })
+            if (kept.length !== fragments.length) {
+              if (kept.length > 0) delta["tool_calls"] = kept
+              else delete delta["tool_calls"]
             }
           }
-          if (choice["finish_reason"] === "tool_calls") {
-            if (callerIndices.size === 0 && injectedIndices.size > 0) {
-              choice["finish_reason"] = "stop"
-              if (!emittedContent) {
-                if (isRecord(delta)) delta["content"] = ""
-                else choice["delta"] = { content: "" }
-                emittedContent = true
-              }
+          if (choice["finish_reason"] === "tool_calls" && sawInjected && !sawCaller) {
+            if (input.required) throw requiredContractError()
+            choice["finish_reason"] = "stop"
+            if (!emittedContent) {
+              if (isRecord(delta)) delta["content"] = ""
+              else choice["delta"] = { content: "" }
+              emittedContent = true
             }
           }
         }
@@ -532,17 +603,44 @@ function guardStream(response: Response, injectedOnly: Set<string>): Response {
         const out = `data: ${JSON.stringify(chunk)}\n`
         controller.enqueue(encoder.encode(out))
       }
+
+      let buffer = ""
+      try {
+        if (signal?.aborted) {
+          cancel()
+          throw abortReason(signal)
+        }
+        while (true) {
+          const pending = reader.read()
+          const part = await (watch ? Promise.race([pending, watch.promise]) : pending)
+          if (part.done) {
+            if (buffer.length > 0) {
+              processLine(buffer)
+            }
+            controller.close()
+            break
+          }
+          buffer += decoder.decode(part.value, { stream: true })
+          const lines = buffer.split("\n")
+          buffer = lines.pop() ?? ""
+          for (const line of lines) {
+            processLine(line)
+          }
+        }
+      } catch (err) {
+        controller.error(err)
+      } finally {
+        signal?.removeEventListener("abort", cancel)
+        watch?.clear()
+        void reader.cancel().catch(() => {})
+      }
     },
     cancel(reason) {
       return reader.cancel(reason)
     },
   })
 
-  return new Response(stream, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  })
+  return rebuildResponse(response, stream)
 }
 
 function pathname(url: string) {
@@ -680,6 +778,13 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     const streaming = payload["stream"] === true
     payload["stream"] = true
 
+    // A caller that required a tool call (or forced one specific function)
+    // must not have that contract silently satisfied by the guard; it is
+    // checked again when injected-only tool calls are stripped.
+    const toolChoice = payload["tool_choice"]
+    const requiredToolChoice =
+      toolChoice === "required" || toolChoice === "any" || (isRecord(toolChoice) && toolChoice["type"] === "function")
+
     const callerHadNoTools = !Array.isArray(payload["tools"]) || payload["tools"].length === 0
     const callerTools: unknown[] = Array.isArray(payload["tools"]) ? [...payload["tools"]] : []
     const callerToolNames = new Set(callerTools.map(toolNameOf).filter(Boolean))
@@ -724,14 +829,22 @@ export function createFetch(input: FetchInput = {}): ZenFetch {
     })
     if (response.ok) {
       const contentType = response.headers.get("content-type") ?? ""
-      if (!streaming && contentType.includes("text/event-stream")) {
-        return aggregate(response, { signal, chunkTimeout: input.chunkTimeout, injectedOnly: injectedOnlyNames })
+      if (contentType.includes("text/event-stream")) {
+        if (streaming) {
+          return guardStream(response, injectedOnlyNames, { signal, required: requiredToolChoice })
+        }
+        return aggregate(response, {
+          signal,
+          chunkTimeout: input.chunkTimeout,
+          injectedOnly: injectedOnlyNames,
+          required: requiredToolChoice,
+        })
       }
-      if (!streaming && contentType.includes("application/json")) {
-        return guardJsonResponse(response, injectedOnlyNames)
-      }
-      if (streaming && contentType.includes("text/event-stream")) {
-        return guardStream(response, injectedOnlyNames)
+      // A gateway may answer even a streamed request with a single JSON
+      // completion; it goes through the same guard as a non-streaming one so
+      // injected-only tool calls can never bypass it into the SDK runtime.
+      if (contentType.includes("application/json")) {
+        return guardJsonResponse(response, injectedOnlyNames, requiredToolChoice)
       }
     }
     return response
