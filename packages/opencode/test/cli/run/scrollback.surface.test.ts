@@ -81,6 +81,7 @@ async function setup(
 
   return {
     renderer: out.renderer,
+    externalOutput: out.externalOutput,
     scrollback: new RunScrollbackStream(out.renderer, input.theme ?? RUN_THEME_FALLBACK, {
       treeSitterClient,
       wrote: input.wrote ?? false,
@@ -503,12 +504,7 @@ test("renders replayed user, reasoning, and assistant output after completion", 
   try {
     const lines: string[] = []
     const take = () => {
-      const commits = claim(out.renderer)
-      try {
-        lines.push(...commits.flatMap((commit) => renderRows(commit).flatMap((row) => row.split("\n"))))
-      } finally {
-        destroy(commits)
-      }
+      lines.push(...out.externalOutput.take().map((commit) => commit.text))
     }
 
     await out.scrollback.append(user("Hello you"))
@@ -522,6 +518,7 @@ test("renders replayed user, reasoning, and assistant output after completion", 
 
     const output = lines.join("\n")
     expect(output).toContain("› Hello you")
+    expect(output).toContain("_Thinking:_ **Plan**")
     expect(output).toContain("Say hello.")
     expect(output).toContain("Hello.")
   } finally {

@@ -16,6 +16,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient, LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+// Effect 4 beta keeps the injectable HttpClient test seam under unstable/http.
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceBootstrap } from "@/project/bootstrap"

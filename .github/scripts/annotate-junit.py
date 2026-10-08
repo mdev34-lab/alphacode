@@ -19,6 +19,8 @@ def failure_excerpt(lines: list[str], name: str, classname: str) -> str:
     if not classname:
         return ""
 
+    # Only attach an exact test's log line. If Bun changes its format or JUnit
+    # names differ, omit the excerpt; the JUnit failure details remain below.
     expected = f"(fail) {classname} > {name}"
     for line in lines:
         candidate = line.lstrip()
@@ -55,7 +57,9 @@ def main() -> int:
             )
         return 0
 
-    repo = os.path.abspath(os.environ.get("GITHUB_WORKSPACE", os.getcwd()))
+    # Prefer GitHub Actions' checkout root, but resolve from this script for local callers.
+    script_repo = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+    repo = os.path.abspath(os.environ.get("GITHUB_WORKSPACE") or script_repo)
     root = ET.parse(report).getroot()
     failures = 0
     for case in root.iter("testcase"):
@@ -70,6 +74,8 @@ def main() -> int:
         if os.path.isabs(path):
             path = os.path.relpath(path, repo)
         path = path.replace("\\", "/")
+        # JUnit can report package-relative or repo-relative paths. Keep repo-relative
+        # packages/... paths intact so an already-prefixed path is not prefixed twice.
         if not path.startswith("packages/"):
             path = f"{package_root}/{path}"
 

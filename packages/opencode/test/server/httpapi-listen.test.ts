@@ -3,7 +3,6 @@ import net from "node:net"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { Global } from "@opencode-ai/core/global"
 import { Server } from "../../src/server/server"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { withTimeout } from "../../src/util/timeout"
@@ -310,7 +309,7 @@ describe("HttpApi Server.listen", () => {
         const plugin = path.join(directory, "plugin.ts")
         const initialized = path.join(directory, "initialized.txt")
         const completed = path.join(directory, "completed.txt")
-        await markPluginDependenciesReady(Global.Path.config)
+        await markPluginDependenciesReady(directory)
         await Bun.write(
           plugin,
           [

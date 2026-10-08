@@ -6,6 +6,37 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { withNetworkOptions, resolveNetworkOptions } from "../network"
 import { ACPProfile } from "@/acp/profile"
 
+function waitForStdinEnd(stdin: NodeJS.ReadStream) {
+  if (stdin.errored) return Promise.reject(stdin.errored)
+  if (stdin.readableEnded || stdin.destroyed) return Promise.resolve()
+
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      stdin.off("end", onEnd)
+      stdin.off("error", onError)
+      stdin.off("close", onClose)
+    }
+    const onEnd = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+    const onClose = () => {
+      cleanup()
+      resolve()
+    }
+
+    stdin.once("end", onEnd)
+    stdin.once("error", onError)
+    stdin.once("close", onClose)
+    if (stdin.errored) onError(stdin.errored)
+    else if (stdin.readableEnded || stdin.destroyed) onEnd()
+  })
+}
+
 export const AcpCommand = effectCmd({
   command: "acp",
   describe: "start ACP (Agent Client Protocol) server",
@@ -45,11 +76,20 @@ export const AcpCommand = effectCmd({
       })
       const output = new ReadableStream<Uint8Array>({
         start(controller) {
-          process.stdin.on("data", (chunk: Buffer) => {
+          const stdin = process.stdin
+          if (stdin.errored) {
+            controller.error(stdin.errored)
+            return
+          }
+          if (stdin.readableEnded || stdin.destroyed) {
+            controller.close()
+            return
+          }
+          stdin.on("data", (chunk: Buffer) => {
             controller.enqueue(new Uint8Array(chunk))
           })
-          process.stdin.on("end", () => controller.close())
-          process.stdin.on("error", (err) => controller.error(err))
+          stdin.on("end", () => controller.close())
+          stdin.on("error", (err) => controller.error(err))
         },
       })
 
@@ -61,15 +101,10 @@ export const AcpCommand = effectCmd({
         return agent.create(conn)
       }, stream)
 
+      const stdinEnded = yield* Effect.sync(() => waitForStdinEnd(process.stdin))
       yield* Effect.logInfo("setup connection")
-      process.stdin.resume()
-      yield* Effect.promise(
-        () =>
-          new Promise<void>((resolve, reject) => {
-            process.stdin.on("end", () => resolve())
-            process.stdin.on("error", reject)
-          }),
-      )
+      yield* Effect.sync(() => process.stdin.resume())
+      yield* Effect.promise(() => stdinEnded)
     }).pipe(Effect.ensuring(Effect.promise(() => server.stop())))
   }),
 })

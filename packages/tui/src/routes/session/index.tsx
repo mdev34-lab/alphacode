@@ -1841,6 +1841,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
           <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
             <code
               filetype="markdown"
+              // Styled streaming CodeRenderable drops reasoning text in this renderer path; keep the body visible.
               drawUnstyledText={true}
               streaming={true}
               syntaxStyle={syntax()}
