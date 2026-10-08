@@ -63,18 +63,22 @@ const drain = (input: LLM.StreamInput) => LLM.Service.use((svc) => svc.stream(in
 
 // drainWith builds an isolated runtime so custom replacements fully own LLM and
 // its transitive deps.
-const drainWith = (layer: Layer.Layer<LLM.Service>, input: LLM.StreamInput) =>
+const runIsolated = <A, E>(layer: Layer.Layer<LLM.Service>, effect: Effect.Effect<A, E, LLM.Service>) =>
   Effect.gen(function* () {
     const ctx = yield* InstanceRef
     if (!ctx) return yield* Effect.die("InstanceRef not provided")
     return yield* Effect.promise(() =>
-      Effect.runPromise(
-        LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain)).pipe(
-          Effect.provide(layer),
-          Effect.provideService(InstanceRef, ctx),
-        ),
-      ),
+      Effect.runPromiseExit(effect.pipe(Effect.provide(layer), Effect.provideService(InstanceRef, ctx))),
     )
+  })
+
+const drainWith = (layer: Layer.Layer<LLM.Service>, input: LLM.StreamInput) =>
+  Effect.gen(function* () {
+    const exit = yield* runIsolated(
+      layer,
+      LLM.Service.use((svc) => svc.stream(input).pipe(Stream.runDrain)),
+    )
+    return yield* exit
   })
 
 function llmLayerWithExecutor(
@@ -1536,36 +1540,44 @@ describe("session.llm.stream", () => {
           permission: [{ permission: "*", pattern: "*", action: "allow" }],
         } satisfies Agent.Info
 
-        // Provide the layer in-test (not via drainWith): drainWith's
-        // Effect.promise boundary would convert the guard's Fail into a Die,
-        // hiding the GenerationLimitExceededError identity asserted below.
-        const error = yield* LLM.Service.use((svc) =>
-          svc
-            .stream({
-              user: {
-                id: MessageID.make("msg_user-native-generation-cap"),
+        // Run the injected layer in an isolated runtime, then unwrap the Exit
+        // returned by Effect.flip so the expected generation-limit error keeps
+        // its original identity.
+        const exit = yield* runIsolated(
+          AppNodeBuilder.build(LLM.node, [
+            [LayerNodePlatform.llmClient, runawayNativeClient],
+            [
+              RuntimeFlags.node,
+              RuntimeFlags.layer({
+                experimentalNativeLlm: true,
+                generationCharMax: 10_000,
+                repetitionLineRepeats: 0,
+                repetitionUnitRepeats: 0,
+              }),
+            ],
+          ]),
+          LLM.Service.use((svc) =>
+            svc
+              .stream({
+                user: {
+                  id: MessageID.make("msg_user-native-generation-cap"),
+                  sessionID,
+                  role: "user",
+                  time: { created: Date.now() },
+                  agent: agent.name,
+                  model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: "high" },
+                } satisfies SessionV1.User,
                 sessionID,
-                role: "user",
-                time: { created: Date.now() },
-                agent: agent.name,
-                model: { providerID: ProviderV2.ID.make("openai"), modelID: resolved.id, variant: "high" },
-              } satisfies SessionV1.User,
-              sessionID,
-              model: resolved,
-              agent,
-              system: ["You are a helpful assistant."],
-              messages: [{ role: "user", content: "Hello" }],
-              tools: {},
-            })
-            .pipe(Stream.runDrain, Effect.flip),
-        ).pipe(
-          Effect.provide(
-            AppNodeBuilder.build(LLM.node, [
-              [LayerNodePlatform.llmClient, runawayNativeClient],
-              [RuntimeFlags.node, RuntimeFlags.layer({ experimentalNativeLlm: true, generationCharMax: 10_000 })],
-            ]),
+                model: resolved,
+                agent,
+                system: ["You are a helpful assistant."],
+                messages: [{ role: "user", content: "Hello" }],
+                tools: {},
+              })
+              .pipe(Stream.runDrain, Effect.flip),
           ),
         )
+        const error = yield* exit
 
         expect(error).toBeInstanceOf(GenerationLimit.GenerationLimitExceededError)
         if (!(error instanceof GenerationLimit.GenerationLimitExceededError)) return
@@ -1578,9 +1590,10 @@ describe("session.llm.stream", () => {
         // stop itself is covered in generation-limit.test.ts.)
         const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make("openai") })
         expect(parsed.name).toBe("UnknownError")
-        const surfaced = typeof parsed.data === "object" && parsed.data !== null && "message" in parsed.data
-          ? parsed.data.message
-          : undefined
+        const surfaced =
+          typeof parsed.data === "object" && parsed.data !== null && "message" in parsed.data
+            ? parsed.data.message
+            : undefined
         expect(surfaced).toContain(GenerationLimit.GENERATION_LIMIT_MESSAGE)
         expect(SessionRetry.retryable(parsed, "openai")).toBeUndefined()
       }),
@@ -1598,10 +1611,13 @@ describe("session.llm.stream", () => {
         const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
         const request = waitRequest(
           "/chat/completions",
-          new Response(createChatStream(`${"The file I need is packages/core/src/fs-util.ts. Let me read it:"}\n`.repeat(30)), {
-            status: 200,
-            headers: { "Content-Type": "text/event-stream" },
-          }),
+          new Response(
+            createChatStream(`${"The file I need is packages/core/src/fs-util.ts. Let me read it:"}\n`.repeat(30)),
+            {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            },
+          ),
         )
 
         const resolved = yield* Provider.use.getModel(
@@ -1648,9 +1664,10 @@ describe("session.llm.stream", () => {
         // repetition-guard.test.ts.)
         const parsed = MessageV2.fromError(error, { providerID: ProviderV2.ID.make(vivgridFixture.providerID) })
         expect(parsed.name).toBe("UnknownError")
-        const surfaced = typeof parsed.data === "object" && parsed.data !== null && "message" in parsed.data
-          ? parsed.data.message
-          : undefined
+        const surfaced =
+          typeof parsed.data === "object" && parsed.data !== null && "message" in parsed.data
+            ? parsed.data.message
+            : undefined
         expect(surfaced).toContain(RepetitionGuard.REPETITION_MESSAGE)
         expect(SessionRetry.retryable(parsed, vivgridFixture.providerID)).toBeUndefined()
       }),
@@ -1676,10 +1693,13 @@ describe("session.llm.stream", () => {
         const fixture = loadFixture(vivgridFixture.providerID, vivgridFixture.modelID)
         const request = waitRequest(
           "/chat/completions",
-          new Response(createChatStream(`${"The file I need is packages/core/src/fs-util.ts. Let me read it:"}\n`.repeat(30)), {
-            status: 200,
-            headers: { "Content-Type": "text/event-stream" },
-          }),
+          new Response(
+            createChatStream(`${"The file I need is packages/core/src/fs-util.ts. Let me read it:"}\n`.repeat(30)),
+            {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            },
+          ),
         )
 
         const resolved = yield* Provider.use.getModel(

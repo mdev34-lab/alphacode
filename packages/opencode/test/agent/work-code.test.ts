@@ -196,24 +196,33 @@ describe("Work/Code agent split", () => {
     }),
   )
 
-  it.instance("permission-denied tools are hidden while finish remains available", () =>
+  it.instance("plan-file edit tools stay visible while workspace edits remain denied", () =>
     Effect.gen(function* () {
       const agent = yield* Agent.Service
       const plan = yield* agent.get("plan")
       expect(plan).toBeDefined()
+      if (!plan) return
 
       const registry = yield* ToolRegistry.Service
       const tools = yield* registry.tools({
         providerID: ProviderV2.ID.make("test"),
         modelID: ModelV2.ID.make("test-model"),
-        agent: plan!,
+        agent: plan,
       })
       const ids = tools.map((tool) => tool.id)
 
-      expect(ids).not.toContain("edit")
-      expect(ids).not.toContain("write")
-      expect(ids).not.toContain("apply_patch")
+      // The tools are visible because the plan agent has a scoped allowance
+      // for plan files; execution still rejects edits outside that exception.
+      expect(ids).toContain("edit")
+      expect(ids).toContain("write")
       expect(ids).toContain("finish")
+      const planFileRule = plan.permission.findLast((rule) => rule.permission === "edit" && rule.action === "allow")
+      expect(planFileRule).toBeDefined()
+      if (!planFileRule) return
+      expect(Permission.evaluate("edit", planFileRule.pattern.replace("*", "plan"), plan.permission).action).toBe(
+        "allow",
+      )
+      expect(Permission.evaluate("edit", "src/index.ts", plan.permission).action).toBe("deny")
     }),
   )
 

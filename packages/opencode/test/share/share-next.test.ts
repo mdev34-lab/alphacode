@@ -222,10 +222,21 @@ describe("ShareNext", () => {
           yield* service.remove(session.id)
 
           expect(yield* share(session.id)).toBeUndefined()
-          expect(seen.map((req) => [req.method, req.url])).toEqual([
-            ["POST", "https://legacy-share.example.com/api/share"],
-            ["DELETE", "https://legacy-share.example.com/api/share/shr_abc"],
-          ])
+          const requests = seen.map((req) => `${req.method} ${req.url}`)
+          const expectedShareRequests = [
+            "POST https://legacy-share.example.com/api/share",
+            "DELETE https://legacy-share.example.com/api/share/shr_abc",
+          ]
+          // Share initialization may fetch the Models.dev catalog once, outside the share endpoints.
+          const knownModelCatalogRequest = "GET https://models.opencode.ai/api.json"
+          const unexpectedRequests = requests.filter(
+            (request) => !expectedShareRequests.includes(request) && request !== knownModelCatalogRequest,
+          )
+          expect(unexpectedRequests).toEqual([])
+          expect(requests.filter((request) => request === knownModelCatalogRequest).length).toBeLessThanOrEqual(1)
+          expect(requests.filter((request) => expectedShareRequests.includes(request)).sort()).toEqual(
+            expectedShareRequests.sort(),
+          )
         }).pipe(Effect.provide(integrationLayer(client)))
       },
       { config: { enterprise: { url: "https://legacy-share.example.com" } } },

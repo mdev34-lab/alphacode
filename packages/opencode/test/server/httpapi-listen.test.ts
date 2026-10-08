@@ -8,6 +8,7 @@ import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { withTimeout } from "../../src/util/timeout"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
+import { markPluginDependenciesReady } from "../fixture/plugin"
 
 const original = {
   OPENCODE_SERVER_PASSWORD: Flag.OPENCODE_SERVER_PASSWORD,
@@ -308,6 +309,7 @@ describe("HttpApi Server.listen", () => {
         const plugin = path.join(directory, "plugin.ts")
         const initialized = path.join(directory, "initialized.txt")
         const completed = path.join(directory, "completed.txt")
+        await markPluginDependenciesReady(directory)
         await Bun.write(
           plugin,
           [

@@ -29,17 +29,18 @@ describe("TUI worker bootstrap", () => {
       const { stdout, stderr, exitCode } = runDriver(true, 30000)
       expect(stderr).toBe("")
       expect(exitCode).toBe(0)
-      expect(stdout).toContain("RESULT:snapshot")
+      expect(stdout.trim()).toBe("RESULT:snapshot")
     },
     { timeout: 120000 },
   )
 
   test(
-    "a thread worker without the marker registers no RPC listener (the black-screen regression)",
+    "an unmarked thread worker exits without registering the RPC listener",
     () => {
       const { stdout, stderr, exitCode } = runDriver(false, 15000)
       expect(stderr).toBe("")
-      expect(stdout).toContain("RESULT:none")
+      expect(exitCode).toBe(0)
+      expect(stdout.trim()).toBe("RESULT:closed")
     },
     { timeout: 120000 },
   )

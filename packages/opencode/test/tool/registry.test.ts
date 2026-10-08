@@ -150,20 +150,24 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("hides task background parameter unless experimental background subagents are enabled", () =>
+  it.instance("exposes the task background option with asynchronous default", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
-      const agent = yield* Agent.Service
-      const build = yield* agent.get("work")
-      if (!build) throw new Error("build agent not found")
+      const agents = yield* Agent.Service
+      const work = yield* agents.get("work")
+      if (!work) throw new Error("work agent not found")
       const task = (yield* registry.tools({
         providerID: ProviderV2.ID.opencode,
         modelID: ModelV2.ID.make("test"),
-        agent: build,
+        agent: work,
       })).find((tool) => tool.id === "task")
+      if (!task) throw new Error("task tool not found")
 
-      expect(task?.jsonSchema).toBeDefined()
-      expect((task?.jsonSchema?.properties as Record<string, unknown> | undefined)?.background).toBeUndefined()
+      const background = ToolJsonSchema.fromTool(task).properties?.background
+      expect(background).toMatchObject({
+        type: "boolean",
+        description: expect.stringContaining("default: true"),
+      })
     }),
   )
 
