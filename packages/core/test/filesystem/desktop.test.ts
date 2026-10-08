@@ -97,6 +97,27 @@ HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User 
       expect(result).toBe("C:\\Users\\CustomUser123\\OneDrive - Corporate\\Desktop")
     })
 
+    test("uses the registry-resolved Desktop path even when its folder name differs from the UI language", () => {
+      const desktop = "C:\\Users\\Camila\\OneDrive - Contoso\\Área de Trabalho"
+      const execCommand = (cmd: string, args: string[]) => {
+        if (args.some((a) => a.includes("User Shell Folders"))) {
+          return `
+HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders
+    Desktop    REG_SZ    ${desktop}
+`
+        }
+        throw new Error("unexpected command")
+      }
+
+      const result = resolveDesktop({
+        platform: "win32",
+        env: { SystemRoot: "C:\\Windows" },
+        execCommand,
+      })
+
+      expect(result).toBe(desktop)
+    })
+
     test("resolves redirected Desktop on another drive (e.g. D:\\)", () => {
       const execCommand = (cmd: string, args: string[]) => {
         if (args.some((a) => a.includes("User Shell Folders"))) {

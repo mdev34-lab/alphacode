@@ -17,6 +17,7 @@ import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 
 const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const desktopDirectory = "C:\\Users\\Camila\\OneDrive - Contoso\\Área de Trabalho"
 
 const directory = AbsolutePath.make(FSUtil.resolve("/repo/packages/core"))
 const projectDirectory = AbsolutePath.make(FSUtil.resolve("/repo"))
@@ -36,7 +37,13 @@ const builtInsNode = LayerNode.group([SystemContextBuiltIns.node, SystemContextR
 const it = testEffect(
   AppNodeBuilder.build(builtInsNode, [
     [Location.node, locationLayer],
-    [Global.node, Global.layerWith({ config: "/global" })],
+    [Global.node, Global.layerWith({ config: "/global", desktop: desktopDirectory })],
+  ]),
+)
+const itWithoutDesktop = testEffect(
+  AppNodeBuilder.build(builtInsNode, [
+    [Location.node, locationLayer],
+    [Global.node, Global.layerWith({ config: "/global", desktop: undefined })],
   ]),
 )
 const instructionFS = Layer.effect(
@@ -55,7 +62,7 @@ const itWithInstructions = testEffect(
   AppNodeBuilder.build(builtInsNode, [
     [Location.node, locationLayer],
     [FSUtil.node, instructionFS],
-    [Global.node, Global.layerWith({ config: "/global" })],
+    [Global.node, Global.layerWith({ config: "/global", desktop: desktopDirectory })],
   ]),
 )
 
@@ -71,6 +78,7 @@ describe("SystemContextBuiltIns", () => {
           "Here is some useful information about the environment you are running in:",
           "<env>",
           `  Working directory: ${directory}`,
+          `  Desktop directory: ${desktopDirectory}`,
           `  Workspace root folder: ${projectDirectory}`,
           "  Is directory a git repo: yes",
           `  Platform: ${process.platform}`,
@@ -79,6 +87,16 @@ describe("SystemContextBuiltIns", () => {
           `Today's date: ${localDate(timestamp)}`,
         ].join("\n"),
       )
+    }),
+  )
+
+  itWithoutDesktop.effect("does not invent a Desktop path when resolution is unavailable", () =>
+    Effect.gen(function* () {
+      const context = yield* SystemContextRegistry.Service
+      const initialized = yield* SystemContext.initialize(yield* context.load())
+
+      expect(initialized.baseline).toContain("  Desktop directory: unavailable (do not infer a path)")
+      expect(initialized.baseline).not.toContain("C:\\Users\\Camila")
     }),
   )
 
@@ -119,6 +137,7 @@ describe("SystemContextBuiltIns", () => {
           "Here is some useful information about the environment you are running in:",
           "<env>",
           `  Working directory: ${directory}`,
+          `  Desktop directory: ${desktopDirectory}`,
           `  Workspace root folder: ${projectDirectory}`,
           "  Is directory a git repo: yes",
           `  Platform: ${process.platform}`,
