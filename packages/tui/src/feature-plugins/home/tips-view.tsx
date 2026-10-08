@@ -1,6 +1,6 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { createMemo, For, type Accessor } from "solid-js"
-import { DEFAULT_THEMES, useTheme } from "../../context/theme"
+import { createMemo, type Accessor } from "solid-js"
+import { DEFAULT_THEMES } from "../../context/theme"
 import { useCommandShortcut } from "../../keymap"
 
 const themeCount = Object.keys(DEFAULT_THEMES).length
@@ -69,7 +69,6 @@ function parse(tip: string): TipPart[] {
 }
 
 const NO_MODELS_TIP = "Run {highlight}/connect{/highlight} to add an AI provider and start coding"
-const NO_MODELS_PARTS = parse(NO_MODELS_TIP)
 
 function shortcutText(value: string) {
   return `{highlight}${value}{/highlight}`
@@ -94,9 +93,11 @@ function configShortcut(api: TuiPluginApi, command: string): TipShortcut {
       .join(", ")
 }
 
-export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
-  const theme = useTheme().theme
-  const tipOffset = Math.random()
+/**
+ * Plain-text tips for the home prompt placeholder. The list is rebuilt when
+ * shortcut bindings or the connected state change; callers own rotation.
+ */
+export function createTipList(props: { api: TuiPluginApi; connected: () => boolean | undefined }) {
   const shortcuts: Shortcuts = {
     agentCycle: useCommandShortcut("agent.cycle"),
     childFirst: configShortcut(props.api, "session.child.first"),
@@ -132,33 +133,19 @@ export function Tips(props: { api: TuiPluginApi; connected?: boolean }) {
     terminalSuspend: useCommandShortcut("terminal.suspend"),
     themeList: useCommandShortcut("theme.switch"),
   }
-  const tip = createMemo(() => {
-    if (props.connected === false) return NO_MODELS_TIP
-    const tips = [...TIPS, process.platform !== "win32" ? TERMINAL_SUSPEND_TIP : INPUT_UNDO_TIP].flatMap((item) => {
+  return createMemo(() => {
+    if (props.connected() === false) return [plain(NO_MODELS_TIP)]
+    return [...TIPS, process.platform !== "win32" ? TERMINAL_SUSPEND_TIP : INPUT_UNDO_TIP].flatMap((item) => {
       const value = typeof item === "string" ? item : item(shortcuts)
-      return value ? [value] : []
+      return value ? [plain(value)] : []
     })
-    return tips[Math.floor(tipOffset * tips.length)] ?? NO_MODELS_TIP
-  }, NO_MODELS_TIP)
-  // Solid can expose a memo's initial value while a pure computation is pending.
-  const parts = createMemo(() => {
-    const value = tip()
-    if (typeof value === "string") return parse(value)
-    return NO_MODELS_PARTS
-  }, NO_MODELS_PARTS)
+  })
+}
 
-  return (
-    <box flexDirection="row" maxWidth="100%">
-      <text flexShrink={0} style={{ fg: theme.warning }}>
-        ● Tip{" "}
-      </text>
-      <text flexShrink={1} wrapMode="word">
-        <For each={parts()}>
-          {(part) => <span style={{ fg: part.highlight ? theme.text : theme.textMuted }}>{part.text}</span>}
-        </For>
-      </text>
-    </box>
-  )
+function plain(tip: string) {
+  return parse(tip)
+    .map((part) => part.text)
+    .join("")
 }
 
 const TIPS: Tip[] = [

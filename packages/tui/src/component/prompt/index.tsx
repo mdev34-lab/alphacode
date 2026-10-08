@@ -70,10 +70,12 @@ export type PromptProps = {
   hint?: JSX.Element
   right?: JSX.Element
   showPlaceholder?: boolean
+  placeholder?: string
   placeholders?: {
     normal?: string[]
     shell?: string[]
   }
+  centerShortcuts?: boolean
 }
 
 export type PromptRef = {
@@ -1333,6 +1335,7 @@ export function Prompt(props: PromptProps) {
       const example = shell()[store.placeholder % shell().length]
       return `Run a command... "${example}"`
     }
+    if (props.placeholder) return props.placeholder
     if (!list().length) return undefined
     return `Ask anything... "${list()[store.placeholder % list().length]}"`
   })
@@ -1540,6 +1543,9 @@ export function Prompt(props: PromptProps) {
           />
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
+          <Show when={props.centerShortcuts}>
+            <box flexGrow={1} flexBasis={0} />
+          </Show>
           <Switch>
             <Match when={status().type !== "idle"}>
               <box
@@ -1715,6 +1721,9 @@ export function Prompt(props: PromptProps) {
                 </Match>
               </Switch>
             </box>
+          </Show>
+          <Show when={props.centerShortcuts}>
+            <box flexGrow={1} flexBasis={0} />
           </Show>
         </box>
       </box>
