@@ -31,6 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { OpenCodeZen } from "./opencode-zen"
 import {
   createQwenWebModel,
   providerInfo as qwenWebProviderInfo,
@@ -185,25 +186,38 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       }),
     opencode: Effect.fnUntraced(function* (input: Info) {
       const env = yield* dep.env()
+      const config = yield* dep.config()
       const hasKey = iife(() => {
         if (input.env.some((item) => env[item])) return true
         return false
       })
-      const ok =
-        hasKey ||
-        Boolean(yield* dep.auth(input.id)) ||
-        Boolean((yield* dep.config()).provider?.["opencode"]?.options?.apiKey)
+      const ok = hasKey || Boolean(yield* dep.auth(input.id)) || Boolean(config.provider?.["opencode"]?.options?.apiKey)
 
       if (!ok) {
         for (const [key, value] of Object.entries(input.models)) {
-          if (value.cost.input === 0) continue
+          if (OpenCodeZen.zeroCost(value.cost)) continue
           delete input.models[key]
         }
       }
 
+      // Free-tier models are only served to the OpenCode CLI and reject regular
+      // API keys, so they are routed through the Zen adapter. See `opencode-zen`.
+      // The set is keyed by wire model id and requires fully zero cost metadata.
+      const free = OpenCodeZen.freeTier(Object.values(input.models))
+      const chunkTimeout = config.provider?.["opencode"]?.options?.chunkTimeout
+      const userAgent =
+        config.provider?.["opencode"]?.options?.userAgent ?? (config.provider?.["opencode"]?.options as any)?.user_agent
+
       return {
         autoload: Object.keys(input.models).length > 0,
-        options: ok ? {} : { apiKey: "public" },
+        options: {
+          ...(ok ? {} : { apiKey: "public" }),
+          fetch: OpenCodeZen.createFetch({
+            free,
+            chunkTimeout: typeof chunkTimeout === "number" ? chunkTimeout : undefined,
+            userAgent: typeof userAgent === "string" ? userAgent : undefined,
+          }),
+        },
       }
     }),
     openai: () =>
@@ -1062,6 +1076,280 @@ const ProviderCost = Schema.Struct({
   ),
 })
 
+export function normalizeCostTier(
+  item: unknown,
+): Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> | undefined {
+  if (!isRecord(item)) return undefined
+  if (!Number.isFinite(item["input"]) || !Number.isFinite(item["output"])) return undefined
+  const cacheRead = isRecord(item["cache"]) ? item["cache"]["read"] : item["cache_read"]
+  const cacheWrite = isRecord(item["cache"]) ? item["cache"]["write"] : item["cache_write"]
+  if (cacheRead !== undefined && !Number.isFinite(cacheRead)) return undefined
+  if (cacheWrite !== undefined && !Number.isFinite(cacheWrite)) return undefined
+  const cache = {
+    read: typeof cacheRead === "number" ? cacheRead : 0,
+    write: typeof cacheWrite === "number" ? cacheWrite : 0,
+  }
+  const rawSize = isRecord(item["tier"]) && item["tier"]["size"] !== undefined ? item["tier"]["size"] : item["tier"]
+  if (!Number.isFinite(rawSize)) return undefined
+  return {
+    input: item["input"] as number,
+    output: item["output"] as number,
+    cache,
+    tier: {
+      type: "context" as const,
+      size: rawSize as number,
+    },
+  }
+}
+
+export function mergeCostTiers(
+  rawTiers: unknown,
+  existingTiers?: readonly Schema.Schema.Type<typeof ProviderCostTier>[],
+  hasInvalidBase?: boolean,
+): Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>[] | undefined {
+  if (Array.isArray(rawTiers) && rawTiers.length === 0 && !hasInvalidBase) return []
+  if (!Array.isArray(rawTiers) && !hasInvalidBase)
+    return existingTiers as Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>[] | undefined
+
+  const rawArray = Array.isArray(rawTiers) ? rawTiers : []
+  const configured = rawArray
+    .map(normalizeCostTier)
+    .filter((t): t is Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> => t !== undefined)
+
+  // If configured tiers were provided but entries failed normalization, ensure invalid pricing
+  // cannot cause a paid model to be classified as free. Retain a non-zero placeholder tier.
+  const hasInvalidTiers = Boolean(hasInvalidBase) || configured.length < rawArray.length
+
+  // Sentinel non-zero fallback tier used when configured tiers fail normalization.
+  // Context size 0 is chosen as a sentinel to ensure it never collides with real
+  // positive context thresholds (e.g. 128k, 200k) while input: 1, output: 1 guarantees
+  // zeroCost returns false so paid models are not misclassified as free-tier.
+  const invalidFallback: Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>> = {
+    input: 1,
+    output: 1,
+    cache: { read: 0, write: 0 },
+    tier: { type: "context", size: 0 },
+  }
+
+  const existing = existingTiers ?? []
+  const tierMap = new Map<number, Types.DeepMutable<Schema.Schema.Type<typeof ProviderCostTier>>>()
+  for (const tier of existing) {
+    tierMap.set(tier.tier.size, tier)
+  }
+  for (const tier of configured) {
+    tierMap.set(tier.tier.size, tier)
+  }
+  if (hasInvalidTiers) {
+    const existingZero = tierMap.get(0)
+    const isZeroTier =
+      existingZero &&
+      existingZero.input === 0 &&
+      existingZero.output === 0 &&
+      (existingZero.cache?.read ?? 0) === 0 &&
+      (existingZero.cache?.write ?? 0) === 0
+
+    if (!existingZero) {
+      tierMap.set(0, invalidFallback)
+    } else if (isZeroTier) {
+      // Existing valid zero-cost tier at size 0 must remain intact.
+      // Place the non-zero sentinel tier at a non-colliding context threshold so invalid
+      // pricing remains non-free without overwriting the existing valid zero-cost tier.
+      let sentinelSize = Number.MAX_SAFE_INTEGER
+      while (tierMap.has(sentinelSize)) {
+        sentinelSize--
+      }
+      tierMap.set(sentinelSize, {
+        ...invalidFallback,
+        tier: { type: "context", size: sentinelSize },
+      })
+    }
+  }
+  return [...tierMap.values()]
+}
+
+export function parseConfigCost(rawCost: unknown, existingCost?: Model["cost"]): Model["cost"] {
+  if (rawCost === undefined) {
+    return (
+      existingCost ?? {
+        input: 0,
+        output: 0,
+        cache: { read: 0, write: 0 },
+      }
+    )
+  }
+
+  // Handle v2 array format: Cost[]
+  if (Array.isArray(rawCost)) {
+    if (rawCost.length === 0) {
+      return (
+        existingCost ?? {
+          input: 1,
+          output: 1,
+          cache: { read: 0, write: 0 },
+          tiers: [
+            {
+              input: 1,
+              output: 1,
+              cache: { read: 0, write: 0 },
+              tier: { type: "context", size: 0 },
+            },
+          ],
+        }
+      )
+    }
+
+    const baseIndex = rawCost.findIndex((c) => isRecord(c) && c["tier"] === undefined)
+    const baseEntry = baseIndex !== -1 ? rawCost[baseIndex] : isRecord(rawCost[0]) ? rawCost[0] : undefined
+    const rawTiers = rawCost.filter((_, i) => i !== (baseIndex !== -1 ? baseIndex : -1))
+
+    const hasValidInput =
+      isRecord(baseEntry) && typeof baseEntry["input"] === "number" && Number.isFinite(baseEntry["input"])
+    const hasValidOutput =
+      isRecord(baseEntry) && typeof baseEntry["output"] === "number" && Number.isFinite(baseEntry["output"])
+    const hasInvalidBase = baseEntry !== undefined && (!hasValidInput || !hasValidOutput)
+
+    const input = hasValidInput ? (baseEntry["input"] as number) : (existingCost?.input ?? 0)
+    const output = hasValidOutput ? (baseEntry["output"] as number) : (existingCost?.output ?? 0)
+
+    const rawCacheRead = baseEntry
+      ? isRecord(baseEntry["cache"])
+        ? baseEntry["cache"]["read"]
+        : baseEntry["cache_read"]
+      : undefined
+    const rawCacheWrite = baseEntry
+      ? isRecord(baseEntry["cache"])
+        ? baseEntry["cache"]["write"]
+        : baseEntry["cache_write"]
+      : undefined
+
+    const hasValidCacheRead =
+      rawCacheRead === undefined || (typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead))
+    const hasValidCacheWrite =
+      rawCacheWrite === undefined || (typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite))
+    const hasInvalidCache = !hasValidCacheRead || !hasValidCacheWrite
+
+    const cache = {
+      read:
+        typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead)
+          ? rawCacheRead
+          : (existingCost?.cache.read ?? 0),
+      write:
+        typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite)
+          ? rawCacheWrite
+          : (existingCost?.cache.write ?? 0),
+    }
+
+    const over200k = rawTiers.find((t) => {
+      if (!isRecord(t)) return false
+      const size = isRecord(t["tier"]) ? t["tier"]["size"] : t["tier"]
+      return size === 200_000
+    })
+
+    const experimentalOver200K = over200k
+      ? {
+          input: typeof over200k["input"] === "number" && Number.isFinite(over200k["input"]) ? over200k["input"] : 0,
+          output:
+            typeof over200k["output"] === "number" && Number.isFinite(over200k["output"]) ? over200k["output"] : 0,
+          cache: {
+            read: isRecord(over200k["cache"])
+              ? typeof over200k["cache"]["read"] === "number" && Number.isFinite(over200k["cache"]["read"])
+                ? over200k["cache"]["read"]
+                : 0
+              : typeof over200k["cache_read"] === "number" && Number.isFinite(over200k["cache_read"])
+                ? over200k["cache_read"]
+                : 0,
+            write: isRecord(over200k["cache"])
+              ? typeof over200k["cache"]["write"] === "number" && Number.isFinite(over200k["cache"]["write"])
+                ? over200k["cache"]["write"]
+                : 0
+              : typeof over200k["cache_write"] === "number" && Number.isFinite(over200k["cache_write"])
+                ? over200k["cache_write"]
+                : 0,
+          },
+        }
+      : existingCost?.experimentalOver200K
+
+    const mergedTiers = mergeCostTiers(
+      rawTiers.length > 0 ? rawTiers : undefined,
+      existingCost?.tiers,
+      hasInvalidBase || hasInvalidCache,
+    )
+
+    return {
+      input,
+      output,
+      cache,
+      ...(mergedTiers && mergedTiers.length > 0 ? { tiers: mergedTiers } : {}),
+      ...(experimentalOver200K ? { experimentalOver200K } : {}),
+    }
+  }
+
+  // Handle single object (v1 format or v2 single Cost object)
+  if (isRecord(rawCost)) {
+    const hasValidInput = typeof rawCost["input"] === "number" && Number.isFinite(rawCost["input"])
+    const hasValidOutput = typeof rawCost["output"] === "number" && Number.isFinite(rawCost["output"])
+    const hasInvalidBase =
+      (rawCost["input"] !== undefined && !hasValidInput) || (rawCost["output"] !== undefined && !hasValidOutput)
+
+    const input = hasValidInput ? (rawCost["input"] as number) : (existingCost?.input ?? 0)
+    const output = hasValidOutput ? (rawCost["output"] as number) : (existingCost?.output ?? 0)
+
+    const rawCacheRead = isRecord(rawCost["cache"]) ? rawCost["cache"]["read"] : rawCost["cache_read"]
+    const rawCacheWrite = isRecord(rawCost["cache"]) ? rawCost["cache"]["write"] : rawCost["cache_write"]
+    const hasValidCacheRead =
+      rawCacheRead === undefined || (typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead))
+    const hasValidCacheWrite =
+      rawCacheWrite === undefined || (typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite))
+    const hasInvalidCache = !hasValidCacheRead || !hasValidCacheWrite
+
+    const cache = {
+      read:
+        typeof rawCacheRead === "number" && Number.isFinite(rawCacheRead)
+          ? rawCacheRead
+          : (existingCost?.cache.read ?? 0),
+      write:
+        typeof rawCacheWrite === "number" && Number.isFinite(rawCacheWrite)
+          ? rawCacheWrite
+          : (existingCost?.cache.write ?? 0),
+    }
+
+    const mergedTiers = mergeCostTiers(rawCost["tiers"], existingCost?.tiers, hasInvalidBase || hasInvalidCache)
+
+    let experimentalOver200K = existingCost?.experimentalOver200K
+    if (isRecord(rawCost["context_over_200k"])) {
+      const co200 = rawCost["context_over_200k"]
+      experimentalOver200K = {
+        input: typeof co200["input"] === "number" && Number.isFinite(co200["input"]) ? co200["input"] : 0,
+        output: typeof co200["output"] === "number" && Number.isFinite(co200["output"]) ? co200["output"] : 0,
+        cache: {
+          read:
+            typeof co200["cache_read"] === "number" && Number.isFinite(co200["cache_read"]) ? co200["cache_read"] : 0,
+          write:
+            typeof co200["cache_write"] === "number" && Number.isFinite(co200["cache_write"])
+              ? co200["cache_write"]
+              : 0,
+        },
+      }
+    }
+
+    return {
+      input,
+      output,
+      cache,
+      ...(mergedTiers && mergedTiers.length > 0 ? { tiers: mergedTiers } : {}),
+      ...(experimentalOver200K ? { experimentalOver200K } : {}),
+    }
+  }
+
+  return (
+    existingCost ?? {
+      input: 0,
+      output: 0,
+      cache: { read: 0, write: 0 },
+    }
+  )
+}
+
 const ProviderLimit = Schema.Struct({
   context: Schema.Finite,
   input: optional(Schema.Finite),
@@ -1505,6 +1793,7 @@ const layer = Layer.effect(
               if (model.id && model.id !== modelID) return modelID
               return existingModel?.name ?? modelID
             })
+
             const parsedModel: Model = {
               id: ModelV2.ID.make(modelID),
               api: {
@@ -1544,14 +1833,7 @@ const layer = Layer.effect(
                     ? { field: "reasoning_content" }
                     : false),
               },
-              cost: {
-                input: model?.cost?.input ?? existingModel?.cost?.input ?? 0,
-                output: model?.cost?.output ?? existingModel?.cost?.output ?? 0,
-                cache: {
-                  read: model?.cost?.cache_read ?? existingModel?.cost?.cache.read ?? 0,
-                  write: model?.cost?.cache_write ?? existingModel?.cost?.cache.write ?? 0,
-                },
-              },
+              cost: parseConfigCost(model?.cost, existingModel?.cost),
               options: mergeDeep(existingModel?.options ?? {}, model.options ?? {}),
               limit: {
                 context: model.limit?.context ?? existingModel?.limit?.context ?? 0,

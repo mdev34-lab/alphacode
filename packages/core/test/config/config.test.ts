@@ -9,7 +9,6 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
 import { Policy } from "@opencode-ai/core/policy"
@@ -137,6 +136,82 @@ describe("Config", () => {
         headers: { "x-test": "1" },
         body: { trace: true },
       })
+    }),
+  )
+
+  it.effect("migrates v1 model cost tiers into v2 pricing", () =>
+    Effect.sync(() => {
+      const migrated = ConfigMigrateV1.migrate({
+        provider: {
+          test: {
+            models: {
+              "tiered-model": {
+                cost: {
+                  input: 1,
+                  output: 2,
+                  cache_read: 0.1,
+                  cache_write: 0.2,
+                  tiers: [
+                    {
+                      input: 3,
+                      output: 4,
+                      cache_read: 0.3,
+                      cache_write: 0.4,
+                      tier: { type: "context", size: 100_000 },
+                    },
+                    {
+                      input: 5,
+                      output: 6,
+                      tier: 200_000,
+                    },
+                    {
+                      input: 7,
+                      output: 8,
+                      tier: { size: 300_000 },
+                    },
+                    {
+                      input: 9,
+                      output: 10,
+                      tier: {} as any, // missing size must be ignored rather than producing NaN
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      })
+
+      expect(migrated.providers?.test?.models?.["tiered-model"]?.cost).toEqual([
+        {
+          input: 1,
+          output: 2,
+          cache: { read: 0.1, write: 0.2 },
+        },
+        {
+          tier: { type: "context", size: 100_000 },
+          input: 3,
+          output: 4,
+          cache: { read: 0.3, write: 0.4 },
+        },
+        {
+          tier: { type: "context", size: 200_000 },
+          input: 5,
+          output: 6,
+          cache: { read: undefined, write: undefined },
+        },
+        {
+          tier: { type: "context", size: 300_000 },
+          input: 7,
+          output: 8,
+          cache: { read: undefined, write: undefined },
+        },
+        {
+          input: 9,
+          output: 10,
+          cache: { read: undefined, write: undefined },
+        },
+      ])
     }),
   )
 

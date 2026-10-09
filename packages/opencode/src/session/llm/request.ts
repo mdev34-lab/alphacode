@@ -8,6 +8,7 @@ import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "../message-v2"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
+import { OpenCodeZen } from "@/provider/opencode-zen"
 import { SystemPrompt } from "../system"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Effect, Record } from "effect"
@@ -53,6 +54,24 @@ export type Prepared = {
 
 const mergeOptions = (target: Record<string, any>, source: Record<string, any> | undefined): Record<string, any> =>
   mergeDeep(target, source ?? {}) as Record<string, any>
+
+const RESERVED_HEADERS = new Set([
+  "x-opencode-project",
+  "x-opencode-session",
+  "x-opencode-request",
+  "x-opencode-client",
+  "x-session-affinity",
+  "x-session-id",
+  "x-parent-session-id",
+  "user-agent",
+])
+
+function stripReservedHeaders(headers: Record<string, string | undefined> | undefined) {
+  if (!headers) return {}
+  return Object.fromEntries(
+    Object.entries(headers).filter(([key, value]) => value !== undefined && !RESERVED_HEADERS.has(key.toLowerCase())),
+  )
+}
 
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
@@ -179,6 +198,26 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   const opencodeProjectID = input.model.providerID.startsWith("opencode")
     ? (yield* InstanceState.context).project.id
     : undefined
+  const opencode = input.model.providerID.startsWith("opencode")
+    ? {
+        ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
+        "x-opencode-session": OpenCodeZen.sessionID(input.sessionID),
+        // Zen expects a fresh request id per turn, while the session id above
+        // stays stable for the whole conversation thread.
+        "x-opencode-request": OpenCodeZen.requestID(),
+        "x-opencode-client": input.flags.client,
+        "User-Agent": USER_AGENT,
+      }
+    : undefined
+
+  const nonOpencode = {
+    "x-session-affinity": input.sessionID,
+    "X-Session-Id": input.sessionID,
+    ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+    "User-Agent": USER_AGENT,
+  }
+
+  const authoritative = opencode ?? nonOpencode
 
   return {
     system,
@@ -187,22 +226,11 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     params,
     messageTransformOptions: options,
     headers: {
-      ...(input.model.providerID.startsWith("opencode")
-        ? {
-            ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
-            "x-opencode-session": input.sessionID,
-            "x-opencode-request": input.user.id,
-            "x-opencode-client": input.flags.client,
-            "User-Agent": USER_AGENT,
-          }
-        : {
-            "x-session-affinity": input.sessionID,
-            "X-Session-Id": input.sessionID,
-            ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-            "User-Agent": USER_AGENT,
-          }),
-      ...input.model.headers,
-      ...headers,
+      ...stripReservedHeaders(input.model.headers),
+      ...stripReservedHeaders(headers),
+      // Zen and session tracking verify these headers, so model config or plugin
+      // headers cannot override or pollute them via mixed-case duplicates.
+      ...authoritative,
     },
   }
 })
