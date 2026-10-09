@@ -8,8 +8,10 @@ import { Session } from "../session/session"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
 import { BackgroundJob } from "@/background/job"
-import { finishGateError, reviewLoopState } from "../session/review-loop"
-import { isReviewAgent } from "../agent/review-agents"
+import { Permission } from "@/permission"
+import { Agent } from "../agent/agent"
+import { finishGateError, reviewLoopState, type ReviewTermination } from "../session/review-loop"
+import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
 
 const DeclaredReasons = ["success", "waiting_for_subagent", "subagent_wait", "failure"] as const
 
@@ -93,6 +95,54 @@ export const FinishTool = Tool.define(
     const sessions = yield* Session.Service
     const config = yield* Config.Service
     const background = yield* BackgroundJob.Service
+    const agents = yield* Agent.Service
+
+    /**
+     * Why this session cannot dispatch the Review subagent, when it cannot.
+     *
+     * This is the only waiver of the review requirement, and it is read from
+     * the facts the task tool refuses a `review` dispatch on - never from the
+     * finish result or anything else the model says about the work:
+     *
+     * - `subagent-depth`: the session sits at the configured subagent depth,
+     *   so the task tool refuses any delegation from it. Under the default
+     *   `subagent_depth` of 1 that is every task child.
+     * - `reviewer-missing`: the reviewer a `review` request routes to is not a
+     *   delegable agent here (disabled, or reconfigured as a primary agent).
+     * - `permission-denied`: the session's effective ruleset denies `task` for
+     *   that reviewer. A child whose agent declares no task rule gets a
+     *   blanket deny that also hides the task tool from it.
+     *
+     * The checks mirror the task tool's own, in its order; keep them in step.
+     */
+    const reviewUnavailable = Effect.fn("FinishTool.reviewUnavailable")(function* (
+      ctx: Tool.Context,
+      subagentDepth: number,
+    ) {
+      const session = yield* sessions.get(ctx.sessionID)
+      let current = session
+      let depth = 0
+      while (current.parentID) {
+        depth++
+        current = yield* sessions.get(current.parentID)
+      }
+      if (depth >= subagentDepth) return "subagent-depth" as const
+      // The task tool routes by the pinned session agent and falls back to the
+      // newest user message's agent, which is the agent running this turn.
+      const reviewer = resolveReviewer("review", session.agent ?? ctx.agent)
+      const target = yield* agents.get(reviewer)
+      if (!target || target.mode === "primary") return "reviewer-missing" as const
+      const running = yield* agents.get(ctx.agent)
+      const ruleset = Permission.merge(running?.permission ?? [], session.permission ?? [])
+      // A blanket deny hides the task tool from the model; an explicit agent
+      // invocation skips the permission prompt, but not that visibility filter.
+      if (Permission.disabled(["task"], ruleset).has("task")) return "permission-denied" as const
+      if (ctx.extra?.bypassAgentCheck) return undefined
+      const patterns = reviewer === "review" ? ["review"] : ["review", reviewer]
+      if (patterns.some((pattern) => Permission.evaluate("task", pattern, ruleset).action === "deny"))
+        return "permission-denied" as const
+      return undefined
+    })
 
     return {
       description: DESCRIPTION,
@@ -113,7 +163,8 @@ export const FinishTool = Tool.define(
             verdict: string
             reviews: number
             maxIterations: number
-            termination: string
+            termination: ReviewTermination
+            unavailable?: "subagent-depth" | "reviewer-missing" | "permission-denied"
           }
         }>,
         ToolFailure
@@ -153,9 +204,9 @@ export const FinishTool = Tool.define(
           // Yielding for background work is not a termination. The turn ends so
           // the model stops polling for the subagents it launched, but the
           // session is woken by their notification, so a wait must leave
-          // everything the real finish depends on untouched: the review nudge
-          // (consumed once per unit of work), the plan, and the terminal
-          // metadata the review loop reads as a delivered outcome.
+          // everything the real finish depends on untouched: the review
+          // requirement, the plan, and the terminal metadata the review loop
+          // reads as a delivered outcome.
           //
           if (params.reason === "waiting_for_subagent") {
             const jobs = yield* background.list()
@@ -224,24 +275,35 @@ export const FinishTool = Tool.define(
           const maxIterations = cfg.review_loop?.max_iterations ?? 5
           const reviewState = reviewLoopState(messages, maxIterations)
           const gateError = finishGateError(reviewState)
-          if (gateError) {
+          // Only consulted when the gate would decline, so an approved or
+          // read-only turn never pays for the session walk.
+          const unavailable = gateError
+            ? yield* reviewUnavailable(ctx, cfg.subagent_depth ?? 1).pipe(
+                Effect.mapError((error) => new ToolFailure({ message: error.message })),
+              )
+            : undefined
+          if (gateError && unavailable === undefined) {
             const phase = reviewState.workSinceReview
               ? "work"
               : reviewState.verdict === "needs-fixes"
                 ? "work"
                 : "review"
-            yield* Effect.logWarning("finish declined with review nudge", {
-              sessionID: ctx.sessionID,
-              verdict: reviewState.verdict,
-              phase,
-              reviews: reviewState.reviews,
-              maxIterations: reviewState.maxIterations,
-              workSinceReview: reviewState.workSinceReview,
-            })
-            // Persist the nudge on the failed part so the next finish call for the
-            // same work is recognised as an explicit skip instead of being declined again.
+            yield* Effect.logWarning(
+              reviewState.nudged ? "finish retried without review, declined again" : "finish declined: review required",
+              {
+                sessionID: ctx.sessionID,
+                verdict: reviewState.verdict,
+                phase,
+                reviews: reviewState.reviews,
+                maxIterations: reviewState.maxIterations,
+                workSinceReview: reviewState.workSinceReview,
+              },
+            )
+            // Persist the decline on the failed part. It is not a waiver: the
+            // next finish for the same work is declined again, and the record
+            // only lets that decline say that retrying does not skip review.
             yield* ctx.metadata({
-              title: "Review suggested",
+              title: "Review required",
               metadata: {
                 review: {
                   nudged: true,
@@ -254,11 +316,10 @@ export const FinishTool = Tool.define(
             return yield* Effect.fail(new ToolFailure({ message: gateError.message }))
           }
 
-          const skipped =
-            reviewState.nudged && (reviewState.verdict === "pending" || reviewState.verdict === "needs-fixes")
-          if (skipped) {
-            yield* Effect.logWarning("review skipped by explicit finish", {
+          if (unavailable) {
+            yield* Effect.logWarning("review requirement waived: this session cannot dispatch the Review subagent", {
               sessionID: ctx.sessionID,
+              reason: unavailable,
               verdict: reviewState.verdict,
               reviews: reviewState.reviews,
               maxIterations: reviewState.maxIterations,
@@ -301,7 +362,12 @@ export const FinishTool = Tool.define(
                 verdict: reviewState.verdict,
                 reviews: reviewState.reviews,
                 maxIterations: reviewState.maxIterations,
-                termination: skipped ? "skipped" : reviewState.verdict === "cap" ? "review-cap" : "approved",
+                termination: unavailable
+                  ? "review-unavailable"
+                  : reviewState.verdict === "cap"
+                    ? "review-cap"
+                    : "approved",
+                ...(unavailable ? { unavailable } : {}),
               },
             },
           }

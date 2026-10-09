@@ -143,6 +143,10 @@ export const TaskTool = Tool.define(
       // (synchronous request) waits for the child result before returning.
       const runInBackground = params.background !== false
 
+      // The finish tool waives its review requirement only when this tool would
+      // refuse a `review` dispatch: the depth limit here, an unresolvable
+      // reviewer, or a permission deny below. Keep `reviewUnavailable` in
+      // finish.ts in step with these refusals.
       const parent = yield* sessions.get(ctx.sessionID)
       let current = parent
       let depth = 0

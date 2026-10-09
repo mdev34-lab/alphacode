@@ -96,7 +96,8 @@ export const Info = Schema.Struct({
       }),
     }),
   ).annotate({
-    description: "Work → Review loop configuration. Review is nudged before finish, not enforced.",
+    description:
+      "Work → Review loop configuration. Finish requires an Approved review of file-writing work until max_iterations completed reviews are reached.",
   }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
