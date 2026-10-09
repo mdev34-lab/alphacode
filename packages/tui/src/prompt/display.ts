@@ -1,5 +1,107 @@
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
+/** Display columns measured with the same Bun width function OpenTUI uses to lay out text. */
+export function displayWidth(value: string) {
+  return Bun.stringWidth(value)
+}
+
+/** Truncate to terminal columns without cutting a Unicode grapheme cluster. */
+export function truncateDisplay(value: string, maxWidth: number) {
+  const width = Number.isFinite(maxWidth) ? Math.max(0, Math.floor(maxWidth)) : 0
+  if (displayWidth(value) <= width) return value
+
+  const ellipsis = "…"
+  const ellipsisWidth = displayWidth(ellipsis)
+  if (width < ellipsisWidth) return ""
+
+  let result = ""
+  let used = 0
+  const available = width - ellipsisWidth
+  for (const part of graphemes.segment(value)) {
+    const partWidth = displayWidth(part.segment)
+    if (used + partWidth > available) break
+    result += part.segment
+    used += partWidth
+  }
+  return result + ellipsis
+}
+
+/** Keep a path's final components visible while truncating its leading directories. */
+export function truncateDisplayTail(value: string, maxWidth: number) {
+  const width = Number.isFinite(maxWidth) ? Math.max(0, Math.floor(maxWidth)) : 0
+  if (displayWidth(value) <= width) return value
+
+  const ellipsis = "…"
+  const ellipsisWidth = displayWidth(ellipsis)
+  if (width < ellipsisWidth) return ""
+
+  let result = ""
+  let used = 0
+  const available = width - ellipsisWidth
+  const parts = Array.from(graphemes.segment(value), (part) => part.segment)
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index]
+    const partWidth = displayWidth(part)
+    if (used + partWidth > available) break
+    result = part + result
+    used += partWidth
+  }
+  return ellipsis + result
+}
+
+/** Keep both ends of a long path visible while fitting it into terminal columns. */
+export function truncateDisplayMiddle(value: string, maxWidth: number) {
+  const width = Number.isFinite(maxWidth) ? Math.max(0, Math.floor(maxWidth)) : 0
+  if (displayWidth(value) <= width) return value
+
+  const ellipsis = "…"
+  const ellipsisWidth = displayWidth(ellipsis)
+  if (width < ellipsisWidth) return ""
+
+  const parts = Array.from(graphemes.segment(value), (part) => part.segment)
+  let leftIndex = 0
+  let rightIndex = parts.length - 1
+  let left = ""
+  let right = ""
+  let remaining = width - ellipsisWidth
+  let takeLeft = true
+
+  while (leftIndex <= rightIndex) {
+    const index = takeLeft ? leftIndex : rightIndex
+    const part = parts[index]
+    const partWidth = displayWidth(part)
+    if (partWidth > remaining) {
+      if (leftIndex === rightIndex) break
+      const alternate = takeLeft ? rightIndex : leftIndex
+      const alternatePart = parts[alternate]
+      const alternateWidth = displayWidth(alternatePart)
+      if (alternateWidth > remaining) break
+      if (takeLeft) {
+        right = alternatePart + right
+        rightIndex--
+      } else {
+        left += alternatePart
+        leftIndex++
+      }
+      remaining -= alternateWidth
+      takeLeft = !takeLeft
+      continue
+    }
+
+    if (takeLeft) {
+      left += part
+      leftIndex++
+    } else {
+      right = part + right
+      rightIndex--
+    }
+    remaining -= partWidth
+    takeLeft = !takeLeft
+  }
+
+  return left + ellipsis + right
+}
+
 export function promptOffsetWidth(value: string) {
   let width = 0
   for (const part of graphemes.segment(value)) {

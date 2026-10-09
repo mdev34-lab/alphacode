@@ -3,7 +3,7 @@ import { TextareaRenderable } from "@opentui/core"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { describe, expect, test } from "bun:test"
-import { onCleanup } from "solid-js"
+import { createEffect, onCleanup } from "solid-js"
 import type { TuiPluginApi, TuiSlotPlugin } from "@opencode-ai/plugin/tui"
 import { tmpdir } from "../../fixture/fixture"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -34,6 +34,7 @@ import { DialogProvider, useDialog } from "../../../src/ui/dialog"
 import { OpencodeKeymapProvider, registerOpencodeKeymap, useBindings, useOpencodeKeymap } from "../../../src/keymap"
 import { useEvent } from "../../../src/context/event"
 import { Home } from "../../../src/routes/home"
+import { useHomeTipPlaceholder } from "../../../src/routes/home/tip-placeholder"
 import { createTuiAttention } from "../../../src/attention"
 import { createTuiApi } from "../../../src/plugin/api"
 import { createTuiApiAdapters } from "../../../src/plugin/adapters"
@@ -48,11 +49,28 @@ import HomeTips from "../../../src/feature-plugins/home/tips"
 
 const SESSION_ID = "ses_home_layout"
 const VERSION = "0.0.0-test"
+const LONG_DIRECTORY =
+  "/tmp/opencode/packages/tui/src/feature-plugins/home/a/deeply/nested/one-more-segment/long-project-directory-name"
 // Tip rotation interval in routes/home.tsx.
 const ROTATE_MS = 10_000
 
-type Options = { width: number; connected?: boolean; sessions?: boolean; tipsHidden?: boolean }
+type Options = {
+  width: number
+  connected?: boolean
+  sessions?: boolean
+  tipsHidden?: boolean
+  directory?: string
+  mcp?: Record<string, { status: "connected" | "failed"; error?: string }>
+  tips?: string[]
+}
 type Setup = Awaited<ReturnType<typeof testRender>>
+
+const CONNECTED_MCP: NonNullable<Options["mcp"]> = {
+  alpha: { status: "connected" },
+  beta: { status: "connected" },
+  delta: { status: "connected" },
+  gamma: { status: "connected" },
+}
 
 function providersPayload(connected: boolean) {
   const cost = connected ? 1 : 0
@@ -111,6 +129,15 @@ function createHomeFetch(options: Options) {
         connected: [connected ? "test" : "opencode"],
       })
     if (url.pathname === "/session") return json(options.sessions ? [sessionPayload()] : [])
+    if (url.pathname === "/mcp" && options.mcp) return json(options.mcp)
+    if (url.pathname === "/path" && options.directory)
+      return json({
+        home: "/tmp/opencode/home",
+        state: "/tmp/opencode/state",
+        config: "/tmp/opencode/config",
+        worktree: "/tmp/opencode",
+        directory: options.directory,
+      })
     return undefined
   }, events)
   return { events, fetch: calls.fetch }
@@ -125,6 +152,13 @@ async function untilFrame(app: Setup, predicate: (frame: string) => boolean, max
     await Bun.sleep(5)
   }
   throw new Error(`frame predicate not satisfied after ${maxPasses} passes:\n${frame}`)
+}
+
+function TestTips(props: { tips: string[] }) {
+  const placeholder = useHomeTipPlaceholder()
+  createEffect(() => placeholder?.setTips(props.tips))
+  onCleanup(() => placeholder?.setTips(undefined))
+  return null
 }
 
 async function renderHome(options: Options) {
@@ -179,7 +213,18 @@ async function renderHome(options: Options) {
     // Builtin home plugins ignore options and meta; a full TuiPluginMeta fixture adds nothing here.
     const meta = { id: "test", source: "internal" } as never
     void HomeFooter.tui(api, undefined, meta)
-    void HomeTips.tui(api, undefined, meta)
+    if (options.tips) {
+      api.slots.register({
+        order: 100,
+        slots: {
+          home_bottom() {
+            return <TestTips tips={options.tips!} />
+          },
+        },
+      })
+    } else {
+      void HomeTips.tui(api, undefined, meta)
+    }
     return null
   }
 
@@ -241,7 +286,7 @@ async function renderHome(options: Options) {
   await Bun.write(`${tmp.path}/kv.json`, JSON.stringify({ tips_hidden: options.tipsHidden ?? false }))
   const app = await testRender(
     () => (
-      <TestTuiContexts paths={{ state: tmp.path }}>
+      <TestTuiContexts cwd={options.directory} paths={{ state: tmp.path }}>
         <ArgsProvider>
           <KVProvider>
             <Harness />
@@ -289,6 +334,64 @@ function hasPlaceholder(row: string) {
 }
 
 describe("home layout", () => {
+  test.each([60, 80])("fits MCP status beside a centered long path at width %i", async (width) => {
+    const app = await renderHome({
+      width,
+      directory: LONG_DIRECTORY,
+      mcp: CONNECTED_MCP,
+    })
+    try {
+      const frame = await untilFrame(app, (value) => value.includes("4 MCP") && value.includes(VERSION))
+      const row = footerRow(frame)
+      expect(row).toContain("4 MCP")
+      expect(row).toContain("/status")
+      expect(row).toContain(`· ${VERSION}`)
+      if (width === 60) expect(row).toContain("…ory-name")
+      else expect(row).toContain("long-project-directory-name")
+      expect(frame.split("\n").filter((line) => line.includes("4 MCP") || line.includes(VERSION))).toHaveLength(1)
+      const locationIndex = row.indexOf("/status") + "/status".length + 2
+      const location = row.slice(locationIndex).trimEnd()
+      const center = Bun.stringWidth(row.slice(0, locationIndex)) + Bun.stringWidth(location) / 2
+      expect(Math.abs(center - width / 2)).toBeLessThanOrEqual(1)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("keeps MCP readable with a compact label when the footer is too narrow", async () => {
+    const app = await renderHome({
+      width: 40,
+      directory: LONG_DIRECTORY,
+      mcp: CONNECTED_MCP,
+    })
+    try {
+      const frame = await untilFrame(app, (value) => value.includes("4 MCP") && value.includes(VERSION))
+      const row = footerRow(frame)
+      expect(row).toContain("4 MCP")
+      expect(row).not.toContain("/status")
+      expect(row).toContain("…")
+      expect(row).toContain(`· ${VERSION}`)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test.each([
+    ["CJK", "界".repeat(30), false],
+    ["emoji", "👨‍👩‍👧‍👦".repeat(15), true],
+    ["combining", "e\u0301".repeat(30), true],
+  ])("fits %s tips by display width without changing prompt height", async (_kind, tip, canFit) => {
+    const app = await renderHome({ width: 60, tips: [tip] })
+    try {
+      const frame = await untilFrame(app, (value) => hasPlaceholder(placeholderRow(value)))
+      expect(promptRows(frame)).toBe(5)
+      if (canFit) expect(placeholderRow(frame)).toContain(tip)
+      else expect(placeholderRow(frame)).toContain("…")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
   test.each([120, 60])("centers the path and version as one footer text at width %i", async (width) => {
     const app = await renderHome({ width })
     try {

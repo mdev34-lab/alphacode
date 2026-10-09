@@ -12,7 +12,7 @@ import { useEditorContext } from "../context/editor"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTuiConfig } from "../config"
 import { HomeSessionDestinationProvider } from "./home/session-destination"
-import { HomeTipPlaceholderProvider, useHomeTipPlaceholder } from "./home/tip-placeholder"
+import { fitHomeTipPlaceholder, HomeTipPlaceholderProvider, useHomeTipPlaceholder } from "./home/tip-placeholder"
 
 let once = false
 const TIP_ROTATE_MS = 10_000
@@ -42,15 +42,7 @@ function HomeScreen() {
   const [tipStep, setTipStep] = createSignal(0)
   // Placeholders must stay on one line; a wrapped tip would resize the prompt on every rotation.
   const tipWidth = createMemo(() => Math.min(promptMaxWidth(), dimensions().width - 4) - 6)
-  const tip = createMemo(() => {
-    const list = tipPlaceholder?.tips()
-    if (!list?.length) return
-    const width = tipWidth()
-    const fitting = list.filter((item) => item.length <= width)
-    const pool = fitting.length ? fitting : list
-    const value = pool[Math.floor(tipOffset * pool.length + tipStep()) % pool.length]
-    return value.length > width ? value.slice(0, Math.max(0, width - 1)) + "…" : value
-  })
+  const tip = createMemo(() => fitHomeTipPlaceholder(tipPlaceholder?.tips(), tipWidth(), tipOffset, tipStep()))
   let sent = false
 
   onMount(() => {
