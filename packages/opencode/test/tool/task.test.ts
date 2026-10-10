@@ -200,6 +200,9 @@ const reviewEnvelope = (report: Record<string, unknown> = REVIEW_REPORT) =>
 
 const REVIEW_ANALYSIS = "### Assessment\n\n**Ready to proceed?** Needs fixes"
 
+const REVIEW_REPORT_APPROVED = { ...REVIEW_REPORT, assessment: "approved", summary: "No findings.", findings: [] }
+const REVIEW_ANALYSIS_APPROVED = "### Assessment\n\n**Ready to proceed?** Approved"
+
 function reviewOps(chunks: string[]): TaskPromptOps {
   return {
     cancel: () => Effect.void,
@@ -241,6 +244,56 @@ function reviewRunOps(chunks: string[], summary = "done"): TaskPromptOps {
  * Scripts a child run that ends through a completed finish call declaring
  * `reason`, which is the only place the parent-facing termination is read from.
  */
+/**
+ * Scripts a review child that both delivers the canonical envelope and leaves
+ * file writes behind. A reviewer sitting at the depth limit cannot review its
+ * own writes, so its ending is an unreviewed handoff to the parent.
+ */
+function reviewWriteOps(chunks: string[], summary = "done"): TaskPromptOps {
+  return {
+    cancel: () => Effect.void,
+    resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+    prompt: (input) =>
+      Effect.sync(() => {
+        const replied = replyParts(input, chunks)
+        const now = Date.now()
+        const write: SessionV1.ToolPart = {
+          id: PartID.ascending(),
+          messageID: replied.info.id,
+          sessionID: input.sessionID,
+          type: "tool",
+          tool: "edit",
+          callID: "edit-call",
+          state: {
+            status: "completed",
+            input: { filePath: "src/cache.ts" },
+            output: "edited",
+            title: "edit",
+            metadata: { reviewLoop: { writesFiles: true } },
+            time: { start: now, end: now },
+          },
+        }
+        const finish: SessionV1.ToolPart = {
+          id: PartID.ascending(),
+          messageID: replied.info.id,
+          sessionID: input.sessionID,
+          type: "tool",
+          tool: "finish",
+          callID: "finish-call",
+          state: {
+            status: "completed",
+            input: { result: summary },
+            output: summary,
+            title: "finish",
+            metadata: {},
+            time: { start: now, end: now },
+          },
+        }
+        return { ...replied, parts: [...replied.parts, write, finish] }
+      }),
+  }
+}
+
 function finishRunOps(reason: Reason, text: string, summary = text): TaskPromptOps {
   return {
     cancel: () => Effect.void,
@@ -890,6 +943,58 @@ describe("tool.task", () => {
       // The report is associated with the reviewed revision and the child
       // session so the parent knows which work unit was reviewed.
       expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
+      expect(result.metadata.review.revision).toBe("uncommitted")
+      expect(result.metadata.review.sessionId).toBe(result.metadata.sessionId)
+    }),
+  )
+
+  it.instance("a review child that hands off unreviewed writes keeps its canonical report", () =>
+    Effect.gen(function* () {
+      const result = yield* runReview(reviewWriteOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`]))
+
+      // The canonical envelope is still the delivery.
+      expect(result.output).toContain("<alphacode-review>")
+      expect(result.output.match(/<alphacode-review>/g)).toHaveLength(1)
+      // The handoff is declared, and it never reads as an approval.
+      expect(result.metadata.review.verdict).toBe("pending")
+      expect(result.metadata.review.termination).toBe("review-pending")
+      expect(result.metadata.reviewLoop).toEqual({
+        writesFiles: true,
+        handoff: "pending",
+        sessionId: result.metadata.sessionId,
+      })
+      expect(result.output).toContain("UNREVIEWED")
+      // The report the parent paid for survives that handoff, and so does what
+      // it was about: the reviewed revision and the child that produced it.
+      expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
+      expect(result.metadata.review.revision).toBe("uncommitted")
+      expect(result.metadata.review.sessionId).toBe(result.metadata.sessionId)
+    }),
+  )
+
+  // The Approved variant the Needs-fixes fixture could not distinguish: the
+  // handoff keeps the report association, yet it can never read as an approval
+  // of the child's own edits - the verdict the part declares stays pending.
+  it.instance("a review child that hands off unreviewed writes keeps its canonical Approved report", () =>
+    Effect.gen(function* () {
+      const result = yield* runReview(
+        reviewWriteOps([`${REVIEW_ANALYSIS_APPROVED}\n\n${reviewEnvelope(REVIEW_REPORT_APPROVED)}`]),
+      )
+
+      expect(result.output).toContain("<alphacode-review>")
+      expect(result.output.match(/<alphacode-review>/g)).toHaveLength(1)
+      // The handoff is declared, and it never reads as an approval.
+      expect(result.metadata.review.verdict).toBe("pending")
+      expect(result.metadata.review.termination).toBe("review-pending")
+      expect(result.metadata.reviewLoop).toEqual({
+        writesFiles: true,
+        handoff: "pending",
+        sessionId: result.metadata.sessionId,
+      })
+      expect(result.output).toContain("UNREVIEWED")
+      // The Approved report the parent paid for survives that handoff, and so
+      // does what it was about: the reviewed revision and the child.
+      expect(result.metadata.review.report).toEqual(REVIEW_REPORT_APPROVED)
       expect(result.metadata.review.revision).toBe("uncommitted")
       expect(result.metadata.review.sessionId).toBe(result.metadata.sessionId)
     }),
@@ -2031,4 +2136,104 @@ describe("tool.task", () => {
       expect(terminationOf(delivered)).toBeUndefined()
     }),
   )
+})
+
+describe("tool.task - child write handoff", () => {
+  for (const outcome of ["completed", "error", "background"] as const) {
+    it.instance(`projects child writes before ${outcome} delivery`, () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const sessions = yield* Session.Service
+        const parentPart: SessionV1.ToolPart = {
+          id: PartID.ascending(),
+          sessionID: chat.id,
+          messageID: assistant.id,
+          type: "tool",
+          tool: "task",
+          callID: "parent-write-task",
+          state: {
+            status: "running",
+            input: { subagent_type: "general", background: false },
+            time: { start: Date.now() },
+          },
+        }
+        yield* sessions.updatePart(parentPart)
+        const jobs = yield* BackgroundJob.Service
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let observed: Record<string, any> = {}
+        const promptOps: TaskPromptOps = {
+          ...stubOps(),
+          prompt: (input) =>
+            Effect.gen(function* () {
+              const response = reply(input, "changed files")
+              yield* sessions.updateMessage(response.info)
+              const part: SessionV1.ToolPart = {
+                id: PartID.ascending(),
+                sessionID: input.sessionID,
+                messageID: response.info.id,
+                type: "tool",
+                tool: "write",
+                callID: "child-write",
+                state: {
+                  status: "completed",
+                  input: {},
+                  output: "written",
+                  title: "write",
+                  metadata: { reviewLoop: { writesFiles: true } },
+                  time: { start: Date.now(), end: Date.now() },
+                },
+              }
+              yield* sessions.updatePart(part)
+              const parentHistory = yield* sessions.messages({ sessionID: chat.id })
+              const persisted = parentHistory.flatMap((m) => m.parts).find((p) => p.id === parentPart.id)
+              expect(
+                persisted?.type === "tool" &&
+                  persisted.state.status === "running" &&
+                  persisted.state.metadata?.reviewLoop?.writesFiles,
+              ).toBe(true)
+              if (outcome === "error") return yield* Effect.fail(new Error("Child crashed after write"))
+              return { ...response, parts: [...response.parts, part] }
+            }).pipe(Effect.orDie),
+        }
+        const exit = yield* def
+          .execute(
+            { description: "write", prompt: "write", subagent_type: "general", background: outcome === "background" },
+            {
+              callID: "parent-write-task",
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "work",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: (value) =>
+                Effect.sync(() => {
+                  observed = value.metadata ?? {}
+                }),
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+        if (outcome === "background" && Exit.isSuccess(exit)) {
+          yield* jobs.wait({ id: exit.value.metadata.sessionId })
+        }
+        const parentHistory = yield* sessions.messages({ sessionID: chat.id })
+        const persisted = parentHistory.flatMap((m) => m.parts).find((p) => p.id === parentPart.id)
+        expect(
+          persisted?.type === "tool" &&
+            persisted.state.status === "running" &&
+            persisted.state.metadata?.reviewLoop?.writesFiles,
+        ).toBe(true)
+        if (outcome === "completed") {
+          expect(Exit.isSuccess(exit)).toBe(true)
+          if (Exit.isSuccess(exit)) {
+            expect(exit.value.metadata.review?.termination).toBe("review-pending")
+            expect(exit.value.output).toContain("UNREVIEWED")
+          }
+        } else if (outcome === "error") expect(Exit.isFailure(exit)).toBe(true)
+        else expect(Exit.isSuccess(exit)).toBe(true)
+      }),
+    )
+  }
 })

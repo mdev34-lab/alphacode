@@ -67,7 +67,11 @@ export function Footer() {
               fg={
                 status().termination === "approved"
                   ? theme.success
-                  : status().termination === "review-cap" || status().termination === "skipped"
+                  : status().termination === "review-cap" ||
+                      status().termination === "review-unavailable" ||
+                      status().termination === "review-blocked" ||
+                      status().termination === "review-pending" ||
+                      status().termination === "skipped"
                     ? theme.warning
                     : theme.text
               }
@@ -77,9 +81,15 @@ export function Footer() {
                 ? "approved"
                 : status().termination === "review-cap"
                   ? "cap"
-                  : status().termination === "skipped"
-                    ? "skipped"
-                    : status().phase}
+                  : status().termination === "review-unavailable"
+                    ? "unavailable"
+                    : status().termination === "review-blocked"
+                      ? "blocked"
+                      : status().termination === "review-pending"
+                        ? "unreviewed"
+                        : status().termination === "skipped"
+                          ? "skipped"
+                          : status().phase}
             </text>
           )}
         </Show>

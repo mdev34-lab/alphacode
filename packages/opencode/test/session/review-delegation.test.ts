@@ -375,12 +375,14 @@ it.instance(
       // The trigger: units of work that changed files, the verification stage,
       // and explicit user review requests.
       expect(body).toContain("unit of work that changed files")
-      expect(body).toContain("the recommended next step is review, not completion")
+      expect(body).toContain("the required next step is review, not completion")
       expect(body).toContain("explicitly asks for a code review")
 
-      // Review is a nudge, not a gate: the agent keeps the ability to finish.
-      expect(body).toContain("Review is guidance, not an enforcement gate")
-      expect(body).toContain("call `finish` again to explicitly skip review")
+      // Review is a requirement (#231): a declined finish is not a waiver, and
+      // the policy no longer offers a second finish as a way to skip it.
+      expect(body).toContain("Review is required before finishing file-writing work.")
+      expect(body).toContain("A declined `finish` is not a waiver")
+      expect(body).not.toContain("explicitly skip review")
 
       // The carve-out: trivial turns with no file changes must not be reviewed.
       expect(body).toContain("does not apply to turns with no file changes")

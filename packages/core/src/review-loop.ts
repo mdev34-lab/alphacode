@@ -4,7 +4,25 @@ export const REVIEW_LOOP_METADATA = "reviewLoop" as const
 
 export type ReviewVerdict = "approved" | "needs-fixes" | "pending" | "none" | "cap"
 export type ReviewPhase = "work" | "review"
-export type ReviewTermination = "approved" | "review-cap" | "skipped"
+/**
+ * How a finished turn left the review loop.
+ *
+ * - `approved`: the work carries an explicit Approved review, or the turn wrote no files.
+ * - `review-cap`: the configured number of review attempts, including failed dispatches, ran without an approval.
+ * - `review-unavailable`: the session could not dispatch the Review subagent at all, so
+ *   legacy runtime waived the requirement. Read-only compatibility, never approval.
+ * - `review-blocked`: review cannot run; only a declared failure may end this way.
+ * - `review-pending`: a depth-limited child hands unreviewed writes to its parent.
+ * - `skipped`: read from transcripts only. Finish used to let a second call skip the
+ *   review; it no longer does, but persisted completions keep their recorded outcome.
+ */
+export type ReviewTermination =
+  | "approved"
+  | "review-cap"
+  | "review-unavailable"
+  | "review-blocked"
+  | "review-pending"
+  | "skipped"
 
 export type ReviewHistoryPart = {
   readonly type?: unknown
@@ -32,7 +50,10 @@ export type ReviewLoopState = {
   readonly maxIterations: number
   readonly workSinceReview: boolean
   readonly reviewInProgress: boolean
-  /** A `finish` call was already declined with a review nudge for the current work. */
+  /**
+   * A `finish` call was already declined for the current work. A decline is not a
+   * waiver: the flag only lets the next decline say that retrying does not skip review.
+   */
   readonly nudged: boolean
   readonly phase: ReviewPhase
   readonly termination?: ReviewTermination
@@ -154,9 +175,10 @@ function isUnreportedReviewTask(part: ReviewHistoryPart) {
   return reason === "cancelled" || reason === "waiting_for_subagent"
 }
 
-function isFileWritingTool(part: ReviewHistoryPart) {
+export function hasFileWrites(part: ReviewHistoryPart) {
   if (part.type !== "tool" || typeof part.tool !== "string") return false
-  if (part.state?.status !== "completed") return false
+  if (part.state?.status !== "completed" && part.state?.status !== "error" && part.state?.status !== "running")
+    return false
   const metadata = {
     ...(isRecord(part.metadata) ? part.metadata : {}),
     ...(isRecord(part.state?.metadata) ? part.state.metadata : {}),
@@ -168,7 +190,7 @@ function isFileWritingTool(part: ReviewHistoryPart) {
 function isPotentiallyMutatingTool(part: ReviewHistoryPart) {
   if (part.type !== "tool" || typeof part.tool !== "string") return false
   if (part.tool === "finish" || isReviewTask(part)) return false
-  return isFileWritingTool(part)
+  return hasFileWrites(part)
 }
 
 function finishReviewMetadata(part: ReviewHistoryPart) {
@@ -195,7 +217,15 @@ function reviewReportVerdict(part: ReviewHistoryPart) {
 function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefined {
   if (part.state?.status !== "completed") return undefined
   const termination = finishReviewMetadata(part)?.termination
-  if (termination === "approved" || termination === "review-cap" || termination === "skipped") return termination
+  if (
+    termination === "approved" ||
+    termination === "review-cap" ||
+    termination === "review-unavailable" ||
+    termination === "review-blocked" ||
+    termination === "review-pending" ||
+    termination === "skipped"
+  )
+    return termination
   return undefined
 }
 
@@ -211,9 +241,9 @@ function isFinishNudge(part: ReviewHistoryPart) {
  * so a new file-writing tool is classified where it is defined. Unmarked tools,
  * including shell, do not trigger the review gate.
  *
- * The gate is a nudge, not a hard block: a `finish` call declined for missing
- * review is remembered as `nudged`, and the next `finish` for the same work is
- * allowed through as an explicit skip. New file writes or a new review reset it.
+ * The gate is a requirement, not a nudge: a `finish` call declined for missing
+ * review is remembered as `nudged` only so the next decline can say that a
+ * retry does not skip review. New file writes or a new review reset it.
  */
 export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIterations = 5): ReviewLoopState {
   const max = Number.isFinite(maxIterations) && maxIterations > 0 ? maxIterations : 1
@@ -236,6 +266,16 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       // already on record.
       if (isUnreportedReviewTask(part)) continue
 
+      if (part.state?.status === "error") {
+        reviews++
+        latest = undefined
+        workSinceReview = false
+        reviewInProgress = false
+        nudged = false
+        termination = undefined
+        continue
+      }
+
       if (part.state?.status !== "completed") {
         latest = undefined
         workSinceReview = true
@@ -248,7 +288,16 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       reviews++
       latest =
         reviewReportVerdict(part) ?? parseReviewVerdict(typeof part.state.output === "string" ? part.state.output : "")
-      workSinceReview = false
+      // Marker precedence before acceptance: a review run that wrote files
+      // hands those writes back unreviewed (`reviewLoop.writesFiles` on its
+      // task part is the handoff marker). The delivered report stays
+      // associated with the revision it reviewed - it still counts as the
+      // recorded verdict and an attempt - but an Approved report cannot count
+      // for the child's edits, so those writes stand as work since this review
+      // and the gate stays armed until a review covers them.
+      const handedOffWrites = hasFileWrites(part)
+      workSinceReview = handedOffWrites
+      if (handedOffWrites) workSeen = true
       reviewInProgress = false
       nudged = false
       termination = undefined
@@ -300,25 +349,32 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
   }
 }
 
-const SKIP_HINT =
-  "If you have determined that another review pass is unnecessary, call finish again to skip review and deliver the result as-is."
+// The dispatch the model has to make, spelled the way the task tool takes it.
+const REVIEW_DISPATCH =
+  'call the `task` tool with `subagent_type: "review"` and `background: false`, and give it the request, the changed files, and the diff for this work'
 
 /**
- * Decide whether this `finish` call should be declined with a review nudge.
- * Only the first `finish` for a given unit of unreviewed work is declined; once
- * the agent has been nudged it keeps the agency to finish anyway.
+ * Decide whether this `finish` call is declined because the current work is
+ * not approved.
+ *
+ * Every `finish` for unapproved file-writing work is declined, not only the
+ * first one: a retry, or any account of the work in the finish result, cannot
+ * stand in for a review. The requirement ends only on the evaluator's own
+ * outcomes - an explicit approval, a turn without file writes, or the review
+ * cap. A depth-limited child can deliver a typed unreviewed handoff to its
+ * parent, which must review its projected writes. An unavailable reviewer
+ * blocks success and may only be reported as a declared failure.
  */
 export function finishGateError(state: ReviewLoopState): Error | undefined {
-  if (state.nudged) return undefined
-  if (state.verdict === "needs-fixes") {
-    return new Error(
-      `Review nudge: the latest review returned Needs fixes. It is strongly recommended to address the findings and run a new synchronous review before finishing. ${SKIP_HINT}`,
-    )
-  }
-  if (state.verdict === "pending") {
-    return new Error(
-      `Review nudge: the current work has no explicit Approved review yet. It is strongly recommended to run a synchronous review before finishing. ${SKIP_HINT}`,
-    )
-  }
-  return undefined
+  if (state.verdict !== "pending" && state.verdict !== "needs-fixes") return undefined
+  const declined = state.nudged
+    ? "Review required: finish declined again, because retrying finish does not skip review."
+    : "Review required: finish declined."
+  const status =
+    state.verdict === "needs-fixes"
+      ? "The latest report from the Review subagent returned Needs fixes, so the current work is not approved. Fix the findings, then run the Review subagent again:"
+      : "The current work changed files and has no explicit Approved review from the Review subagent. Run the Review subagent now:"
+  return new Error(
+    `${declined} ${status} ${REVIEW_DISPATCH}. Call finish after it returns Approved; if it returns Needs fixes, fix the findings and review again. Calling finish again without that review is declined again, and calling the work creative, a prototype, trivial, or not production code does not exempt it.`,
+  )
 }

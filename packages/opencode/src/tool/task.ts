@@ -1,8 +1,11 @@
+import { sessionAgent } from "../session/session-agent"
 import * as Tool from "./tool"
 import { FinishTool, deliveredReason, readTermination, type TerminationReason } from "@/tool/finish"
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ReviewReport } from "@opencode-ai/core/review-report"
+import { hasFileWrites, REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
@@ -12,9 +15,8 @@ import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Ref, Schema, Scope } from "effect"
+import { Effect, Exit, Option, Ref, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
-import { NotFoundError } from "@/storage/storage"
 import { Database } from "@opencode-ai/core/database/database"
 
 export interface TaskPromptOps {
@@ -133,6 +135,7 @@ export const TaskTool = Tool.define(
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
     const database = yield* Database.Service
+    const events = yield* EventV2Bridge.Service
 
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -143,6 +146,10 @@ export const TaskTool = Tool.define(
       // (synchronous request) waits for the child result before returning.
       const runInBackground = params.background !== false
 
+      // The finish tool waives its review requirement only when this tool would
+      // refuse a `review` dispatch: the depth limit here, an unresolvable
+      // reviewer, or a permission deny below. Keep `reviewUnavailable` in
+      // finish.ts in step with these refusals.
       const parent = yield* sessions.get(ctx.sessionID)
       let current = parent
       let depth = 0
@@ -179,21 +186,6 @@ export const TaskTool = Tool.define(
       // `NotFound` is narrowed here; any other cause stays a defect rather than
       // being reinterpreted as "no parent agent", which is the only reading
       // this function can act on.
-      const resolveParentAgent = Effect.fnUntraced(function* (session: Session.Info) {
-        if (session.agent) return session.agent
-        const messages = yield* sessions
-          .messages({ sessionID: session.id, limit: 50 })
-          .pipe(
-            Effect.catchIf(NotFoundError.isInstance, (cause) =>
-              Effect.fail(
-                new Error(
-                  `Cannot resolve which reviewer to dispatch: parent session ${session.id} could not be read (${cause.message})`,
-                ),
-              ),
-            ),
-          )
-        return messages.findLast((message) => message.info.role === "user")?.info.agent
-      })
 
       // One resolution, two consumers: routing the review request, and
       // addressing the background notification back to the parent. Resolving
@@ -206,7 +198,7 @@ export const TaskTool = Tool.define(
       // a background result still never pays for the message read.
       // `Effect.cached` yields the memoized effect rather than its value, so nothing runs here.
       // Only the `review` routing below and the background delivery yield it.
-      const parentAgentOf = yield* Effect.cached(resolveParentAgent(parent))
+      const parentAgentOf = yield* Effect.cached(sessionAgent(sessions, parent))
 
       // `review` is the request, not the identity. The parent agent decides
       // which reviewer actually runs, so the report gate, the permission prompt
@@ -303,7 +295,7 @@ export const TaskTool = Tool.define(
         modelID: msg.info.modelID,
         providerID: msg.info.providerID,
       }
-      const metadata = {
+      const metadata: Record<string, any> = {
         parentSessionId: ctx.sessionID,
         sessionId: nextSession.id,
         model,
@@ -327,6 +319,68 @@ export const TaskTool = Tool.define(
       // records `cancelled` itself, so this ref holds the whole delivered
       // contract rather than the declared subset.
       const termination = yield* Ref.make<TerminationReason | undefined>(undefined)
+      const projectWrites = Effect.fn("TaskTool.projectChildWrites")(function* (parts: readonly SessionV1.Part[]) {
+        if (!parts.some(hasFileWrites)) return
+        metadata[REVIEW_LOOP_METADATA] = { writesFiles: true, handoff: "pending", sessionId: nextSession.id }
+        const parentMessages = yield* sessions.messages({ sessionID: ctx.sessionID })
+        const taskPart = parentMessages
+          .flatMap((message) => message.parts)
+          .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.callID === ctx.callID)
+        if (taskPart && taskPart.state.status !== "pending") {
+          yield* sessions.updatePart({
+            ...taskPart,
+            state: { ...taskPart.state, metadata: { ...taskPart.state.metadata, ...metadata } },
+          })
+        } else {
+          yield* ctx.metadata({ title: params.description, metadata: { ...metadata } })
+        }
+      })
+      // Observe writes while the child is running, not only after successful
+      // delivery. A crash or promotion must not erase its parent's evidence.
+      //
+      // A subscriber is infallible by contract (`Subscriber` returns
+      // `Effect<void>`), and this one projects through `sessions.messages`,
+      // which can report the parent session as gone. Dropping the error channel
+      // is safe: the live projection is an optimization over the transcript
+      // projection `runWithEvidence` performs when the child ends, so a failure
+      // here costs nothing that the run's end does not recover. It is logged
+      // because a parent that cannot be read mid-run is worth knowing about.
+      //
+      // The projection has to stay awaited by the publish that triggered it, or
+      // the parent's task part is not carrying the child's evidence by the time
+      // the child's own run reads it back. It is awaited because `EventV2` runs
+      // listeners inline, inside `publish`, with `Effect.forEach` (sequential by
+      // default): the publisher waits for whatever a listener returns. That is
+      // true of this pipe and of every other failure handler available in
+      // effect@4 - `Effect.catch`, `Effect.catchIf`, `Effect.catchCause` all
+      // await the effect they wrap, as does a listener that handles nothing.
+      // None of them starts a fiber, so none of them can detach this body; only
+      // an explicit fork does (`Effect.forkDetach`, `Effect.forkChild`), and
+      // that is what would cost the ordering "projects child writes before
+      // completed delivery" asserts. See the pinned ordering test at
+      // `EventV2 listener awaiting` in packages/core/test/event.test.ts.
+      //
+      // What the combinator does decide is the failure channel, and how a
+      // projection that cannot read its parent is reported. Durable events are
+      // already isolated by `EventV2` - a throwing listener is logged, not
+      // propagated - so this site is not protecting the publish; it is naming
+      // the failure once, with the child's session, instead of letting it fall
+      // through to that generic log.
+      const unsubscribeWrites = yield* events.listen((event) => {
+        if (event.type !== SessionV1.Event.PartUpdated.type) return Effect.void
+        const data = event.data as { sessionID?: unknown; part?: SessionV1.Part }
+        if (data.sessionID !== nextSession.id || !data.part) return Effect.void
+        return projectWrites([data.part]).pipe(
+          Effect.option,
+          Effect.flatMap((projected) =>
+            Option.isNone(projected)
+              ? Effect.logError("Child write evidence live projection failed; the run's end recovers it", {
+                  sessionID: nextSession.id,
+                })
+              : Effect.void,
+          ),
+        )
+      })
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         const parts = yield* ops.resolvePromptParts(params.prompt)
@@ -342,6 +396,7 @@ export const TaskTool = Tool.define(
           parts,
         })
 
+        yield* projectWrites(result.parts)
         const finish = result.parts.findLast(
           (item): item is SessionV1.ToolPart =>
             item.type === "tool" && item.tool === FinishTool.id && item.state.status === "completed",
@@ -428,7 +483,9 @@ export const TaskTool = Tool.define(
                       : state === "cancelled"
                         ? `Background task cancelled: ${params.description}`
                         : `Background task failed: ${params.description}`,
-                  text,
+                  text: metadata[REVIEW_LOOP_METADATA]
+                    ? `UNREVIEWED: This child changed files. Parent must run Review before reporting success.\n${text}`
+                    : text,
                   termination,
                 }),
               },
@@ -469,7 +526,25 @@ export const TaskTool = Tool.define(
         )
       })
 
-      if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
+      // Each continuation owns its listener until that continuation ends.
+      // Extending an existing background job must clean up too.
+      const runWithEvidence = () =>
+        runTask().pipe(
+          Effect.onInterrupt(() => ops.cancel(nextSession.id)),
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const history = yield* sessions.messages({ sessionID: nextSession.id })
+              yield* projectWrites(history.flatMap((message) => message.parts))
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("Child write evidence history unavailable", { sessionID: nextSession.id, cause }),
+              ),
+              Effect.ensuring(unsubscribeWrites),
+            ),
+          ),
+        )
+
+      if (yield* background.extend({ id: nextSession.id, run: runWithEvidence() })) {
         return {
           title: params.description,
           metadata: {
@@ -498,7 +573,7 @@ export const TaskTool = Tool.define(
           }),
           notify(nextSession.id),
         ]),
-        run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
+        run: runWithEvidence(),
       })
 
       function backgroundResult() {
@@ -564,20 +639,31 @@ export const TaskTool = Tool.define(
             // so consumers know which revision was reviewed without re-parsing
             // the output. The output already carries the canonical envelope.
             const review = isReviewAgent(next.name) ? ReviewReport.extract([result?.output ?? ""]) : undefined
+            const reviewed = review?.ok
+              ? { report: review.report, sessionId: nextSession.id, revision: review.report.revision }
+              : undefined
             const reason = yield* Ref.get(termination)
             const completed: Tool.ExecuteResult = {
               title: params.description,
               metadata: {
                 ...metadata,
-                ...(review?.ok
-                  ? { review: { report: review.report, sessionId: nextSession.id, revision: review.report.revision } }
-                  : {}),
+                ...(reviewed ? { review: reviewed } : {}),
                 ...(reason !== undefined ? { termination: { reason } } : {}),
+                // A handoff reports the child's writes as unreviewed. It keeps
+                // the delivered report and what that report was about: the
+                // parent still paid for the review, and dropping the
+                // association would leave it re-parsing the output to learn
+                // which revision was reviewed.
+                ...(metadata[REVIEW_LOOP_METADATA]
+                  ? { review: { ...reviewed, verdict: "pending", termination: "review-pending" } }
+                  : {}),
               },
               output: renderOutput({
                 sessionID: nextSession.id,
                 state: "completed",
-                text: result?.output ?? "",
+                text: metadata[REVIEW_LOOP_METADATA]
+                  ? `UNREVIEWED: This child changed files. Parent must run Review before reporting success.\n${result?.output ?? ""}`
+                  : (result?.output ?? ""),
                 termination: reason,
               }),
             }

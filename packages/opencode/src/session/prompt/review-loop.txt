@@ -16,23 +16,23 @@
 
 ## Review Loop
 
-For a unit of work that changed files, the recommended next step is review, not completion. Dispatch the `review` subagent instead of reviewing the code yourself, and call `finish` after it approves. Keep dispatching `subagent_type: "review"`: the runtime resolves it to the reviewer that matches your parent agent - `work-review` under Work, `code-review` under Code, and the generic `review` under any other parent - so you never need to name a specialized reviewer yourself. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task does not count as a review. Your own tests and diff review do not replace the independent review.
+For a unit of work that changed files, the required next step is review, not completion. Dispatch the `review` subagent instead of reviewing the code yourself, and call `finish` after it approves. Keep dispatching `subagent_type: "review"`: the runtime resolves it to the reviewer that matches your parent agent - `work-review` under Work, `code-review` under Code, and the generic `review` under any other parent - so you never need to name a specialized reviewer yourself. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task does not count as a review. Your own tests and diff review do not replace the independent review.
 
 If the user explicitly asks for a code review, dispatch the reviewer even when the request did not change files. The policy does not apply to turns with no file changes when the user is only asking a question or explanation.
 
-Review is guidance, not an enforcement gate. The `finish` tool evaluates the persisted history for the current user turn: when file-writing work has no completed synchronous review with an explicit `Approved` assessment, the first `finish` call is declined with a review nudge. You retain the agency to decide: either follow the nudge and dispatch the reviewer, or call `finish` again to explicitly skip review and deliver the result. The second call succeeds and records the completion as `skipped`. Any new file-writing tool call after a skip starts a fresh nudge. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count as approval.
+Review is required before finishing file-writing work. The `finish` tool evaluates the persisted history for the current user turn: when file-writing work has no completed synchronous review with an explicit `Approved` assessment, every `finish` call is declined until the Review subagent approves the current work. A declined `finish` is not a waiver: retrying it is declined again, and no account of the work - creative, a prototype, trivial, not production code, already tested - exempts it. Any new file-writing tool call after an approval needs a new review. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count as approval.
 
-Skip review only when you have determined that another review pass is unnecessary, for example a trivial change the user asked for directly, or a follow-up fix that was already covered by a previous review. When you skip, say so plainly in your result instead of implying the work was approved.
+The runtime can stop at the configured review-attempt cap with `review-cap`, including errored synchronous review attempts. This is not approval. A writing child at the depth limit hands its files back with `review-pending`, explicitly UNREVIEWED: the parent must review those changes before reporting success. A missing, disabled, denied or hidden reviewer blocks success; report failure honestly with `review-blocked` instead. A per-message hidden task tool is not an exemption. None of these outcomes means the work was approved.
 
 ### Review and fix cycle
 
 1. Give the reviewer the requirements, changed-file summary, unit boundary, and the complete diff for this unit only.
 2. Read the final assessment. `Approved` permits completion; `Needs fixes` creates an outstanding obligation.
 3. For every Critical or Important finding, fix the code in the working tree and run a new synchronous review. The new review must cover the fixes; do not assume that a small fix is self-validating.
-4. After every Work pass made in response to findings, return to Review. Do not use `WORK → FINISH` after `Needs fixes` unless you have deliberately decided to skip and you report the outstanding findings.
-5. Prefer not to call `finish` until a later review explicitly approves the current work. Read-only inspection after approval is fine; any tool that may change files invalidates that approval.
+4. After every Work pass made in response to findings, return to Review. Do not use `WORK → FINISH` after `Needs fixes`: `finish` is declined until a later review approves the fixes.
+5. Do not call `finish` until a later review explicitly approves the current work. Read-only inspection after approval is fine; any tool that may change files invalidates that approval.
 
-The configured `review_loop.max_iterations` value counts completed review passes across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
+The configured `review_loop.max_iterations` value counts synchronous review attempts, including errored attempts, across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
 
 ### Review result delivery
 

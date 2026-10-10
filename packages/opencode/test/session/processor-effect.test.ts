@@ -104,7 +104,7 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const waitFor = <A>(check: Effect.Effect<A | undefined>, message: string) =>
+const waitFor = <A, E>(check: Effect.Effect<A | undefined, E>, message: string) =>
   Effect.gen(function* () {
     const stop = Date.now() + 500
     while (Date.now() < stop) {
@@ -1373,3 +1373,119 @@ itMissingOutputMetrics.live("session.processor omits generation metrics when no 
     { config: cfg },
   ),
 )
+
+for (const scenario of [
+  { name: "stale false output", persistedWrites: true, returnedReview: { writesFiles: false } },
+  { name: "output with no writes flag", persistedWrites: true, returnedReview: {} },
+  { name: "new true output", persistedWrites: false, returnedReview: { writesFiles: true } },
+]) {
+  it.live(`session.processor preserves child writes with ${scenario.name}`, () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+
+          yield* llm.tool("lookup", { query: "weather" })
+
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "tool")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model: mdl,
+          })
+
+          const delivery = defer<{ title: string; output: string; metadata: Record<string, unknown> }>()
+          const run = yield* handle
+            .process({
+              user: {
+                id: parent.id,
+                sessionID: chat.id,
+                role: "user",
+                time: parent.time,
+                agent: parent.agent,
+                model: { providerID: ref.providerID, modelID: ref.modelID },
+              } satisfies SessionV1.User,
+              sessionID: chat.id,
+              model: mdl,
+              agent: agent(),
+              system: [],
+              messages: [{ role: "user", content: "tool" }],
+              tools: {
+                lookup: tool({
+                  description: "Look up information",
+                  inputSchema: z.object({ query: z.string() }),
+                  execute: async () => delivery.promise,
+                }),
+              },
+            })
+            .pipe(Effect.forkChild)
+
+          // The background return was computed before the child's write event.
+          // Persist that late evidence before letting the stale return complete.
+          const running = yield* waitFor(
+            session
+              .messages({ sessionID: chat.id, limit: 50 })
+              .pipe(
+                Effect.map((messages) =>
+                  messages
+                    .flatMap((m) => m.parts)
+                    .find(
+                      (part): part is SessionV1.ToolPart => part.type === "tool" && part.state.status === "running",
+                    ),
+                ),
+              ),
+            "timed out waiting for running task",
+          )
+          if (running.state.status !== "running") throw new Error("expected running tool")
+          yield* session.updatePart({
+            ...running,
+            state: {
+              ...running.state,
+              metadata: {
+                source: "live",
+                lateEvidence: "child-write",
+                reviewLoop: { writesFiles: scenario.persistedWrites, childSession: "child" },
+              },
+            },
+          })
+          delivery.resolve({
+            title: "Weather lookup",
+            output: "result:weather",
+            metadata: {
+              source: "returned",
+              reviewLoop: { ...scenario.returnedReview, outcome: "background" },
+            },
+          })
+          const value = yield* Fiber.join(run)
+
+          const parts = yield* MessageV2.parts(msg.id)
+          const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
+
+          expect(value).toBe("continue")
+          expect(yield* llm.calls).toBe(1)
+          expect(call?.callID).toBe("call_1")
+          expect(call?.tool).toBe("lookup")
+          expect(call?.state.status).toBe("completed")
+          if (call?.state.status !== "completed") return
+          expect(call.state.input).toEqual({ query: "weather" })
+          expect(call.state.output).toBe("result:weather")
+          expect(call.state.title).toBe("Weather lookup")
+          expect(call.state.metadata).toEqual({
+            source: "returned",
+            lateEvidence: "child-write",
+            reviewLoop: {
+              writesFiles: true,
+              childSession: "child",
+              outcome: "background",
+            },
+          })
+          expect(call.state.time.start).toBeDefined()
+          expect(call.state.time.end).toBeDefined()
+        }),
+      { config: (url) => providerCfg(url) },
+    ),
+  )
+}
