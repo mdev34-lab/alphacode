@@ -121,6 +121,8 @@ export interface QwenWebTurnInput extends WebChatTurnInput {
    * re-send a trimmed tail. Defaults to `content`.
    */
   recoveryContent?: string
+  /** Lazily re-upload the full prompt's media when a fresh-chat retry is needed. */
+  recoveryFiles?: (signal?: AbortSignal) => Promise<QwenWebFileEntry[] | undefined>
 }
 
 export class QwenWebSession implements WebChatProvider {
@@ -275,11 +277,13 @@ export class QwenWebSession implements WebChatProvider {
     try {
       let recoveredFreshChat = false
       let content = input.content
+      let files = input.files
       for (;;) {
         if (input.signal?.aborted) throw abortedError()
         const outcome = yield* this.deliverTurn({
           input,
           content,
+          files,
           allowFreshChatRecovery: !recoveredFreshChat,
           trace,
         })
@@ -288,6 +292,7 @@ export class QwenWebSession implements WebChatProvider {
         // The fresh chat has no server-side transcript: the recovery must
         // never ride on a trimmed tail.
         content = input.recoveryContent ?? input.content
+        files = (await input.recoveryFiles?.(input.signal)) ?? input.files
         trace("fresh chat recovery")
       }
     } finally {
@@ -306,6 +311,7 @@ export class QwenWebSession implements WebChatProvider {
   private async *deliverTurn(state: {
     input: QwenWebTurnInput
     content: string
+    files?: QwenWebFileEntry[]
     allowFreshChatRecovery: boolean
     trace: (label: string, extra?: Record<string, unknown>) => void
   }): AsyncGenerator<WebChatEvent, "recover-fresh-chat" | "finished"> {
@@ -389,7 +395,7 @@ export class QwenWebSession implements WebChatProvider {
             model,
             chatId,
             parentId,
-            files: input.files,
+            files: state.files,
             reasoningMode: input.reasoningMode,
             chatMode: this.chatMode,
             toolMode,
@@ -655,6 +661,7 @@ export class QwenWebSession implements WebChatProvider {
           return "recover-fresh-chat"
         }
         clearChatBinding()
+        this.store.put(thread)
       }
 
       const graceful = !failure || isStallTimeout(failure)

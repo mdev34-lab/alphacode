@@ -51,9 +51,14 @@ interface SessionBehavior {
   stream?: ReadableStream<Uint8Array>
 }
 
-function fakeUpload(behavior?: { failWith?: unknown; entries?: unknown[] }) {
+function fakeUpload(behavior?: {
+  failWith?: unknown
+  entries?: unknown[]
+  onUpload?: (media: Array<{ source: string; mediaType?: string; filename?: string }>) => void
+}) {
   return {
-    uploadAll: async () => {
+    uploadAll: async (media: Array<{ source: string; mediaType?: string; filename?: string }>) => {
+      behavior?.onUpload?.(media)
       if (behavior?.failWith) throw behavior.failWith
       return (behavior?.entries ?? []) as never
     },
@@ -70,6 +75,8 @@ function model(
   options?: {
     sessionBehavior?: SessionBehavior
     uploadBehavior?: { failWith?: unknown; entries?: unknown[] }
+    store?: ThreadStore
+    modelId?: string
   },
 ): QwenWebLanguageModel {
   const transport: QwenWebTransport = {
@@ -107,9 +114,9 @@ function model(
   } as unknown as QwenWebTransport
   const session = new QwenWebSession({
     transport,
-    store: freshStore(),
+    store: options?.store ?? freshStore(),
   })
-  return new QwenWebLanguageModel("qwen3-max", {
+  return new QwenWebLanguageModel(options?.modelId ?? "qwen3-max", {
     session,
     upload: fakeUpload(options?.uploadBehavior) as never,
   })
@@ -682,8 +689,9 @@ describe("issue 232: dead-chat recovery and honest errors at the SDK boundary", 
 
   type Scripted = { kind: "sse"; lines: string[] } | { kind: "json"; status: number; body: string }
 
-  function recoveryHarness(completionScript: Scripted[]) {
-    const payloads: Array<{ path: string; prompt: string }> = []
+  function recoveryHarness(completionScript: Scripted[], uploadEntries: unknown[] = []) {
+    const payloads: Array<{ path: string; prompt: string; files: unknown[] }> = []
+    const uploadedMedia: Array<Array<{ source: string; mediaType?: string; filename?: string }>> = []
     const createdChats: string[] = []
     let completions = 0
     const transport = {
@@ -697,8 +705,12 @@ describe("issue 232: dead-chat recovery and honest errors at the SDK boundary", 
         return { status: 200, statusText: "OK", contentType: "application/json", body: JSON.stringify({ chat_id: id }) }
       },
       rawRequestStream: async (_method: string, requestPath: string, options?: { body?: string }) => {
-        const body = JSON.parse(options?.body ?? "{}") as { messages?: Array<{ content?: string }> }
-        payloads.push({ path: requestPath, prompt: body.messages?.[0]?.content ?? "" })
+        const body = JSON.parse(options?.body ?? "{}") as { messages?: Array<{ content?: string; files?: unknown[] }> }
+        payloads.push({
+          path: requestPath,
+          prompt: body.messages?.[0]?.content ?? "",
+          files: body.messages?.[0]?.files ?? [],
+        })
         const result = completionScript[Math.min(completions, completionScript.length - 1)]!
         completions++
         if (result.kind === "json") {
@@ -709,8 +721,14 @@ describe("issue 232: dead-chat recovery and honest errors at the SDK boundary", 
       idleBudgetMs: () => 1000,
     } as unknown as QwenWebTransport
     const session = new QwenWebSession({ transport, store: freshStore() })
-    const languageModel = new QwenWebLanguageModel("qwen3-max", { session, upload: fakeUpload() as never })
-    return { languageModel, session, payloads, createdChats }
+    const languageModel = new QwenWebLanguageModel("qwen3-max", {
+      session,
+      upload: fakeUpload({
+        entries: uploadEntries,
+        onUpload: (media) => uploadedMedia.push(media.map((item) => ({ ...item }))),
+      }) as never,
+    })
+    return { languageModel, session, payloads, uploadedMedia, createdChats }
   }
 
   const followUpPrompt: LanguageModelV3Prompt = [
@@ -750,6 +768,44 @@ describe("issue 232: dead-chat recovery and honest errors at the SDK boundary", 
     expect(harness.payloads[2]!.prompt).toContain("The follow-up question.")
     expect(parts.some((part) => part.type === "text-delta")).toBe(true)
     expect((parts.at(-1) as { finishReason?: { unified?: string } }).finishReason?.unified).toBe("stop")
+  })
+
+  test("a text-only follow-up preserves prior image attachments during fresh-chat recovery", async () => {
+    const priorImage = { type: "image", id: "prior-image", url: "https://files.test/prior.png", name: "prior.png" }
+    const harness = recoveryHarness(
+      [
+        { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+        { kind: "json", status: 200, body: DELETED_JSON },
+        { kind: "sse", lines: [created("r3", "chat-2"), textFor("r3", "Recovered"), "data: [DONE]\n"] },
+      ],
+      [priorImage],
+    )
+    const originalPrompt: LanguageModelV3Prompt = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this picture." },
+          { type: "file", data: "aW1hZ2U=", mediaType: "image/png", filename: "prior.png" },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "It shows a landscape." }] },
+    ]
+    const followUpPrompt: LanguageModelV3Prompt = [
+      ...originalPrompt,
+      { role: "user", content: [{ type: "text", text: "What color is the sky?" }] },
+    ]
+
+    await collect((await harness.languageModel.doStream({ prompt: [originalPrompt[0]!] })).stream)
+    await collect((await harness.languageModel.doStream({ prompt: followUpPrompt })).stream)
+
+    expect(harness.payloads[0]!.files).toEqual([priorImage])
+    expect(harness.payloads[1]!.prompt).toContain("What color is the sky?")
+    expect(harness.payloads[1]!.prompt).not.toContain("Describe this picture.")
+    expect(harness.payloads[1]!.files).toEqual([])
+    expect(harness.payloads[2]!.prompt).toContain("Describe this picture.")
+    expect(harness.payloads[2]!.files).toEqual([priorImage])
+    expect(harness.uploadedMedia).toHaveLength(2)
+    expect(harness.uploadedMedia[1]![0]!.filename).toBe("prior.png")
   })
 
   test("an anchored thread without a live chat binding keeps the full prompt", async () => {
@@ -800,6 +856,65 @@ describe("issue 232: dead-chat recovery and honest errors at the SDK boundary", 
     const last = harness.payloads.at(-1)!
     expect(last.path).toContain("chat_id=chat-2")
     expect(last.prompt).toContain("LONG ORIGINAL CONTEXT")
+  })
+
+  test("a mapped stale-after-text error persists the unbinding before generator.return", async () => {
+    const file = path.join(os.tmpdir(), `qwen-webchat-sdk-reload-${Math.random().toString(36).slice(2)}.json`)
+    const store = new ThreadStore({ file })
+    const scope = "issue232-stale-persist"
+    const threadId = `qwen-web:qwen3.8-max:${scope}`
+    const now = Date.now()
+    store.put({
+      id: threadId,
+      model: "qwen3.8-max",
+      providerId: "dead-chat",
+      messages: [
+        { id: "u0", role: "user", content: "Earlier", parts: [{ type: "text", text: "Earlier" }] },
+        {
+          id: "a0",
+          role: "assistant",
+          content: "Earlier answer",
+          parts: [{ type: "text", text: "Earlier answer" }],
+          providerState: { responseId: "r-old" },
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    })
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const languageModel = model([], captured, {
+      store,
+      modelId: "qwen3.8-max",
+      sessionBehavior: { stream: byteStream([CREATED, textEvent("partial text"), STALE_EVENT]) },
+    })
+    const { stream } = await languageModel.doStream({
+      prompt: [
+        { role: "user", content: [{ type: "text", text: "Earlier" }] },
+        { role: "assistant", content: [{ type: "text", text: "Earlier answer" }] },
+        { role: "user", content: [{ type: "text", text: "Continue" }] },
+      ],
+      providerOptions: { "qwen-web": { threadId: scope } },
+    })
+    const reader = stream.getReader()
+    const parts: LanguageModelV3StreamPart[] = []
+    let streamError: unknown
+    for (;;) {
+      try {
+        const next = await reader.read()
+        if (next.done) break
+        if (next.value) parts.push(next.value)
+      } catch (error) {
+        streamError = error
+        break
+      }
+    }
+    expect(streamError).toBeInstanceOf(APICallError)
+    expect(parts.some((part) => part.type === "response-metadata")).toBe(true)
+    expect(parts.some((part) => part.type === "text-delta" && part.delta === "partial text")).toBe(true)
+    expect(captured.calls).toBe(1)
+    const reloaded = new ThreadStore({ file }).get(threadId)
+    expect(reloaded?.providerId).toBeUndefined()
+    expect(reloaded?.messages.some((message) => message.providerState?.["responseId"] === "r-old")).toBe(false)
   })
 
   test("an empty upstream turn surfaces a retryable API error, not a silent stop", async () => {

@@ -169,7 +169,8 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
     const tools = functionTools(options.tools as QwenWebToolDefinition[] | undefined)
     const useTools = tools.length > 0 && options.toolChoice?.type !== "none"
 
-    let rendered = renderPrompt(options.prompt)
+    const fullRendered = renderPrompt(options.prompt)
+    let rendered = fullRendered
     const wrap = (p: string, full: boolean): string => {
       let out = p
       if (useTools) {
@@ -224,6 +225,11 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
       prompt = wrap(trim.text, false)
     }
     const files = rendered.media.length > 0 ? await this.uploadFiles(rendered.media, signal) : undefined
+    // Incremental calls omit earlier media too; upload the full set only if recovery needs a fresh chat.
+    const recoveryFiles =
+      trim && fullRendered.media.length > 0
+        ? (recoverySignal?: AbortSignal) => this.uploadFiles(fullRendered.media, recoverySignal)
+        : undefined
     const toolDeclarations = useTools
       ? tools.map((tool) => ({
           name: tool.name,
@@ -248,6 +254,7 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
       thread,
       content: prompt,
       recoveryContent: fullPrompt,
+      recoveryFiles,
       tools: toolDeclarations,
       files,
       reasoningMode,
