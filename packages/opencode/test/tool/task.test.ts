@@ -200,6 +200,9 @@ const reviewEnvelope = (report: Record<string, unknown> = REVIEW_REPORT) =>
 
 const REVIEW_ANALYSIS = "### Assessment\n\n**Ready to proceed?** Needs fixes"
 
+const REVIEW_REPORT_APPROVED = { ...REVIEW_REPORT, assessment: "approved", summary: "No findings.", findings: [] }
+const REVIEW_ANALYSIS_APPROVED = "### Assessment\n\n**Ready to proceed?** Approved"
+
 function reviewOps(chunks: string[]): TaskPromptOps {
   return {
     cancel: () => Effect.void,
@@ -964,6 +967,34 @@ describe("tool.task", () => {
       // The report the parent paid for survives that handoff, and so does what
       // it was about: the reviewed revision and the child that produced it.
       expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
+      expect(result.metadata.review.revision).toBe("uncommitted")
+      expect(result.metadata.review.sessionId).toBe(result.metadata.sessionId)
+    }),
+  )
+
+  // The Approved variant the Needs-fixes fixture could not distinguish: the
+  // handoff keeps the report association, yet it can never read as an approval
+  // of the child's own edits - the verdict the part declares stays pending.
+  it.instance("a review child that hands off unreviewed writes keeps its canonical Approved report", () =>
+    Effect.gen(function* () {
+      const result = yield* runReview(
+        reviewWriteOps([`${REVIEW_ANALYSIS_APPROVED}\n\n${reviewEnvelope(REVIEW_REPORT_APPROVED)}`]),
+      )
+
+      expect(result.output).toContain("<alphacode-review>")
+      expect(result.output.match(/<alphacode-review>/g)).toHaveLength(1)
+      // The handoff is declared, and it never reads as an approval.
+      expect(result.metadata.review.verdict).toBe("pending")
+      expect(result.metadata.review.termination).toBe("review-pending")
+      expect(result.metadata.reviewLoop).toEqual({
+        writesFiles: true,
+        handoff: "pending",
+        sessionId: result.metadata.sessionId,
+      })
+      expect(result.output).toContain("UNREVIEWED")
+      // The Approved report the parent paid for survives that handoff, and so
+      // does what it was about: the reviewed revision and the child.
+      expect(result.metadata.review.report).toEqual(REVIEW_REPORT_APPROVED)
       expect(result.metadata.review.revision).toBe("uncommitted")
       expect(result.metadata.review.sessionId).toBe(result.metadata.sessionId)
     }),

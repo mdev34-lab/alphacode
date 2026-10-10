@@ -277,6 +277,62 @@ describe("review loop - conservative task evidence", () => {
       expect(finishGateError(state)).toBeInstanceOf(Error)
     })
   }
+  // The task tool marks a review run that wrote files as an unreviewed handoff
+  // on the same part that carries its report. The report association is
+  // preserved there, but the marker has precedence before the report is
+  // accepted: an Approved report cannot count for the child's edits.
+  const handoffReviewMessage = (assessment: "approved" | "needs-fixes") => ({
+    info: { role: "assistant" },
+    parts: [
+      {
+        type: "tool",
+        tool: "task",
+        state: {
+          status: "completed",
+          input: { subagent_type: "review", background: false },
+          output: `### Assessment\n\n**Ready to proceed?** ${assessment === "approved" ? "Approved" : "Needs fixes"}`,
+          metadata: {
+            [REVIEW_LOOP_METADATA]: { writesFiles: true, handoff: "pending", sessionId: "ses_review_child" },
+            review: {
+              report: { version: 1, revision: "uncommitted", assessment, summary: "done", findings: [] },
+              sessionId: "ses_review_child",
+              revision: "uncommitted",
+              verdict: "pending",
+              termination: "review-pending",
+            },
+          },
+        },
+      },
+    ],
+  })
+
+  test("an Approved report cannot approve a review child's unreviewed writes", () => {
+    const state = reviewLoopState([userMessage, editMessage, handoffReviewMessage("approved")])
+
+    expect(state.reviews).toBe(1)
+    expect(state.workSinceReview).toBe(true)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  test("a review child's unreviewed writes need review even without parent edits", () => {
+    const state = reviewLoopState([userMessage, handoffReviewMessage("approved")])
+
+    expect(state.workSinceReview).toBe(true)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+
+  // The gate is a requirement the parent can discharge: its own later Review
+  // covers the projected child writes and approves the whole current work.
+  test("a clean review after the handoff covers the child's projected writes", () => {
+    const state = reviewLoopState([userMessage, editMessage, handoffReviewMessage("approved"), reviewMessage()])
+
+    expect(state.workSinceReview).toBe(false)
+    expect(state.verdict).toBe("approved")
+    expect(finishGateError(state)).toBeUndefined()
+  })
+
   test("errored review counts an honest attempt and reaches cap", () => {
     const failed = reviewMessage({ status: "error" })
     const state = reviewLoopState([userMessage, editMessage, failed], 1)

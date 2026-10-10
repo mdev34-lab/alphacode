@@ -1610,6 +1610,71 @@ describe("tool.finish – a parent reviews its child's writes", () => {
       }),
     )
   }
+
+  // The report side of the same handoff: a review child that wrote files hands
+  // those writes back unreviewed even when its report is Approved. The task
+  // tool keeps the report association on the part and declares the handoff
+  // `review-pending`, so the marker - not the approval - decides the gate. The
+  // Needs-fixes fixture could not catch this hole: a Needs-fixes handoff
+  // already reads as unapproved.
+  const addWritingReview = Effect.fn("FinishTest.addWritingReview")(function* (
+    sessionID: SessionID,
+    messageID: MessageID,
+  ) {
+    const session = yield* Session.Service
+    const now = Date.now()
+    yield* session.updatePart({
+      id: PartID.ascending(),
+      messageID,
+      sessionID,
+      type: "tool",
+      tool: "task",
+      callID: "review-write-task",
+      state: {
+        status: "completed",
+        input: { subagent_type: "review", background: false },
+        output:
+          "UNREVIEWED: This child changed files. Parent must run Review before reporting success.\nAssessment: Approved",
+        title: "task",
+        metadata: {
+          [REVIEW_LOOP_METADATA]: { writesFiles: true, handoff: "pending", sessionId: "ses_review_child" },
+          review: {
+            report: REVIEW_APPROVED,
+            sessionId: "ses_review_child",
+            revision: "uncommitted",
+            verdict: "pending",
+            termination: "review-pending",
+          },
+          termination: { reason: "success" },
+        },
+        time: { start: now, end: now },
+      },
+    })
+  })
+
+  it.instance("an Approved report from a writing review child does not approve the child's edits", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      yield* addToolPart(chat.id, assistant.id, "edit")
+      yield* addWritingReview(chat.id, assistant.id)
+      const def = yield* (yield* FinishTool).init()
+
+      const failure = reviewFailure(
+        yield* def.execute({ reason: "success", result: "done" }, workCtx(chat.id, assistant.id)).pipe(Effect.exit),
+      )
+      expect(failure?.message).toContain("no explicit Approved review")
+
+      // The parent's own Review covers the child's projected writes: the gate
+      // is a requirement the parent can discharge, not a permanent block.
+      yield* addReview(chat.id, assistant.id, "Approved")
+      const result = yield* def.execute(
+        { reason: "success", result: "Reviewed the child's changes." },
+        workCtx(chat.id, assistant.id),
+      )
+      expect(result.metadata.review?.termination).toBe("approved")
+      expect(result.metadata.review?.verdict).toBe("approved")
+    }),
+  )
 })
 
 // An errored synchronous review is an honest attempt: it consumed one of the

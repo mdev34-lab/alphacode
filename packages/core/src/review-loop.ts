@@ -288,7 +288,16 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       reviews++
       latest =
         reviewReportVerdict(part) ?? parseReviewVerdict(typeof part.state.output === "string" ? part.state.output : "")
-      workSinceReview = false
+      // Marker precedence before acceptance: a review run that wrote files
+      // hands those writes back unreviewed (`reviewLoop.writesFiles` on its
+      // task part is the handoff marker). The delivered report stays
+      // associated with the revision it reviewed - it still counts as the
+      // recorded verdict and an attempt - but an Approved report cannot count
+      // for the child's edits, so those writes stand as work since this review
+      // and the gate stays armed until a review covers them.
+      const handedOffWrites = hasFileWrites(part)
+      workSinceReview = handedOffWrites
+      if (handedOffWrites) workSeen = true
       reviewInProgress = false
       nudged = false
       termination = undefined
