@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 667e769a949f690977369cbbce0802bf662c861f..89ceaf6de7188ea537910dda862793e049c5ab0a 100644
+index 667e769a94..89ceaf6de7 100644
 --- a/README.md
 +++ b/README.md
 @@ -25,3 +25,7 @@ bun install
@@ -11,7 +11,7 @@ index 667e769a949f690977369cbbce0802bf662c861f..89ceaf6de7188ea537910dda862793e0
 +
 +- [Agent effort](specs/agent-effort.md) — the fast/medium/thorough dial: configuration, review passes, validation gates, and the `task()` override.
 diff --git a/bun.lock b/bun.lock
-index ac2d1fce109b8bf7b27d68679f6161c0e58bde71..914a439a14ac013d73ca356cd8f96e847541f308 100644
+index ac2d1fce10..914a439a14 100644
 --- a/bun.lock
 +++ b/bun.lock
 @@ -491,6 +491,7 @@
@@ -23,7 +23,7 @@ index ac2d1fce109b8bf7b27d68679f6161c0e58bde71..914a439a14ac013d73ca356cd8f96e84
          "@opentui/core": "catalog:",
          "@opentui/keymap": "catalog:",
 diff --git a/packages/core/src/config.ts b/packages/core/src/config.ts
-index c76486968b0784d57dab102e2d51a7e18f57b7f5..2ed383dc822125944122709a5dd95e70a824f8b5 100644
+index c76486968b..2ed383dc82 100644
 --- a/packages/core/src/config.ts
 +++ b/packages/core/src/config.ts
 @@ -5,6 +5,7 @@ import path from "path"
@@ -64,10 +64,10 @@ index c76486968b0784d57dab102e2d51a7e18f57b7f5..2ed383dc822125944122709a5dd95e70
        if (!info) return
 diff --git a/packages/core/src/effort-policy.ts b/packages/core/src/effort-policy.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..eda1a1656d6f7bcac29b8b690f4c702b642a166b
+index 0000000000..93d5036e43
 --- /dev/null
 +++ b/packages/core/src/effort-policy.ts
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,263 @@
 +export * as EffortPolicy from "./effort-policy"
 +
 +import { AgentEffort } from "@opencode-ai/schema/agent-effort"
@@ -108,6 +108,8 @@ index 0000000000000000000000000000000000000000..eda1a1656d6f7bcac29b8b690f4c702b
 +  | "findings-open"
 +  | "budget-exhausted"
 +  | "review-unavailable"
++  | "review-blocked"
++  | "review-pending"
 +  | "not-required"
 +  | "waiting"
 +
@@ -123,6 +125,13 @@ index 0000000000000000000000000000000000000000..eda1a1656d6f7bcac29b8b690f4c702b
 +  readonly reviewerAvailable: boolean
 +  /** Why the reviewer is unavailable, when it is. */
 +  readonly unavailableReason?: string
++  /** Typed reason code for an unavailable reviewer (for example `subagent-depth`), when known. */
++  readonly unavailableCode?: string
++  /**
++   * A depth-limited child with a parent cannot dispatch review: its writes are handed
++   * back to the parent as unreviewed (`review-pending`), never approved.
++   */
++  readonly handoff?: boolean
 +}
 +
 +export type FinishOutcome = {
@@ -201,70 +210,48 @@ index 0000000000000000000000000000000000000000..eda1a1656d6f7bcac29b8b690f4c702b
 +/**
 + * Decide whether this `finish` call delivers, and with which honest labels.
 + *
-+ * Enforcement lives here — at the finish checkpoint — and nowhere else. A
-+ * declined call is recoverable feedback; calling finish again never becomes a
-+ * generic review bypass, because the decision depends only on the persisted
-+ * review state, not on how often finish was attempted.
++ * Enforcement lives here, at the finish checkpoint, and depends only on the persisted review
++ * state, never on how often finish was attempted.
 + *
-+ * - `fast`: no review required; delivery is labelled unreviewed unless an
-+ *   independent review actually happened.
-+ * - `medium`: at least one independent review; only blocking findings (or
-+ *   stale work) force another pass, bounded by two passes, after which the
-+ *   delivery is labelled exhausted/open rather than looped.
-+ * - `thorough`: until-clean with no pass cap; it declines while findings or
-+ *   stale work remain, unless the reviewer is genuinely unavailable — which is
-+ *   delivered honestly, never upgraded to approval.
++ * - `fast`: no mandatory review. Delivers with an honest unreviewed/findings label.
++ * - `medium`: at least one independent review, then at most two completed attempts. Blocking
++ *   findings or stale work force another pass until the cap; after the cap delivery is labelled
++ *   budget-exhausted, never approved.
++ * - `thorough`: until-clean with no pass cap.
 + *
-+ * `failure` and `subagent_wait` reasons deliver without a success review
-+ * ritual: waiting is never approval, and a failed task is never labelled
-+ * approved. Read-only turns are exempt and labelled `not-required`, distinct
-+ * from approval.
++ * For medium and thorough (#233): an unavailable reviewer BLOCKS a successful finish. Only a
++ * declared failure may deliver with `review-blocked`, and a depth-limited child hands its writes
++ * to its parent as `review-pending`. A declared failure with a dispatchable reviewer is still
++ * reviewed. `subagent_wait` is a provisional yield, never approval. Read-only turns are exempt and
++ * labelled `not-required`, distinct from approval.
 + */
 +export function evaluateFinish(input: FinishInput): FinishOutcome {
 +  const { effort, reason, state, reviewerAvailable } = input
-+  const disposition: Disposition = state.reviews > 0 ? "reviewed" : "unreviewed"
++  // A delivered verdict is what makes a review "happened"; an errored or malformed attempt only
++  // spends budget.
++  const reviewed = state.lastReviewVerdict !== undefined
++  const disposition: Disposition = reviewed ? "reviewed" : "unreviewed"
 +  const limit = passLimit(effort)
-+  // Fast's zero required passes is not a finite budget to serialize as a cap;
-+  // only medium's two-pass bound becomes a `maxIterations` limit.
 +  const maxIterations = limit !== undefined && limit > 0 && Number.isFinite(limit) ? limit : undefined
 +  const common: { disposition: Disposition; maxIterations?: number } = {
 +    disposition,
 +    ...(maxIterations !== undefined ? { maxIterations } : {}),
 +  }
 +
-+  if (reason === "subagent_wait") {
-+    return { deliver: true, termination: "waiting", ...common }
-+  }
++  if (reason === "subagent_wait") return { deliver: true, termination: "waiting", ...common }
 +
 +  if (!state.workSeen) {
-+    // No code changes this task: exempt from the review ritual, and the label
-+    // must distinguish that exemption from approval.
++    // No code changes this task: exempt from the review ritual, labelled distinctly from approval.
 +    if (reason === "failure") return { deliver: true, termination: "unreviewed", ...common }
 +    return { deliver: true, termination: "not-required", ...common }
 +  }
 +
-+  if (reason === "failure") {
-+    return { deliver: true, termination: "unreviewed", ...common }
-+  }
-+
-+  const reviewed = state.reviews > 0
-+  const blocking = state.blockingFindings > 0
 +  const converged =
 +    reviewed && !state.workSinceReview && state.lastReviewVerdict === "approved" && state.blockingFindings === 0
++  const blocking = state.blockingFindings > 0
 +
 +  const deliverableTermination = ((): Termination => {
-+    // Fast requires no passes, so it can never exhaust a budget — and with no
-+    // review on record the honest label is unreviewed, never an open finding
-+    // or an approval.
-+    if (limit === 0 && !reviewed) return "unreviewed"
-+    if (
-+      limit !== undefined &&
-+      limit > 0 &&
-+      state.reviews >= limit &&
-+      (blocking || state.lastReviewVerdict !== "approved")
-+    )
-+      return "budget-exhausted"
-+    if (state.workSinceReview) return "findings-open"
++    if (state.workSinceReview) return reviewed ? "findings-open" : "unreviewed"
 +    if (converged) return "approved"
 +    if (state.lastReviewVerdict === "needs-fixes") return "findings-open"
 +    if (reviewed) return "findings-open"
@@ -272,72 +259,80 @@ index 0000000000000000000000000000000000000000..eda1a1656d6f7bcac29b8b690f4c702b
 +  })()
 +
 +  if (effort === "fast") {
++    // Fast requires no review. With no verdict on record the honest label is unreviewed.
 +    return { deliver: true, termination: deliverableTermination, ...common }
 +  }
 +
-+  const unavailable = () => ({
-+    deliver: true,
-+    termination: "review-unavailable" as const,
-+    ...common,
-+    unavailableReason: input.unavailableReason ?? "no reviewer is dispatchable in this session's context",
-+  })
-+
-+  // A review already in flight owns the outcome; finishing now would deliver
-+  // work whose review never reported.
 +  if (state.reviewInProgress) {
 +    return decline(common, "A synchronous review is already in progress. Wait for its report before finishing.")
 +  }
 +
-+  if (!reviewed) {
-+    if (!reviewerAvailable) return unavailable()
++  const exhausted = limit !== undefined && state.reviews >= limit
++
++  // Blocked, handed off, or declared failure: never a silent approval.
++  const unavailable = (): FinishOutcome => {
++    const unavailableReason = input.unavailableReason ?? "no reviewer is dispatchable in this session's context"
++    if (input.handoff) return { deliver: true, termination: "review-pending", ...common, unavailableReason }
++    if (reason === "failure") return { deliver: true, termination: "review-blocked", ...common, unavailableReason }
 +    return decline(
 +      common,
-+      `This task changed files and effort is "${effort}": it requires at least one independent review before delivery. Dispatch the \`review\` subagent synchronously (\`subagent_type: "review"\`, \`background: false\`) and finish after it reports.`,
++      `Review blocked (${input.unavailableCode ?? unavailableReason}): success cannot be reported without review. Restore Review dispatch or report failure honestly.`,
++      unavailableReason,
 +    )
 +  }
 +
 +  if (effort === "medium") {
-+    const exhausted = limit !== undefined && state.reviews >= limit
-+    if (blocking) {
-+      if (exhausted) return { deliver: true, termination: "budget-exhausted", ...common }
-+      if (!reviewerAvailable) return unavailable()
-+      return decline(
-+        common,
-+        `The latest review still has ${state.blockingFindings} blocking finding(s) (critical/important), or needs fixes with no findings. Address them and run another synchronous review, or stay within the two-pass budget to deliver with an honest exhausted status.`,
-+      )
++    if (exhausted && !converged) {
++      // At the cap: a blocking or unapproved last verdict is budget-exhausted; stale work after an
++      // approval is findings-open. Neither is ever labelled approved.
++      const approvedStale = reviewed && state.lastReviewVerdict === "approved" && !blocking
++      return { deliver: true, termination: approvedStale ? "findings-open" : "budget-exhausted", ...common }
 +    }
-+    if (state.workSinceReview) {
-+      // Work landed after the last review: the current tree is unreviewed.
-+      // Below the cap this requires one more pass; at the cap delivery is
-+      // allowed but must disclose the stale work instead of claiming approval.
-+      if (exhausted) return { deliver: true, termination: "findings-open", ...common }
++    if (!reviewed) return reviewerAvailable ? decline(common, reviewRequired(effort)) : unavailable()
++    if (blocking || state.workSinceReview || state.lastReviewVerdict !== "approved") {
 +      if (!reviewerAvailable) return unavailable()
 +      return decline(
 +        common,
-+        "Work changed after the last review, so the current tree has not been reviewed. Run another synchronous review before finishing.",
++        state.workSinceReview
++          ? "Review required: work changed after the last review, so the current tree has no explicit Approved review. Run the Review subagent again before finishing."
++          : `Review required: the latest report from the Review subagent returned Needs fixes, with ${state.blockingFindings} blocking finding(s) (critical/important) or no findings listed, so the current work is not approved. Fix the findings, then run the Review subagent again (\`subagent_type: "review"\`, \`background: false\`) before finishing.`,
 +      )
 +    }
 +    return { deliver: true, termination: deliverableTermination, ...common }
 +  }
 +
 +  // thorough: until-clean, no finite cap.
-+  if (blocking || state.lastReviewVerdict !== "approved" || state.workSinceReview) {
++  if (!reviewed || blocking || state.lastReviewVerdict !== "approved" || state.workSinceReview) {
 +    if (!reviewerAvailable) return unavailable()
 +    return decline(
 +      common,
 +      state.workSinceReview && state.lastReviewVerdict === "approved"
 +        ? "Work changed after the approved review, so the current tree is no longer covered. Run another synchronous review before finishing."
-+        : 'Effort is "thorough": delivery requires a clean, current independent review. Address the outstanding findings and run another synchronous review.',
++        : 'Review required: effort is "thorough", so delivery requires a clean, current independent review from the Review subagent (\`subagent_type: "review"\`, \`background: false\`). Address the outstanding findings and run it again before finishing.',
 +    )
 +  }
 +  return { deliver: true, termination: "approved", ...common }
 +}
 +
-+function decline(common: { disposition: Disposition; maxIterations?: number }, feedback: string): FinishOutcome {
-+  return { deliver: false, termination: "unreviewed", ...common, feedback }
++function reviewRequired(effort: AgentEffort.Level) {
++  return `Review required: this task changed files and effort is "${effort}", which requires at least one independent review before delivery. The current work has no explicit Approved review from the Review subagent. Run the Review subagent now: call the \`task\` tool with \`subagent_type: "review"\` and \`background: false\`, then call finish after it returns Approved.`
++}
++
++function decline(
++  common: { disposition: Disposition; maxIterations?: number },
++  feedback: string,
++  unavailableReason?: string,
++): FinishOutcome {
++  return {
++    deliver: false,
++    termination: "unreviewed",
++    ...common,
++    feedback,
++    ...(unavailableReason ? { unavailableReason } : {}),
++  }
 +}
 diff --git a/packages/core/src/review-loop.ts b/packages/core/src/review-loop.ts
-index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bdfa541d8a 100644
+index 74d6adda02..c6f2efaf1f 100644
 --- a/packages/core/src/review-loop.ts
 +++ b/packages/core/src/review-loop.ts
 @@ -1,3 +1,4 @@
@@ -345,7 +340,25 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
  import { ReviewReport } from "./review-report"
  
  export const REVIEW_LOOP_METADATA = "reviewLoop" as const
-@@ -26,6 +27,17 @@ export type ReviewHistoryMessage = {
+@@ -8,13 +9,12 @@ export type ReviewPhase = "work" | "review"
+  * How a finished turn left the review loop.
+  *
+  * - `approved`: the work carries an explicit Approved review, or the turn wrote no files.
+- * - `review-cap`: the configured number of review attempts, including failed dispatches, ran without an approval.
+- * - `review-unavailable`: the session could not dispatch the Review subagent at all, so
+- *   legacy runtime waived the requirement. Read-only compatibility, never approval.
++ * - `review-cap`: the configured number of review attempts, including failed dispatches and
++ *   malformed completed reviews, ran without an approval.
++ * - `review-unavailable`: legacy label for a delivered turn whose reviewer could not run.
+  * - `review-blocked`: review cannot run; only a declared failure may end this way.
+  * - `review-pending`: a depth-limited child hands unreviewed writes to its parent.
+- * - `skipped`: read from transcripts only. Finish used to let a second call skip the
+- *   review; it no longer does, but persisted completions keep their recorded outcome.
++ * - `skipped`: read from transcripts only; persisted completions keep their recorded outcome.
+  */
+ export type ReviewTermination =
+   | "approved"
+@@ -44,19 +44,37 @@ export type ReviewHistoryMessage = {
    readonly parts: readonly ReviewHistoryPart[]
  }
  
@@ -363,7 +376,14 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
  export type ReviewLoopState = {
    readonly verdict: ReviewVerdict
    readonly reviews: number
-@@ -36,6 +48,16 @@ export type ReviewLoopState = {
+   readonly maxIterations: number
+   readonly workSinceReview: boolean
+   readonly reviewInProgress: boolean
+-  /**
+-   * A `finish` call was already declined for the current work. A decline is not a
+-   * waiver: the flag only lets the next decline say that retrying does not skip review.
+-   */
++  /** A `finish` call was already declined with a review nudge for the current work. */
    readonly nudged: boolean
    readonly phase: ReviewPhase
    readonly termination?: ReviewTermination
@@ -380,13 +400,43 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
  }
  
  const ASSESSMENT = /(?:^|\b)(?:assessment|verdict)\s*(?:[:\-–—]\s*)?(approved|needs\s+fix(?:es)?)/gi
-@@ -140,21 +162,41 @@ function isCancelledReviewTask(part: ReviewHistoryPart) {
-   return taskTerminationReason(part) === "cancelled"
+@@ -150,23 +168,15 @@ function taskTerminationReason(part: ReviewHistoryPart) {
  }
  
--function isFileWritingTool(part: ReviewHistoryPart) {
+ /**
+- * A review task that delivered no verdict for this turn.
+- *
+  * A cancelled subagent delivered no review. The tool reports the cancellation as
+  * a completed part carrying the typed reason, so without this the evaluator
+  * counts a cancellation as a delivered review — and a few of them walk the turn
+  * to the iteration cap and disable the review gate entirely.
+- *
+- * A yielded subagent (`waiting_for_subagent`) is the same kind of non-event,
+- * for the opposite reason: it is still in flight through its own subagents, so
+- * its report is provisional and its run ending now means nothing further will
+- * be delivered for it. Counting it would let a review that keeps working after
+- * its envelope - and whose final result is then dropped - satisfy the gate.
+- *
+- * That arm is now defensive: the finish tool refuses the yield for a session
+- * that is itself a subagent, and the task envelope never carries the reason, so
+- * only a transcript written before that guard reads as yielded. It stays
+- * because the failure it prevents is silent.
++ */
++/**
++ * A review task that delivered no verdict for this turn: a cancelled subagent, or a
++ * yielded one (`waiting_for_subagent`). Neither counts toward the cap, and a yielded
++ * report is provisional, so counting it would let an unfinished review satisfy the gate.
+  */
+ function isUnreportedReviewTask(part: ReviewHistoryPart) {
+   if (!isSynchronousReviewTask(part)) return false
+@@ -175,22 +185,47 @@ function isUnreportedReviewTask(part: ReviewHistoryPart) {
+   return reason === "cancelled" || reason === "waiting_for_subagent"
+ }
+ 
+-export function hasFileWrites(part: ReviewHistoryPart) {
 -  if (part.type !== "tool" || typeof part.tool !== "string") return false
--  if (part.state?.status !== "completed") return false
+-  if (part.state?.status !== "completed" && part.state?.status !== "error" && part.state?.status !== "running")
+-    return false
 +/** The persisted `reviewLoop` declaration on a part, from either metadata slot. */
 +function reviewLoopDeclaration(part: ReviewHistoryPart) {
    const metadata = {
@@ -410,11 +460,17 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
 +  const declared = reviewLoopDeclaration(part)?.writesFiles === true
 +  if (!declared) return false
 +  if (part.type !== "tool") return true
-+  return part.state?.status === "completed"
++  // Errored and still-running tools count: their writes may already be on disk.
++  return part.state?.status === "completed" || part.state?.status === "error" || part.state?.status === "running"
  }
  
 -function isPotentiallyMutatingTool(part: ReviewHistoryPart) {
 -  if (part.type !== "tool" || typeof part.tool !== "string") return false
++/** Name kept for callers that predate the effort policy; same relation as `declaresFileWrites`. */
++export function hasFileWrites(part: ReviewHistoryPart) {
++  return declaresFileWrites(part)
++}
++
 +/**
 + * Work that invalidates a review: a completed file-writing tool, a delegated
 + * non-review child task that wrote files, or a background notification
@@ -425,12 +481,12 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
 +  if (part.type !== "tool") return declaresFileWrites(part)
 +  if (typeof part.tool !== "string") return false
    if (part.tool === "finish" || isReviewTask(part)) return false
--  return isFileWritingTool(part)
+-  return hasFileWrites(part)
 +  return declaresFileWrites(part)
  }
  
  function finishReviewMetadata(part: ReviewHistoryPart) {
-@@ -169,13 +211,29 @@ function finishReviewMetadata(part: ReviewHistoryPart) {
+@@ -205,27 +240,35 @@ function finishReviewMetadata(part: ReviewHistoryPart) {
   * truncated in the parent's history, which could cut the envelope or the
   * prose assessment while the report itself survives in metadata.
   */
@@ -446,9 +502,9 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
 +  return report
 +}
 +
-+function reviewReportVerdict(part: ReviewHistoryPart) {
-+  const report = reviewReportFromMetadata(part)
-+  return report?.assessment
++function reviewReportVerdict(part: ReviewHistoryPart): "approved" | "needs-fixes" | undefined {
++  const assessment = reviewReportFromMetadata(part)?.assessment
++  return assessment === "approved" || assessment === "needs-fixes" ? assessment : undefined
 +}
 +
 +/** Findings of the most recent completed valid review, envelope or metadata. */
@@ -462,7 +518,22 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
  }
  
  function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefined {
-@@ -189,20 +247,39 @@ function isFinishNudge(part: ReviewHistoryPart) {
+   if (part.state?.status !== "completed") return undefined
+   const termination = finishReviewMetadata(part)?.termination
+-  if (
+-    termination === "approved" ||
+-    termination === "review-cap" ||
+-    termination === "review-unavailable" ||
+-    termination === "review-blocked" ||
+-    termination === "review-pending" ||
+-    termination === "skipped"
+-  )
+-    return termination
++  if (termination === "approved" || termination === "review-cap" || termination === "skipped") return termination
+   return undefined
+ }
+ 
+@@ -233,20 +276,39 @@ function isFinishNudge(part: ReviewHistoryPart) {
    return part.state?.status === "error" && finishReviewMetadata(part)?.nudged === true
  }
  
@@ -492,9 +563,9 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
 + * count as work that requires review — direct file-writing tools and delegated
 + * child writes alike.
   *
-- * The gate is a nudge, not a hard block: a `finish` call declined for missing
-- * review is remembered as `nudged`, and the next `finish` for the same work is
-- * allowed through as an explicit skip. New file writes or a new review reset it.
+- * The gate is a requirement, not a nudge: a `finish` call declined for missing
+- * review is remembered as `nudged` only so the next decline can say that a
+- * retry does not skip review. New file writes or a new review reset it.
 + * Passing `effort` (or an options object) switches the pass budget to the
 + * two-switch policy: medium caps at two passes, fast and thorough are uncapped
 + * in this evaluator, and the configured legacy `maxIterations` no longer
@@ -511,7 +582,7 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
    const start = messages.findLastIndex((message) => messageRole(message) === "user" && !isSyntheticUser(message))
    const current = start < 0 ? messages : messages.slice(start + 1)
  
-@@ -212,6 +289,10 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+@@ -256,6 +318,10 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
    let reviewInProgress = false
    let nudged = false
    let latest: Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined
@@ -522,7 +593,21 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
    let termination: ReviewTermination | undefined
  
    for (const part of current.flatMap((message) => message.parts)) {
-@@ -231,9 +312,22 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+@@ -266,10 +332,12 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+       // already on record.
+       if (isUnreportedReviewTask(part)) continue
+ 
++      // A failed dispatch is an attempt toward the cap. It is not a verdict, so
++      // it never clears work or approves anything: the work it was meant to
++      // review stays unreviewed.
+       if (part.state?.status === "error") {
+         reviews++
+         latest = undefined
+-        workSinceReview = false
+         reviewInProgress = false
+         nudged = false
+         termination = undefined
+@@ -285,23 +353,36 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
          continue
        }
  
@@ -530,11 +615,33 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
 -      latest =
 +      const verdict =
          reviewReportVerdict(part) ?? parseReviewVerdict(typeof part.state.output === "string" ? part.state.output : "")
-+      // A completed run without a readable verdict is a delivery failure, not a
-+      // pass: malformed report attempts are never counted as completed reviews.
-+      if (!verdict) continue
-+
+-      // Marker precedence before acceptance: a review run that wrote files
+-      // hands those writes back unreviewed (`reviewLoop.writesFiles` on its
+-      // task part is the handoff marker). The delivered report stays
+-      // associated with the revision it reviewed - it still counts as the
+-      // recorded verdict and an attempt - but an Approved report cannot count
+-      // for the child's edits, so those writes stand as work since this review
+-      // and the gate stays armed until a review covers them.
++      // A completed run without a readable verdict is a malformed attempt: it counts
++      // toward the cap, but it is never a verdict and never an approval.
 +      reviews++
++      // Marker precedence before acceptance: a review run that wrote files hands
++      // those writes back unreviewed (`reviewLoop.writesFiles` on its task part).
++      // An Approved report cannot count for the child's edits, so they stand as
++      // work since this review and the gate stays armed until a review covers them.
+       const handedOffWrites = hasFileWrites(part)
+-      workSinceReview = handedOffWrites
+       if (handedOffWrites) workSeen = true
+       reviewInProgress = false
+       nudged = false
+       termination = undefined
+-      continue
++      if (!verdict) {
++        latest = undefined
++        workSinceReview = workSinceReview || handedOffWrites
++        continue
++      }
++
 +      latest = verdict
 +      lastReviewVerdict = verdict
 +      if (verdict === "approved") approvedOnRecord = true
@@ -544,10 +651,11 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
 +        (finding) => isRecord(finding) && (finding.severity === "critical" || finding.severity === "important"),
 +      ).length
 +      if (verdict === "needs-fixes" && openFindings === 0) blockingFindings = Math.max(blockingFindings, 1)
-       workSinceReview = false
-       reviewInProgress = false
-       nudged = false
-@@ -252,7 +346,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
++      workSinceReview = handedOffWrites
+     }
+ 
+     if (isFinishNudge(part)) {
+@@ -315,7 +396,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
        continue
      }
  
@@ -556,7 +664,7 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
        workSeen = true
        workSinceReview = true
        reviewInProgress = false
-@@ -282,6 +376,11 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+@@ -345,6 +426,11 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
      reviewInProgress,
      nudged,
      phase,
@@ -568,23 +676,30 @@ index ed133d7cede68e52a89bbe54728223a4e2001e78..ac5220f29a55a1c86083ffc27970e0bd
      ...(termination ? { termination } : {}),
    }
  }
-@@ -290,9 +389,11 @@ const SKIP_HINT =
-   "If you have determined that another review pass is unnecessary, call finish again to skip review and deliver the result as-is."
+@@ -354,16 +440,12 @@ const REVIEW_DISPATCH =
+   'call the `task` tool with `subagent_type: "review"` and `background: false`, and give it the request, the changed files, and the diff for this work'
  
  /**
-- * Decide whether this `finish` call should be declined with a review nudge.
-- * Only the first `finish` for a given unit of unreviewed work is declined; once
-- * the agent has been nudged it keeps the agency to finish anyway.
-+ * Legacy gate kept for old callers: only the first `finish` for a given unit of
-+ * unreviewed work is declined; once the agent has been nudged it keeps the
-+ * agency to finish anyway. The production finish path deliberately does not use
-+ * this helper — effort enforcement lives in the effort policy, where repeated
-+ * finish calls never become a generic review bypass.
+- * Decide whether this `finish` call is declined because the current work is
+- * not approved.
++ * Decide whether a `finish` call is declined because the current work is not approved.
+  *
+- * Every `finish` for unapproved file-writing work is declined, not only the
+- * first one: a retry, or any account of the work in the finish result, cannot
+- * stand in for a review. The requirement ends only on the evaluator's own
+- * outcomes - an explicit approval, a turn without file writes, or the review
+- * cap. A depth-limited child can deliver a typed unreviewed handoff to its
+- * parent, which must review its projected writes. An unavailable reviewer
+- * blocks success and may only be reported as a declared failure.
++ * Every `finish` for unapproved file-writing work is declined, not only the first one: a
++ * retry, or any account of the work in the finish result, cannot stand in for a review.
++ * This helper is the strict legacy relation; the effort policy (`EffortPolicy.evaluateFinish`)
++ * is the production checkpoint and owns the fast/medium/thorough differences.
   */
  export function finishGateError(state: ReviewLoopState): Error | undefined {
-   if (state.nudged) return undefined
+   if (state.verdict !== "pending" && state.verdict !== "needs-fixes") return undefined
 diff --git a/packages/core/src/v1/config/config.ts b/packages/core/src/v1/config/config.ts
-index c949447e80776c8ef4b86fcf99e5e21517f5906b..de9a02b6c37c3e3462ae38b8418896fbab2caa04 100644
+index 362c7480fe..20de6594ad 100644
 --- a/packages/core/src/v1/config/config.ts
 +++ b/packages/core/src/v1/config/config.ts
 @@ -1,6 +1,7 @@
@@ -595,18 +710,17 @@ index c949447e80776c8ef4b86fcf99e5e21517f5906b..de9a02b6c37c3e3462ae38b8418896fb
  import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema"
  import { ConfigExperimental } from "../../config/experimental"
  import { ConfigReference } from "../../config/reference"
-@@ -119,10 +120,23 @@ export const Info = Schema.Struct({
+@@ -125,10 +126,23 @@ export const Info = Schema.Struct({
          title: Schema.optional(ConfigAgentV1.Info),
          summary: Schema.optional(ConfigAgentV1.Info),
          compaction: Schema.optional(ConfigAgentV1.Info),
--      }),
--      [Schema.Record(Schema.String, ConfigAgentV1.Info)],
 +        // The reserved effort policy: a scalar level, or — for legacy
 +        // compatibility — a named agent literally called `effort` defined as an
 +        // object. The two are distinguished by shape at every consumer; the
 +        // scalar form is never enumerated as a named agent.
 +        effort: Schema.optional(Schema.Union([AgentEffort.Level, ConfigAgentV1.Info])),
-+      }),
+       }),
+-      [Schema.Record(Schema.String, ConfigAgentV1.Info)],
 +      // StructWithRest intersects declared properties with the rest record for
 +      // every key, so the rest value type must admit the scalar effort policy
 +      // as well. Declared agent keys still require ConfigAgentV1.Info via their
@@ -623,7 +737,7 @@ index c949447e80776c8ef4b86fcf99e5e21517f5906b..de9a02b6c37c3e3462ae38b8418896fb
      description: "Custom provider configurations and model overrides",
    }),
 diff --git a/packages/core/src/v1/config/migrate.ts b/packages/core/src/v1/config/migrate.ts
-index ebe1b905ff87d703b63559008fc1abfa18b88ad0..b7425ba81114dbb8eaf630de1b9645c018a00382 100644
+index fbd2ecdb1d..11a5107305 100644
 --- a/packages/core/src/v1/config/migrate.ts
 +++ b/packages/core/src/v1/config/migrate.ts
 @@ -19,7 +19,6 @@ const keys = new Set([
@@ -634,7 +748,7 @@ index ebe1b905ff87d703b63559008fc1abfa18b88ad0..b7425ba81114dbb8eaf630de1b9645c0
    "provider",
    "permission",
    "tools",
-@@ -29,21 +28,45 @@ const keys = new Set([
+@@ -29,21 +28,46 @@ const keys = new Set([
  
  export function isV1(input: unknown) {
    if (typeof input !== "object" || input === null || Array.isArray(input)) return false
@@ -665,8 +779,9 @@ index ebe1b905ff87d703b63559008fc1abfa18b88ad0..b7425ba81114dbb8eaf630de1b9645c0
 +export function migrate(info: typeof ConfigV1.Info.Type, native?: unknown) {
 +  const raw: Record<string, unknown> =
 +    typeof native === "object" && native !== null && !Array.isArray(native) ? (native as Record<string, unknown>) : {}
-+  const nativeAgents = typeof raw.agents === "object" && raw.agents !== null ? raw.agents : undefined
-+  const nativeProviders = typeof raw.providers === "object" && raw.providers !== null ? raw.providers : undefined
++  const nativeAgents = typeof raw.agents === "object" && raw.agents !== null ? (raw.agents as Record<string, unknown>) : undefined
++  const nativeProviders =
++    typeof raw.providers === "object" && raw.providers !== null ? (raw.providers as Record<string, unknown>) : undefined
    return {
      $schema: info.$schema,
      shell: info.shell,
@@ -683,7 +798,7 @@ index ebe1b905ff87d703b63559008fc1abfa18b88ad0..b7425ba81114dbb8eaf630de1b9645c0
      snapshots: info.snapshot,
      watcher: info.watcher,
      formatter: info.formatter,
-@@ -67,7 +90,7 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
+@@ -67,7 +91,7 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
        typeof plugin === "string" ? plugin : { package: plugin[0], options: plugin[1] },
      ),
      experimental: info.experimental?.policies && { policies: info.experimental.policies },
@@ -692,7 +807,7 @@ index ebe1b905ff87d703b63559008fc1abfa18b88ad0..b7425ba81114dbb8eaf630de1b9645c0
    }
  }
  
-@@ -100,7 +123,32 @@ function agents(info: typeof ConfigV1.Info.Type) {
+@@ -100,7 +124,35 @@ function agents(info: typeof ConfigV1.Info.Type) {
      ...Object.entries(info.mode ?? {}).map(([name, agent]) => [name, { ...agent, mode: "primary" as const }] as const),
    ]
    if (!entries.length) return undefined
@@ -720,18 +835,21 @@ index ebe1b905ff87d703b63559008fc1abfa18b88ad0..b7425ba81114dbb8eaf630de1b9645c0
 +}
 +
 +/** Carry native v2 entries across migration with precedence over same-named legacy entries. */
-+function withNative(legacy: Readonly<Record<string, unknown>> | undefined, native: object | undefined) {
++function withNative<T extends Readonly<Record<string, unknown>>>(
++  legacy: T | undefined,
++  native: Record<string, unknown> | undefined,
++): T | undefined {
 +  if (!native) return legacy
-+  return { ...(legacy ?? {}), ...(native as Record<string, unknown>) }
++  return { ...(legacy ?? {}), ...native } as T
  }
  
  export function migrateAgent(info: ConfigAgentV1.Info) {
 diff --git a/packages/core/test/agent-effort.test.ts b/packages/core/test/agent-effort.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..84206a773bb6d4499ea3dae4dd1989f7dce35583
+index 0000000000..5ecdf842d3
 --- /dev/null
 +++ b/packages/core/test/agent-effort.test.ts
-@@ -0,0 +1,919 @@
+@@ -0,0 +1,933 @@
 +import path from "path"
 +import fs from "fs/promises"
 +import { describe, expect } from "bun:test"
@@ -931,13 +1049,24 @@ index 0000000000000000000000000000000000000000..84206a773bb6d4499ea3dae4dd1989f7
 +    }),
 +  )
 +
-+  it.effect("medium delivers as review-unavailable when the reviewer cannot run", () =>
++  it.effect("medium blocks a successful finish when the reviewer cannot run (#233)", () =>
 +    Effect.sync(() => {
 +      const outcome = evaluate("medium", workState(), false)
-+      expect(outcome.deliver).toBe(true)
-+      expect(outcome.termination).toBe("review-unavailable")
++      expect(outcome.deliver).toBe(false)
++      expect(outcome.termination).toBe("unreviewed")
 +      expect(outcome.disposition).toBe("unreviewed")
++      expect(outcome.feedback).toContain("Review blocked")
 +      expect(outcome.unavailableReason).toBeTruthy()
++
++      const declared = EffortPolicy.evaluateFinish({
++        effort: "medium",
++        reason: "failure",
++        state: workState(),
++        reviewerAvailable: false,
++      })
++      expect(declared.deliver).toBe(true)
++      expect(declared.termination).toBe("review-blocked")
++      expect(declared.unavailableReason).toBeTruthy()
 +    }),
 +  )
 +
@@ -1094,13 +1223,13 @@ index 0000000000000000000000000000000000000000..84206a773bb6d4499ea3dae4dd1989f7
 +    }),
 +  )
 +
-+  it.effect("thorough delivers honestly when the reviewer is unavailable, never as approval", () =>
++  it.effect("thorough blocks success when the reviewer is unavailable, never as approval", () =>
 +    Effect.sync(() => {
 +      const outcome = evaluate("thorough", workState(), false)
-+      expect(outcome.deliver).toBe(true)
-+      expect(outcome.termination).toBe("review-unavailable")
++      expect(outcome.deliver).toBe(false)
 +      expect(outcome.disposition).toBe("unreviewed")
 +      expect(outcome.maxIterations).toBeUndefined()
++      expect(outcome.feedback).toContain("Review blocked")
 +    }),
 +  )
 +
@@ -1130,8 +1259,9 @@ index 0000000000000000000000000000000000000000..84206a773bb6d4499ea3dae4dd1989f7
 +        state: workState(),
 +        reviewerAvailable: true,
 +      })
-+      expect(failed.deliver).toBe(true)
-+      expect(failed.termination).toBe("unreviewed")
++      // #233: a declared failure is still reviewed when a reviewer can run.
++      expect(failed.deliver).toBe(false)
++      expect(failed.feedback).toContain("requires at least one independent review")
 +
 +      const waiting = EffortPolicy.evaluateFinish({
 +        effort: "medium",
@@ -1363,7 +1493,9 @@ index 0000000000000000000000000000000000000000..84206a773bb6d4499ea3dae4dd1989f7
 +        ],
 +        { effort: "medium" },
 +      )
-+      expect(malformed.reviews).toBe(0)
++      expect(malformed.reviews).toBe(1)
++      expect(malformed.lastReviewVerdict).toBeUndefined()
++      expect(malformed.verdict).not.toBe("approved")
 +    }),
 +  )
 +
@@ -1652,7 +1784,7 @@ index 0000000000000000000000000000000000000000..84206a773bb6d4499ea3dae4dd1989f7
 +  )
 +})
 diff --git a/packages/opencode/src/agent/agent.ts b/packages/opencode/src/agent/agent.ts
-index e6d7bbfda36f235493ce9c2a8842e14021fb3ef5..bf787e3a3fc3a07eed3d75510c401214e13755bb 100644
+index e6d7bbfda3..bf787e3a3f 100644
 --- a/packages/opencode/src/agent/agent.ts
 +++ b/packages/opencode/src/agent/agent.ts
 @@ -357,6 +357,10 @@ const layer = Layer.effect(
@@ -1667,19 +1799,19 @@ index e6d7bbfda36f235493ce9c2a8842e14021fb3ef5..bf787e3a3fc3a07eed3d75510c401214
            // renamed `work` agent. Unlike lookups (which prefer a real `build`
            // agent when one already exists), this config key is always treated
 diff --git a/packages/opencode/src/permission/index.ts b/packages/opencode/src/permission/index.ts
-index 2e27ff2424dbb000ea9ed7f73471769716ba40a1..433397ef960b0234f131f3bbdcabced16f9f7cfc 100644
+index 722578b6d3..2dec028c50 100644
 --- a/packages/opencode/src/permission/index.ts
 +++ b/packages/opencode/src/permission/index.ts
-@@ -9,10 +9,17 @@ import { EventV2Bridge } from "@/event-v2-bridge"
- 
- export const Event = PermissionV1.Event
- 
+@@ -13,11 +13,17 @@ export const Event = PermissionV1.Event
+ // Deliberately generous: long enough for a human watching the TUI to answer,
+ // short enough that an unattended run does not hang on a prompt nobody sees.
+ const DEFAULT_TIMEOUT_SECONDS = 45
 +export interface DeniesInput {
 +  readonly permission: string
 +  readonly patterns: readonly string[]
 +  readonly ruleset: PermissionV1.Ruleset
 +}
-+
+ 
  export interface Interface {
    readonly ask: (input: PermissionV1.AskInput) => Effect.Effect<void, PermissionV1.Error>
    readonly reply: (input: PermissionV1.ReplyInput) => Effect.Effect<void, PermissionV1.NotFoundError>
@@ -1687,8 +1819,8 @@ index 2e27ff2424dbb000ea9ed7f73471769716ba40a1..433397ef960b0234f131f3bbdcabced1
 +  readonly denies: (input: DeniesInput) => Effect.Effect<boolean>
  }
  
- interface PendingEntry {
-@@ -37,6 +44,22 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
+ // Outcomes a registered request can settle with. `DeniedError` is absent because a
+@@ -46,6 +52,22 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
    )
  }
  
@@ -1711,7 +1843,7 @@ index 2e27ff2424dbb000ea9ed7f73471769716ba40a1..433397ef960b0234f131f3bbdcabced1
  export class Service extends Context.Service<Service, Interface>()("@opencode/Permission") {}
  
  const layer = Layer.effect(
-@@ -69,9 +92,12 @@ const layer = Layer.effect(
+@@ -79,9 +101,12 @@ const layer = Layer.effect(
        const { ruleset, ...request } = input
        let needsAsk = false
  
@@ -1727,7 +1859,7 @@ index 2e27ff2424dbb000ea9ed7f73471769716ba40a1..433397ef960b0234f131f3bbdcabced1
          if (rule.action === "deny") {
            return yield* new PermissionV1.DeniedError({
              ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
-@@ -171,7 +197,18 @@ const layer = Layer.effect(
+@@ -229,7 +254,18 @@ const layer = Layer.effect(
        return Array.from(pending.values(), (item) => item.info)
      })
  
@@ -1748,7 +1880,7 @@ index 2e27ff2424dbb000ea9ed7f73471769716ba40a1..433397ef960b0234f131f3bbdcabced1
  )
  
 diff --git a/packages/opencode/src/session/prompt.ts b/packages/opencode/src/session/prompt.ts
-index 468dda6957dd337db7fb3f253a098c7d4bf9819a..7b468194010918ff7f644e69bb69e75d6c7c99dd 100644
+index 468dda6957..7b46819401 100644
 --- a/packages/opencode/src/session/prompt.ts
 +++ b/packages/opencode/src/session/prompt.ts
 @@ -6,7 +6,7 @@ import os from "os"
@@ -1817,31 +1949,38 @@ index 468dda6957dd337db7fb3f253a098c7d4bf9819a..7b468194010918ff7f644e69bb69e75d
              const format = lastUser.format ?? { type: "text" as const }
              if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
 diff --git a/packages/opencode/src/session/prompt/finish-nudge.txt b/packages/opencode/src/session/prompt/finish-nudge.txt
-index f7d54938092f5d35de07cf5994c7883431db0e94..05261b755b705b84904ce53b68e537e23c52da4b 100644
+index 0dca468fb3..4721b55642 100644
 --- a/packages/opencode/src/session/prompt/finish-nudge.txt
 +++ b/packages/opencode/src/session/prompt/finish-nudge.txt
 @@ -1,7 +1,7 @@
  [WARNING] The turn ended without a successful finish call.
  
--Call `finish` to complete the turn. If the current work changed files, it is strongly recommended to first run a synchronous `review` task with `subagent_type: "review"` and `background: false`; the runtime resolves that to the reviewer matching your runtime (`work-review` under Work, `code-review` under Code), so you never name a specialized reviewer yourself. If the latest review returned `Needs fixes`, fix the findings and review those fixes again; the previous review no longer applies.
+-Call `finish` to complete the turn. If the current work changed files, `finish` requires an explicit Approved review from the Review subagent first: run it with the `task` tool, `subagent_type: "review"` and `background: false`; the runtime resolves that to the reviewer matching your runtime (`work-review` under Work, `code-review` under Code), so you never name a specialized reviewer yourself. If the latest review returned `Needs fixes`, fix the findings and run the Review subagent again; the previous review no longer applies.
 +Call `finish` to complete the turn. If the current work changed files and your effort policy requires an independent review (medium and thorough; fast does not), first run a synchronous `review` task with `subagent_type: "review"` and `background: false`; the runtime resolves that to the reviewer matching your runtime (`work-review` under Work, `code-review` under Code), so you never name a specialized reviewer yourself. If the latest review returned `Needs fixes`, fix the findings and review those fixes again; the previous review no longer applies.
  
--After an explicit approval, call `finish` exactly once with a concise result. If your previous `finish` call was declined with a review nudge and you have determined that another review pass is unnecessary, call `finish` again to explicitly skip review and deliver the result; say so in the result. If the review cap is reached, report `review-cap` rather than claiming approval.
-+After a review approves the current work, call `finish` exactly once with a concise result. If your previous `finish` call was declined with a review requirement, repeating `finish` does not skip it — the effort policy is re-evaluated from the same review state. Run the required review, or let `finish` deliver with its honest status when the reviewer is genuinely unavailable or the pass budget is exhausted; never claim approval yourself.
+-After an explicit approval, call `finish` exactly once with a concise result. A `finish` call declined for a missing review is not a waiver: calling `finish` again without running the Review subagent is declined again, whatever the result says about the work. If the review cap is reached, report `review-cap` rather than claiming approval.
++After an explicit Approved review from the Review subagent covers the current work, call `finish` exactly once with a concise result. If your previous `finish` call was declined with a review requirement, repeating `finish` does not skip it (calling `finish` again without running the Review subagent is declined again; when the medium pass budget is exhausted the result is delivered as `budget-exhausted`) — the effort policy is re-evaluated from the same review state. Run the required review, or let `finish` deliver with its honest status when the reviewer is genuinely unavailable or the pass budget is exhausted; never claim approval yourself.
  
  (This is an automated reminder. Do not answer it conversationally.)
 diff --git a/packages/opencode/src/session/prompt/review-loop.txt b/packages/opencode/src/session/prompt/review-loop.txt
-index b4125a53ccb953392e6a96ac96d3d789022e2205..192fc752106e095ef8a1ca5e5abe2dce2d12f8f1 100644
+index f548c58fc6..d904aae896 100644
 --- a/packages/opencode/src/session/prompt/review-loop.txt
 +++ b/packages/opencode/src/session/prompt/review-loop.txt
-@@ -20,19 +20,19 @@ For a unit of work that changed files, the recommended next step is review, not
+@@ -16,23 +16,25 @@
+ 
+ ## Review Loop
+ 
+-For a unit of work that changed files, the required next step is review, not completion. Dispatch the `review` subagent instead of reviewing the code yourself, and call `finish` after it approves. Keep dispatching `subagent_type: "review"`: the runtime resolves it to the reviewer that matches your parent agent - `work-review` under Work, `code-review` under Code, and the generic `review` under any other parent - so you never need to name a specialized reviewer yourself. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task does not count as a review. Your own tests and diff review do not replace the independent review.
++For a unit of work that changed files at medium or thorough effort, the required next step is review, not completion. At medium and thorough effort, Review is required before finishing file-writing work. Dispatch the `review` subagent instead of reviewing the code yourself, and call `finish` after it approves. Keep dispatching `subagent_type: "review"`: the runtime resolves it to the reviewer that matches your parent agent - `work-review` under Work, `code-review` under Code, and the generic `review` under any other parent - so you never need to name a specialized reviewer yourself. Run the review synchronously with `subagent_type: "review"` and `background: false`; a background task does not count as a review. Your own tests and diff review do not replace the independent review.
  
  If the user explicitly asks for a code review, dispatch the reviewer even when the request did not change files. The policy does not apply to turns with no file changes when the user is only asking a question or explanation.
  
--Review is guidance, not an enforcement gate. The `finish` tool evaluates the persisted history for the current user turn: when file-writing work has no completed synchronous review with an explicit `Approved` assessment, the first `finish` call is declined with a review nudge. You retain the agency to decide: either follow the nudge and dispatch the reviewer, or call `finish` again to explicitly skip review and deliver the result. The second call succeeds and records the completion as `skipped`. Any new file-writing tool call after a skip starts a fresh nudge. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count as approval.
-+Review requirements follow the effort policy (fast/medium/thorough) injected with your instructions, and `finish` is the only enforcement checkpoint. `finish` evaluates the persisted history for the current user turn and, when the effective level requires an independent review that has not happened, the call is declined with recoverable feedback. Repeated `finish` calls never waive a required review: the decision depends only on the review state, not on how often you call it. At `fast`, no review is required and delivery is labelled unreviewed unless an independent review actually happened. At `medium`, deliver after at least one clean synchronous review; only blocking findings (Critical/Important, or a Needs-fixes report with no findings) or work landed after the last review force another pass, bounded by two passes, after which `finish` delivers with an honest exhausted/open-findings status instead of looping. At `thorough`, `finish` keeps declining until a clean current review exists, or delivers as `review-unavailable` when the reviewer genuinely cannot run — never as approval. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count as approval.
+-Review is required before finishing file-writing work. The `finish` tool evaluates the persisted history for the current user turn: when file-writing work has no completed synchronous review with an explicit `Approved` assessment, every `finish` call is declined until the Review subagent approves the current work. A declined `finish` is not a waiver: retrying it is declined again, and no account of the work - creative, a prototype, trivial, not production code, already tested - exempts it. Any new file-writing tool call after an approval needs a new review. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count as approval.
++Review requirements follow the effort policy (fast/medium/thorough) injected with your instructions, and `finish` is the only enforcement checkpoint. `finish` evaluates the persisted history for the current user turn and, when the effective level requires an independent review that has not happened, the call is declined with recoverable feedback. Repeated `finish` calls never waive a required review: the decision depends only on the review state, not on how often you call it. At `fast`, no review is required and delivery is labelled unreviewed unless an independent review actually happened. At `medium`, deliver after at least one clean synchronous review; only blocking findings (Critical/Important, or a Needs-fixes report with no findings) or work landed after the last review force another pass, bounded by two passes, after which `finish` delivers with an honest exhausted/open-findings status instead of looping. At `thorough`, `finish` keeps declining until a clean current review exists, or is blocked as `review-blocked` when the reviewer genuinely cannot run — never as approval. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count as approval.
  
--Skip review only when you have determined that another review pass is unnecessary, for example a trivial change the user asked for directly, or a follow-up fix that was already covered by a previous review. When you skip, say so plainly in your result instead of implying the work was approved.
+-The runtime can stop at the configured review-attempt cap with `review-cap`, including errored synchronous review attempts. This is not approval. A writing child at the depth limit hands its files back with `review-pending`, explicitly UNREVIEWED: the parent must review those changes before reporting success. A missing, disabled, denied or hidden reviewer blocks success; report failure honestly with `review-blocked` instead. A per-message hidden task tool is not an exemption. None of these outcomes means the work was approved.
++A declined `finish` is not a waiver: retrying it is declined again. A review requirement ends without approval only as `review-pending` (a child's unreviewed handoff), `review-blocked` (a declared dispatch failure), or the pass budget's honest status. None of these outcomes means the work was approved.
++
 +When no review is required, or a review genuinely cannot run, say so plainly in your result instead of implying the work was approved: an unreviewed, exhausted, or unavailable-review delivery is an honest status, not an approval.
  
  ### Review and fix cycle
@@ -1849,17 +1988,18 @@ index b4125a53ccb953392e6a96ac96d3d789022e2205..192fc752106e095ef8a1ca5e5abe2dce
  1. Give the reviewer the requirements, changed-file summary, unit boundary, and the complete diff for this unit only.
  2. Read the final assessment. `Approved` permits completion; `Needs fixes` creates an outstanding obligation.
  3. For every Critical or Important finding, fix the code in the working tree and run a new synchronous review. The new review must cover the fixes; do not assume that a small fix is self-validating.
--4. After every Work pass made in response to findings, return to Review. Do not use `WORK → FINISH` after `Needs fixes` unless you have deliberately decided to skip and you report the outstanding findings.
+-4. After every Work pass made in response to findings, return to Review. Do not use `WORK → FINISH` after `Needs fixes`: `finish` is declined until a later review approves the fixes.
+-5. Do not call `finish` until a later review explicitly approves the current work. Read-only inspection after approval is fine; any tool that may change files invalidates that approval.
 +4. After every Work pass made in response to findings, return to Review. Calling `finish` while findings or stale work remain is delivered only within the effort policy's pass budget, and then with an honest findings-open/exhausted status — it never converts open findings into approval.
- 5. Prefer not to call `finish` until a later review explicitly approves the current work. Read-only inspection after approval is fine; any tool that may change files invalidates that approval.
++5. Prefer not to call `finish` until a later review explicitly approves the current work. Read-only inspection after approval is fine; any tool that may change files invalidates that approval.
  
--The configured `review_loop.max_iterations` value counts completed review passes across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
-+The effort policy owns the pass budget: `fast` requires none, `medium` allows at most two completed review passes, and `thorough` is until-clean with no finite cap. The legacy configured `review_loop.max_iterations` value is still readable by older tooling but does not override these semantics. When a level's budget is exhausted, the result is delivered with an honest `budget-exhausted` or `findings-open` status — never as approved.
+-The configured `review_loop.max_iterations` value counts synchronous review attempts, including errored attempts, across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
++The effort policy owns the pass budget: `fast` requires none, `medium` allows at most two completed review passes, and `thorough` is until-clean with no finite cap. The legacy configured `review_loop.max_iterations` value is not read by the effort policy: medium's budget is always two passes. When a level's budget is exhausted, the result is delivered with an honest `budget-exhausted` or `findings-open` status — never as approved.
  
  ### Review result delivery
  
 diff --git a/packages/opencode/src/session/review-loop.ts b/packages/opencode/src/session/review-loop.ts
-index 1659d76c8730ce74f5fd9cce7177765445c05a8c..ab0a403340824f9449a23162b8d03643879f7328 100644
+index 1659d76c87..ab0a403340 100644
 --- a/packages/opencode/src/session/review-loop.ts
 +++ b/packages/opencode/src/session/review-loop.ts
 @@ -1,16 +1,26 @@
@@ -1894,7 +2034,7 @@ index 1659d76c8730ce74f5fd9cce7177765445c05a8c..ab0a403340824f9449a23162b8d03643
 +  return evaluateReviewLoop(messages as readonly ReviewHistoryMessage[], options)
  }
 diff --git a/packages/opencode/src/session/session.ts b/packages/opencode/src/session/session.ts
-index ec29e58ca4aaf5f05aff05861485e3c5dc7d5c69..65554a7a30bb29b7b5020bd2d3601943c8c5de3d 100644
+index 9160e4fcb8..677d9bdb4d 100644
 --- a/packages/opencode/src/session/session.ts
 +++ b/packages/opencode/src/session/session.ts
 @@ -44,6 +44,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -1933,10 +2073,11 @@ index ec29e58ca4aaf5f05aff05861485e3c5dc7d5c69..65554a7a30bb29b7b5020bd2d3601943
    id: SessionID,
    slug: Schema.String,
 diff --git a/packages/opencode/src/tool/finish.ts b/packages/opencode/src/tool/finish.ts
-index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b8bd1b16a 100644
+index 5d7ca9c6fc..2e79a66108 100644
 --- a/packages/opencode/src/tool/finish.ts
 +++ b/packages/opencode/src/tool/finish.ts
-@@ -1,14 +1,18 @@
+@@ -1,18 +1,19 @@
+-import { sessionAgent } from "../session/session-agent"
  import * as Tool from "./tool"
  import { ToolFailure } from "@opencode-ai/llm"
  import { ReviewReport } from "@opencode-ai/core/review-report"
@@ -1949,65 +2090,128 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +import { Session, readAgentEffort } from "../session/session"
  import { SessionV1 } from "@opencode-ai/core/v1/session"
  import { Config } from "@/config/config"
--import { finishGateError, reviewLoopState } from "../session/review-loop"
--import { isReviewAgent } from "../agent/review-agents"
 +import { reviewLoopState } from "../session/review-loop"
-+import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
+ import { BackgroundJob } from "@/background/job"
+-import { Permission } from "@/permission"
+-import { Agent } from "../agent/agent"
+-import { finishGateError, reviewLoopState, type ReviewTermination } from "../session/review-loop"
+ import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
 +import { Agent } from "../agent/agent"
 +import { Permission } from "@/permission"
  
- const DeclaredReasons = ["success", "subagent_wait", "failure"] as const
+ const DeclaredReasons = ["success", "waiting_for_subagent", "subagent_wait", "failure"] as const
  
-@@ -29,6 +33,24 @@ export const TerminationReason = Schema.Literals([...DeclaredReasons, "cancelled
- 
- export type TerminationReason = Schema.Schema.Type<typeof TerminationReason>
- 
-+export const ValidationChecks = Schema.Array(
-+  Schema.Struct({
-+    category: Schema.Literals(["syntax", "smoke", "tests", "typecheck", "parity"]).annotate({
-+      description: "Which validation category this check reports on.",
-+    }),
-+    status: Schema.Literals(["passed", "failed", "not-run", "not-applicable"]).annotate({
-+      description:
-+        "The declared outcome: passed, failed, not-run (the check did not run), or not-applicable (the check does not apply here).",
-+    }),
-+    detail: Schema.String.annotate({
-+      description: "A short explanation of what ran (or why it did not), for the transcript and metadata.",
-+    }),
-+  }),
-+).annotate({
-+  description:
-+    "Agent-reported validation evidence. These checks are never executed or verified by finish; they are recorded as declared evidence only.",
-+})
-+
- export const Parameters = Schema.Struct({
-   reason: Reason.annotate({
-     description:
-@@ -38,6 +60,14 @@ export const Parameters = Schema.Struct({
+@@ -48,6 +49,20 @@ export const Parameters = Schema.Struct({
      description:
        "The final result of the task: a concise summary of what was accomplished, presented to the user as the task outcome.",
    }),
 +  validation: Schema.optional(
 +    Schema.Struct({
-+      checks: ValidationChecks,
-+    }).annotate({
-+      description:
-+        "Optional declaration of validation evidence for this result (agent-reported, not executed by finish).",
++      checks: Schema.Array(
++        Schema.Struct({
++          category: Schema.Literals(["syntax", "smoke", "tests", "typecheck", "parity"]),
++          status: Schema.Literals(["passed", "failed", "not-run", "not-applicable"]),
++          detail: Schema.String,
++        }),
++      ),
 +    }),
-+  ),
++  ).annotate({
++    description:
++      "Optional agent-reported validation evidence: one entry per check. finish records it and never executes checks itself.",
++  }),
  })
  
  /**
-@@ -70,6 +100,8 @@ export const FinishTool = Tool.define(
-     const todo = yield* Todo.Service
-     const sessions = yield* Session.Service
+@@ -107,86 +122,12 @@ export const FinishTool = Tool.define(
      const config = yield* Config.Service
-+    const agents = yield* Agent.Service
+     const background = yield* BackgroundJob.Service
+     const agents = yield* Agent.Service
+-
+-    /**
+-     * Why this session cannot dispatch the Review subagent, when it cannot.
+-     *
+-     * This is dispatch evidence, not a waiver of the review requirement, and it is read from
+-     * the facts the task tool refuses a `review` dispatch on - never from the
+-     * finish result or anything else the model says about the work:
+-     *
+-     * - `subagent-depth`: the session sits at the configured subagent depth,
+-     *   so the task tool refuses any delegation from it. Under the default
+-     *   `subagent_depth` of 1 that is every task child.
+-     * - `task-hidden`: the newest user message hides the `task` tool for this
+-     *   turn. That is a per-message decision, so it blocks a dispatch the
+-     *   session's own ruleset would otherwise allow.
+-     * - `reviewer-missing`: the reviewer a `review` request routes to is not a
+-     *   delegable agent here (disabled, or reconfigured as a primary agent).
+-     * - `permission-denied`: the session's effective ruleset denies `task` for
+-     *   that reviewer. A child whose agent declares no task rule gets a
+-     *   blanket deny that also hides the task tool from it.
+-     *
+-     * The checks mirror the task tool's own, in its order; keep them in step.
+-     */
+-    const reviewUnavailable = Effect.fn("FinishTool.reviewUnavailable")(function* (
+-      ctx: Tool.Context,
+-      subagentDepth: number,
+-    ) {
+-      const session = yield* sessions.get(ctx.sessionID)
+-      let current = session
+-      let depth = 0
+-      while (current.parentID) {
+-        depth++
+-        current = yield* sessions.get(current.parentID)
+-      }
+-      if (depth >= subagentDepth) return "subagent-depth" as const
+-      const latestUser = (yield* sessions.messages({ sessionID: session.id })).findLast(
+-        (message) => message.info.role === "user",
+-      )
+-      if (latestUser?.info.role === "user" && latestUser.info.tools?.task === false) return "task-hidden" as const
+-      // The task tool routes by the pinned session agent and falls back to the
+-      // newest user message's agent, which is the agent running this turn.
+-      const reviewer = resolveReviewer("review", yield* sessionAgent(sessions, session))
+-      const target = yield* agents.get(reviewer)
+-      if (!target || target.mode === "primary") return "reviewer-missing" as const
+-      const running = yield* agents.get(ctx.agent)
+-      const ruleset = Permission.merge(running?.permission ?? [], session.permission ?? [])
+-      // A blanket deny hides the task tool from the model; an explicit agent
+-      // invocation skips the permission prompt, but not that visibility filter.
+-      if (Permission.disabled(["task"], ruleset).has("task")) return "permission-denied" as const
+-      if (ctx.extra?.bypassAgentCheck) return undefined
+-      const patterns = reviewer === "review" ? ["review"] : ["review", reviewer]
+-      if (patterns.some((pattern) => Permission.evaluate("task", pattern, ruleset).action === "deny"))
+-        return "permission-denied" as const
+-      return undefined
+-    })
 +    const permission = yield* Permission.Service
  
      return {
        description: DESCRIPTION,
-@@ -84,7 +116,9 @@ export const FinishTool = Tool.define(
+       parameters: Parameters,
+-      // A yield and a terminal result are two success shapes. Naming the fields
+-      // the tool can return keeps `metadata` checked for consumers instead of
+-      // widening it to the index signature, while still letting inference see a
+-      // single contract rather than collapsing both branches into one shape
+-      // whose every field is optional.
+-      execute: (
+-        params: Schema.Schema.Type<typeof Parameters>,
+-        ctx: Tool.Context,
+-      ): Effect.Effect<
+-        Tool.ExecuteResult<{
+-          waiting?: boolean
+-          termination?: { reason: Reason }
+-          review?: {
+-            verdict: string
+-            reviews: number
+-            maxIterations: number
+-            termination: ReviewTermination
+-            unavailable?: ReviewUnavailable
+-          }
+-        }>,
+-        ToolFailure
+-      > =>
++      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+         Effect.gen(function* () {
+           yield* ctx.waitForOtherTools ?? Effect.void
+           const messages = yield* sessions
+@@ -196,7 +137,9 @@ export const FinishTool = Tool.define(
            // tool, so the structured review result is gated here, at the
            // control-flow boundary: without a parseable report envelope the
            // call fails as recoverable model feedback and the run continues
@@ -2018,22 +2222,60 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
            if (isReviewAgent(ctx.agent)) {
              const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
              const delivery = ReviewReport.extract([
-@@ -107,58 +141,151 @@ export const FinishTool = Tool.define(
+@@ -219,6 +162,7 @@ export const FinishTool = Tool.define(
                )
              }
            }
 +
+           // Yielding for background work is not a termination. The turn ends so
+           // the model stops polling for the subagents it launched, but the
+           // session is woken by their notification, so a wait must leave
+@@ -290,89 +234,166 @@ export const FinishTool = Tool.define(
+           }
+ 
            const cfg = yield* config.get()
 -          const maxIterations = cfg.review_loop?.max_iterations ?? 5
 -          const reviewState = reviewLoopState(messages, maxIterations)
 -          const gateError = finishGateError(reviewState)
--          if (gateError) {
+-          // Only consulted when the gate would decline, so an approved or
+-          // read-only turn never pays for the session walk.
+-          const unavailable = gateError
+-            ? yield* reviewUnavailable(ctx, cfg.subagent_depth ?? 1).pipe(
+-                Effect.mapError((error) => new ToolFailure({ message: error.message })),
+-              )
+-            : undefined
+-          // A handoff needs a parent to hand to, so it is only ever a child's
+-          // ending. The read is mapped to a ToolFailure like every other session
+-          // read in this tool: a raw NotFoundError would escape the tool's error
+-          // contract and reach the model with no actionable message.
+-          const handoff =
+-            gateError !== undefined &&
+-            unavailable === "subagent-depth" &&
+-            (yield* sessions
+-              .get(ctx.sessionID)
+-              .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))).parentID !== undefined
+-          const blockedFailure =
+-            gateError !== undefined && unavailable !== undefined && !handoff && params.reason === "failure"
+-          if (gateError && !handoff && !blockedFailure) {
 -            const phase = reviewState.workSinceReview
 -              ? "work"
 -              : reviewState.verdict === "needs-fixes"
 -                ? "work"
 -                : "review"
--            yield* Effect.logWarning("finish declined with review nudge", {
+-            yield* Effect.logWarning(
+-              reviewState.nudged ? "finish retried without review, declined again" : "finish declined: review required",
+-              {
+-                sessionID: ctx.sessionID,
+-                verdict: reviewState.verdict,
+-                phase,
+-                reviews: reviewState.reviews,
+-                maxIterations: reviewState.maxIterations,
+-                workSinceReview: reviewState.workSinceReview,
+-              },
+-            )
+-            // Persist the decline on the failed part. It is not a waiver: the
+-            // next finish for the same work is declined again, and the record
+-            // only lets that decline say that retrying does not skip review.
 +          const session = yield* sessions.get(ctx.sessionID).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
 +          // Effective level: session-persisted selection, then configured
 +          // default, then medium. The model never supplies a level here —
@@ -2054,7 +2296,7 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +              : yield* Effect.gen(function* () {
 +                  if (!session)
 +                    return {
-+                      available: false as const,
++                      available: false as const, code: "session-unreadable" as const,
 +                      reason: "the session could not be read to verify reviewer dispatch context",
 +                    }
 +                  // Same routing tier as task(): the pinned session agent,
@@ -2073,12 +2315,12 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +                  const reviewer = yield* agents.get(resolved)
 +                  if (!requested || !reviewer)
 +                    return {
-+                      available: false as const,
++                      available: false as const, code: "reviewer-missing" as const,
 +                      reason: `reviewer agent "${!requested ? "review" : resolved}" is not available`,
 +                    }
 +                  if (reviewer.mode === "primary")
 +                    return {
-+                      available: false as const,
++                      available: false as const, code: "reviewer-missing" as const,
 +                      reason: `reviewer agent "${resolved}" is a primary agent and cannot be delegated to`,
 +                    }
 +                  // The dispatch permission gate asks through `ctx.ask`,
@@ -2092,7 +2334,7 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +                  const caller = yield* agents.get(ctx.agent)
 +                  if (!caller)
 +                    return {
-+                      available: false as const,
++                      available: false as const, code: "caller-unreadable" as const,
 +                      reason: `running agent "${ctx.agent}" could not be read to verify its dispatch permissions`,
 +                    }
 +                  const ruleset = Permission.merge(caller.permission, session.permission ?? [])
@@ -2103,9 +2345,13 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +                  // would mask a deny at dispatch cannot make finish claim
 +                  // review-unavailable while dispatch stays allowed — and an
 +                  // ungranted deny still reports unavailable honestly.
-+                  if (yield* permission.denies({ permission: "task", patterns, ruleset }))
++                  // An explicit agent invocation (bypassAgentCheck) lets task skip its
++                  // permission prompt, so the same deny does not stop that dispatch and
++                  // must not read as unavailable here either.
++                  const bypassAgentCheck = ctx.extra?.bypassAgentCheck === true
++                  if (!bypassAgentCheck && (yield* permission.denies({ permission: "task", patterns, ruleset })))
 +                    return {
-+                      available: false as const,
++                      available: false as const, code: "permission-denied" as const,
 +                      reason: `permission config denies task "${resolved}"`,
 +                    }
 +                  let depth = 0
@@ -2117,14 +2363,22 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +                      .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
 +                    if (!parent)
 +                      return {
-+                        available: false as const,
++                        available: false as const, code: "session-unreadable" as const,
 +                        reason: "session ancestry could not be read to verify the subagent depth limit",
 +                      }
 +                    current = parent
 +                  }
++                  // 233: the newest user message hides the task tool for this turn.
++                  // A per-message decision, so it blocks a dispatch the ruleset would allow.
++                  const latestUser = messages.findLast((message) => message.info.role === "user")
++                  if (latestUser?.info.role === "user" && latestUser.info.tools?.task === false)
++                    return {
++                      available: false as const, code: "task-hidden" as const,
++                      reason: "the newest user message hides the task tool for this turn",
++                    }
 +                  if (depth >= (cfg.subagent_depth ?? 1))
 +                    return {
-+                      available: false as const,
++                      available: false as const, code: "subagent-depth" as const,
 +                      reason: `subagent depth limit reached (${cfg.subagent_depth ?? 1})`,
 +                    }
 +                  return { available: true as const }
@@ -2136,36 +2390,36 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +            state: reviewState,
 +            reviewerAvailable: availability.available,
 +            ...(availability.reason ? { unavailableReason: availability.reason } : {}),
++            ...(availability.available ? {} : { unavailableCode: availability.code }),
++            // #233 handoff: a child that cannot dispatch review because of the depth limit hands
++            // its unreviewed writes to its parent (review-pending), never claims approval.
++            handoff: !availability.available && session?.parentID !== undefined && availability.reason.startsWith("subagent depth"),
 +          })
 +
 +          if (!outcome.deliver) {
 +            yield* Effect.logWarning("finish declined by effort policy", {
-               sessionID: ctx.sessionID,
++              sessionID: ctx.sessionID,
 +              effort,
 +              reason: params.reason,
-               verdict: reviewState.verdict,
--              phase,
-               reviews: reviewState.reviews,
--              maxIterations: reviewState.maxIterations,
--              workSinceReview: reviewState.workSinceReview,
++              verdict: reviewState.verdict,
++              reviews: reviewState.reviews,
 +              feedback: outcome.feedback,
-             })
--            // Persist the nudge on the failed part so the next finish call for the
--            // same work is recognised as an explicit skip instead of being declined again.
++            })
 +            // Persist the attempt on the failed part so the transcript shows
 +            // the review demand. Declining depends only on the persisted review
 +            // state, so repeating this call never becomes a review bypass.
              yield* ctx.metadata({
--              title: "Review suggested",
-+              title: "Review required",
+               title: "Review required",
                metadata: {
                  review: {
                    nudged: true,
++                  ...(availability.available ? {} : { unavailable: availability.code }),
 +                  effort,
 +                  disposition: outcome.disposition,
                    verdict: reviewState.verdict,
                    reviews: reviewState.reviews,
 -                  maxIterations: reviewState.maxIterations,
+-                  ...(unavailable ? { termination: "review-blocked", unavailable } : {}),
 +                  ...(outcome.maxIterations !== undefined ? { maxIterations: outcome.maxIterations } : {}),
 +                  openFindings: reviewState.openFindings,
 +                  blockingFindings: reviewState.blockingFindings,
@@ -2174,37 +2428,45 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
                  },
                },
              })
--            return yield* Effect.fail(new ToolFailure({ message: gateError.message }))
+-            return yield* Effect.fail(
+-              new ToolFailure({
+-                message: unavailable
+-                  ? `Review blocked (${unavailable}): success cannot be reported without review. Restore Review dispatch or report failure honestly. ${gateError.message}`
+-                  : gateError.message,
+-              }),
+-            )
 +            return yield* Effect.fail(new ToolFailure({ message: outcome.feedback ?? "Review required." }))
            }
  
--          const skipped =
--            reviewState.nudged && (reviewState.verdict === "pending" || reviewState.verdict === "needs-fixes")
--          if (skipped) {
--            yield* Effect.logWarning("review skipped by explicit finish", {
-+          if (outcome.termination === "budget-exhausted" || outcome.termination === "review-unavailable") {
-+            yield* Effect.logWarning("finish delivered without a clean review", {
-               sessionID: ctx.sessionID,
--              verdict: reviewState.verdict,
-+              effort,
-+              termination: outcome.termination,
-               reviews: reviewState.reviews,
--              maxIterations: reviewState.maxIterations,
--            })
+-          if (handoff || blockedFailure) {
+-            yield* Effect.logWarning(
+-              handoff ? "unreviewed child writes handed to parent" : "review blocked: declared failure",
+-              {
+-                sessionID: ctx.sessionID,
+-                reason: unavailable,
+-                verdict: reviewState.verdict,
+-                reviews: reviewState.reviews,
+-                maxIterations: reviewState.maxIterations,
+-              },
+-            )
 -          }
 -
 -          if (reviewState.verdict === "cap") {
 -            yield* Effect.logWarning("review loop terminated at cap", {
--              sessionID: ctx.sessionID,
++          if (outcome.termination === "budget-exhausted" || outcome.termination === "review-unavailable") {
++            yield* Effect.logWarning("finish delivered without a clean review", {
+               sessionID: ctx.sessionID,
 -              phase: "review",
 -              reason: "review-cap",
--              reviews: reviewState.reviews,
++              effort,
++              termination: outcome.termination,
+               reviews: reviewState.reviews,
 -              maxIterations: reviewState.maxIterations,
 +              ...(outcome.unavailableReason ? { unavailableReason: outcome.unavailableReason } : {}),
              })
            }
  
-@@ -179,17 +306,50 @@ export const FinishTool = Tool.define(
+@@ -393,25 +414,51 @@ export const FinishTool = Tool.define(
              ),
            )
  
@@ -2239,13 +2501,22 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
 +            output: `${params.result}\n\n[${status}]`,
              metadata: {
                termination: { reason: params.reason },
+-              ...(handoff ? { reviewLoop: { writesFiles: true, handoff: "pending", sessionId: ctx.sessionID } } : {}),
                review: {
 +                effort,
 +                disposition: outcome.disposition,
++                ...(availability.available ? {} : { unavailable: availability.code }),
                  verdict: reviewState.verdict,
                  reviews: reviewState.reviews,
 -                maxIterations: reviewState.maxIterations,
--                termination: skipped ? "skipped" : reviewState.verdict === "cap" ? "review-cap" : "approved",
+-                termination: handoff
+-                  ? "review-pending"
+-                  : blockedFailure
+-                    ? "review-blocked"
+-                    : reviewState.verdict === "cap"
+-                      ? "review-cap"
+-                      : "approved",
+-                ...(unavailable ? { unavailable } : {}),
 +                ...(outcome.maxIterations !== undefined ? { maxIterations: outcome.maxIterations } : {}),
 +                termination: outcome.termination,
 +                openFindings: reviewState.openFindings,
@@ -2259,22 +2530,22 @@ index c1b074014c7e5c09ce036ae918345583e825b4f0..0f47ff812c4bec47f421d8849537a48b
            }
          }),
 diff --git a/packages/opencode/src/tool/finish.txt b/packages/opencode/src/tool/finish.txt
-index 3d1d19e93c909bf52981584d9cd45779255a7c12..db35c9c042d430fecb279e855b0bbdbd23145dfd 100644
+index e69258a6d1..8844edc143 100644
 --- a/packages/opencode/src/tool/finish.txt
 +++ b/packages/opencode/src/tool/finish.txt
-@@ -9,7 +9,9 @@ Pass `reason` and `result`. `reason` is required and must be one of:
+@@ -10,7 +10,9 @@ Pass `reason` and `result`. `reason` is required and must be one of:
  
  Pass `result` as a concise summary of what you did or answered. These are silent protocol signals, not something to announce to the user — do not say that you are finishing; just call it as the last step of your reply.
  
--If the current turn changed files without a completed synchronous review, the first finish call is declined with a review nudge. Running the `review` subagent is strongly recommended; if you have determined that another review pass is unnecessary, call finish again to explicitly skip review and deliver the result, and say so in `result`.
-+Whether an independent review is required depends on your effort policy (fast/medium/thorough), and `finish` is the only enforcement checkpoint: when the effective level requires an independent review that has not happened, the call is declined with recoverable feedback. Repeated `finish` calls never waive a required review — the decision is based only on the persisted review state for this turn. At `fast`, no review is required and the result is honestly labelled unreviewed unless an independent review actually happened. At `medium`, deliver after at least one clean synchronous `review` pass (`subagent_type: "review"`, `background: false`); only blocking findings or work landed after the last review force another pass, bounded by two passes, after which `finish` delivers with an honest exhausted status. At `thorough`, `finish` keeps declining until a clean current review exists, or delivers as `review-unavailable` when the reviewer genuinely cannot run — never as approval.
+-If the current turn changed files, finish requires an explicit Approved review of that work from the Review subagent: dispatch it with the `task` tool, `subagent_type: "review"` and `background: false`, then call finish once it returns Approved. If it returns Needs fixes, fix the findings and run the Review subagent again. Until then every finish call is declined, whatever its `reason` other than `waiting_for_subagent` — a failed attempt still leaves its changes behind, so have them reviewed before reporting the failure. Retrying finish does not skip review, and calling the work creative, a prototype, trivial, or not production code in `result` does not exempt it. The runtime can stop at the configured review-attempt cap with `review-cap`, including errored synchronous review attempts. This is not approval. A writing child at the depth limit hands its files back with `review-pending`, explicitly UNREVIEWED: the parent must review those changes before reporting success. A missing, disabled, denied or hidden reviewer blocks success; report failure honestly with `review-blocked` instead. A per-message hidden task tool is not an exemption. None of these outcomes means the work was approved.
++Retrying finish does not skip review. When the medium pass budget is exhausted, the result is delivered as `budget-exhausted`, never as an approval. Medium and thorough dispatches that cannot run end as `review-blocked`, and a child's unreviewed handoff ends as `review-pending`. At medium and thorough effort, finish requires an explicit Approved review of that work from the Review subagent (dispatch it with `subagent_type: "review"` and `background: false`); at fast effort no review is required. Whether an independent review is required depends on your effort policy (fast/medium/thorough), and `finish` is the only enforcement checkpoint: when the effective level requires an independent review that has not happened, the call is declined with recoverable feedback. Repeated `finish` calls never waive a required review — the decision is based only on the persisted review state for this turn. At `fast`, no review is required and the result is honestly labelled unreviewed unless an independent review actually happened. At `medium`, deliver after at least one clean synchronous `review` pass (`subagent_type: "review"`, `background: false`); only blocking findings or work landed after the last review force another pass, bounded by two passes, after which `finish` delivers with an honest exhausted status. At `thorough`, `finish` keeps declining until a clean current review exists, or is blocked as `review-blocked` when the reviewer genuinely cannot run — never as approval.
 +
 +You may pass `validation.checks` declaring validation evidence for this result: one entry per check with `category` (syntax, smoke, tests, typecheck, parity), `status` (passed, failed, not-run, not-applicable), and a short `detail`. finish runs nothing itself — it records your declaration against the gate derived from your effort level, and missing or failed evidence is reported as incomplete/failed, never as passed.
  
  Call it once, after any other tool calls have completed. Do not call it to report partial progress, and do not use it to ask a question — use the question tool for questions and keep working otherwise.
  
 diff --git a/packages/opencode/src/tool/registry.ts b/packages/opencode/src/tool/registry.ts
-index d8ddce8bb370a6a15ceb24e6dd02f48254ba508f..3cb742de9452cae432de57f66565b3e39ca9d656 100644
+index d8ddce8bb3..3cb742de94 100644
 --- a/packages/opencode/src/tool/registry.ts
 +++ b/packages/opencode/src/tool/registry.ts
 @@ -473,6 +473,7 @@ export const node = LayerNode.make({
@@ -2286,28 +2557,31 @@ index d8ddce8bb370a6a15ceb24e6dd02f48254ba508f..3cb742de9452cae432de57f66565b3e3
      CrossSpawnSpawner.node,
      Format.node,
 diff --git a/packages/opencode/src/tool/task.ts b/packages/opencode/src/tool/task.ts
-index ff914a08ff54cbba1a07088292b344e2edb66636..73a6dfa48250e36629e990cbaaca92884c9887ab 100644
+index 095d4eeff6..01b38839ec 100644
 --- a/packages/opencode/src/tool/task.ts
 +++ b/packages/opencode/src/tool/task.ts
-@@ -4,7 +4,7 @@ import DESCRIPTION from "./task.txt"
+@@ -4,10 +4,10 @@ import { FinishTool, deliveredReason, readTermination, type TerminationReason }
+ import DESCRIPTION from "./task.txt"
  import { SessionV1 } from "@opencode-ai/core/v1/session"
  import { ReviewReport } from "@opencode-ai/core/review-report"
+-import { hasFileWrites, REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
++import { declaresFileWrites, hasFileWrites, REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
+ import { EventV2Bridge } from "@/event-v2-bridge"
  import { BackgroundJob } from "@/background/job"
 -import { Session } from "@/session/session"
 +import { Session, readAgentEffort, withAgentEffort } from "@/session/session"
  import { SessionID, MessageID } from "../session/schema"
  import { MessageV2 } from "../session/message-v2"
  import { Agent } from "../agent/agent"
-@@ -16,6 +16,8 @@ import { Effect, Exit, Ref, Schema, Scope } from "effect"
+@@ -18,6 +18,7 @@ import { Config } from "@/config/config"
+ import { Effect, Exit, Option, Ref, Schema, Scope } from "effect"
  import { EffectBridge } from "@/effect/bridge"
- import { NotFoundError } from "@/storage/storage"
  import { Database } from "@opencode-ai/core/database/database"
 +import { AgentEffort } from "@opencode-ai/schema/agent-effort"
-+import { declaresFileWrites, REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
  
  export interface TaskPromptOps {
    cancel(sessionID: SessionID): Effect.Effect<void>
-@@ -54,6 +56,10 @@ const BaseParameterFields = {
+@@ -64,6 +65,10 @@ const BaseParameterFields = {
  
  export const Parameters = Schema.Struct({
    ...BaseParameterFields,
@@ -2318,7 +2592,7 @@ index ff914a08ff54cbba1a07088292b344e2edb66636..73a6dfa48250e36629e990cbaaca9288
    background: Schema.optional(Schema.Boolean).annotate({
      description:
        "Run the agent asynchronously (default: true). The tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Set to false to run synchronously and wait for the result.",
-@@ -277,6 +283,27 @@ export const TaskTool = Tool.define(
+@@ -284,6 +289,27 @@ export const TaskTool = Tool.define(
            ],
          }))
  
@@ -2346,7 +2620,7 @@ index ff914a08ff54cbba1a07088292b344e2edb66636..73a6dfa48250e36629e990cbaaca9288
        const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
          Effect.provideService(Database.Service, database),
          Effect.orDie,
-@@ -292,6 +319,11 @@ export const TaskTool = Tool.define(
+@@ -299,6 +325,11 @@ export const TaskTool = Tool.define(
          parentSessionId: ctx.sessionID,
          sessionId: nextSession.id,
          model,
@@ -2358,31 +2632,26 @@ index ff914a08ff54cbba1a07088292b344e2edb66636..73a6dfa48250e36629e990cbaaca9288
          ...(runInBackground ? { background: true } : {}),
        }
  
-@@ -310,6 +342,11 @@ export const TaskTool = Tool.define(
-       // finish call; that path records `cancelled` itself, so this ref holds the
-       // whole termination contract rather than only the declared subset.
-       const termination = yield* Ref.make<TerminationReason | undefined>(undefined)
-+      // Whether this child wrote files, captured from its completed history so
-+      // delegated writes land in the parent's review accounting exactly like
-+      // direct edit/write tools. Review dispatches are not work, so they never
-+      // propagate the flag.
+@@ -366,6 +397,10 @@ export const TaskTool = Tool.define(
+       // propagated - so this site is not protecting the publish; it is naming
+       // the failure once, with the child's session, instead of letting it fall
+       // through to that generic log.
++      // Whether this child wrote files, from its history. Declared writes count
++      // whether the child is a review run or not: #233 hands a review run's writes
++      // back to the parent as unreviewed work, so they are never dropped here.
 +      const wroteFiles = yield* Ref.make(false)
- 
-       const runTask = Effect.fn("TaskTool.runTask")(function* () {
-         const parts = yield* ops.resolvePromptParts(params.prompt)
-@@ -325,6 +362,11 @@ export const TaskTool = Tool.define(
-           parts,
+       const unsubscribeWrites = yield* events.listen((event) => {
+         if (event.type !== SessionV1.Event.PartUpdated.type) return Effect.void
+         const data = event.data as { sessionID?: unknown; part?: SessionV1.Part }
+@@ -397,6 +432,7 @@ export const TaskTool = Tool.define(
          })
  
-+        yield* Ref.set(
-+          wroteFiles,
-+          !isReviewAgent(next.name) && result.parts.some((part) => part.type === "tool" && declaresFileWrites(part)),
-+        )
-+
+         yield* projectWrites(result.parts)
++        yield* Ref.set(wroteFiles, result.parts.some((part) => declaresFileWrites(part)))
          const finish = result.parts.findLast(
            (item): item is SessionV1.ToolPart =>
              item.type === "tool" && item.tool === FinishTool.id && item.state.status === "completed",
-@@ -393,6 +435,7 @@ export const TaskTool = Tool.define(
+@@ -465,6 +501,7 @@ export const TaskTool = Tool.define(
          // the child finishes. `ctx.agent` is not a candidate: on the subtask path
          // it is the child's agent.
          const parentAgent = yield* parentAgentOf
@@ -2390,8 +2659,8 @@ index ff914a08ff54cbba1a07088292b344e2edb66636..73a6dfa48250e36629e990cbaaca9288
          yield* ops
            .prompt({
              sessionID: ctx.sessionID,
-@@ -414,6 +457,10 @@ export const TaskTool = Tool.define(
-                   text,
+@@ -488,6 +525,10 @@ export const TaskTool = Tool.define(
+                     : text,
                    termination,
                  }),
 +                // The notification itself carries the child's delegated writes
@@ -2401,16 +2670,15 @@ index ff914a08ff54cbba1a07088292b344e2edb66636..73a6dfa48250e36629e990cbaaca9288
                },
              ],
            })
-@@ -525,6 +572,8 @@ export const TaskTool = Tool.define(
+@@ -617,6 +658,7 @@ export const TaskTool = Tool.define(
              )
              if (result?.metadata?.background === true) return backgroundResult()
              if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
 +            const wrote = yield* Ref.get(wroteFiles)
-+            const reason = yield* Ref.get(termination)
              // Cancellation is a delivery, not a tool failure: the parent is
              // blocked on this call, and a free-form failure would leave it
              // re-deriving what happened from prose. The same envelope the
-@@ -534,6 +583,7 @@ export const TaskTool = Tool.define(
+@@ -626,6 +668,7 @@ export const TaskTool = Tool.define(
                  title: params.description,
                  metadata: {
                    ...metadata,
@@ -2418,24 +2686,8 @@ index ff914a08ff54cbba1a07088292b344e2edb66636..73a6dfa48250e36629e990cbaaca9288
                    termination: { reason: "cancelled" },
                  },
                  output: renderOutput({
-@@ -547,7 +597,6 @@ export const TaskTool = Tool.define(
-             // so consumers know which revision was reviewed without re-parsing
-             // the output. The output already carries the canonical envelope.
-             const review = isReviewAgent(next.name) ? ReviewReport.extract([result?.output ?? ""]) : undefined
--            const reason = yield* Ref.get(termination)
-             const completed: Tool.ExecuteResult = {
-               title: params.description,
-               metadata: {
-@@ -556,6 +605,7 @@ export const TaskTool = Tool.define(
-                   ? { review: { report: review.report, sessionId: nextSession.id, revision: review.report.revision } }
-                   : {}),
-                 ...(reason !== undefined ? { termination: { reason } } : {}),
-+                ...(wrote ? { [REVIEW_LOOP_METADATA]: { writesFiles: true } } : {}),
-               },
-               output: renderOutput({
-                 sessionID: nextSession.id,
 diff --git a/packages/opencode/src/tool/task.txt b/packages/opencode/src/tool/task.txt
-index 48147c9d1c5ad3d94c59dae421bf70349743349b..24da43fcce47115b3bc1c42ae0c75fac00a7600c 100644
+index 48147c9d1c..24da43fcce 100644
 --- a/packages/opencode/src/tool/task.txt
 +++ b/packages/opencode/src/tool/task.txt
 @@ -24,3 +24,4 @@ Usage notes:
@@ -2444,52 +2696,85 @@ index 48147c9d1c5ad3d94c59dae421bf70349743349b..24da43fcce47115b3bc1c42ae0c75fac
  9. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
 +10. The optional `effort` parameter selects the child's agent-effort policy (fast, medium, or thorough). Omit it to reuse this child's persisted selection on resume, otherwise inherit your own/root selection, then the configured `agent.effort`, then medium. The resolved level persists on the child session before it runs and governs the child's review and validation requirements at its `finish` checkpoint; it never changes routing, permissions, or progress behavior.
 diff --git a/packages/opencode/test/session/review-loop.test.ts b/packages/opencode/test/session/review-loop.test.ts
-index 4496f7a327e72ae9148ea1f6f7aca82cd9b1bf23..aa5bd18fc4d844cebd60584f575bdf75ca2d31c0 100644
+index e442eccf7d..1a3f2823c0 100644
 --- a/packages/opencode/test/session/review-loop.test.ts
 +++ b/packages/opencode/test/session/review-loop.test.ts
-@@ -116,24 +116,30 @@ describe("review loop prompt contract", () => {
+@@ -137,13 +137,34 @@ describe("review loop prompt contract", () => {
+     const prompt = await readPrompt("review-loop.txt")
  
      expect(prompt).toContain("After every Work pass made in response to findings, return to Review")
-     expect(prompt).toContain("Prefer not to call `finish` until a later review explicitly approves")
+-    expect(prompt).toContain("Do not call `finish` until a later review explicitly approves")
 -    expect(prompt).toContain("review-cap")
++    expect(prompt).toContain("Prefer not to call `finish` until a later review explicitly approves")
 +    // The pass budget belongs to the effort policy; the old fixed `review-cap`
 +    // termination is gone from the prompt contract.
 +    expect(prompt).toContain("The effort policy owns the pass budget")
 +    expect(prompt).toContain("`budget-exhausted` or `findings-open` status — never as approved")
 +    expect(prompt).not.toContain("review-cap")
-   })
- 
--  test("presents review as a nudge the agent may explicitly skip", async () => {
++  })
++
 +  test("makes finish the only enforcement checkpoint for the review requirement", async () => {
-     const prompt = await readPrompt("review-loop.txt")
- 
--    expect(prompt).toContain("Review is guidance, not an enforcement gate")
--    expect(prompt).toContain("call `finish` again to explicitly skip review")
++    const prompt = await readPrompt("review-loop.txt")
++
 +    expect(prompt).toContain("`finish` is the only enforcement checkpoint")
 +    expect(prompt).toContain("Repeated `finish` calls never waive a required review")
 +    expect(prompt).not.toContain("Review is guidance, not an enforcement gate")
 +    expect(prompt).not.toContain("explicitly skip review")
-     expect(prompt).not.toContain("Mandatory Review Loop")
-   })
- 
--  test("finish nudge preserves the review recommendation and the skip path", async () => {
++    expect(prompt).not.toContain("Mandatory Review Loop")
++  })
++
 +  test("finish nudge preserves the review recommendation and forbids a skip path", async () => {
-     const nudge = await readPrompt("finish-nudge.txt")
- 
-     expect(nudge).toContain("synchronous `review` task")
-     expect(nudge).toContain("latest review returned `Needs fixes`")
--    expect(nudge).toContain("call `finish` again to explicitly skip review")
--    expect(nudge).toContain("review-cap")
++    const nudge = await readPrompt("finish-nudge.txt")
++
++    expect(nudge).toContain("explicit Approved review from the Review subagent")
++    expect(nudge).toContain('`subagent_type: "review"` and `background: false`')
++    expect(nudge).toContain("latest review returned `Needs fixes`")
 +    expect(nudge).toContain("repeating `finish` does not skip it")
 +    expect(nudge).not.toContain("review-cap")
    })
  
-   test("the reviewer must end with one machine-readable report envelope", async () => {
-@@ -178,7 +184,9 @@ describe("review loop prompt contract", () => {
+-  // #231: the policy used to call review guidance and let a second finish
+-  // skip it. It now states the requirement and names the only runtime outcomes
+-  // that end it, none of which the model can choose.
+   test("presents review as a requirement with no skip path", async () => {
+     const prompt = (await readPrompt("review-loop.txt")).replace(/\s+/g, " ")
+ 
+@@ -152,7 +173,7 @@ describe("review loop prompt contract", () => {
+     // #233 replaced the runtime waiver with three outcomes, none of which is a
+     // skip: the attempt cap, a child's unreviewed handoff, and a blocked
+     // dispatch that only an honest failure may report.
+-    expect(prompt).toContain("`review-cap`")
++    expect(prompt).toContain("`budget-exhausted`")
+     expect(prompt).toContain("`review-pending`")
+     expect(prompt).toContain("`review-blocked`")
+     expect(prompt).toContain("None of these outcomes means the work was approved")
+@@ -168,7 +189,7 @@ describe("review loop prompt contract", () => {
+     expect(nudge).toContain('`subagent_type: "review"` and `background: false`')
+     expect(nudge).toContain("latest review returned `Needs fixes`")
+     expect(nudge).toContain("calling `finish` again without running the Review subagent is declined again")
+-    expect(nudge).toContain("review-cap")
++    expect(nudge).toContain("budget-exhausted")
+     expect(nudge).not.toMatch(/explicitly skip review|strongly recommended/)
+   })
+ 
+@@ -178,7 +199,7 @@ describe("review loop prompt contract", () => {
+     expect(description).toContain("finish requires an explicit Approved review of that work from the Review subagent")
+     expect(description).toContain('`subagent_type: "review"` and `background: false`')
+     expect(description).toContain("Retrying finish does not skip review")
+-    expect(description).toContain("`review-cap`")
++    expect(description).toContain("`budget-exhausted`")
+     // #233: the waiver is gone from the tool description too. A dispatch that
+     // cannot run blocks success and only an honest failure may report it.
+     expect(description).toContain("`review-blocked`")
+@@ -229,11 +250,9 @@ describe("review loop prompt contract", () => {
  
      expect(finish).toContain("ctx.waitForOtherTools ?? Effect.void")
      expect(finish).toContain(".messages({ sessionID: ctx.sessionID })")
--    expect(finish).toContain("return yield* Effect.fail(new ToolFailure({ message: gateError.message }))")
+-    // #233: the decline is still a failed tool call, and a session that cannot
+-    // dispatch the reviewer says so in the same failure instead of completing.
+-    expect(finish).toContain("new ToolFailure({")
+-    expect(finish).toContain("gateError.message")
+-    expect(finish).toContain("Review blocked (")
 +    expect(finish).toContain(
 +      'return yield* Effect.fail(new ToolFailure({ message: outcome.feedback ?? "Review required." }))',
 +    )
@@ -2498,10 +2783,10 @@ index 4496f7a327e72ae9148ea1f6f7aca82cd9b1bf23..aa5bd18fc4d844cebd60584f575bdf75
    })
 diff --git a/packages/opencode/test/tool/agent-effort.test.ts b/packages/opencode/test/tool/agent-effort.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134be8016d79
+index 0000000000..e678a17a50
 --- /dev/null
 +++ b/packages/opencode/test/tool/agent-effort.test.ts
-@@ -0,0 +1,1066 @@
+@@ -0,0 +1,1085 @@
 +import { afterEach, describe, expect } from "bun:test"
 +import { Database } from "@opencode-ai/core/database/database"
 +import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -2661,6 +2946,16 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +      }),
 +  )
 +})
++
++// The medium/thorough block: a successful finish whose reviewer cannot run
++// fails the tool call with the typed `Review blocked (<code>)` message.
++const blockedMessage = (exit: Exit.Exit<unknown, unknown>) => {
++  expect(Exit.isFailure(exit)).toBe(true)
++  if (!Exit.isFailure(exit)) return ""
++  const failure = Cause.squash(exit.cause)
++  expect(failure).toBeInstanceOf(ToolFailure)
++  return failure instanceof ToolFailure ? failure.message : ""
++}
 +
 +const finishContext = (sessionID: SessionID, messageID: MessageID) => ({
 +  sessionID,
@@ -2853,7 +3148,7 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +
 +describe("tool.finish – reviewer availability matches the dispatch context", () => {
 +  it.instance(
-+    "a config task deny delivers review-unavailable repeatedly, never a decline loop",
++    "a config task deny blocks success at medium on every repeat, and only an honest failure report delivers",
 +    () =>
 +      Effect.gen(function* () {
 +        const { chat, assistant } = yield* seedSession()
@@ -2861,37 +3156,41 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +        const tool = yield* FinishTool
 +        const def = yield* tool.init()
 +
-+        const first = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+        expect(first.metadata.review.termination).toBe("review-unavailable")
-+        expect(first.metadata.review.disposition).toBe("unreviewed")
-+        expect(first.metadata.review.unavailableReason).toContain("permission")
++        // Medium requires a reviewer: an unavailable one blocks success on
++        // every repeat (no decline loop) and never reads as approval.
++        const first = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(first)).toContain("Review blocked (permission-denied)")
++        const second = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(second)).toContain("Review blocked (permission-denied)")
 +
-+        // Repeating finish reaches the same honest delivery: the denied
-+        // reviewer never turns into a decline the model cannot escape.
-+        const second = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+        expect(second.metadata.review.termination).toBe("review-unavailable")
++        // Only an honest failure report can complete the turn.
++        const reported = yield* def.execute({ reason: "failure", result: "Review cannot run" }, finishContext(chat.id, assistant.id))
++        expect(reported.metadata.review.termination).toBe("review-blocked")
++        expect(reported.metadata.review.unavailable).toBe("permission-denied")
 +      }),
 +    { config: { permission: { task: { review: "deny" } } } },
 +  )
 +
-+  it.instance("a session-scoped task deny also delivers review-unavailable", () =>
-+    Effect.gen(function* () {
-+      const { chat, assistant } = yield* seedSession({
-+        permission: [{ action: "deny", permission: "task", pattern: "review" }],
-+      })
-+      yield* addToolPart(chat.id, assistant.id, "edit")
-+      const tool = yield* FinishTool
-+      const def = yield* tool.init()
++  it.instance(
++    "a session-scoped task deny also blocks success at medium",
++    () =>
++      Effect.gen(function* () {
++        const { chat, assistant } = yield* seedSession({
++          permission: [{ action: "deny", permission: "task", pattern: "review" }],
++        })
++        yield* addToolPart(chat.id, assistant.id, "edit")
++        const tool = yield* FinishTool
++        const def = yield* tool.init()
 +
-+      const result = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+      expect(result.metadata.review.termination).toBe("review-unavailable")
-+      expect(result.metadata.review.disposition).toBe("unreviewed")
-+      expect(result.metadata.review.unavailableReason).toContain("permission")
-+    }),
++        const exit = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(exit)).toContain("Review blocked (permission-denied)")
++        const reported = yield* def.execute({ reason: "failure", result: "Review cannot run" }, finishContext(chat.id, assistant.id))
++        expect(reported.metadata.review.termination).toBe("review-blocked")
++      }),
 +  )
 +
 +  it.instance(
-+    "the subagent depth limit delivers review-unavailable, never approval",
++    "the subagent depth limit blocks success at medium, never approval",
 +    () =>
 +      Effect.gen(function* () {
 +        const { chat, assistant } = yield* seedSession()
@@ -2899,9 +3198,11 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +        const tool = yield* FinishTool
 +        const def = yield* tool.init()
 +
-+        const result = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+        expect(result.metadata.review.termination).toBe("review-unavailable")
-+        expect(result.metadata.review.unavailableReason).toContain("subagent depth limit")
++        const exit = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(exit)).toContain("Review blocked (subagent-depth)")
++        const reported = yield* def.execute({ reason: "failure", result: "Review cannot run" }, finishContext(chat.id, assistant.id))
++        expect(reported.metadata.review.termination).toBe("review-blocked")
++        expect(reported.metadata.review.unavailable).toBe("subagent-depth")
 +      }),
 +    { config: { subagent_depth: 0 } },
 +  )
@@ -2938,7 +3239,7 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +  }
 +
 +  it.instance(
-+    "a running-agent-scoped task deny delivers honest review-unavailable repeatedly, matching real dispatch denial",
++    "a running-agent-scoped task deny blocks success at medium on every repeat, matching real dispatch denial",
 +    () =>
 +      Effect.gen(function* () {
 +        const agents = yield* Agent.Service
@@ -2952,20 +3253,19 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +        const caller = yield* agents.get("work")
 +        expect(Permission.evaluate("task", "review", caller!.permission).action).toBe("deny")
 +
-+        const first = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+        expect(first.metadata.review.termination).toBe("review-unavailable")
-+        expect(first.metadata.review.disposition).toBe("unreviewed")
-+        expect(first.metadata.review.unavailableReason).toContain("permission")
-+
-+        // Repeating reaches the same honest delivery: a reviewer this
-+        // caller may never dispatch is never demanded forever.
-+        const second = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+        expect(second.metadata.review.termination).toBe("review-unavailable")
++        const first = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(first)).toContain("Review blocked (permission-denied)")
++        const second = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(second)).toContain("Review blocked (permission-denied)")
 +
 +        // The real dispatch gate reaches the same verdict: the routed pair
 +        // is denied under the caller's composition.
 +        const exit = yield* dispatchGate(chat, caller!, ["review", "work-review"])
 +        expectDenied(exit)
++
++        const reported = yield* def.execute({ reason: "failure", result: "Review cannot run" }, finishContext(chat.id, assistant.id))
++        expect(reported.metadata.review.termination).toBe("review-blocked")
++        expect(reported.metadata.review.unavailable).toBe("permission-denied")
 +      }),
 +    { config: { agent: { work: { permission: { task: { review: "deny" } } } } } },
 +  )
@@ -3018,7 +3318,7 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +  )
 +
 +  it.instance(
-+    "a deny on the routed reviewer pattern is honored through the caller's ruleset",
++    "a deny on the routed reviewer pattern blocks success at medium through the caller's ruleset",
 +    () =>
 +      Effect.gen(function* () {
 +        const agents = yield* Agent.Service
@@ -3033,13 +3333,15 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +        expect(Permission.evaluate("task", "review", caller!.permission).action).toBe("allow")
 +        expect(Permission.evaluate("task", "work-review", caller!.permission).action).toBe("deny")
 +
-+        const result = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+        expect(result.metadata.review.termination).toBe("review-unavailable")
-+        expect(result.metadata.review.unavailableReason).toContain("permission")
-+        expect(result.metadata.review.unavailableReason).toContain("work-review")
++        const exit = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(exit)).toContain("Review blocked (permission-denied)")
 +
-+        const exit = yield* dispatchGate(chat, caller!, ["review", "work-review"])
-+        expectDenied(exit)
++        const gate = yield* dispatchGate(chat, caller!, ["review", "work-review"])
++        expectDenied(gate)
++
++        const reported = yield* def.execute({ reason: "failure", result: "Review cannot run" }, finishContext(chat.id, assistant.id))
++        expect(reported.metadata.review.termination).toBe("review-blocked")
++        expect(reported.metadata.review.unavailable).toBe("permission-denied")
 +      }),
 +    { config: { agent: { work: { permission: { task: { "work-review": "deny" } } } } } },
 +  )
@@ -3257,7 +3559,7 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +  )
 +
 +  it.instance(
-+    "a pinned session agent still routes the specialist outside the window",
++    "a pinned session agent still routes the specialist outside the window and blocks success",
 +    () =>
 +      Effect.gen(function* () {
 +        const sessions = yield* Session.Service
@@ -3270,20 +3572,21 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +
 +        const tool = yield* FinishTool
 +        const def = yield* tool.init()
-+        const result = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
++        const exit = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
 +
 +        // The window holds no user row, so only the pinned tier can route:
-+        // the specialist deny still reports honestly instead of degrading
-+        // to the generic reviewer.
-+        expect(result.metadata.review.termination).toBe("review-unavailable")
-+        expect(result.metadata.review.unavailableReason).toContain("permission")
-+        expect(result.metadata.review.unavailableReason).toContain("work-review")
++        // the specialist deny blocks honestly instead of degrading to the
++        // generic reviewer.
++        expect(blockedMessage(exit)).toContain("Review blocked (permission-denied)")
++        const reported = yield* def.execute({ reason: "failure", result: "Review cannot run" }, finishContext(chat.id, assistant.id))
++        expect(reported.metadata.review.termination).toBe("review-blocked")
++        expect(reported.metadata.review.unavailable).toBe("permission-denied")
 +      }),
 +    { config: { agent: { work: { permission: { task: { "work-review": "deny" } } } } } },
 +  )
 +
 +  it.instance(
-+    "the newest user row inside the window still specializes the reviewer",
++    "the newest user row inside the window still specializes the reviewer and blocks success",
 +    () =>
 +      Effect.gen(function* () {
 +        const { chat, assistant } = yield* seedSession({ title: "in-window" })
@@ -3294,10 +3597,11 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +
 +        const tool = yield* FinishTool
 +        const def = yield* tool.init()
-+        const result = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
-+
-+        expect(result.metadata.review.termination).toBe("review-unavailable")
-+        expect(result.metadata.review.unavailableReason).toContain("work-review")
++        const exit = yield* def.execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id)).pipe(Effect.exit)
++        expect(blockedMessage(exit)).toContain("Review blocked (permission-denied)")
++        const reported = yield* def.execute({ reason: "failure", result: "Review cannot run" }, finishContext(chat.id, assistant.id))
++        expect(reported.metadata.review.termination).toBe("review-blocked")
++        expect(reported.metadata.review.unavailable).toBe("permission-denied")
 +      }),
 +    { config: { agent: { work: { permission: { task: { "work-review": "deny" } } } } } },
 +  )
@@ -3569,32 +3873,56 @@ index 0000000000000000000000000000000000000000..0d5bd5ef002c03bc58e6007fe841134b
 +  )
 +})
 diff --git a/packages/opencode/test/tool/finish.test.ts b/packages/opencode/test/tool/finish.test.ts
-index 46a6bc17c270d4256a52f33aaa6238ca7d692b25..d4965b038f319952ee0d7a5a68ab143bd6c0e8b6 100644
+index 94aab10dc5..7e13b9bb21 100644
 --- a/packages/opencode/test/tool/finish.test.ts
 +++ b/packages/opencode/test/tool/finish.test.ts
-@@ -14,6 +14,7 @@ import { Agent } from "@/agent/agent"
- import { Config } from "@/config/config"
- import { EventV2Bridge } from "@/event-v2-bridge"
+@@ -17,6 +17,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
  import { FinishTool } from "@/tool/finish"
+ import type { Tool } from "@/tool/tool"
+ import { BackgroundJob } from "@/background/job"
 +import { Permission } from "@/permission"
  import { disposeAllInstances } from "../fixture/fixture"
  import { testEffect } from "../lib/effect"
  import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-@@ -34,6 +35,7 @@ const layer = () =>
+@@ -37,6 +38,7 @@ const layer = () =>
        Agent.node,
        Config.node,
        EventV2Bridge.node,
 +      Permission.node,
        CrossSpawnSpawner.node,
+       BackgroundJob.node,
      ]),
-   )
-@@ -129,13 +131,29 @@ describe("tool.finish – persisted review nudge", () => {
-       const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
-       expect(failure).toBeInstanceOf(ToolFailure)
-       if (!(failure instanceof ToolFailure)) return
--      expect(failure.message).toContain("no explicit Approved review")
--      expect(failure.message).toContain("call finish again to skip review")
--      expect(recorded).toEqual([{ review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } }])
+@@ -200,8 +202,7 @@ describe("tool.finish – review requirement", () => {
+       const def = yield* tool.init()
+       const recorded: Record<string, unknown>[] = []
+ 
+-      const failure = reviewFailure(
+-        yield* def
++      const exit = yield* def
+           .execute(
+             { reason: "success", result: "done" },
+             workCtx(chat.id, assistant.id, (input) => {
+@@ -209,76 +210,92 @@ describe("tool.finish – review requirement", () => {
+               return Effect.void
+             }),
+           )
+-          .pipe(Effect.exit),
+-      )
+-
+-      expect(failure?.message).toContain("no explicit Approved review")
+-      expect(failure?.message).toContain("Review subagent")
+-      expect(failure?.message).toContain('`subagent_type: "review"`')
+-      expect(failure?.message).toContain("`background: false`")
+-      expect(failure?.message).not.toMatch(/skip review and deliver|call finish again to skip/i)
+-      expect(failure?.message).not.toContain("retrying finish does not skip review")
+-      expect(recorded).toEqual([PENDING_DECLINE])
++          .pipe(Effect.exit)
++
++      expect(Exit.isFailure(exit)).toBe(true)
++      if (!Exit.isFailure(exit)) return
++      const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
++      expect(failure).toBeInstanceOf(ToolFailure)
++      if (!(failure instanceof ToolFailure)) return
 +      expect(failure.message).toContain("requires at least one independent review")
 +      expect(failure.message).toContain('subagent_type: "review"')
 +      // The old skip-on-repeat hint is gone: repeating finish is never the way out.
@@ -3617,17 +3945,48 @@ index 46a6bc17c270d4256a52f33aaa6238ca7d692b25..d4965b038f319952ee0d7a5a68ab143b
      }),
    )
  
--  it.instance("lets a second finish call skip review once the nudge is persisted", () =>
+-  // The eval-3 regression: the first finish was declined, and the second one
+-  // was accepted as an explicit skip.
+-  it.instance("declines a retried finish without a review instead of treating it as a skip", () =>
 +  it.instance("declines a repeated finish call too: the persisted nudge is not a skip path", () =>
      Effect.gen(function* () {
        const { chat, assistant } = yield* seedSession()
        yield* addToolPart(chat.id, assistant.id, "edit")
-@@ -151,29 +169,47 @@ describe("tool.finish – persisted review nudge", () => {
-         state: {
-           status: "error",
-           input: { reason: "success", result: "done" },
--          error: "Review nudge",
--          metadata: { review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } },
+-      const input = { reason: "success" as const, result: "done" }
+-
+-      const first = yield* declineOf(input, chat.id, assistant.id)
+-      expect(first.recorded).toEqual([PENDING_DECLINE])
+-      yield* recordDeclinedFinish(chat.id, assistant.id, input, first)
+-      const retry = yield* declineOf(input, chat.id, assistant.id)
+-
+-      expect(retry.message).toContain("finish declined again")
+-      expect(retry.message).toContain("retrying finish does not skip review")
+-      expect(retry.message).toContain('`subagent_type: "review"`')
+-      expect(retry.recorded).toEqual([PENDING_DECLINE])
+-    }),
+-  )
+-
+-  // The rationale the model gave in eval-3. The result is never read by the
+-  // gate, so the HTML asset is declined exactly like any other unreviewed work,
+-  // on the first call and on the retry, and completes once a review approves.
+-  it.instance("does not exempt an HTML asset described as creative rather than production code", () =>
+-    Effect.gen(function* () {
+-      const { chat, assistant } = yield* seedSession()
+-      yield* addToolPart(chat.id, assistant.id, "write", {
+-        filePath: "scene.html",
+-        content: "<!doctype html><canvas id='scene'></canvas>",
++      const session = yield* Session.Service
++      const now = Date.now()
++      yield* session.updatePart({
++        id: PartID.ascending(),
++        messageID: assistant.id,
++        sessionID: chat.id,
++        type: "tool",
++        tool: "finish",
++        callID: "finish-call-1",
++        state: {
++          status: "error",
++          input: { reason: "success", result: "done" },
 +          error: "Review required",
 +          metadata: {
 +            review: {
@@ -3642,23 +4001,36 @@ index 46a6bc17c270d4256a52f33aaa6238ca7d692b25..d4965b038f319952ee0d7a5a68ab143b
 +              workSinceReview: true,
 +            },
 +          },
-           time: { start: now, end: now },
-         },
++          time: { start: now, end: now },
++        },
        })
        const tool = yield* FinishTool
        const def = yield* tool.init()
+-      const creative = {
+-        reason: "success" as const,
+-        result:
+-          "Created scene.html, an animated HTML scene. Review skipped: this is a creative asset, not production code.",
+-      }
+-
+-      const first = yield* declineOf(creative, chat.id, assistant.id)
+-      expect(first.message).toContain("no explicit Approved review")
+-      yield* recordDeclinedFinish(chat.id, assistant.id, creative, first)
+-      const retry = yield* declineOf(creative, chat.id, assistant.id)
+-      expect(retry.message).toContain("finish declined again")
+-      expect(retry.message).toContain("does not exempt it")
+-
+-      yield* addReview(chat.id, assistant.id, "Approved")
 -      const result = yield* def.execute(
--        { reason: "success", result: "done" },
--        {
--          sessionID: chat.id,
--          messageID: assistant.id,
--          agent: "work",
--          abort: new AbortController().signal,
--          messages: [],
--          metadata: () => Effect.void,
--          ask: () => Effect.void,
--        },
+-        { reason: "success", result: "Created scene.html; the Review subagent approved it." },
+-        workCtx(chat.id, assistant.id),
 -      )
+-      expect(result.title).toBe("Task completed")
+-      expect(result.metadata.review).toEqual({
+-        verdict: "approved",
+-        reviews: 1,
+-        maxIterations: 5,
+-        termination: "approved",
+-      })
 +      const exit = yield* def
 +        .execute(
 +          { reason: "success", result: "done" },
@@ -3673,10 +4045,7 @@ index 46a6bc17c270d4256a52f33aaa6238ca7d692b25..d4965b038f319952ee0d7a5a68ab143b
 +          },
 +        )
 +        .pipe(Effect.exit)
- 
--      expect(result.title).toBe("Task completed")
--      expect(result.metadata.review.termination).toBe("skipped")
--      expect(result.metadata.review.verdict).toBe("pending")
++
 +      expect(Exit.isFailure(exit)).toBe(true)
 +      if (!Exit.isFailure(exit)) return
 +      const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
@@ -3687,29 +4056,120 @@ index 46a6bc17c270d4256a52f33aaa6238ca7d692b25..d4965b038f319952ee0d7a5a68ab143b
      }),
    )
  
+@@ -362,12 +379,15 @@ describe("tool.finish – review requirement exemptions", () => {
+   )
+ 
+   it.instance(
+-    "the review cap completes as review-cap, not as an approval",
++    "the review cap completes as budget-exhausted, not as an approval",
+     () =>
+       Effect.gen(function* () {
+         const { chat, assistant } = yield* seedSession()
+         yield* addToolPart(chat.id, assistant.id, "edit")
+         yield* addReview(chat.id, assistant.id, "Needs fixes")
++        // Medium's canonical budget is two completed passes: the second
++        // non-approving pass reaches the cap.
++        yield* addReview(chat.id, assistant.id, "Needs fixes")
+         const tool = yield* FinishTool
+         const def = yield* tool.init()
+ 
+@@ -376,14 +396,13 @@ describe("tool.finish – review requirement exemptions", () => {
+           workCtx(chat.id, assistant.id),
+         )
+ 
+-        expect(result.metadata.review).toEqual({
++        expect(result.metadata.review).toMatchObject({
+           verdict: "cap",
+-          reviews: 1,
+-          maxIterations: 1,
+-          termination: "review-cap",
++          reviews: 2,
++          maxIterations: 2,
++          termination: "budget-exhausted",
+         })
+       }),
+-    { config: { review_loop: { max_iterations: 1 } } },
+   )
+ 
+   // The task tool refuses any delegation from a session at the subagent depth
+@@ -405,10 +424,10 @@ describe("tool.finish – review requirement exemptions", () => {
+       )
+ 
+       expect(result.title).toBe("Task completed")
+-      expect(result.metadata.review).toEqual({
++      expect(result.metadata.review).toMatchObject({
+         verdict: "pending",
+         reviews: 0,
+-        maxIterations: 5,
++        maxIterations: 2, // medium's canonical pass budget
+         termination: "review-pending",
+         unavailable: "subagent-depth",
+       })
+@@ -1521,10 +1540,10 @@ describe("tool.finish – review blocked at the root", () => {
+           { reason: "failure", result: "Review cannot run at this depth." },
+           workCtx(chat.id, assistant.id),
+         )
+-        expect(result.metadata.review).toEqual({
++        expect(result.metadata.review).toMatchObject({
+           verdict: "pending",
+           reviews: 0,
+-          maxIterations: 5,
++          maxIterations: 2, // medium's canonical pass budget
+           termination: "review-blocked",
+           unavailable: "subagent-depth",
+         })
+@@ -1712,20 +1731,22 @@ describe("tool.finish – errored review attempts reach the cap", () => {
+         const { chat, assistant } = yield* seedSession()
+         yield* addToolPart(chat.id, assistant.id, "edit")
+         yield* addErroredReview(chat.id, assistant.id)
++        yield* addErroredReview(chat.id, assistant.id)
+         const def = yield* (yield* FinishTool).init()
+ 
++        // Two failed dispatches spend medium's two-pass budget: the cap ends the
++        // requirement honestly, never as a verdict.
+         const result = yield* def.execute(
+           { reason: "success", result: "Stopped at the cap after the review dispatch failed." },
+           workCtx(chat.id, assistant.id),
+         )
+-        expect(result.metadata.review).toEqual({
+-          verdict: "cap",
+-          reviews: 1,
+-          maxIterations: 1,
+-          termination: "review-cap",
++        expect(result.metadata.review).toMatchObject({
++          verdict: "pending",
++          reviews: 2,
++          maxIterations: 2,
++          termination: "budget-exhausted",
+         })
+       }),
+-    { config: { review_loop: { max_iterations: 1 } } },
+   )
+ 
+   // Below the cap the same errored attempt leaves the work unapproved: counting
 diff --git a/packages/opencode/test/tool/review-finish-history.test.ts b/packages/opencode/test/tool/review-finish-history.test.ts
-index ba97cc9cc5660c1044f5ad27a51b5569b7e78556..202aaedcde1727b3118c80ee7b24d1c3247befda 100644
+index 6e5ac0b40a..bf5d77f548 100644
 --- a/packages/opencode/test/tool/review-finish-history.test.ts
 +++ b/packages/opencode/test/tool/review-finish-history.test.ts
-@@ -12,6 +12,7 @@ import { Agent } from "@/agent/agent"
- import { Config } from "@/config/config"
+@@ -13,6 +13,7 @@ import { Config } from "@/config/config"
  import { EventV2Bridge } from "@/event-v2-bridge"
  import { FinishTool } from "@/tool/finish"
+ import { BackgroundJob } from "@/background/job"
 +import { Permission } from "@/permission"
  import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
  import { disposeAllInstances } from "../fixture/fixture"
  import { testEffect } from "../lib/effect"
-@@ -27,6 +28,7 @@ const layer = () =>
+@@ -28,6 +29,7 @@ const layer = () =>
        Agent.node,
        Config.node,
        EventV2Bridge.node,
 +      Permission.node,
        CrossSpawnSpawner.node,
+       BackgroundJob.node,
      ]),
-   )
 diff --git a/packages/schema/src/agent-effort.ts b/packages/schema/src/agent-effort.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..51a947ed8d4475630e05d0837b08b07cdbab0ba7
+index 0000000000..51a947ed8d
 --- /dev/null
 +++ b/packages/schema/src/agent-effort.ts
 @@ -0,0 +1,22 @@
@@ -3736,10 +4196,10 @@ index 0000000000000000000000000000000000000000..51a947ed8d4475630e05d0837b08b07c
 +  return levels.includes(value as Level) ? (value as Level) : (fallback ?? "medium")
 +}
 diff --git a/packages/sdk/js/src/v2/gen/types.gen.ts b/packages/sdk/js/src/v2/gen/types.gen.ts
-index aae0f9530ab10a513e24e38c5e4acefeb5e2cb10..1c8dc76a1b18969a60bdda5ca6b3ffd6cba6eb44 100644
+index 701706aaad..d966cf028d 100644
 --- a/packages/sdk/js/src/v2/gen/types.gen.ts
 +++ b/packages/sdk/js/src/v2/gen/types.gen.ts
-@@ -1955,7 +1955,8 @@ export type Config = {
+@@ -1958,7 +1958,8 @@ export type Config = {
      title?: AgentConfig
      summary?: AgentConfig
      compaction?: AgentConfig
@@ -3749,7 +4209,7 @@ index aae0f9530ab10a513e24e38c5e4acefeb5e2cb10..1c8dc76a1b18969a60bdda5ca6b3ffd6
    }
    provider?: {
      [key: string]: ProviderConfig
-@@ -3855,6 +3856,8 @@ export type ConfigV2ReferenceLocal = {
+@@ -3863,6 +3864,8 @@ export type ConfigV2ReferenceLocal = {
    hidden?: boolean
  }
  
@@ -3759,7 +4219,7 @@ index aae0f9530ab10a513e24e38c5e4acefeb5e2cb10..1c8dc76a1b18969a60bdda5ca6b3ffd6
  
  export type ConfigV2ExperimentalPolicy = {
 diff --git a/packages/tui/package.json b/packages/tui/package.json
-index c1393b9dc91e37444af80610f6a3c53fe355a868..2654c7f6327046b6a42531b6e0c21a9591542fe7 100644
+index c1393b9dc9..2654c7f632 100644
 --- a/packages/tui/package.json
 +++ b/packages/tui/package.json
 @@ -50,6 +50,7 @@
@@ -3771,7 +4231,7 @@ index c1393b9dc91e37444af80610f6a3c53fe355a868..2654c7f6327046b6a42531b6e0c21a95
      "@opentui/core": "catalog:",
      "@opentui/keymap": "catalog:",
 diff --git a/packages/tui/src/app.tsx b/packages/tui/src/app.tsx
-index f4c28071c2384d4623237b3f21e82437a671ac7f..beda6a5c867dc4b17e0fbeabebf5d21c83c6df72 100644
+index f4c28071c2..beda6a5c86 100644
 --- a/packages/tui/src/app.tsx
 +++ b/packages/tui/src/app.tsx
 @@ -81,6 +81,7 @@ import {
@@ -3808,7 +4268,7 @@ index f4c28071c2384d4623237b3f21e82437a671ac7f..beda6a5c867dc4b17e0fbeabebf5d21c
          title: "Agent cycle reverse",
 diff --git a/packages/tui/src/component/dialog-agent-effort.tsx b/packages/tui/src/component/dialog-agent-effort.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..b3e9120dc537beae02a4ff1e6280fae403f74ec8
+index 0000000000..b3e9120dc5
 --- /dev/null
 +++ b/packages/tui/src/component/dialog-agent-effort.tsx
 @@ -0,0 +1,67 @@
@@ -3880,7 +4340,7 @@ index 0000000000000000000000000000000000000000..b3e9120dc537beae02a4ff1e6280fae4
 +  )
 +}
 diff --git a/packages/tui/src/component/prompt/index.tsx b/packages/tui/src/component/prompt/index.tsx
-index 164b12d85a97e55d63b7a39538b0b2a2b19bff52..5bf1aa70ab7f3a7da5ccbe2794cafb9a31a6e1fe 100644
+index 164b12d85a..5bf1aa70ab 100644
 --- a/packages/tui/src/component/prompt/index.tsx
 +++ b/packages/tui/src/component/prompt/index.tsx
 @@ -316,7 +316,10 @@ export function Prompt(props: PromptProps) {
@@ -3911,7 +4371,7 @@ index 164b12d85a97e55d63b7a39538b0b2a2b19bff52..5bf1aa70ab7f3a7da5ccbe2794cafb9a
                              <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
                              <text>
 diff --git a/packages/tui/src/context/local.tsx b/packages/tui/src/context/local.tsx
-index 298fc442d683841e4c719980c994697546a2886d..e45827c6b9f414a586680787163e5dc167c314a9 100644
+index 298fc442d6..e45827c6b9 100644
 --- a/packages/tui/src/context/local.tsx
 +++ b/packages/tui/src/context/local.tsx
 @@ -1,6 +1,6 @@
@@ -4194,10 +4654,10 @@ index 298fc442d683841e4c719980c994697546a2886d..e45827c6b9f414a586680787163e5dc1
      }
      return result
 diff --git a/packages/tui/src/routes/session/index.tsx b/packages/tui/src/routes/session/index.tsx
-index 04c37e3a19703ae0fae39718683afed22d6ff64f..1e9410d5a06ca8b9c3f05657227d3f38e80ecd88 100644
+index 13a506975f..b1e23788ab 100644
 --- a/packages/tui/src/routes/session/index.tsx
 +++ b/packages/tui/src/routes/session/index.tsx
-@@ -41,6 +41,7 @@ import type {
+@@ -42,6 +42,7 @@ import { ReviewReport } from "@opencode-ai/core/review-report"
  import { useLocal } from "../../context/local"
  import { Locale } from "../../util/locale"
  import { webSearchProviderLabel } from "../../util/tool-display"
@@ -4205,47 +4665,65 @@ index 04c37e3a19703ae0fae39718683afed22d6ff64f..1e9410d5a06ca8b9c3f05657227d3f38
  import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
  import { useSDK } from "../../context/sdk"
  import { useEditorContext } from "../../context/editor"
-@@ -2164,7 +2165,7 @@ function Finish(props: ToolProps) {
-     ),
+@@ -2212,22 +2213,28 @@ export function finishResult(input: Record<string, unknown>, output?: string) {
+ 
+ /**
+  * The part-to-view mapping, kept separate from the component so the wiring is
+- * testable without mounting the route. The wait flag only exists on a completed
+- * part: the tool returns it as the call's metadata, so it is stamped when the
+- * tool part settles and there is no earlier status that can carry it.
++ * testable without mounting the route. The wait flag and the effort status come
++ * from the completed part's metadata, so they are only stamped on a settled call.
+  */
+ export function finishToolViewForPart(part: ToolPart, result?: string) {
+   return finishToolView(
+     part.state.status,
+     result,
+-    part.state.status === "completed" && "metadata" in part.state && part.state.metadata?.waiting === true,
++    part.state.status === "completed" && "metadata" in part.state ? part.state.metadata : undefined,
    )
-   const visible = createMemo(() => (expanded() || !collapsed().overflow ? result() : collapsed().output))
--  const view = createMemo(() => finishToolView(props.part.state.status, visible()))
-+  const view = createMemo(() => finishToolView(props.part.state.status, visible(), props.metadata))
-   const content = createMemo(() => {
-     if (!collapsed().overflow) return view().children
-     return `${view().children}
-@@ -2193,7 +2194,7 @@ export function finishResult(input: Record<string, unknown>, output?: string) {
-   return (output?.trim() || stringValue(input.result)?.trim() || undefined) ?? undefined
  }
  
--export function finishToolView(status: FinishToolStatus, result?: string) {
-+export function finishToolView(status: FinishToolStatus, result?: string, metadata?: Record<string, unknown>) {
+-export function finishToolView(status: FinishToolStatus, result?: string, waiting = false) {
++export function finishToolView(
++  status: FinishToolStatus,
++  result?: string,
++  // A boolean is the #233 `waiting` flag; an object is the completed part's metadata.
++  metadataOrWaiting?: Record<string, unknown> | boolean,
++) {
++  const metadata = typeof metadataOrWaiting === "boolean" ? { waiting: metadataOrWaiting } : metadataOrWaiting
+   // A wait is not a completion: the agent yielded the turn while the background
+-  // subagents it launched still run, so the block must not read as done — a
+-  // paused icon, not the check the completed finish uses.
++  // subagents it launched still run, so the block must not read as done. The
++  // waiting state is a paused icon, not the check the completed finish uses.
++  const waiting = metadata?.waiting === true
+   const completed = waiting ? WAITING_LABEL : "Task completed"
    if (status === "pending") {
      return {
-       icon: "✓",
-@@ -2214,13 +2215,18 @@ export function finishToolView(status: FinishToolStatus, result?: string) {
+@@ -2249,13 +2256,18 @@ export function finishToolView(status: FinishToolStatus, result?: string, waitin
        children: "Completing task...",
      }
    }
 +  // Completed (or failed) finish results expose their honest review and
 +  // validation status inline; transcripts without those fields keep the
 +  // original rendering.
-+  const summary = result ? `Task completed\n↳ ${result}` : "Task completed"
++  const summary = result ? `${completed}\n↳ ${result}` : completed
 +  const statusLines = finishStatus(metadata)
    return {
-     icon: "✓",
+     icon: waiting ? WAITING_ICON : "✓",
      pending: "Completing task...",
      complete: status === "completed",
      spinner: false,
      failure: "Finish failed",
--    children: result ? `Task completed\n↳ ${result}` : "Task completed",
+-    children: result ? `${completed}\n↳ ${result}` : completed,
 +    children: statusLines ? `${summary}\n${finishStatusLines(statusLines).join("\n")}` : summary,
    }
  }
  
 diff --git a/packages/tui/src/util/agent-effort.ts b/packages/tui/src/util/agent-effort.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c4d9b427b49a31707235627821a94a16c2058952
+index 0000000000..c4d9b427b4
 --- /dev/null
 +++ b/packages/tui/src/util/agent-effort.ts
 @@ -0,0 +1,235 @@
@@ -4486,7 +4964,7 @@ index 0000000000000000000000000000000000000000..c4d9b427b49a31707235627821a94a16
 +}
 diff --git a/packages/tui/test/cli/tui/dialog-agent-effort.test.tsx b/packages/tui/test/cli/tui/dialog-agent-effort.test.tsx
 new file mode 100644
-index 0000000000000000000000000000000000000000..89666564eb2af2c4aa394de48b2311bce0788ecb
+index 0000000000..89666564eb
 --- /dev/null
 +++ b/packages/tui/test/cli/tui/dialog-agent-effort.test.tsx
 @@ -0,0 +1,526 @@
@@ -5017,7 +5495,7 @@ index 0000000000000000000000000000000000000000..89666564eb2af2c4aa394de48b2311bc
 +  })
 +})
 diff --git a/packages/tui/test/context/local.test.ts b/packages/tui/test/context/local.test.ts
-index 0731a2d5382288390834e5cebeb49845c1fd029e..3f4dd73446a329ebe8f9879fbdbd4d5d261e6e56 100644
+index 0731a2d538..3f4dd73446 100644
 --- a/packages/tui/test/context/local.test.ts
 +++ b/packages/tui/test/context/local.test.ts
 @@ -1,5 +1,5 @@
@@ -5098,7 +5576,7 @@ index 0731a2d5382288390834e5cebeb49845c1fd029e..3f4dd73446a329ebe8f9879fbdbd4d5d
 +  })
 +})
 diff --git a/packages/tui/test/prompt/vision-tag.test.tsx b/packages/tui/test/prompt/vision-tag.test.tsx
-index a51053d0a5483c3fb00cac09d9dc056232c26bae..cba1a87651a4ad9917882bb3897121b544b6d9d5 100644
+index a51053d0a5..cba1a87651 100644
 --- a/packages/tui/test/prompt/vision-tag.test.tsx
 +++ b/packages/tui/test/prompt/vision-tag.test.tsx
 @@ -429,6 +429,13 @@ describe("prompt vision tag", () => {
@@ -5141,7 +5619,7 @@ index a51053d0a5483c3fb00cac09d9dc056232c26bae..cba1a87651a4ad9917882bb3897121b5
        const visionProvIdx = frame.indexOf("TestProvider")
 diff --git a/packages/tui/test/util/agent-effort.test.ts b/packages/tui/test/util/agent-effort.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d227c2b482d58ae2f5af636555043df49f8de9f7
+index 0000000000..d227c2b482
 --- /dev/null
 +++ b/packages/tui/test/util/agent-effort.test.ts
 @@ -0,0 +1,251 @@
@@ -5398,7 +5876,7 @@ index 0000000000000000000000000000000000000000..d227c2b482d58ae2f5af636555043df4
 +})
 diff --git a/specs/agent-effort.md b/specs/agent-effort.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..a5713277e1fe9c21e014182d421ffab7a27a0e75
+index 0000000000..a5713277e1
 --- /dev/null
 +++ b/specs/agent-effort.md
 @@ -0,0 +1,121 @@
