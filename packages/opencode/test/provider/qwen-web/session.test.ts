@@ -262,6 +262,15 @@ describe("consumeQwenStream", () => {
     expect(result.error?.code).toBe("upstream_error")
   })
 
+  test("deleted-chat stream errors carry the stale-chat recovery marker", async () => {
+    const result = await consumeQwenStream(
+      byteStream(['data: {"error":{"code":"CHAT_NOT_FOUND","message":"This chat has been deleted."}}\n']),
+    )
+    expect(result.finishReason).toBe("error")
+    expect(result.error?.upstreamCode).toBe("chat_not_exist")
+    expect(result.error?.retryable).toBe(true)
+  })
+
   test("aborted signals stop consumption", async () => {
     const controller = new AbortController()
     controller.abort()

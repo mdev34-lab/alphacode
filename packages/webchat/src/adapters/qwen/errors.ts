@@ -117,6 +117,8 @@ export function isAbortLike(input: unknown): boolean {
 /** Classify a mid-stream `data: {"error": ...}` payload. */
 export function classifyStreamError(code: string, message: string): QwenWebError {
   const detail = `${code} ${message}`.slice(0, 300)
+  // Code first: a chat-specific upstream code outranks message heuristics.
+  if (isStaleChatCode(code)) return staleChatError({ upstreamCode: code, detail: message })
   if (isQuotaMessage(detail)) {
     return new QwenWebError({
       code: "rate_limited",
@@ -134,6 +136,7 @@ export function classifyStreamError(code: string, message: string): QwenWebError
         "Qwen interrupted the stream with a human-verification challenge. Complete it in the Qwen browser profile, then retry.",
     })
   }
+  if (isChatMissingMessage(detail)) return staleChatError({ upstreamCode: code, detail: message })
   return new QwenWebError({
     code: "upstream_error",
     retryable: true,
@@ -166,10 +169,124 @@ export function isQuotaMessage(message: string): boolean {
   return QUOTA_PATTERNS.some((pattern) => normalized.includes(pattern))
 }
 
-const CHAT_MISSING_PATTERNS = ["is not exist", "not exist", "does not exist", "chat not found", "no such chat"]
+/** Canonical `upstreamCode` stamped on every stale/missing-chat error. */
+export const STALE_CHAT_UPSTREAM_CODE = "chat_not_exist"
 
+const CHAT_MISSING_PATTERNS = [
+  "is not exist",
+  "not exist",
+  "does not exist",
+  "chat not found",
+  "no such chat",
+  "chat has been deleted",
+  "chat was deleted",
+  "chat is deleted",
+  "start a new chat",
+]
+
+/** Message-side detection of a dead upstream chat (case-insensitive). */
 export function isChatMissingMessage(message: string): boolean {
-  return CHAT_MISSING_PATTERNS.some((pattern) => message.includes(pattern))
+  const normalized = message.toLowerCase()
+  return CHAT_MISSING_PATTERNS.some((pattern) => normalized.includes(pattern))
+}
+
+const CHAT_MISSING_CODE_PATTERNS = [
+  "chat not found",
+  "chat not exist",
+  "chat does not exist",
+  "chat is not exist",
+  "no such chat",
+  "chat deleted",
+  "chat has been deleted",
+]
+
+/** Normalize an upstream error code for matching (`CHAT_NOT_FOUND` -> `chat not found`). */
+export function normalizeUpstreamCode(code: string): string {
+  return code.toLowerCase().replace(/[_-]+/g, " ").trim()
+}
+
+/**
+ * Code-first detection of a dead upstream chat. Codes must be chat-specific:
+ * a bare `Not_Found` is usually a retired *model* id (see the catalog
+ * translation in the SDK), not a stale chat, and must not trigger a chat
+ * recovery.
+ */
+export function isStaleChatCode(code: string): boolean {
+  const normalized = normalizeUpstreamCode(code)
+  return CHAT_MISSING_CODE_PATTERNS.some((pattern) => normalized.includes(pattern))
+}
+
+/**
+ * A dead upstream chat (deleted/expired chat id). The chat state — not the
+ * request — is broken, so the error is retryable: the session layer recovers
+ * by starting a fresh chat, and callers may retry after that.
+ */
+export function staleChatError(input: { status?: number; upstreamCode?: string; detail?: string }): QwenWebError {
+  const origin = input.upstreamCode?.trim() || STALE_CHAT_UPSTREAM_CODE
+  const detail = input.detail?.trim().slice(0, 200)
+  return new QwenWebError({
+    code: "upstream_error",
+    retryable: true,
+    status: input.status,
+    upstreamCode: STALE_CHAT_UPSTREAM_CODE,
+    message: detail
+      ? `Qwen chat is no longer valid (${origin}): ${detail}`
+      : `Qwen chat is no longer valid (${origin}). A new chat will be started.`,
+  })
+}
+
+/** True when an error reports a dead upstream chat (the recovery marker). */
+export function isStaleChatError(input: unknown): boolean {
+  return QwenWebError.isInstance(input) && input.upstreamCode === STALE_CHAT_UPSTREAM_CODE
+}
+
+/** An upstream turn that completed without producing anything usable. */
+export function emptyResponseError(): QwenWebError {
+  return new QwenWebError({
+    code: "invalid_response",
+    retryable: true,
+    message:
+      "Qwen returned an empty response: the turn completed without text, reasoning, or tool calls. Nothing was committed; retrying is safe.",
+  })
+}
+
+/**
+ * Classify a JSON-looking body that failed to parse — typically an error
+ * payload larger than the bounded preview, arriving truncated. Field-level
+ * salvage keeps the report honest about what the upstream actually said;
+ * an unparseable body is never evidence that a login is required.
+ */
+export function classifyTruncatedJson(raw: string, status: number): QwenWebError {
+  const code = /"code"\s*:\s*"([^"]{1,80})"/.exec(raw)?.[1]
+  const detail = /"(?:details|message)"\s*:\s*"([^"]{1,300})"/.exec(raw)?.[1]
+  if (code && isStaleChatCode(code)) return staleChatError({ status, upstreamCode: code, detail })
+  if (detail && isChatMissingMessage(detail)) return staleChatError({ status, upstreamCode: code, detail })
+  if (code === "RateLimited" || status === 429 || (detail && isQuotaMessage(detail))) {
+    return new QwenWebError({
+      code: "rate_limited",
+      retryable: true,
+      status: 429,
+      upstreamCode: code,
+      message: `Qwen rate limit reached: ${(detail ?? "response body was truncated before it could be read").slice(0, 200)}`,
+    })
+  }
+  return new QwenWebError({
+    code: "invalid_response",
+    retryable: status >= 500,
+    status,
+    upstreamCode: code,
+    message: `Qwen returned a malformed or truncated JSON error response (HTTP ${status})${code ? ` [${code}]` : ""}: ${(detail ?? raw).slice(0, 200)}`,
+  })
+}
+
+/** A non-stream response where an event stream was expected. */
+export function nonStreamResponseError(preview: string, status: number): QwenWebError {
+  return new QwenWebError({
+    code: "invalid_response",
+    retryable: status >= 500,
+    status,
+    message: `Qwen returned a non-stream response where an event stream was expected (HTTP ${status}): ${preview.slice(0, 200) || "<empty body>"}`,
+  })
 }
 
 const WAF_PATTERNS = [
@@ -252,7 +369,15 @@ export function classifyJsonError(raw: string, status: number): QwenWebError | u
       ? parsed.data.code
       : typeof parsed?.code === "string"
         ? parsed.code
-        : undefined
+        : typeof parsed?.error?.code === "string"
+          ? parsed.error.code
+          : undefined
+
+  // Code first: `CHAT_NOT_FOUND`-style codes identify a dead chat even when
+  // the message text is generic (or worded differently, e.g. "deleted").
+  if (code && isStaleChatCode(code)) {
+    return staleChatError({ status, upstreamCode: code, detail: detailText || undefined })
+  }
 
   if (detailText && isWafMessage(detailText)) {
     return new QwenWebError({
@@ -265,13 +390,7 @@ export function classifyJsonError(raw: string, status: number): QwenWebError | u
   }
 
   if (detailText && isChatMissingMessage(detailText)) {
-    return new QwenWebError({
-      code: "upstream_error",
-      retryable: true,
-      status,
-      upstreamCode: "chat_not_exist",
-      message: `Qwen chat session is no longer valid (${detailText.slice(0, 160)}).`,
-    })
+    return staleChatError({ status, upstreamCode: code, detail: detailText })
   }
 
   if (detailText && /chat is in progress|the chat is in progress/i.test(detailText)) {

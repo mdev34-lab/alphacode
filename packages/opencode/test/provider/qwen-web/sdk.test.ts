@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import os from "os"
 import path from "path"
-import { APICallError, type LanguageModelV3CallOptions, type LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import {
+  APICallError,
+  type LanguageModelV3CallOptions,
+  type LanguageModelV3Prompt,
+  type LanguageModelV3StreamPart,
+} from "@ai-sdk/provider"
 import { QwenWebError } from "@opencode-ai/webchat/adapters/qwen/errors"
 import { QwenWebSession } from "@opencode-ai/webchat/adapters/qwen/session"
 import { ThreadStore } from "@opencode-ai/webchat/store"
@@ -313,7 +318,7 @@ describe("QwenWebLanguageModel.doStream", () => {
 
   test("reports unsupported settings as warnings", async () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
-    const { stream } = await model([CREATED, "data: [DONE]\n"], captured).doStream({
+    const { stream } = await model([CREATED, textEvent("ok"), "data: [DONE]\n"], captured).doStream({
       prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
       temperature: 0.5,
       topP: 0.9,
@@ -331,7 +336,7 @@ describe("QwenWebLanguageModel.doStream", () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
     await collect(
       (
-        await model([CREATED, "data: [DONE]\n"], captured).doStream({
+        await model([CREATED, textEvent("ok"), "data: [DONE]\n"], captured).doStream({
           prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
           tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
           toolChoice: { type: "required" },
@@ -351,7 +356,7 @@ describe("QwenWebLanguageModel.doStream", () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
     await collect(
       (
-        await model([CREATED, "data: [DONE]\n"], captured).doStream({
+        await model([CREATED, textEvent("ok"), "data: [DONE]\n"], captured).doStream({
           prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
           providerOptions: { "qwen-web": { thinking: false } },
         })
@@ -365,7 +370,7 @@ describe("QwenWebLanguageModel.doStream", () => {
     const retryableError = new QwenWebError({ code: "browser_error", message: "crashed", retryable: true })
     await collect(
       (
-        await model([CREATED, "data: [DONE]\n"], retryable, {
+        await model([CREATED, textEvent("ok"), "data: [DONE]\n"], retryable, {
           sessionBehavior: { failFirstWith: retryableError },
         }).doStream({
           prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
@@ -661,5 +666,150 @@ describe("factories and error mapping", () => {
     expect(unknown.isRetryable).toBe(true)
     const passthrough = new APICallError({ message: "x", url: "u", requestBodyValues: {}, isRetryable: false })
     expect(toApiError(passthrough, "m")).toBe(passthrough)
+  })
+})
+describe("issue 232: dead-chat recovery and honest errors at the SDK boundary", () => {
+  const DELETED_JSON = JSON.stringify({
+    success: false,
+    code: "CHAT_NOT_FOUND",
+    message: "This chat has been deleted. Please start a new chat to continue.",
+  })
+  const STALE_EVENT = 'data: {"error":{"code":"CHAT_NOT_FOUND","message":"This chat has been deleted."}}\n'
+  const created = (id: string, chatId: string) =>
+    `data: {"type":"response.created","response":{"id":"${id}","chat_id":"${chatId}"}}\n`
+  const textFor = (responseId: string, content: string) =>
+    `data: {"response_id":"${responseId}","choices":[{"delta":{"phase":"answer","content":"${content}"}}]}\n`
+
+  type Scripted = { kind: "sse"; lines: string[] } | { kind: "json"; status: number; body: string }
+
+  function recoveryHarness(completionScript: Scripted[]) {
+    const payloads: Array<{ path: string; prompt: string }> = []
+    const createdChats: string[] = []
+    let completions = 0
+    const transport = {
+      requestJson: async () => ({ status: 200, statusText: "OK", contentType: "application/json", body: "{}" }),
+      requestStream: async () => {
+        throw new Error("unexpected requestStream")
+      },
+      rawRequestJson: async () => {
+        const id = `chat-${createdChats.length + 1}`
+        createdChats.push(id)
+        return { status: 200, statusText: "OK", contentType: "application/json", body: JSON.stringify({ chat_id: id }) }
+      },
+      rawRequestStream: async (_method: string, requestPath: string, options?: { body?: string }) => {
+        const body = JSON.parse(options?.body ?? "{}") as { messages?: Array<{ content?: string }> }
+        payloads.push({ path: requestPath, prompt: body.messages?.[0]?.content ?? "" })
+        const result = completionScript[Math.min(completions, completionScript.length - 1)]!
+        completions++
+        if (result.kind === "json") {
+          return { status: result.status, contentType: "application/json", stream: byteStream([result.body]), abort: () => {} }
+        }
+        return { status: 200, contentType: "text/event-stream", stream: byteStream(result.lines), abort: () => {} }
+      },
+      idleBudgetMs: () => 1000,
+    } as unknown as QwenWebTransport
+    const session = new QwenWebSession({ transport, store: freshStore() })
+    const languageModel = new QwenWebLanguageModel("qwen3-max", { session, upload: fakeUpload() as never })
+    return { languageModel, session, payloads, createdChats }
+  }
+
+  const followUpPrompt: LanguageModelV3Prompt = [
+    { role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] },
+    { role: "assistant", content: [{ type: "text", text: "First answer" }] },
+    { role: "user", content: [{ type: "text", text: "The follow-up question." }] },
+  ]
+
+  test("a deleted chat recovers once and re-sends the FULL prompt, not the trimmed tail", async () => {
+    const harness = recoveryHarness([
+      { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+      { kind: "json", status: 200, body: DELETED_JSON },
+      { kind: "sse", lines: [created("r2", "chat-2"), textFor("r2", "Second answer"), "data: [DONE]\n"] },
+    ])
+
+    // Turn 1 anchors the thread on chat-1.
+    await collect(
+      (
+        await harness.languageModel.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    expect(harness.payloads[0]!.prompt).toContain("LONG ORIGINAL CONTEXT")
+
+    // Turn 2's trimmed tail hits CHAT_NOT_FOUND; the caller sees one clean stream.
+    const parts = await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream)
+
+    expect(harness.createdChats).toEqual(["chat-1", "chat-2"])
+    expect(harness.payloads).toHaveLength(3)
+    // Attempt 1: the incremental tail against the dead chat.
+    expect(harness.payloads[1]!.path).toContain("chat_id=chat-1")
+    expect(harness.payloads[1]!.prompt).not.toContain("LONG ORIGINAL CONTEXT")
+    // Attempt 2: fresh chat, FULL prompt (the fresh chat has no transcript).
+    expect(harness.payloads[2]!.path).toContain("chat_id=chat-2")
+    expect(harness.payloads[2]!.prompt).toContain("LONG ORIGINAL CONTEXT")
+    expect(harness.payloads[2]!.prompt).toContain("The follow-up question.")
+    expect(parts.some((part) => part.type === "text-delta")).toBe(true)
+    expect((parts.at(-1) as { finishReason?: { unified?: string } }).finishReason?.unified).toBe("stop")
+  })
+
+  test("an anchored thread without a live chat binding keeps the full prompt", async () => {
+    const harness = recoveryHarness([{ kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] }])
+    await collect(
+      (
+        await harness.languageModel.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    // Simulate a poisoned legacy threads.json: anchors survived, binding gone.
+    const thread = (harness.session as unknown as { store: ThreadStore }).store.all()[0]!
+    expect(thread.messages.at(-1)?.providerState).toEqual({ responseId: "r1" })
+    thread.providerId = undefined
+
+    await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream)
+    expect(harness.payloads[1]!.prompt).toContain("LONG ORIGINAL CONTEXT")
+    expect(harness.payloads[1]!.prompt).toContain("The follow-up question.")
+  })
+
+  test("a mid-stream dead chat after output fails the stream and unbinds the thread", async () => {
+    const harness = recoveryHarness([
+      { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+      { kind: "sse", lines: [created("r2", "chat-1"), textFor("r2", "partial"), STALE_EVENT] },
+      { kind: "sse", lines: [created("r3", "chat-2"), textFor("r3", "Recovered"), "data: [DONE]\n"] },
+    ])
+    await collect(
+      (
+        await harness.languageModel.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+
+    // Output already reached the caller, so the turn fails honestly instead of re-running.
+    const error = await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+    expect(error).toBeInstanceOf(APICallError)
+    expect((error as APICallError).message).toContain("no longer valid")
+    expect((error as APICallError).isRetryable).toBe(true)
+
+    // The dead binding was dropped: the next turn starts fresh with the FULL prompt.
+    await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream)
+    expect(harness.createdChats).toEqual(["chat-1", "chat-2"])
+    const last = harness.payloads.at(-1)!
+    expect(last.path).toContain("chat_id=chat-2")
+    expect(last.prompt).toContain("LONG ORIGINAL CONTEXT")
+  })
+
+  test("an empty upstream turn surfaces a retryable API error, not a silent stop", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const { stream } = await model([CREATED, "data: [DONE]\n"], captured).doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })
+    const error = await collect(stream).catch((e) => e)
+    expect(error).toBeInstanceOf(APICallError)
+    expect((error as APICallError).isRetryable).toBe(true)
+    expect((error as APICallError).message).toContain("empty response")
   })
 })
