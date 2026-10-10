@@ -60,6 +60,12 @@ const call = (input: typeof WebFetchTool.Input.Type, id = "call-webfetch") => ({
   call: { type: "tool-call" as const, id, name: "webfetch", input },
 })
 
+const page =
+  "<nav><a href='/'>Home</a></nav><header><a href='/login'>Sign in</a></header>" +
+  "<div role='navigation'>Menu</div><div class='cookie-consent'>Accept cookies</div>" +
+  "<aside>Related</aside><footer>Copyright</footer>" +
+  "<main><h1>Title</h1><p>Body</p></main>"
+
 describe("WebFetchTool helpers", () => {
   test("defaults format and rejects invalid timeout controls", () => {
     const decode = Schema.decodeUnknownSync(WebFetchTool.Input)
@@ -175,6 +181,45 @@ describe("WebFetchTool registration", () => {
       expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "text" }))).toEqual({
         type: "text",
         value: "Helloworld",
+      })
+    }),
+  )
+
+  it.effect("strips site chrome from markdown while keeping the main content", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () => Effect.succeed(new Response(page, { headers: { "content-type": "text/html" } }))
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/page", format: "markdown" }))).toEqual({
+        type: "text",
+        value: "# Title\n\nBody",
+      })
+    }),
+  )
+
+  it.effect("strips site chrome from text while keeping the main content", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () => Effect.succeed(new Response(page, { headers: { "content-type": "text/html" } }))
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/page", format: "text" }))).toEqual({
+        type: "text",
+        value: "TitleBody",
+      })
+    }),
+  )
+
+  it.effect("returns raw HTML byte for byte without stripping", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () => Effect.succeed(new Response(page, { headers: { "content-type": "text/html" } }))
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/page", format: "html" }))).toEqual({
+        type: "text",
+        value: page,
       })
     }),
   )
