@@ -1,0 +1,40 @@
+Name: feat(agent): add fast, medium and thorough effort selector
+Base: dev at 62906688a9fc36a6059f78f5d7e4d70d2e437be4
+Status: DRAFT — final independent review has no verdict; free-model quota interrupted it. Do not claim CLEAN.
+
+Description:
+### Issue for this PR
+
+Closes #235
+
+### Type of change
+
+- [ ] Bug fix
+- [x] New feature
+- [ ] Refactor / code improvement
+- [ ] Documentation
+
+### What does this PR do?
+
+Adds `agent.effort`, a TUI selector beside model thinking, and a `task({ effort })` override with child inheritance. Work still orchestrates Code at every level; edits remain unlimited.
+
+Fast uses no mandatory review and minimal validation. Medium is the configurable default, with at most two review passes and relevant tests. Thorough uses until-clean review and full validation. `finish()` alone checks persisted review history and labels unreviewed, stale, exhausted or unavailable delivery honestly. Repeated calls cannot bypass review. Availability matches actual task routing and permissions, including long sessions and existing always-allow grants. Validation evidence is agent-reported, not automatically executed. Coupled thinking defaults do not overwrite explicit/configured choices.
+
+### How did you verify your code works?
+
+Focused evidence: **437 passed, 0 failed across 18 files**. After the final routing fix, reran 131 finish/task/review tests and 79 permission tests; the unchanged Core/config/API/TUI groups previously passed 80/99/48. SDK generation-only stages, formatting and strict patch application against the stated base passed.
+
+Separate registry/skill checks: 18 passed, 1 failed; the registry case also fails on the untouched base. Three unchanged `thinking-nested` cases have recorded base failures. These are not claimed green.
+
+Typechecking has no completed result; full builds/suites/parity and CI remain unverified. The already-stale `packages/sdk/openapi.json` was left unchanged to avoid unrelated drift and also omits `agent.effort`; generated SDK types are updated.
+
+Final independent review is incomplete: the free models hit their usage limit before a verdict. This package is a draft, not an approved change.
+
+### Screenshots / recordings
+
+Bundled `agent-effort.png` is an actual terminal-renderer fixture character capture, neutrally rasterized—not a production screenshot. Upload it with the PR.
+
+### Checklist
+
+- [x] I have tested my changes locally
+- [x] I have not included unrelated changes in this PR
