@@ -113,7 +113,47 @@ const isTextualMime = (mime: string) =>
 
 const BOILERPLATE_TAGS = ["nav", "header", "footer", "aside"]
 const BOILERPLATE_ROLES = ["navigation", "banner", "contentinfo"]
-const BOILERPLATE_CLASSES = ["cookie", "footer"]
+// Narrow cookie/footer-specific chrome tokens only. Broad substring matching (legacy
+// `.includes("cookie")` / `.includes("footer")`) removed legitimate content such as
+// `cookie-recipe` or `footer-note`; generic consent/gdpr tokens are intentionally NOT added
+// here because they can match legitimate content and would widen scope beyond this fix.
+const BOILERPLATE_CLASS_TOKENS = [
+  "cookie",
+  "cookies",
+  "cookie-banner",
+  "cookie-bar",
+  "cookie-consent",
+  "cookie-notice",
+  "cookie-notification",
+  "cookie-overlay",
+  "cookie-popup",
+  "cookie-warning",
+  "cookie-wall",
+  "cookie_accept",
+  "cookie_acceptance",
+  "cookie_alert",
+  "cookie_approve",
+  "cookie_approval",
+  "cookie_notice",
+  "cookie_ok",
+  "cookieconsent",
+  "cookie-consent-container",
+  "footer",
+  "site-footer",
+  "page-footer",
+  "global-footer",
+  "main-footer",
+]
+
+// HTML class attributes are whitespace-delimited; compare exact whole tokens only
+// (no comma splitting, no punctuation/edge trimming). A single token containing a comma
+// (e.g. "consent,cookie,banner") is not a recognized chrome token and is retained.
+const isBoilerplateClass = (value: string) => {
+  for (const token of value.toLowerCase().split(/\s+/)) {
+    if (BOILERPLATE_CLASS_TOKENS.includes(token)) return true
+  }
+  return false
+}
 
 function stripBoilerplate(html: string) {
   const doc = parseDocument(html)
@@ -121,7 +161,7 @@ function stripBoilerplate(html: string) {
     (element) =>
       BOILERPLATE_TAGS.includes(element.name) ||
       BOILERPLATE_ROLES.includes((element.attribs["role"] ?? "").toLowerCase()) ||
-      BOILERPLATE_CLASSES.some((name) => (element.attribs["class"] ?? "").toLowerCase().includes(name)),
+      isBoilerplateClass(element.attribs["class"] ?? ""),
     doc.children,
   )
   for (const element of boilerplate) DomUtils.removeElement(element)
