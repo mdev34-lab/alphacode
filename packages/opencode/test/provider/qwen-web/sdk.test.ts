@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import os from "os"
 import path from "path"
-import { APICallError, type LanguageModelV3CallOptions, type LanguageModelV3StreamPart } from "@ai-sdk/provider"
+import {
+  APICallError,
+  type LanguageModelV3CallOptions,
+  type LanguageModelV3Prompt,
+  type LanguageModelV3StreamPart,
+} from "@ai-sdk/provider"
 import { QwenWebError } from "@opencode-ai/webchat/adapters/qwen/errors"
 import { QwenWebSession } from "@opencode-ai/webchat/adapters/qwen/session"
 import { ThreadStore } from "@opencode-ai/webchat/store"
@@ -46,9 +51,20 @@ interface SessionBehavior {
   stream?: ReadableStream<Uint8Array>
 }
 
-function fakeUpload(behavior?: { failWith?: unknown; entries?: unknown[] }) {
+function fakeUpload(behavior?: {
+  failWith?: unknown
+  entries?: unknown[]
+  onUpload?: (
+    media: Array<{ source: string; mediaType?: string; filename?: string }>,
+    signal?: AbortSignal,
+  ) => void | Promise<void>
+}) {
   return {
-    uploadAll: async () => {
+    uploadAll: async (
+      media: Array<{ source: string; mediaType?: string; filename?: string }>,
+      signal?: AbortSignal,
+    ) => {
+      await behavior?.onUpload?.(media, signal)
       if (behavior?.failWith) throw behavior.failWith
       return (behavior?.entries ?? []) as never
     },
@@ -65,6 +81,8 @@ function model(
   options?: {
     sessionBehavior?: SessionBehavior
     uploadBehavior?: { failWith?: unknown; entries?: unknown[] }
+    store?: ThreadStore
+    modelId?: string
   },
 ): QwenWebLanguageModel {
   const transport: QwenWebTransport = {
@@ -102,9 +120,9 @@ function model(
   } as unknown as QwenWebTransport
   const session = new QwenWebSession({
     transport,
-    store: freshStore(),
+    store: options?.store ?? freshStore(),
   })
-  return new QwenWebLanguageModel("qwen3-max", {
+  return new QwenWebLanguageModel(options?.modelId ?? "qwen3-max", {
     session,
     upload: fakeUpload(options?.uploadBehavior) as never,
   })
@@ -313,7 +331,7 @@ describe("QwenWebLanguageModel.doStream", () => {
 
   test("reports unsupported settings as warnings", async () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
-    const { stream } = await model([CREATED, "data: [DONE]\n"], captured).doStream({
+    const { stream } = await model([CREATED, textEvent("ok"), "data: [DONE]\n"], captured).doStream({
       prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
       temperature: 0.5,
       topP: 0.9,
@@ -331,7 +349,7 @@ describe("QwenWebLanguageModel.doStream", () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
     await collect(
       (
-        await model([CREATED, "data: [DONE]\n"], captured).doStream({
+        await model([CREATED, textEvent("ok"), "data: [DONE]\n"], captured).doStream({
           prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
           tools: [{ type: "function", name: "read", inputSchema: { type: "object" } }],
           toolChoice: { type: "required" },
@@ -351,7 +369,7 @@ describe("QwenWebLanguageModel.doStream", () => {
     const captured: Captured = { calls: 0, stops: [], aborted: false }
     await collect(
       (
-        await model([CREATED, "data: [DONE]\n"], captured).doStream({
+        await model([CREATED, textEvent("ok"), "data: [DONE]\n"], captured).doStream({
           prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
           providerOptions: { "qwen-web": { thinking: false } },
         })
@@ -365,7 +383,7 @@ describe("QwenWebLanguageModel.doStream", () => {
     const retryableError = new QwenWebError({ code: "browser_error", message: "crashed", retryable: true })
     await collect(
       (
-        await model([CREATED, "data: [DONE]\n"], retryable, {
+        await model([CREATED, textEvent("ok"), "data: [DONE]\n"], retryable, {
           sessionBehavior: { failFirstWith: retryableError },
         }).doStream({
           prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
@@ -661,5 +679,422 @@ describe("factories and error mapping", () => {
     expect(unknown.isRetryable).toBe(true)
     const passthrough = new APICallError({ message: "x", url: "u", requestBodyValues: {}, isRetryable: false })
     expect(toApiError(passthrough, "m")).toBe(passthrough)
+  })
+})
+describe("issue 232: dead-chat recovery and honest errors at the SDK boundary", () => {
+  const DELETED_JSON = JSON.stringify({
+    success: false,
+    code: "CHAT_NOT_FOUND",
+    message: "This chat has been deleted. Please start a new chat to continue.",
+  })
+  const STALE_EVENT = 'data: {"error":{"code":"CHAT_NOT_FOUND","message":"This chat has been deleted."}}\n'
+  const MODEL_NOT_FOUND_EVENT = 'data: {"error":{"code":"Not_Found","message":"Model does not exist"}}\n'
+  const created = (id: string, chatId: string) =>
+    `data: {"type":"response.created","response":{"id":"${id}","chat_id":"${chatId}"}}\n`
+  const textFor = (responseId: string, content: string) =>
+    `data: {"response_id":"${responseId}","choices":[{"delta":{"phase":"answer","content":"${content}"}}]}\n`
+
+  type Scripted = { kind: "sse"; lines: string[] } | { kind: "json"; status: number; body: string }
+
+  function recoveryHarness(
+    completionScript: Scripted[],
+    uploadEntries: unknown[] = [],
+    uploadBehavior?: {
+      failWith?: unknown
+      onUpload?: (
+        media: Array<{ source: string; mediaType?: string; filename?: string }>,
+        signal?: AbortSignal,
+      ) => void | Promise<void>
+    },
+  ) {
+    const payloads: Array<{ path: string; prompt: string; files: unknown[] }> = []
+    const uploadedMedia: Array<Array<{ source: string; mediaType?: string; filename?: string }>> = []
+    const createdChats: string[] = []
+    let completions = 0
+    const transport = {
+      requestJson: async () => ({ status: 200, statusText: "OK", contentType: "application/json", body: "{}" }),
+      requestStream: async () => {
+        throw new Error("unexpected requestStream")
+      },
+      rawRequestJson: async () => {
+        const id = `chat-${createdChats.length + 1}`
+        createdChats.push(id)
+        return { status: 200, statusText: "OK", contentType: "application/json", body: JSON.stringify({ chat_id: id }) }
+      },
+      rawRequestStream: async (_method: string, requestPath: string, options?: { body?: string }) => {
+        const body = JSON.parse(options?.body ?? "{}") as { messages?: Array<{ content?: string; files?: unknown[] }> }
+        payloads.push({
+          path: requestPath,
+          prompt: body.messages?.[0]?.content ?? "",
+          files: body.messages?.[0]?.files ?? [],
+        })
+        const result = completionScript[Math.min(completions, completionScript.length - 1)]!
+        completions++
+        if (result.kind === "json") {
+          return { status: result.status, contentType: "application/json", stream: byteStream([result.body]), abort: () => {} }
+        }
+        return { status: 200, contentType: "text/event-stream", stream: byteStream(result.lines), abort: () => {} }
+      },
+      idleBudgetMs: () => 1000,
+    } as unknown as QwenWebTransport
+    const store = freshStore()
+    const session = new QwenWebSession({ transport, store })
+    const languageModel = new QwenWebLanguageModel("qwen3-max", {
+      session,
+      upload: fakeUpload({
+        entries: uploadEntries,
+        failWith: uploadBehavior?.failWith,
+        onUpload: async (media, signal) => {
+          uploadedMedia.push(media.map((item) => ({ ...item })))
+          await uploadBehavior?.onUpload?.(media, signal)
+        },
+      }) as never,
+    })
+    return { languageModel, session, store, payloads, uploadedMedia, createdChats }
+  }
+
+  const followUpPrompt: LanguageModelV3Prompt = [
+    { role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] },
+    { role: "assistant", content: [{ type: "text", text: "First answer" }] },
+    { role: "user", content: [{ type: "text", text: "The follow-up question." }] },
+  ]
+
+  test("a deleted chat recovers once and re-sends the FULL prompt, not the trimmed tail", async () => {
+    const harness = recoveryHarness([
+      { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+      { kind: "json", status: 200, body: DELETED_JSON },
+      { kind: "sse", lines: [created("r2", "chat-2"), textFor("r2", "Second answer"), "data: [DONE]\n"] },
+    ])
+
+    // Turn 1 anchors the thread on chat-1.
+    await collect(
+      (
+        await harness.languageModel.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    expect(harness.payloads[0]!.prompt).toContain("LONG ORIGINAL CONTEXT")
+
+    // Turn 2's trimmed tail hits CHAT_NOT_FOUND; the caller sees one clean stream.
+    const parts = await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream)
+
+    expect(harness.createdChats).toEqual(["chat-1", "chat-2"])
+    expect(harness.payloads).toHaveLength(3)
+    // Attempt 1: the incremental tail against the dead chat.
+    expect(harness.payloads[1]!.path).toContain("chat_id=chat-1")
+    expect(harness.payloads[1]!.prompt).not.toContain("LONG ORIGINAL CONTEXT")
+    // Attempt 2: fresh chat, FULL prompt (the fresh chat has no transcript).
+    expect(harness.payloads[2]!.path).toContain("chat_id=chat-2")
+    expect(harness.payloads[2]!.prompt).toContain("LONG ORIGINAL CONTEXT")
+    expect(harness.payloads[2]!.prompt).toContain("The follow-up question.")
+    expect(parts.some((part) => part.type === "text-delta")).toBe(true)
+    expect((parts.at(-1) as { finishReason?: { unified?: string } }).finishReason?.unified).toBe("stop")
+  })
+
+  test("a non-chat Not_Found stream error preserves the live binding and incremental follow-ups", async () => {
+    const harness = recoveryHarness([
+      { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+      { kind: "sse", lines: [MODEL_NOT_FOUND_EVENT] },
+      { kind: "sse", lines: [created("r3", "chat-1"), textFor("r3", "Retried"), "data: [DONE]\n"] },
+    ])
+
+    await collect(
+      (
+        await harness.languageModel.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    const error = await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+
+    expect(error).toBeInstanceOf(APICallError)
+    expect((error as APICallError).message).toContain("Model does not exist")
+    expect(harness.payloads).toHaveLength(2)
+    expect(harness.createdChats).toEqual(["chat-1"])
+    expect(harness.store.all()[0]!.providerId).toBe("chat-1")
+    expect(harness.store.all()[0]!.messages.some((message) => message.providerState?.["responseId"] === "r1")).toBe(true)
+
+    await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream)
+    expect(harness.payloads).toHaveLength(3)
+    expect(harness.payloads[2]!.path).toContain("chat_id=chat-1")
+    expect(harness.payloads[2]!.prompt).toContain("The follow-up question.")
+    expect(harness.payloads[2]!.prompt).not.toContain("LONG ORIGINAL CONTEXT")
+    expect(harness.createdChats).toEqual(["chat-1"])
+  })
+
+  test("a text-only follow-up preserves prior image attachments during fresh-chat recovery", async () => {
+    const priorImage = { type: "image", id: "prior-image", url: "https://files.test/prior.png", name: "prior.png" }
+    const harness = recoveryHarness(
+      [
+        { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+        { kind: "json", status: 200, body: DELETED_JSON },
+        { kind: "sse", lines: [created("r3", "chat-2"), textFor("r3", "Recovered"), "data: [DONE]\n"] },
+      ],
+      [priorImage],
+    )
+    const originalPrompt: LanguageModelV3Prompt = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this picture." },
+          { type: "file", data: "aW1hZ2U=", mediaType: "image/png", filename: "prior.png" },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "It shows a landscape." }] },
+    ]
+    const followUpPrompt: LanguageModelV3Prompt = [
+      ...originalPrompt,
+      { role: "user", content: [{ type: "text", text: "What color is the sky?" }] },
+    ]
+
+    await collect((await harness.languageModel.doStream({ prompt: [originalPrompt[0]!] })).stream)
+    await collect((await harness.languageModel.doStream({ prompt: followUpPrompt })).stream)
+
+    expect(harness.payloads[0]!.files).toEqual([priorImage])
+    expect(harness.payloads[1]!.prompt).toContain("What color is the sky?")
+    expect(harness.payloads[1]!.prompt).not.toContain("Describe this picture.")
+    expect(harness.payloads[1]!.files).toEqual([])
+    expect(harness.payloads[2]!.prompt).toContain("Describe this picture.")
+    expect(harness.payloads[2]!.files).toEqual([priorImage])
+    expect(harness.uploadedMedia).toHaveLength(2)
+    expect(harness.uploadedMedia[1]![0]!.filename).toBe("prior.png")
+  })
+
+  test("full-prompt media upload is lazy and a recovery upload failure stops before fresh completion", async () => {
+    const priorImage = { type: "image", id: "prior-image", url: "https://files.test/prior.png", name: "prior.png" }
+    let uploadCount = 0
+    const harness = recoveryHarness(
+      [
+        { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+        { kind: "json", status: 200, body: DELETED_JSON },
+        { kind: "sse", lines: [created("r3", "chat-2"), textFor("r3", "Recovered"), "data: [DONE]\n"] },
+      ],
+      [priorImage],
+      {
+        onUpload: () => {
+          uploadCount++
+          if (uploadCount === 2) {
+            throw new QwenWebError({ code: "network_error", retryable: true, message: "recovery upload failed" })
+          }
+        },
+      },
+    )
+    const imageMessage = {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Describe this picture." },
+        { type: "file" as const, data: "aW1hZ2U=", mediaType: "image/png", filename: "prior.png" },
+      ],
+    }
+    const followUp: LanguageModelV3Prompt = [
+      imageMessage,
+      { role: "assistant", content: [{ type: "text", text: "It shows a landscape." }] },
+      { role: "user", content: [{ type: "text", text: "What color is the sky?" }] },
+    ]
+
+    await collect((await harness.languageModel.doStream({ prompt: [imageMessage] })).stream)
+    expect(uploadCount).toBe(1)
+    const error = await collect((await harness.languageModel.doStream({ prompt: followUp })).stream).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+
+    expect(error).toBeInstanceOf(APICallError)
+    expect((error as APICallError).message).toContain("recovery upload failed")
+    expect(uploadCount).toBe(2)
+    expect(harness.payloads).toHaveLength(2)
+    expect(harness.payloads[1]!.files).toEqual([])
+    expect(harness.createdChats).toEqual(["chat-1"])
+    expect(harness.store.all()[0]!.providerId).toBeUndefined()
+    expect(harness.store.all()[0]!.messages.some((message) => message.content === "What color is the sky?")).toBe(false)
+  })
+
+  test("aborting a lazy recovery upload prevents the fresh-chat completion", async () => {
+    const priorImage = { type: "image", id: "prior-image", url: "https://files.test/prior.png", name: "prior.png" }
+    let uploadCount = 0
+    let resolveUploadStarted: (() => void) | undefined
+    const uploadStarted = new Promise<void>((resolve) => {
+      resolveUploadStarted = resolve
+    })
+    let recoverySignal: AbortSignal | undefined
+    const harness = recoveryHarness(
+      [
+        { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+        { kind: "json", status: 200, body: DELETED_JSON },
+        { kind: "sse", lines: [created("r3", "chat-2"), textFor("r3", "Recovered"), "data: [DONE]\n"] },
+      ],
+      [priorImage],
+      {
+        onUpload: (_media, signal) => {
+          uploadCount++
+          if (uploadCount === 1) return
+          recoverySignal = signal
+          resolveUploadStarted?.()
+          return new Promise<void>((_resolve, reject) => {
+            const onAbort = () => reject(new DOMException("The operation was aborted", "AbortError"))
+            if (signal?.aborted) onAbort()
+            else signal?.addEventListener("abort", onAbort, { once: true })
+          })
+        },
+      },
+    )
+    const imageMessage = {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Describe this picture." },
+        { type: "file" as const, data: "aW1hZ2U=", mediaType: "image/png", filename: "prior.png" },
+      ],
+    }
+    const followUp: LanguageModelV3Prompt = [
+      imageMessage,
+      { role: "assistant", content: [{ type: "text", text: "It shows a landscape." }] },
+      { role: "user", content: [{ type: "text", text: "What color is the sky?" }] },
+    ]
+
+    await collect((await harness.languageModel.doStream({ prompt: [imageMessage] })).stream)
+    const abort = new AbortController()
+    const { stream } = await harness.languageModel.doStream({ prompt: followUp, abortSignal: abort.signal })
+    const reading = collect(stream).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+    await uploadStarted
+    expect(recoverySignal).toBeDefined()
+    expect(recoverySignal?.aborted).toBe(false)
+
+    abort.abort()
+    const error = await reading
+
+    expect(error).toBeInstanceOf(APICallError)
+    expect((error as APICallError).isRetryable).toBe(false)
+    expect(recoverySignal?.aborted).toBe(true)
+    expect(harness.payloads).toHaveLength(2)
+    expect(harness.createdChats).toEqual(["chat-1"])
+    expect(harness.store.all()[0]!.providerId).toBeUndefined()
+    expect(harness.store.all()[0]!.messages.some((message) => message.content === "What color is the sky?")).toBe(false)
+  })
+
+  test("an anchored thread without a live chat binding keeps the full prompt", async () => {
+    const harness = recoveryHarness([{ kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] }])
+    await collect(
+      (
+        await harness.languageModel.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+    // Simulate a poisoned legacy threads.json: anchors survived, binding gone.
+    const thread = (harness.session as unknown as { store: ThreadStore }).store.all()[0]!
+    expect(thread.messages.at(-1)?.providerState).toEqual({ responseId: "r1" })
+    thread.providerId = undefined
+
+    await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream)
+    expect(harness.payloads[1]!.prompt).toContain("LONG ORIGINAL CONTEXT")
+    expect(harness.payloads[1]!.prompt).toContain("The follow-up question.")
+  })
+
+  test("a mid-stream dead chat after output fails the stream and unbinds the thread", async () => {
+    const harness = recoveryHarness([
+      { kind: "sse", lines: [CREATED, textEvent("First answer"), "data: [DONE]\n"] },
+      { kind: "sse", lines: [created("r2", "chat-1"), textFor("r2", "partial"), STALE_EVENT] },
+      { kind: "sse", lines: [created("r3", "chat-2"), textFor("r3", "Recovered"), "data: [DONE]\n"] },
+    ])
+    await collect(
+      (
+        await harness.languageModel.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "LONG ORIGINAL CONTEXT" }] }],
+        })
+      ).stream,
+    )
+
+    // Output already reached the caller, so the turn fails honestly instead of re-running.
+    const error = await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+    expect(error).toBeInstanceOf(APICallError)
+    expect((error as APICallError).message).toContain("no longer valid")
+    expect((error as APICallError).isRetryable).toBe(true)
+
+    // The dead binding was dropped: the next turn starts fresh with the FULL prompt.
+    await collect((await harness.languageModel.doStream({ prompt: [...followUpPrompt] })).stream)
+    expect(harness.createdChats).toEqual(["chat-1", "chat-2"])
+    const last = harness.payloads.at(-1)!
+    expect(last.path).toContain("chat_id=chat-2")
+    expect(last.prompt).toContain("LONG ORIGINAL CONTEXT")
+  })
+
+  test("a mapped stale-after-text error persists the unbinding before generator.return", async () => {
+    const file = path.join(os.tmpdir(), `qwen-webchat-sdk-reload-${Math.random().toString(36).slice(2)}.json`)
+    const store = new ThreadStore({ file })
+    const scope = "issue232-stale-persist"
+    const threadId = `qwen-web:qwen3.8-max:${scope}`
+    const now = Date.now()
+    store.put({
+      id: threadId,
+      model: "qwen3.8-max",
+      providerId: "dead-chat",
+      messages: [
+        { id: "u0", role: "user", content: "Earlier", parts: [{ type: "text", text: "Earlier" }] },
+        {
+          id: "a0",
+          role: "assistant",
+          content: "Earlier answer",
+          parts: [{ type: "text", text: "Earlier answer" }],
+          providerState: { responseId: "r-old" },
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    })
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const languageModel = model([], captured, {
+      store,
+      modelId: "qwen3.8-max",
+      sessionBehavior: { stream: byteStream([CREATED, textEvent("partial text"), STALE_EVENT]) },
+    })
+    const { stream } = await languageModel.doStream({
+      prompt: [
+        { role: "user", content: [{ type: "text", text: "Earlier" }] },
+        { role: "assistant", content: [{ type: "text", text: "Earlier answer" }] },
+        { role: "user", content: [{ type: "text", text: "Continue" }] },
+      ],
+      providerOptions: { "qwen-web": { threadId: scope } },
+    })
+    const reader = stream.getReader()
+    const parts: LanguageModelV3StreamPart[] = []
+    let streamError: unknown
+    for (;;) {
+      try {
+        const next = await reader.read()
+        if (next.done) break
+        if (next.value) parts.push(next.value)
+      } catch (error) {
+        streamError = error
+        break
+      }
+    }
+    expect(streamError).toBeInstanceOf(APICallError)
+    expect(parts.some((part) => part.type === "response-metadata")).toBe(true)
+    expect(parts.some((part) => part.type === "text-delta" && part.delta === "partial text")).toBe(true)
+    expect(captured.calls).toBe(1)
+    const reloaded = new ThreadStore({ file }).get(threadId)
+    expect(reloaded?.providerId).toBeUndefined()
+    expect(reloaded?.messages.some((message) => message.providerState?.["responseId"] === "r-old")).toBe(false)
+  })
+
+  test("an empty upstream turn surfaces a non-retryable API error, not a silent stop", async () => {
+    const captured: Captured = { calls: 0, stops: [], aborted: false }
+    const { stream } = await model([CREATED, "data: [DONE]\n"], captured).doStream({
+      prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })
+    const error = await collect(stream).catch((e) => e)
+    expect(error).toBeInstanceOf(APICallError)
+    expect((error as APICallError).isRetryable).toBe(false)
+    expect((error as APICallError).message).toContain("empty response")
   })
 })

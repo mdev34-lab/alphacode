@@ -51,12 +51,17 @@ export interface QwenWebModelOptions {
 // transcript. In-place message edits or a mid-session switch away from qwen
 // and back diverge from that mirror and degrade to stale context rather than
 // failing — both are rare flows; the trim's common-case benefit stands.
+// The trim also requires a LIVE chat binding (`thread.providerId`): when a
+// dead upstream chat was discarded after a failed turn, the anchors no
+// longer point at anything the next request can chain onto, and trimming
+// would silently drop the whole transcript.
 function incrementalPrompt(
   prompt: LanguageModelV3Prompt,
   thread: WebChatThread,
   lite: boolean,
 ): RenderedPrompt | undefined {
   if (lite) return undefined
+  if (!thread.providerId) return undefined
   if (!lastAnchored(thread)?.providerState?.responseId) return undefined
   let lastAssistant = -1
   for (let index = prompt.length - 1; index >= 0; index--) {
@@ -164,7 +169,8 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
     const tools = functionTools(options.tools as QwenWebToolDefinition[] | undefined)
     const useTools = tools.length > 0 && options.toolChoice?.type !== "none"
 
-    let rendered = renderPrompt(options.prompt)
+    const fullRendered = renderPrompt(options.prompt)
+    let rendered = fullRendered
     const wrap = (p: string, full: boolean): string => {
       let out = p
       if (useTools) {
@@ -209,12 +215,21 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
     // One persistent thread per model (+optional per-agent scope). The turn
     // is incremental: only this turn's prompt is sent, chained upstream.
     const thread = await this.session.ensureThread({ model: upstreamModel, scope: this.threadScope(options) })
+    // The full rendered prompt: if a dead upstream chat forces the session's
+    // one fresh-chat recovery, the fresh chat carries no server-side
+    // transcript, so the re-run must ride on this — never on the trimmed tail.
+    const fullPrompt = prompt
     const trim = incrementalPrompt(options.prompt, thread, this.isLite(options))
     if (trim) {
       rendered = trim
       prompt = wrap(trim.text, false)
     }
     const files = rendered.media.length > 0 ? await this.uploadFiles(rendered.media, signal) : undefined
+    // Incremental calls omit earlier media too; upload the full set only if recovery needs a fresh chat.
+    const recoveryFiles =
+      trim && fullRendered.media.length > 0
+        ? (recoverySignal?: AbortSignal) => this.uploadFiles(fullRendered.media, recoverySignal)
+        : undefined
     const toolDeclarations = useTools
       ? tools.map((tool) => ({
           name: tool.name,
@@ -238,6 +253,8 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
     const generator = this.session.runTurn({
       thread,
       content: prompt,
+      recoveryContent: fullPrompt,
+      recoveryFiles,
       tools: toolDeclarations,
       files,
       reasoningMode,
@@ -390,6 +407,11 @@ export class QwenWebLanguageModel implements LanguageModelV3 {
             if (finished) return
             if (isAbortLike(error) || signal?.aborted) failStream(controller, aborted())
             else failStream(controller, error)
+          } finally {
+            // Never orphan a suspended generator: throwing on an `error`
+            // event would otherwise leave the turn's cleanup (the session's
+            // per-thread busy flag, abort listeners) pending forever.
+            void generator.return(undefined).catch(() => {})
           }
         })()
       },
