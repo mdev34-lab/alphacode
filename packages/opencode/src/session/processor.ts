@@ -187,33 +187,49 @@ const layer = Layer.effect(
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
+        // The commit is a read-modify-write, and a child's write projection can
+        // land on this part from another fiber while the tool is running. Merge
+        // against what is actually stored, under the part's lock, so the commit
+        // cannot erase evidence that was written after the read above.
+        //
         // Background output can predate a child's write projection. Keep
         // persisted evidence and never let a stale false erase a known write.
-        const metadata = { ...match.part.state.metadata, ...output.metadata }
-        const previousReview = match.part.state.metadata?.reviewLoop
-        const returnedReview = output.metadata.reviewLoop
-        if (isRecord(previousReview) || isRecord(returnedReview)) {
-          metadata.reviewLoop = {
-            ...(isRecord(previousReview) ? previousReview : {}),
-            ...(isRecord(returnedReview) ? returnedReview : {}),
-            ...((isRecord(previousReview) && previousReview.writesFiles === true) ||
-            (isRecord(returnedReview) && returnedReview.writesFiles === true)
-              ? { writesFiles: true }
-              : {}),
-          }
-        }
-        yield* session.updatePart({
-          ...match.part,
-          state: {
-            status: "completed",
-            input: match.part.state.input,
-            output: output.output,
-            metadata,
-            title: output.title,
-            time: { start: match.part.state.time.start, end: Date.now() },
-            attachments: output.attachments,
+        const committed = yield* session.modifyPart(
+          {
+            sessionID: match.call.sessionID,
+            messageID: match.call.messageID,
+            partID: match.call.partID,
           },
-        })
+          (part): SessionV1.ToolPart | undefined => {
+            if (!part || part.type !== "tool" || part.state.status !== "running") return undefined
+            const metadata = { ...part.state.metadata, ...output.metadata }
+            const previousReview = part.state.metadata?.reviewLoop
+            const returnedReview = output.metadata.reviewLoop
+            if (isRecord(previousReview) || isRecord(returnedReview)) {
+              metadata.reviewLoop = {
+                ...(isRecord(previousReview) ? previousReview : {}),
+                ...(isRecord(returnedReview) ? returnedReview : {}),
+                ...((isRecord(previousReview) && previousReview.writesFiles === true) ||
+                (isRecord(returnedReview) && returnedReview.writesFiles === true)
+                  ? { writesFiles: true }
+                  : {}),
+              }
+            }
+            return {
+              ...part,
+              state: {
+                status: "completed",
+                input: part.state.input,
+                output: output.output,
+                metadata,
+                title: output.title,
+                time: { start: part.state.time.start, end: Date.now() },
+                attachments: output.attachments,
+              },
+            }
+          },
+        )
+        if (!committed) return
         yield* settleToolCall(toolCallID)
       })
 

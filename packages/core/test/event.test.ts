@@ -1122,3 +1122,82 @@ describe("EventV2", () => {
     }),
   )
 })
+
+// ---------------------------------------------------------------------------
+// Whether a publish waits for the listener it triggered, and what detaches one.
+//
+// `EventV2` runs listeners inline, inside `publish`, with `Effect.forEach`
+// (sequential by default), so the publisher waits for whatever a listener
+// returns. Handling a listener's own failure does not change that: every
+// failure handler available in this version of effect - `Effect.option`,
+// `Effect.catch`, `Effect.catchCause` - awaits the effect it wraps, and so does
+// a listener that handles nothing. Only an explicit fork (`Effect.forkDetach`,
+// `Effect.forkChild`) starts a fiber and lets the publish return before the body
+// has finished. The task tool's live write projection depends on that
+// difference, so it is pinned here.
+// ---------------------------------------------------------------------------
+describe("EventV2 listener awaiting", () => {
+  // A listener that parks halfway through its body. Whether the publish that
+  // triggered it has returned by then is the whole question.
+  const parkListener = (wrap: (body: Effect.Effect<void>) => Effect.Effect<unknown>) =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const entered = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const finished = yield* Deferred.make<void>()
+      const body = Effect.gen(function* () {
+        yield* Deferred.succeed(entered, undefined)
+        yield* Deferred.await(release)
+      }).pipe(Effect.andThen(Deferred.succeed(finished, undefined)))
+      const unsubscribe = yield* events.listen(() => wrap(body))
+      const published = yield* Deferred.make<void>()
+      const fiber = yield* events
+        .publish(DurableMessage, durableData(Session.ID.create(), "await"))
+        .pipe(Effect.andThen(Deferred.succeed(published, undefined)), Effect.forkScoped)
+      return { entered, release, finished, published, fiber, unsubscribe }
+    })
+
+  // The durable event is isolated: `EventV2` catches a throwing listener and
+  // logs it. That isolation is about failure, not about waiting.
+  for (const [name, wrap] of [
+    ["Effect.option", (body: Effect.Effect<void>) => body.pipe(Effect.option)],
+    ["Effect.catch", (body: Effect.Effect<void>) => body.pipe(Effect.catch(() => Effect.void))],
+    ["Effect.catchCause", (body: Effect.Effect<void>) => body.pipe(Effect.catchCause(() => Effect.void))],
+    ["no failure handler", (body: Effect.Effect<void>) => body],
+  ] as const) {
+    it.live(`a publish waits for a listener that handles its failure with ${name}`, () =>
+      Effect.gen(function* () {
+        const state = yield* parkListener(wrap)
+
+        // The listener has started and is parked. The publish has not returned.
+        yield* Deferred.await(state.entered)
+        expect(Option.isSome(yield* Deferred.poll(state.published))).toBe(false)
+
+        yield* Deferred.succeed(state.release, undefined)
+        yield* Fiber.join(state.fiber)
+
+        // The listener's body finished before the publish returned.
+        expect(Option.isSome(yield* Deferred.poll(state.finished))).toBe(true)
+        yield* state.unsubscribe
+      }),
+    )
+  }
+
+  // The only thing that detaches a listener is a fork, not a catch: a detached
+  // fiber is not awaited by the publish that started it.
+  it.live("only a fork detaches a listener from the publish that triggered it", () =>
+    Effect.gen(function* () {
+      const state = yield* parkListener((body) => body.pipe(Effect.forkDetach, Effect.asVoid))
+
+      yield* Fiber.join(state.fiber)
+      // The publish has returned and the forked body has started, but the body
+      // is still parked on `release`: the publish never waited for it.
+      yield* Deferred.await(state.entered)
+      expect(Option.isSome(yield* Deferred.poll(state.finished))).toBe(false)
+
+      yield* Deferred.succeed(state.release, undefined)
+      yield* Deferred.await(state.finished)
+      yield* state.unsubscribe
+    }),
+  )
+})

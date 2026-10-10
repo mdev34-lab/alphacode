@@ -346,14 +346,26 @@ export const TaskTool = Tool.define(
       // here costs nothing that the run's end does not recover. It is logged
       // because a parent that cannot be read mid-run is worth knowing about.
       //
-      // The shape of this pipe is load-bearing, not stylistic. The projection
-      // has to stay awaited by the publish that triggered it, or the parent's
-      // task part is not carrying the child's evidence by the time the child's
-      // own run reads it back. `Effect.catchAll`, `Effect.catchAllCause` and
-      // `Effect.either` at this call site detach it — the body starts and the
-      // publish stops waiting for it — and "projects child writes before
-      // completed delivery" fails deterministically. `Effect.option` keeps it
-      // awaited. Do not swap the combinator without re-running that test.
+      // The projection has to stay awaited by the publish that triggered it, or
+      // the parent's task part is not carrying the child's evidence by the time
+      // the child's own run reads it back. It is awaited because `EventV2` runs
+      // listeners inline, inside `publish`, with `Effect.forEach` (sequential by
+      // default): the publisher waits for whatever a listener returns. That is
+      // true of this pipe and of every other failure handler available in
+      // effect@4 - `Effect.catch`, `Effect.catchIf`, `Effect.catchCause` all
+      // await the effect they wrap, as does a listener that handles nothing.
+      // None of them starts a fiber, so none of them can detach this body; only
+      // an explicit fork does (`Effect.forkDetach`, `Effect.forkChild`), and
+      // that is what would cost the ordering "projects child writes before
+      // completed delivery" asserts. See the pinned ordering test at
+      // `EventV2 listener awaiting` in packages/core/test/event.test.ts.
+      //
+      // What the combinator does decide is the failure channel, and how a
+      // projection that cannot read its parent is reported. Durable events are
+      // already isolated by `EventV2` - a throwing listener is logged, not
+      // propagated - so this site is not protecting the publish; it is naming
+      // the failure once, with the child's session, instead of letting it fall
+      // through to that generic log.
       const unsubscribeWrites = yield* events.listen((event) => {
         if (event.type !== SessionV1.Event.PartUpdated.type) return Effect.void
         const data = event.data as { sessionID?: unknown; part?: SessionV1.Part }
@@ -627,23 +639,23 @@ export const TaskTool = Tool.define(
             // so consumers know which revision was reviewed without re-parsing
             // the output. The output already carries the canonical envelope.
             const review = isReviewAgent(next.name) ? ReviewReport.extract([result?.output ?? ""]) : undefined
+            const reviewed = review?.ok
+              ? { report: review.report, sessionId: nextSession.id, revision: review.report.revision }
+              : undefined
             const reason = yield* Ref.get(termination)
             const completed: Tool.ExecuteResult = {
               title: params.description,
               metadata: {
                 ...metadata,
-                ...(review?.ok
-                  ? { review: { report: review.report, sessionId: nextSession.id, revision: review.report.revision } }
-                  : {}),
+                ...(reviewed ? { review: reviewed } : {}),
                 ...(reason !== undefined ? { termination: { reason } } : {}),
+                // A handoff reports the child's writes as unreviewed. It keeps
+                // the delivered report and what that report was about: the
+                // parent still paid for the review, and dropping the
+                // association would leave it re-parsing the output to learn
+                // which revision was reviewed.
                 ...(metadata[REVIEW_LOOP_METADATA]
-                  ? {
-                      review: {
-                        ...((review?.ok && { report: review.report }) || {}),
-                        verdict: "pending",
-                        termination: "review-pending",
-                      },
-                    }
+                  ? { review: { ...reviewed, verdict: "pending", termination: "review-pending" } }
                   : {}),
               },
               output: renderOutput({

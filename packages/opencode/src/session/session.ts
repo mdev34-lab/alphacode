@@ -457,6 +457,16 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  /**
+   * Read-modify-write over one part, holding that part's lock across both
+   * halves. `modify` sees the part as it is stored, so a concurrent
+   * `updatePart` cannot land between the read and the write. Returning
+   * `undefined` writes nothing.
+   */
+  readonly modifyPart: <T extends SessionV1.Part>(
+    input: { readonly sessionID: SessionID; readonly messageID: MessageID; readonly partID: PartID },
+    modify: (part: SessionV1.Part | undefined) => T | undefined,
+  ) => Effect.Effect<T | undefined>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -632,7 +642,7 @@ const layer: Layer.Layer<
         return msg
       }).pipe(Effect.withSpan("Session.updateMessage"))
 
-    const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
+    const persistPart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
         yield* events.publish(SessionV1.Event.PartUpdated, {
           sessionID: part.sessionID,
@@ -641,6 +651,36 @@ const layer: Layer.Layer<
         })
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
+
+    // Parts are written from concurrent fibers: a child's live write projection
+    // lands on the parent's task part while the processor is completing that
+    // same part. Both are read-modify-writes over one row, so they serialize per
+    // part rather than racing to overwrite each other.
+    const partLocks = new Map<string, Promise<void>>()
+
+    const withPartLock = <A, E, R>(partID: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const previous = partLocks.get(partID) ?? Promise.resolve()
+          let release!: () => void
+          const owned = new Promise<void>((done) => {
+            release = done
+          })
+          partLocks.set(
+            partID,
+            previous.then(() => owned),
+          )
+          return { previous, release }
+        }),
+        ({ previous }) =>
+          Effect.gen(function* () {
+            yield* Effect.promise(() => previous)
+            return yield* effect
+          }),
+        ({ release }) => Effect.sync(release),
+      )
+
+    const updatePart: Interface["updatePart"] = (part) => withPartLock(part.id, persistPart(part))
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
       const row = yield* db
@@ -663,6 +703,17 @@ const layer: Layer.Layer<
         messageID: row.message_id,
       } as SessionV1.Part
     })
+
+    const modifyPart: Interface["modifyPart"] = (input, modify) =>
+      withPartLock(
+        input.partID,
+        Effect.gen(function* () {
+          const current = yield* getPart(input)
+          const next = modify(current)
+          if (next === undefined) return undefined
+          return yield* persistPart(next)
+        }),
+      )
 
     const create = Effect.fn("Session.create")(function* (input?: {
       parentID?: SessionID
@@ -928,6 +979,7 @@ const layer: Layer.Layer<
       removeMessage,
       removePart,
       updatePart,
+      modifyPart,
       getPart,
       updatePartDelta,
       findMessage,
