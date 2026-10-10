@@ -1,0 +1,316 @@
+diff --git a/packages/cli/package.json b/packages/cli/package.json
+index 4c1e263..701a28b 100644
+--- a/packages/cli/package.json
++++ b/packages/cli/package.json
+@@ -13,6 +13,7 @@
+   "scripts": {
+     "build": "bun run script/build.ts",
+     "dev": "bun run src/index.ts",
++    "test": "bun test --timeout 30000 --only-failures",
+     "typecheck": "tsgo --noEmit"
+   },
+   "dependencies": {
+diff --git a/packages/cli/src/commands/handlers/service/restart.ts b/packages/cli/src/commands/handlers/service/restart.ts
+index d348987..b8df147 100644
+--- a/packages/cli/src/commands/handlers/service/restart.ts
++++ b/packages/cli/src/commands/handlers/service/restart.ts
+@@ -8,7 +8,6 @@ export default Runtime.handler(
+   Commands.commands.service.commands.restart,
+   Effect.fn("cli.service.restart")(function* () {
+     const daemon = yield* Daemon.Service
+-    yield* daemon.stop()
+-    process.stdout.write((yield* daemon.start()) + EOL)
++    process.stdout.write((yield* daemon.restart()) + EOL)
+   }),
+ )
+diff --git a/packages/cli/src/services/daemon.ts b/packages/cli/src/services/daemon.ts
+index 895f5f3..87beb63 100644
+--- a/packages/cli/src/services/daemon.ts
++++ b/packages/cli/src/services/daemon.ts
+@@ -14,6 +14,7 @@ export interface Interface {
+   readonly client: () => Effect.Effect<ReturnType<typeof createOpencodeClient>, unknown>
+   readonly transport: () => Effect.Effect<{ url: string; headers: RequestInit["headers"] }, unknown>
+   readonly start: () => Effect.Effect<string, Error>
++  readonly restart: () => Effect.Effect<string, unknown>
+   readonly status: () => Effect.Effect<string | undefined>
+   readonly stop: () => Effect.Effect<void, unknown>
+   readonly password: (value?: string) => Effect.Effect<string, unknown>
+@@ -22,6 +23,32 @@ export interface Interface {
+ 
+ export class Service extends Context.Service<Service, Interface>()("@opencode/cli/Daemon") {}
+ 
++export type StartDecision = "reuse" | "spawn" | "replace" | "refuse-active"
++
++// Starting must never stop a background service that may own in-flight runs.
++// `activeRuns` is undefined when the probe failed; an unknown count is treated
++// as possibly active so a version-mismatched server is not killed blindly.
++export function decideStart(input: {
++  registered: boolean
++  sameVersion: boolean
++  compiled: boolean
++  factoryDefault: boolean
++  activeRuns: number | undefined
++}): StartDecision {
++  if (!input.registered) return "spawn"
++  if (input.sameVersion && input.compiled && !input.factoryDefault) return "reuse"
++  if (input.activeRuns === undefined || input.activeRuns > 0) return input.sameVersion ? "reuse" : "refuse-active"
++  return "replace"
++}
++
++// Restart is stop-then-start, so it is refused whenever a live service might
++// own runs. Explicit `service stop` remains the way to end a service on purpose.
++export function decideRestart(input: { registered: boolean; activeRuns: number | undefined }): "proceed" | "refuse-active" {
++  if (!input.registered) return "proceed"
++  if (input.activeRuns === undefined || input.activeRuns > 0) return "refuse-active"
++  return "proceed"
++}
++
+ const Registration = Schema.Struct({
+   id: Schema.optional(Schema.String),
+   version: Schema.optional(Schema.String),
+@@ -109,14 +136,45 @@ export const layer = Layer.effect(
+       )
+     })
+ 
++    // Number of foreground runs the registered server reports as active, or
++    // undefined when the probe fails (callers treat unknown as possibly active).
++    const activeRuns = Effect.fnUntraced(function* (info: Registration) {
++      const client = yield* createClient(info.url)
++      const response = yield* Effect.tryPromise(() => client.v2.session.active({ signal: AbortSignal.timeout(2_000) }))
++      return Object.keys(response.data?.data ?? {}).length
++    })
++
++    const probeActiveRuns = (info: Registration | undefined) =>
++      info === undefined
++        ? Effect.succeed(undefined)
++        : activeRuns(info).pipe(
++            Effect.map((count): number | undefined => count),
++            Effect.orElseSucceed((): number | undefined => undefined),
++          )
++
+     const start = Effect.fn("cli.daemon.start")(function* () {
+       const existing = yield* healthy().pipe(Effect.option)
+       const found = Option.getOrUndefined(existing)
+       const compiled = path.basename(process.execPath).replace(/\.exe$/, "") !== "bun"
+       const factoryDefault =
+         process.env.OPENCODE_FACTORY_DEFAULT === "1" || process.env.OPENCODE_FACTORY_DEFAULT === "true"
++      const activeCount = yield* probeActiveRuns(found)
+ 
+-      if (!factoryDefault && found?.version === InstallationVersion && compiled) return found.url
++      const decision = decideStart({
++        registered: found !== undefined,
++        sameVersion: found?.version === InstallationVersion,
++        compiled,
++        factoryDefault,
++        activeRuns: activeCount,
++      })
++      if (decision === "reuse" && found) return found.url
++      if (decision === "refuse-active" && found) {
++        return yield* Effect.fail(
++          new Error(
++            `Background service ${found.version ?? "unknown"} does not match this client and has ${activeCount ?? "unknown"} active run(s). Wait for them to finish, or run "service stop" to end them explicitly, then start again.`,
++          ),
++        )
++      }
+       if (found) yield* stopProcess(found).pipe(Effect.ignore)
+ 
+       const entrypoint = compiled ? undefined : process.argv[1]
+@@ -139,6 +197,21 @@ export const layer = Layer.effect(
+       )
+     })
+ 
++    const restart = Effect.fn("cli.daemon.restart")(function* () {
++      const existing = yield* healthy().pipe(Effect.option)
++      const found = Option.getOrUndefined(existing)
++      const activeCount = yield* probeActiveRuns(found)
++      if (decideRestart({ registered: found !== undefined, activeRuns: activeCount }) === "refuse-active") {
++        return yield* Effect.fail(
++          new Error(
++            `Background service has ${activeCount ?? "unknown"} active run(s); restart refused so they are not interrupted. Wait for them to finish, or run "service stop" to end them explicitly.`,
++          ),
++        )
++      }
++      yield* stop()
++      return yield* start()
++    })
++
+     const transport = Effect.fn("cli.daemon.transport")(function* () {
+       return { url: yield* start(), headers: ServerAuth.headers({ password: yield* password() }) }
+     })
+@@ -190,7 +263,7 @@ export const layer = Layer.effect(
+       )
+     })
+ 
+-    return Service.of({ client, transport, start, status, stop, password, register })
++    return Service.of({ client, transport, start, restart, status, stop, password, register })
+   }),
+ )
+ 
+diff --git a/packages/cli/test/services/daemon.test.ts b/packages/cli/test/services/daemon.test.ts
+new file mode 100644
+index 0000000..1791a5a
+--- /dev/null
++++ b/packages/cli/test/services/daemon.test.ts
+@@ -0,0 +1,162 @@
++import { afterAll, beforeAll, describe, expect, test } from "bun:test"
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs"
++import { tmpdir } from "os"
++import path from "path"
++import { randomUUID } from "crypto"
++import { Effect, Layer } from "effect"
++import { NodeFileSystem } from "@effect/platform-node"
++
++// The daemon state directory is resolved from XDG_STATE_HOME when the module
++// is first imported, so the isolated directory must be set before the import.
++const stateHome = mkdtempSync(path.join(tmpdir(), "alphacode-daemon-test-"))
++process.env.XDG_STATE_HOME = stateHome
++
++type DaemonModule = typeof import("../../src/services/daemon")
++let mod: DaemonModule
++let installationVersion: string
++
++beforeAll(async () => {
++  mod = await import("../../src/services/daemon")
++  installationVersion = (await import("@opencode-ai/core/installation/version")).InstallationVersion
++})
++
++afterAll(() => {
++  rmSync(stateHome, { recursive: true, force: true })
++})
++
++describe("decideStart", () => {
++  const base = { registered: true, sameVersion: true, compiled: true, factoryDefault: false, activeRuns: 0 }
++
++  test("spawns when nothing is registered", () => {
++    expect(mod.decideStart({ ...base, registered: false })).toBe("spawn")
++    expect(mod.decideStart({ ...base, registered: false, activeRuns: 3 })).toBe("spawn")
++  })
++
++  test("reuses a same-version compiled service even when idle", () => {
++    expect(mod.decideStart(base)).toBe("reuse")
++  })
++
++  test("replaces an idle service that is not reusable", () => {
++    expect(mod.decideStart({ ...base, compiled: false })).toBe("replace")
++    expect(mod.decideStart({ ...base, factoryDefault: true })).toBe("replace")
++    expect(mod.decideStart({ ...base, sameVersion: false })).toBe("replace")
++  })
++
++  test("never stops an active service: same-version reuses instead of replacing", () => {
++    expect(mod.decideStart({ ...base, compiled: false, activeRuns: 1 })).toBe("reuse")
++    expect(mod.decideStart({ ...base, factoryDefault: true, activeRuns: 2 })).toBe("reuse")
++  })
++
++  test("refuses a version-mismatched service with active runs", () => {
++    expect(mod.decideStart({ ...base, sameVersion: false, activeRuns: 1 })).toBe("refuse-active")
++  })
++
++  test("treats an unknown active count as possibly active", () => {
++    expect(mod.decideStart({ ...base, sameVersion: false, activeRuns: undefined })).toBe("refuse-active")
++    expect(mod.decideStart({ ...base, compiled: false, activeRuns: undefined })).toBe("reuse")
++  })
++})
++
++describe("decideRestart", () => {
++  test("proceeds when nothing is registered", () => {
++    expect(mod.decideRestart({ registered: false, activeRuns: undefined })).toBe("proceed")
++  })
++
++  test("proceeds only when the registered service is confirmed idle", () => {
++    expect(mod.decideRestart({ registered: true, activeRuns: 0 })).toBe("proceed")
++    expect(mod.decideRestart({ registered: true, activeRuns: 1 })).toBe("refuse-active")
++    expect(mod.decideRestart({ registered: true, activeRuns: undefined })).toBe("refuse-active")
++  })
++})
++
++function alive(pid: number) {
++  try {
++    process.kill(pid, 0)
++    return true
++  } catch {
++    return false
++  }
++}
++
++async function fakeServer(input: { version: string; activeRuns: number }) {
++  const sessions = Object.fromEntries(
++    Array.from({ length: input.activeRuns }, (_, i) => [`ses_test_${i}`, { type: "running" }]),
++  )
++  const server = Bun.serve({
++    hostname: "127.0.0.1",
++    port: 0,
++    fetch(req) {
++      const url = new URL(req.url)
++      if (url.pathname === "/api/health") return Response.json({ healthy: true })
++      if (url.pathname === "/api/session/active") return Response.json({ data: sessions })
++      return new Response("not found", { status: 404 })
++    },
++  })
++  return server
++}
++
++describe("daemon start/restart with a live active run (integration)", () => {
++  const cases = [
++    { name: "same-version service with an active run is reused, not replaced", version: "", activeRuns: 1 },
++  ] as const
++
++  for (const item of cases) {
++    test(item.name, async () => {
++      const version = item.version || installationVersion
++      const server = await fakeServer({ version, activeRuns: item.activeRuns })
++      // A real process stands in for the registered server so a stop would be observable.
++      const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
++      try {
++        const layer = mod.layer.pipe(Layer.provide(NodeFileSystem.layer))
++        const program = Effect.gen(function* () {
++          const daemon = yield* mod.Service
++          yield* daemon.password("test-password")
++          const file = path.join(stateHome, "opencode", "server.json")
++          mkdirSync(path.dirname(file), { recursive: true })
++          writeFileSync(file, JSON.stringify({ id: randomUUID(), version, url: server.url.origin, pid: child.pid }))
++          return yield* Effect.gen(function* () {
++            const started = yield* daemon.start()
++            const restarted = yield* daemon.restart().pipe(Effect.result)
++            return { started, restarted }
++          })
++        })
++        const result = await Effect.runPromise(Effect.provide(program, layer))
++        expect(result.started).toBe(server.url.origin)
++        expect(result.restarted._tag).toBe("Failure")
++        if (result.restarted._tag === "Failure") {
++          expect(String(result.restarted.failure)).toContain("active run(s)")
++        }
++        // The registered process must still be alive: nothing was stopped or respawned.
++        expect(alive(child.pid)).toBe(true)
++      } finally {
++        child.kill()
++        server.stop(true)
++      }
++    })
++  }
++
++  test("version-mismatched service with an active run is refused and left running", async () => {
++    const server = await fakeServer({ version: "0.0.0-mismatch", activeRuns: 1 })
++    const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
++    try {
++      const layer = mod.layer.pipe(Layer.provide(NodeFileSystem.layer))
++      const program = Effect.gen(function* () {
++        const daemon = yield* mod.Service
++        yield* daemon.password("test-password")
++        mkdirSync(path.join(stateHome, "opencode"), { recursive: true })
++        writeFileSync(
++          path.join(stateHome, "opencode", "server.json"),
++          JSON.stringify({ id: randomUUID(), version: "0.0.0-mismatch", url: server.url.origin, pid: child.pid }),
++        )
++        return yield* daemon.start().pipe(Effect.result)
++      })
++      const result = await Effect.runPromise(Effect.provide(program, layer))
++      expect(result._tag).toBe("Failure")
++      if (result._tag === "Failure") expect(String(result.failure)).toContain("active run(s)")
++      expect(alive(child.pid)).toBe(true)
++    } finally {
++      child.kill()
++      server.stop(true)
++    }
++  })
++})
