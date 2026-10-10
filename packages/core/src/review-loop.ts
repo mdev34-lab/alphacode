@@ -8,13 +8,21 @@ export type ReviewPhase = "work" | "review"
  * How a finished turn left the review loop.
  *
  * - `approved`: the work carries an explicit Approved review, or the turn wrote no files.
- * - `review-cap`: the configured number of completed reviews ran without an approval.
+ * - `review-cap`: the configured number of review attempts, including failed dispatches, ran without an approval.
  * - `review-unavailable`: the session could not dispatch the Review subagent at all, so
- *   the runtime waived the requirement. This is never an approval.
+ *   legacy runtime waived the requirement. Read-only compatibility, never approval.
+ * - `review-blocked`: review cannot run; only a declared failure may end this way.
+ * - `review-pending`: a depth-limited child hands unreviewed writes to its parent.
  * - `skipped`: read from transcripts only. Finish used to let a second call skip the
  *   review; it no longer does, but persisted completions keep their recorded outcome.
  */
-export type ReviewTermination = "approved" | "review-cap" | "review-unavailable" | "skipped"
+export type ReviewTermination =
+  | "approved"
+  | "review-cap"
+  | "review-unavailable"
+  | "review-blocked"
+  | "review-pending"
+  | "skipped"
 
 export type ReviewHistoryPart = {
   readonly type?: unknown
@@ -167,9 +175,10 @@ function isUnreportedReviewTask(part: ReviewHistoryPart) {
   return reason === "cancelled" || reason === "waiting_for_subagent"
 }
 
-function isFileWritingTool(part: ReviewHistoryPart) {
+export function hasFileWrites(part: ReviewHistoryPart) {
   if (part.type !== "tool" || typeof part.tool !== "string") return false
-  if (part.state?.status !== "completed") return false
+  if (part.state?.status !== "completed" && part.state?.status !== "error" && part.state?.status !== "running")
+    return false
   const metadata = {
     ...(isRecord(part.metadata) ? part.metadata : {}),
     ...(isRecord(part.state?.metadata) ? part.state.metadata : {}),
@@ -181,7 +190,7 @@ function isFileWritingTool(part: ReviewHistoryPart) {
 function isPotentiallyMutatingTool(part: ReviewHistoryPart) {
   if (part.type !== "tool" || typeof part.tool !== "string") return false
   if (part.tool === "finish" || isReviewTask(part)) return false
-  return isFileWritingTool(part)
+  return hasFileWrites(part)
 }
 
 function finishReviewMetadata(part: ReviewHistoryPart) {
@@ -212,6 +221,8 @@ function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefin
     termination === "approved" ||
     termination === "review-cap" ||
     termination === "review-unavailable" ||
+    termination === "review-blocked" ||
+    termination === "review-pending" ||
     termination === "skipped"
   )
     return termination
@@ -254,6 +265,16 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       // verdict, so it neither counts toward the cap nor disturbs the verdict
       // already on record.
       if (isUnreportedReviewTask(part)) continue
+
+      if (part.state?.status === "error") {
+        reviews++
+        latest = undefined
+        workSinceReview = false
+        reviewInProgress = false
+        nudged = false
+        termination = undefined
+        continue
+      }
 
       if (part.state?.status !== "completed") {
         latest = undefined
@@ -331,9 +352,9 @@ const REVIEW_DISPATCH =
  * first one: a retry, or any account of the work in the finish result, cannot
  * stand in for a review. The requirement ends only on the evaluator's own
  * outcomes - an explicit approval, a turn without file writes, or the review
- * cap. The one waiver the runtime grants, a session that cannot dispatch the
- * Review subagent at all, needs the session to decide, so the finish tool
- * applies it and records it as `review-unavailable` rather than an approval.
+ * cap. A depth-limited child can deliver a typed unreviewed handoff to its
+ * parent, which must review its projected writes. An unavailable reviewer
+ * blocks success and may only be reported as a declared failure.
  */
 export function finishGateError(state: ReviewLoopState): Error | undefined {
   if (state.verdict !== "pending" && state.verdict !== "needs-fixes") return undefined

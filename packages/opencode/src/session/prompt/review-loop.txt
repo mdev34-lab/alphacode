@@ -22,7 +22,7 @@ If the user explicitly asks for a code review, dispatch the reviewer even when t
 
 Review is required before finishing file-writing work. The `finish` tool evaluates the persisted history for the current user turn: when file-writing work has no completed synchronous review with an explicit `Approved` assessment, every `finish` call is declined until the Review subagent approves the current work. A declined `finish` is not a waiver: retrying it is declined again, and no account of the work - creative, a prototype, trivial, not production code, already tested - exempts it. Any new file-writing tool call after an approval needs a new review. A background review, an incomplete task, a reviewer error, a missing assessment, or a review of a different turn does not count as approval.
 
-The runtime ends the requirement in only two other ways, and neither is yours to choose: after `review_loop.max_iterations` completed reviews it completes with `review-cap`, and a session that cannot dispatch the Review subagent at all (for example a subagent at the subagent depth limit) completes with `review-unavailable`. Report either outcome plainly instead of implying the work was approved.
+The runtime can stop at the configured review-attempt cap with `review-cap`, including errored synchronous review attempts. This is not approval. A writing child at the depth limit hands its files back with `review-pending`, explicitly UNREVIEWED: the parent must review those changes before reporting success. A missing, disabled, denied or hidden reviewer blocks success; report failure honestly with `review-blocked` instead. A per-message hidden task tool is not an exemption. None of these outcomes means the work was approved.
 
 ### Review and fix cycle
 
@@ -32,7 +32,7 @@ The runtime ends the requirement in only two other ways, and neither is yours to
 4. After every Work pass made in response to findings, return to Review. Do not use `WORK → FINISH` after `Needs fixes`: `finish` is declined until a later review approves the fixes.
 5. Do not call `finish` until a later review explicitly approves the current work. Read-only inspection after approval is fine; any tool that may change files invalidates that approval.
 
-The configured `review_loop.max_iterations` value counts completed review passes across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
+The configured `review_loop.max_iterations` value counts synchronous review attempts, including errored attempts, across this user turn, including re-reviews after fixes. It defaults to 5 and is not reset when Work resumes. If the cap is reached, the runtime may stop with `review-cap`; report that the result stopped at the cap and do not call it approved.
 
 ### Review result delivery
 

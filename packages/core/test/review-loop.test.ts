@@ -254,3 +254,40 @@ describe("review loop – finish requirement", () => {
     expect(state.verdict).toBe("pending")
   })
 })
+
+describe("review loop - conservative task evidence", () => {
+  for (const status of ["running", "error", "completed"]) {
+    test(`child write evidence survives ${status}`, () => {
+      const child = {
+        info: { role: "assistant" },
+        parts: [
+          {
+            type: "tool",
+            tool: "task",
+            state: {
+              status,
+              input: { subagent_type: "code" },
+              metadata: { reviewLoop: { writesFiles: true, handoff: "pending" } },
+            },
+          },
+        ],
+      }
+      const state = reviewLoopState([userMessage, child])
+      expect(state.verdict).toBe("pending")
+      expect(finishGateError(state)).toBeInstanceOf(Error)
+    })
+  }
+  test("errored review counts an honest attempt and reaches cap", () => {
+    const failed = reviewMessage({ status: "error" })
+    const state = reviewLoopState([userMessage, editMessage, failed], 1)
+    expect(state.reviews).toBe(1)
+    expect(state.verdict).toBe("cap")
+    expect(state.reviewInProgress).toBe(false)
+  })
+  test("errored review stays unapproved before cap", () => {
+    const state = reviewLoopState([userMessage, editMessage, reviewMessage({ status: "error" })], 2)
+    expect(state.reviews).toBe(1)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+  })
+})

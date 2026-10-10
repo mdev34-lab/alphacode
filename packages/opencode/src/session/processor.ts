@@ -187,13 +187,28 @@ const layer = Layer.effect(
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
+        // Background output can predate a child's write projection. Keep
+        // persisted evidence and never let a stale false erase a known write.
+        const metadata = { ...match.part.state.metadata, ...output.metadata }
+        const previousReview = match.part.state.metadata?.reviewLoop
+        const returnedReview = output.metadata.reviewLoop
+        if (isRecord(previousReview) || isRecord(returnedReview)) {
+          metadata.reviewLoop = {
+            ...(isRecord(previousReview) ? previousReview : {}),
+            ...(isRecord(returnedReview) ? returnedReview : {}),
+            ...((isRecord(previousReview) && previousReview.writesFiles === true) ||
+            (isRecord(returnedReview) && returnedReview.writesFiles === true)
+              ? { writesFiles: true }
+              : {}),
+          }
+        }
         yield* session.updatePart({
           ...match.part,
           state: {
             status: "completed",
             input: match.part.state.input,
             output: output.output,
-            metadata: output.metadata,
+            metadata,
             title: output.title,
             time: { start: match.part.state.time.start, end: Date.now() },
             attachments: output.attachments,

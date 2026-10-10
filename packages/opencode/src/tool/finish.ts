@@ -1,3 +1,4 @@
+import { sessionAgent } from "../session/session-agent"
 import * as Tool from "./tool"
 import { ToolFailure } from "@opencode-ai/llm"
 import { ReviewReport } from "@opencode-ai/core/review-report"
@@ -88,6 +89,16 @@ export function deliveredReason(reason: Reason | undefined): TerminationReason |
   return reason
 }
 
+/**
+ * Why a session cannot dispatch the Review subagent.
+ *
+ * This is dispatch evidence, never a waiver. It is persisted on the finish part
+ * so the review loop and the TUI can tell a blocked turn from an approved one,
+ * and the set is the contract both read: every reason `reviewUnavailable` below
+ * can report must be declared here, or the metadata assignment fails to type.
+ */
+export type ReviewUnavailable = "subagent-depth" | "task-hidden" | "reviewer-missing" | "permission-denied"
+
 export const FinishTool = Tool.define(
   "finish",
   Effect.gen(function* () {
@@ -100,13 +111,16 @@ export const FinishTool = Tool.define(
     /**
      * Why this session cannot dispatch the Review subagent, when it cannot.
      *
-     * This is the only waiver of the review requirement, and it is read from
+     * This is dispatch evidence, not a waiver of the review requirement, and it is read from
      * the facts the task tool refuses a `review` dispatch on - never from the
      * finish result or anything else the model says about the work:
      *
      * - `subagent-depth`: the session sits at the configured subagent depth,
      *   so the task tool refuses any delegation from it. Under the default
      *   `subagent_depth` of 1 that is every task child.
+     * - `task-hidden`: the newest user message hides the `task` tool for this
+     *   turn. That is a per-message decision, so it blocks a dispatch the
+     *   session's own ruleset would otherwise allow.
      * - `reviewer-missing`: the reviewer a `review` request routes to is not a
      *   delegable agent here (disabled, or reconfigured as a primary agent).
      * - `permission-denied`: the session's effective ruleset denies `task` for
@@ -127,9 +141,13 @@ export const FinishTool = Tool.define(
         current = yield* sessions.get(current.parentID)
       }
       if (depth >= subagentDepth) return "subagent-depth" as const
+      const latestUser = (yield* sessions.messages({ sessionID: session.id })).findLast(
+        (message) => message.info.role === "user",
+      )
+      if (latestUser?.info.role === "user" && latestUser.info.tools?.task === false) return "task-hidden" as const
       // The task tool routes by the pinned session agent and falls back to the
       // newest user message's agent, which is the agent running this turn.
-      const reviewer = resolveReviewer("review", session.agent ?? ctx.agent)
+      const reviewer = resolveReviewer("review", yield* sessionAgent(sessions, session))
       const target = yield* agents.get(reviewer)
       if (!target || target.mode === "primary") return "reviewer-missing" as const
       const running = yield* agents.get(ctx.agent)
@@ -164,7 +182,7 @@ export const FinishTool = Tool.define(
             reviews: number
             maxIterations: number
             termination: ReviewTermination
-            unavailable?: "subagent-depth" | "reviewer-missing" | "permission-denied"
+            unavailable?: ReviewUnavailable
           }
         }>,
         ToolFailure
@@ -282,7 +300,19 @@ export const FinishTool = Tool.define(
                 Effect.mapError((error) => new ToolFailure({ message: error.message })),
               )
             : undefined
-          if (gateError && unavailable === undefined) {
+          // A handoff needs a parent to hand to, so it is only ever a child's
+          // ending. The read is mapped to a ToolFailure like every other session
+          // read in this tool: a raw NotFoundError would escape the tool's error
+          // contract and reach the model with no actionable message.
+          const handoff =
+            gateError !== undefined &&
+            unavailable === "subagent-depth" &&
+            (yield* sessions
+              .get(ctx.sessionID)
+              .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))).parentID !== undefined
+          const blockedFailure =
+            gateError !== undefined && unavailable !== undefined && !handoff && params.reason === "failure"
+          if (gateError && !handoff && !blockedFailure) {
             const phase = reviewState.workSinceReview
               ? "work"
               : reviewState.verdict === "needs-fixes"
@@ -310,20 +340,30 @@ export const FinishTool = Tool.define(
                   verdict: reviewState.verdict,
                   reviews: reviewState.reviews,
                   maxIterations: reviewState.maxIterations,
+                  ...(unavailable ? { termination: "review-blocked", unavailable } : {}),
                 },
               },
             })
-            return yield* Effect.fail(new ToolFailure({ message: gateError.message }))
+            return yield* Effect.fail(
+              new ToolFailure({
+                message: unavailable
+                  ? `Review blocked (${unavailable}): success cannot be reported without review. Restore Review dispatch or report failure honestly. ${gateError.message}`
+                  : gateError.message,
+              }),
+            )
           }
 
-          if (unavailable) {
-            yield* Effect.logWarning("review requirement waived: this session cannot dispatch the Review subagent", {
-              sessionID: ctx.sessionID,
-              reason: unavailable,
-              verdict: reviewState.verdict,
-              reviews: reviewState.reviews,
-              maxIterations: reviewState.maxIterations,
-            })
+          if (handoff || blockedFailure) {
+            yield* Effect.logWarning(
+              handoff ? "unreviewed child writes handed to parent" : "review blocked: declared failure",
+              {
+                sessionID: ctx.sessionID,
+                reason: unavailable,
+                verdict: reviewState.verdict,
+                reviews: reviewState.reviews,
+                maxIterations: reviewState.maxIterations,
+              },
+            )
           }
 
           if (reviewState.verdict === "cap") {
@@ -358,15 +398,18 @@ export const FinishTool = Tool.define(
             output: params.result,
             metadata: {
               termination: { reason: params.reason },
+              ...(handoff ? { reviewLoop: { writesFiles: true, handoff: "pending", sessionId: ctx.sessionID } } : {}),
               review: {
                 verdict: reviewState.verdict,
                 reviews: reviewState.reviews,
                 maxIterations: reviewState.maxIterations,
-                termination: unavailable
-                  ? "review-unavailable"
-                  : reviewState.verdict === "cap"
-                    ? "review-cap"
-                    : "approved",
+                termination: handoff
+                  ? "review-pending"
+                  : blockedFailure
+                    ? "review-blocked"
+                    : reviewState.verdict === "cap"
+                      ? "review-cap"
+                      : "approved",
                 ...(unavailable ? { unavailable } : {}),
               },
             },

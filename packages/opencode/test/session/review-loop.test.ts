@@ -149,7 +149,14 @@ describe("review loop prompt contract", () => {
 
     expect(prompt).toContain("Review is required before finishing file-writing work.")
     expect(prompt).toContain("A declined `finish` is not a waiver: retrying it is declined again")
-    expect(prompt).toContain("`review-unavailable`")
+    // #233 replaced the runtime waiver with three outcomes, none of which is a
+    // skip: the attempt cap, a child's unreviewed handoff, and a blocked
+    // dispatch that only an honest failure may report.
+    expect(prompt).toContain("`review-cap`")
+    expect(prompt).toContain("`review-pending`")
+    expect(prompt).toContain("`review-blocked`")
+    expect(prompt).toContain("None of these outcomes means the work was approved")
+    expect(prompt).not.toContain("`review-unavailable`")
     expect(prompt).not.toContain("Review is guidance, not an enforcement gate")
     expect(prompt).not.toMatch(/explicitly skip review|Skip review only/)
   })
@@ -172,7 +179,11 @@ describe("review loop prompt contract", () => {
     expect(description).toContain('`subagent_type: "review"` and `background: false`')
     expect(description).toContain("Retrying finish does not skip review")
     expect(description).toContain("`review-cap`")
-    expect(description).toContain("`review-unavailable`")
+    // #233: the waiver is gone from the tool description too. A dispatch that
+    // cannot run blocks success and only an honest failure may report it.
+    expect(description).toContain("`review-blocked`")
+    expect(description).toContain("`review-pending`")
+    expect(description).not.toContain("`review-unavailable`")
     expect(description).not.toMatch(/explicitly skip review|strongly recommended/)
   })
 
@@ -218,7 +229,11 @@ describe("review loop prompt contract", () => {
 
     expect(finish).toContain("ctx.waitForOtherTools ?? Effect.void")
     expect(finish).toContain(".messages({ sessionID: ctx.sessionID })")
-    expect(finish).toContain("return yield* Effect.fail(new ToolFailure({ message: gateError.message }))")
+    // #233: the decline is still a failed tool call, and a session that cannot
+    // dispatch the reviewer says so in the same failure instead of completing.
+    expect(finish).toContain("new ToolFailure({")
+    expect(finish).toContain("gateError.message")
+    expect(finish).toContain("Review blocked (")
     expect(finish).not.toContain("Effect.orDie")
     expect(finish).not.toContain('termination: "blocked"')
   })

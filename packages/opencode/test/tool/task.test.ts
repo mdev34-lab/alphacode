@@ -2032,3 +2032,103 @@ describe("tool.task", () => {
     }),
   )
 })
+
+describe("tool.task - child write handoff", () => {
+  for (const outcome of ["completed", "error", "background"] as const) {
+    it.instance(`projects child writes before ${outcome} delivery`, () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const sessions = yield* Session.Service
+        const parentPart: SessionV1.ToolPart = {
+          id: PartID.ascending(),
+          sessionID: chat.id,
+          messageID: assistant.id,
+          type: "tool",
+          tool: "task",
+          callID: "parent-write-task",
+          state: {
+            status: "running",
+            input: { subagent_type: "general", background: false },
+            time: { start: Date.now() },
+          },
+        }
+        yield* sessions.updatePart(parentPart)
+        const jobs = yield* BackgroundJob.Service
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let observed: Record<string, any> = {}
+        const promptOps: TaskPromptOps = {
+          ...stubOps(),
+          prompt: (input) =>
+            Effect.gen(function* () {
+              const response = reply(input, "changed files")
+              yield* sessions.updateMessage(response.info)
+              const part: SessionV1.ToolPart = {
+                id: PartID.ascending(),
+                sessionID: input.sessionID,
+                messageID: response.info.id,
+                type: "tool",
+                tool: "write",
+                callID: "child-write",
+                state: {
+                  status: "completed",
+                  input: {},
+                  output: "written",
+                  title: "write",
+                  metadata: { reviewLoop: { writesFiles: true } },
+                  time: { start: Date.now(), end: Date.now() },
+                },
+              }
+              yield* sessions.updatePart(part)
+              const parentHistory = yield* sessions.messages({ sessionID: chat.id })
+              const persisted = parentHistory.flatMap((m) => m.parts).find((p) => p.id === parentPart.id)
+              expect(
+                persisted?.type === "tool" &&
+                  persisted.state.status === "running" &&
+                  persisted.state.metadata?.reviewLoop?.writesFiles,
+              ).toBe(true)
+              if (outcome === "error") return yield* Effect.fail(new Error("Child crashed after write"))
+              return { ...response, parts: [...response.parts, part] }
+            }).pipe(Effect.orDie),
+        }
+        const exit = yield* def
+          .execute(
+            { description: "write", prompt: "write", subagent_type: "general", background: outcome === "background" },
+            {
+              callID: "parent-write-task",
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "work",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: (value) =>
+                Effect.sync(() => {
+                  observed = value.metadata ?? {}
+                }),
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+        if (outcome === "background" && Exit.isSuccess(exit)) {
+          yield* jobs.wait({ id: exit.value.metadata.sessionId })
+        }
+        const parentHistory = yield* sessions.messages({ sessionID: chat.id })
+        const persisted = parentHistory.flatMap((m) => m.parts).find((p) => p.id === parentPart.id)
+        expect(
+          persisted?.type === "tool" &&
+            persisted.state.status === "running" &&
+            persisted.state.metadata?.reviewLoop?.writesFiles,
+        ).toBe(true)
+        if (outcome === "completed") {
+          expect(Exit.isSuccess(exit)).toBe(true)
+          if (Exit.isSuccess(exit)) {
+            expect(exit.value.metadata.review?.termination).toBe("review-pending")
+            expect(exit.value.output).toContain("UNREVIEWED")
+          }
+        } else if (outcome === "error") expect(Exit.isFailure(exit)).toBe(true)
+        else expect(Exit.isSuccess(exit)).toBe(true)
+      }),
+    )
+  }
+})
