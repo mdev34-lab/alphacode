@@ -25,6 +25,7 @@ const text = (content: string, responseId = "r1") =>
   `data: {"response_id":"${responseId}","choices":[{"delta":{"phase":"answer","content":"${content}"}}]}\n`
 const DONE = "data: [DONE]\n"
 const STALE_EVENT = `data: {"error":{"code":"CHAT_NOT_FOUND","message":"This chat has been deleted. Please start a new chat to continue."}}\n`
+const MODEL_NOT_FOUND_EVENT = `data: {"error":{"code":"Not_Found","message":"Model does not exist"}}\n`
 
 function byteStream(lines: string[], chunkBytes = 64): ReadableStream<Uint8Array> {
   const bytes = new TextEncoder().encode(lines.join(""))
@@ -208,6 +209,36 @@ describe("fresh-chat recovery from a dead upstream chat (issue 232)", () => {
     expect(state.aborts).toBe(1)
   })
 
+  test("a non-chat Not_Found stream error preserves the live chat binding", async () => {
+    const state = newState()
+    const session = sessionFor(
+      [
+        { kind: "sse", lines: [MODEL_NOT_FOUND_EVENT] },
+        { kind: "sse", lines: [CREATED("r2", "live-chat"), text("Next turn", "r2"), DONE] },
+      ],
+      state,
+    )
+    const thread = await seededThread(session, { providerId: "live-chat", responseId: "r-old" })
+
+    const events = await drain(session.runTurn({ thread, content: "trimmed tail", recoveryContent: "FULL PROMPT" }))
+    const error = events.find((event) => event.type === "error") as { error: unknown } | undefined
+
+    expect(error).toBeDefined()
+    expect(isStaleChatError(error!.error)).toBe(false)
+    expect(state.completionsCalled).toBe(1)
+    expect(state.chatsCreated).toBe(0)
+    expect(thread.providerId).toBe("live-chat")
+    expect(thread.messages.some((message) => message.providerState?.["responseId"] === "r-old")).toBe(true)
+
+    // The next turn still chains to the live chat instead of replaying full context.
+    const next = await drain(session.runTurn({ thread, content: "next trimmed tail", recoveryContent: "FULL PROMPT" }))
+    expect(next.some((event) => event.type === "error")).toBe(false)
+    expect(state.payloads[1]!.path).toContain("chat_id=live-chat")
+    expect(state.payloads[1]!.body["parent_id"]).toBe("r-old")
+    expect(promptOf(state.payloads[1])).toBe("next trimmed tail")
+    expect(state.chatsCreated).toBe(0)
+  })
+
   test("a dead chat after partial output surfaces honestly and still drops the binding", async () => {
     const state = newState()
     const session = sessionFor(
@@ -234,7 +265,7 @@ describe("fresh-chat recovery from a dead upstream chat (issue 232)", () => {
     expect(thread.messages.at(-1)?.role).toBe("user")
   })
 
-  test("recovery is bounded: at most one fresh chat per turn", async () => {
+  test("a stale fresh-chat recovery stops without a blind setup retry", async () => {
     const state = newState()
     const session = sessionFor([{ kind: "json", status: 200, body: DELETED_JSON }], state)
     const thread = await seededThread(session, { providerId: "dead-chat", responseId: "r-old" })
@@ -245,10 +276,10 @@ describe("fresh-chat recovery from a dead upstream chat (issue 232)", () => {
     )
 
     expect(isStaleChatError(error)).toBe(true)
-    // Delivery 1 on the dead chat, then ONE fresh chat whose setup loop is
-    // retried once (bounded), then the turn gives up.
+    // One request on the dead chat and one on the fresh chat; stale is never
+    // retried blindly against the same chat.
     expect(state.chatsCreated).toBe(1)
-    expect(state.completionsCalled).toBe(3)
+    expect(state.completionsCalled).toBe(2)
     expect(thread.providerId).toBeUndefined()
     expect(thread.messages.some((message) => message.content.includes("FULL"))).toBe(false)
     expect(thread.messages.some((message) => message.providerState?.["responseId"] === "r-old")).toBe(false)
@@ -328,9 +359,15 @@ describe("upstream chat id adoption (issue 232)", () => {
 })
 
 describe("honest empty and truncated answers (issue 232)", () => {
-  test("an empty turn is an error event, never a false stop", async () => {
+  test("an empty turn rolls back its user node and is not automatically retried", async () => {
     const state = newState()
-    const session = sessionFor([{ kind: "sse", lines: [CREATED("r1", "fresh-1"), DONE] }], state)
+    const session = sessionFor(
+      [
+        { kind: "sse", lines: [CREATED("r1", "fresh-1"), DONE] },
+        { kind: "sse", lines: [CREATED("r2", "fresh-1"), text("Recovered", "r2"), DONE] },
+      ],
+      state,
+    )
     const thread = await seededThread(session)
 
     const events = await drain(session.runTurn({ thread, content: "hi" }))
@@ -340,15 +377,23 @@ describe("honest empty and truncated answers (issue 232)", () => {
       | { error: { code?: string; retryable?: boolean; message?: string } }
       | undefined
     expect(errorEvent?.error.code).toBe("invalid_response")
-    expect(errorEvent?.error.retryable).toBe(true)
+    expect(errorEvent?.error.retryable).toBe(false)
     expect(errorEvent?.error.message).toContain("empty response")
+    expect(errorEvent?.error.message).toContain("rolled back from local thread history")
+    expect(errorEvent?.error.message).not.toContain("Nothing was committed")
+    expect(errorEvent?.error.message).not.toContain("retrying is safe")
     expect(events.at(-1)?.type).toBe("done")
+    expect(state.completionsCalled).toBe(1)
 
-    // Nothing was committed: no assistant node, but the live chat stays bound
-    // and the delivered user node stays in the mirror.
-    expect(thread.messages.filter((message) => message.role === "assistant")).toHaveLength(0)
-    expect(thread.messages.filter((message) => message.role === "user")).toHaveLength(1)
+    // No local prompt or assistant node remains; an explicit later attempt
+    // creates only one user node rather than duplicating the failed turn.
+    expect(thread.messages).toHaveLength(0)
     expect(thread.providerId).toBe("fresh-1")
+    const retryEvents = await drain(session.runTurn({ thread, content: "hi" }))
+    expect(retryEvents.some((event) => event.type === "error")).toBe(false)
+    expect(state.completionsCalled).toBe(2)
+    expect(thread.messages.filter((message) => message.role === "user")).toHaveLength(1)
+    expect(thread.messages.filter((message) => message.role === "assistant")).toHaveLength(1)
   })
 
   test("a reasoning-only turn is not treated as empty", async () => {

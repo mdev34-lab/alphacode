@@ -173,21 +173,15 @@ export function isQuotaMessage(message: string): boolean {
 export const STALE_CHAT_UPSTREAM_CODE = "chat_not_exist"
 
 const CHAT_MISSING_PATTERNS = [
-  "is not exist",
-  "not exist",
-  "does not exist",
-  "chat not found",
-  "no such chat",
-  "chat has been deleted",
-  "chat was deleted",
-  "chat is deleted",
-  "start a new chat",
+  /\b(?:the\s+|this\s+|requested\s+|upstream\s+)?chat(?:\s+id)?\s+(?:(?:is|does)\s+)?(?:not\s+exist|not\s+found)\b/i,
+  /\b(?:the\s+|this\s+|requested\s+|upstream\s+)?chat(?:\s+id)?\s+(?:has\s+been|was|is)\s+deleted\b/i,
+  /\bno\s+such\s+chat\b/i,
+  /\bstart\s+a\s+new\s+chat\b/i,
 ]
 
-/** Message-side detection of a dead upstream chat (case-insensitive). */
+/** Message-side detection requires chat-specific wording; generic missing-item text is not enough. */
 export function isChatMissingMessage(message: string): boolean {
-  const normalized = message.toLowerCase()
-  return CHAT_MISSING_PATTERNS.some((pattern) => normalized.includes(pattern))
+  return CHAT_MISSING_PATTERNS.some((pattern) => pattern.test(message))
 }
 
 const CHAT_MISSING_CODE_PATTERNS = [
@@ -244,9 +238,9 @@ export function isStaleChatError(input: unknown): boolean {
 export function emptyResponseError(): QwenWebError {
   return new QwenWebError({
     code: "invalid_response",
-    retryable: true,
+    retryable: false,
     message:
-      "Qwen returned an empty response: the turn completed without text, reasoning, or tool calls. Nothing was committed; retrying is safe.",
+      "Qwen returned an empty response: the turn completed without text, reasoning, or tool calls. The prompt was rolled back from local thread history; no automatic retry was attempted.",
   })
 }
 

@@ -376,8 +376,8 @@ export class QwenWebSession implements WebChatProvider {
     }
 
     try {
-      // Pre-stream setup is retried once; failures here cannot have produced
-      // upstream output, so a retry cannot duplicate a generation.
+      // Pre-stream setup is retried once for transient failures; a confirmed
+      // dead chat is handled below without a blind retry.
       let setupError: unknown
       let staleChat = false
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -415,9 +415,9 @@ export class QwenWebSession implements WebChatProvider {
           break
         } catch (error) {
           setupError = error
-          // A confirmed-dead chat never succeeds on a blind retry: escalate
-          // to the one fresh-chat recovery instead of burning the retry.
-          if (state.allowFreshChatRecovery && isStaleChatError(error)) {
+          // A confirmed-dead chat never succeeds on a blind retry, even after
+          // the one fresh-chat recovery has already been consumed.
+          if (isStaleChatError(error)) {
             staleChat = true
             break
           }
@@ -427,7 +427,7 @@ export class QwenWebSession implements WebChatProvider {
           })
         }
       }
-      if (staleChat) {
+      if (staleChat && state.allowFreshChatRecovery) {
         discardDelivery()
         return "recover-fresh-chat"
       }
@@ -684,8 +684,10 @@ export class QwenWebSession implements WebChatProvider {
         // An empty turn is a failure, not a stop: committing it would hand
         // the caller a silent "finished" with an empty assistant message.
         if (textParts.length === 0 && toolCalls.length === 0 && !textAccumulated && !reasoningAccumulated) {
-          yield { type: "error", error: failure ?? emptyResponseError() }
+          removeById(thread, fid)
+          if (seedUsed !== undefined) thread.seedText = seedUsed
           this.store.put(thread)
+          yield { type: "error", error: failure ?? emptyResponseError() }
           trace("turn done", { failure: true, empty: true })
           yield { type: "done", thread }
           return "finished"

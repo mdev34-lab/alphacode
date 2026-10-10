@@ -174,12 +174,14 @@ describe("stale-chat classification (issue 232)", () => {
     expect(isStaleChatCode("Unauthorized")).toBe(false)
   })
 
-  test("message detection is case-insensitive and covers deletions", () => {
+  test("message detection is case-insensitive, chat-specific, and covers deletions", () => {
     expect(isChatMissingMessage("This chat has been deleted. Please start a new chat to continue.")).toBe(true)
     expect(isChatMissingMessage("CHAT NOT FOUND")).toBe(true)
     expect(isChatMissingMessage("Chat is NOT exist")).toBe(true)
     expect(isChatMissingMessage("chat created")).toBe(false)
     expect(isChatMissingMessage("model not found")).toBe(false)
+    expect(isChatMissingMessage("Model does not exist")).toBe(false)
+    expect(isChatMissingMessage("Attachment file does not exist")).toBe(false)
   })
 
   test("the deleted-chat payload is a retryable stale-chat error, not a dead end", () => {
@@ -213,6 +215,24 @@ describe("stale-chat classification (issue 232)", () => {
     expect(generic.code).toBe("upstream_error")
   })
 
+  test("message fallback cannot turn model or file errors into stale-chat errors", () => {
+    const modelMessage = classifyStreamError("Not_Found", "Model does not exist")
+    const fileMessage = classifyStreamError("File_Not_Found", "Attachment file does not exist")
+    expect(isStaleChatError(modelMessage)).toBe(false)
+    expect(isStaleChatError(fileMessage)).toBe(false)
+
+    const modelBody = classifyJsonError('{"success":false,"code":"Not_Found","message":"Model does not exist"}', 200)
+    const fileBody = classifyJsonError('{"success":false,"message":"Attachment file does not exist"}', 200)
+    expect(isStaleChatError(modelBody)).toBe(false)
+    expect(isStaleChatError(fileBody)).toBe(false)
+
+    // Explicit chat-specific upstream codes still win over generic message text.
+    expect(isStaleChatError(classifyStreamError("CHAT_NOT_FOUND", "Model does not exist"))).toBe(true)
+    expect(
+      isStaleChatError(classifyJsonError('{"success":false,"code":"CHAT_NOT_FOUND","message":"Model does not exist"}', 200)),
+    ).toBe(true)
+  })
+
   test("stale errors never masquerade as quota or challenge", () => {
     const error = classifyJsonError(DELETED_BODY, 200)
     expect(error?.code).not.toBe("rate_limited")
@@ -233,11 +253,14 @@ describe("stale-chat classification (issue 232)", () => {
 })
 
 describe("honest empty/truncated error reporting (issue 232)", () => {
-  test("empty responses are retryable invalid_response, not silent stops", () => {
+  test("empty responses do not promise a safe retry or trigger an automatic retry", () => {
     const error = emptyResponseError()
     expect(error.code).toBe("invalid_response")
-    expect(error.retryable).toBe(true)
+    expect(error.retryable).toBe(false)
     expect(error.message).toContain("empty response")
+    expect(error.message).toContain("rolled back from local thread history")
+    expect(error.message).not.toContain("Nothing was committed")
+    expect(error.message).not.toContain("retrying is safe")
   })
 
   test("truncated JSON salvages the visible fields instead of claiming login", () => {
