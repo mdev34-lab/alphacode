@@ -60,6 +60,14 @@ const call = (input: typeof WebFetchTool.Input.Type, id = "call-webfetch") => ({
   call: { type: "tool-call" as const, id, name: "webfetch", input },
 })
 
+const page =
+  "<nav><a href='/'>Home</a></nav><header><a href='/login'>Sign in</a></header>" +
+  "<div role='navigation'>Menu</div><div class='cookie-consent'>Accept cookies</div>" +
+  "<aside>Related</aside><footer>Copyright</footer>" +
+  "<main><h1>Title</h1><p>Body</p></main>"
+
+const withChrome = (body: string) => `<div class='cookie-banner'>We use cookies</div>${body}`
+
 describe("WebFetchTool helpers", () => {
   test("defaults format and rejects invalid timeout controls", () => {
     const decode = Schema.decodeUnknownSync(WebFetchTool.Input)
@@ -175,6 +183,207 @@ describe("WebFetchTool registration", () => {
       expect(yield* executeTool(registry, call({ url: "https://1.1.1.1", format: "text" }))).toEqual({
         type: "text",
         value: "Helloworld",
+      })
+    }),
+  )
+
+  it.effect("strips site chrome from markdown while keeping the main content", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () => Effect.succeed(new Response(page, { headers: { "content-type": "text/html" } }))
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/page", format: "markdown" }))).toEqual({
+        type: "text",
+        value: "# Title\n\nBody",
+      })
+    }),
+  )
+
+  it.effect("strips site chrome from text while keeping the main content", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () => Effect.succeed(new Response(page, { headers: { "content-type": "text/html" } }))
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/page", format: "text" }))).toEqual({
+        type: "text",
+        value: "TitleBody",
+      })
+    }),
+  )
+
+  it.effect("returns raw HTML byte for byte without stripping", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () => Effect.succeed(new Response(page, { headers: { "content-type": "text/html" } }))
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/page", format: "html" }))).toEqual({
+        type: "text",
+        value: page,
+      })
+    }),
+  )
+
+  it.effect("keeps legitimate cookie and footer content while removing exact chrome tokens", () =>
+    Effect.gen(function* () {
+      reset()
+      const registry = yield* ToolRegistry.Service
+
+      respond = () =>
+        Effect.succeed(
+          new Response("<article class='cookie-recipe'><h2>Cookie Recipe</h2><p>Mix flour.</p></article>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/recipe", format: "markdown" }))).toEqual({
+        type: "text",
+        value: "## Cookie Recipe\n\nMix flour.",
+      })
+
+      respond = () =>
+        Effect.succeed(
+          new Response("<div class='footer-note'>See appendix</div><main><p>Body</p></main>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/note", format: "markdown" }))).toEqual({
+        type: "text",
+        value: "See appendix\n\nBody",
+      })
+
+      respond = () =>
+        Effect.succeed(
+          new Response("<span class='cookies-page'>Fresh cookies daily</span><main><p>Body</p></main>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/shop", format: "text" }))).toEqual({
+        type: "text",
+        value: "Fresh cookies dailyBody",
+      })
+
+      respond = () =>
+        Effect.succeed(
+          new Response("<div class='js-cookie-policy-link'>Policy</div><main><p>Body</p></main>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/policy", format: "text" }))).toEqual({
+        type: "text",
+        value: "PolicyBody",
+      })
+    }),
+  )
+
+  it.effect("retains non-chrome tokens that contain punctuation or underscores", () =>
+    Effect.gen(function* () {
+      reset()
+      const registry = yield* ToolRegistry.Service
+
+      // Single comma-containing token: HTML classes are whitespace-delimited, so this is one
+      // unknown token (not cookie/banner chrome) and must be retained.
+      respond = () =>
+        Effect.succeed(
+          new Response("<div class='consent,cookie,banner'>Consent preferences</div><main><p>Body</p></main>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/comma", format: "text" }))).toEqual({
+        type: "text",
+        value: "Consent preferencesBody",
+      })
+
+      // Punctuation-wrapped token is not an exact chrome token.
+      respond = () =>
+        Effect.succeed(
+          new Response("<span class='!cookie!'>Cookie policy summary</span><main><p>Body</p></main>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/bang", format: "text" }))).toEqual({
+        type: "text",
+        value: "Cookie policy summaryBody",
+      })
+
+      // Underscore-edge token is not an exact chrome token.
+      respond = () =>
+        Effect.succeed(
+          new Response("<div class='_cookie_'>Sticky note about cookies</div><main><p>Body</p></main>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/edge", format: "text" }))).toEqual({
+        type: "text",
+        value: "Sticky note about cookiesBody",
+      })
+
+      // Generic consent/gdpr words alone are not chrome tokens anymore.
+      respond = () =>
+        Effect.succeed(
+          new Response("<article class='gdpr-notice consent'>Your data rights</article><main><p>Body</p></main>", {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/rights", format: "text" }))).toEqual({
+        type: "text",
+        value: "Your data rightsBody",
+      })
+
+      // Intended cookie-consent / cookie-banner / site-footer chrome removal retained.
+      respond = () =>
+        Effect.succeed(
+          new Response(
+            "<div class='cookie-consent'>Accept all</div><div class='cookie-banner'>We use cookies</div>" +
+              "<div class='site-footer'>Copyright</div><main><p>Body</p></main>",
+            { headers: { "content-type": "text/html" } },
+          ),
+        )
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/chrome", format: "text" }))).toEqual({
+        type: "text",
+        value: "Body",
+      })
+    }),
+  )
+
+  it.effect("removes nested cookie consent chrome without touching sibling content", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () =>
+        Effect.succeed(
+          new Response(
+            "<div class='page'><div class='cookie-banner'>We use cookies</div><div class='content'><p>Real content</p></div></div>",
+            { headers: { "content-type": "text/html" } },
+          ),
+        )
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/nested", format: "markdown" }))).toEqual({
+        type: "text",
+        value: "Real content",
+      })
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/nested", format: "text" }))).toEqual({
+        type: "text",
+        value: "Real content",
+      })
+    }),
+  )
+
+  it.effect("preserves markup of non-chrome nodes when stripping", () =>
+    Effect.gen(function* () {
+      reset()
+      respond = () =>
+        Effect.succeed(
+          new Response(withChrome("<main><h1>Title</h1><p>Body <strong>bold</strong></p></main>"), {
+            headers: { "content-type": "text/html" },
+          }),
+        )
+      const registry = yield* ToolRegistry.Service
+
+      expect(yield* executeTool(registry, call({ url: "https://1.1.1.1/markup", format: "markdown" }))).toEqual({
+        type: "text",
+        value: "# Title\n\nBody **bold**",
       })
     }),
   )
