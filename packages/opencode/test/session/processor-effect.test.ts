@@ -104,7 +104,7 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const waitFor = <A>(check: Effect.Effect<A | undefined>, message: string) =>
+const waitFor = <A, E>(check: Effect.Effect<A | undefined, E>, message: string) =>
   Effect.gen(function* () {
     const stop = Date.now() + 500
     while (Date.now() < stop) {
