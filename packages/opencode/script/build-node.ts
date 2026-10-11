@@ -21,6 +21,8 @@ await Bun.build({
   external: ["jsonc-parser", "@lydell/node-pty"],
   define: {
     OPENCODE_MODELS_DEV: generated.modelsData,
+    ALPHACODE_VERSION: `'${Script.version}'`,
+    ALPHACODE_CHANNEL: `'${Script.channel}'`,
     OPENCODE_VERSION: `'${Script.version}'`,
     OPENCODE_CHANNEL: `'${Script.channel}'`,
   },
