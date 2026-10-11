@@ -1,0 +1,464 @@
+diff --git a/packages/cli/package.json b/packages/cli/package.json
+index 4c1e263..701a28b 100644
+--- a/packages/cli/package.json
++++ b/packages/cli/package.json
+@@ -13,6 +13,7 @@
+   "scripts": {
+     "build": "bun run script/build.ts",
+     "dev": "bun run src/index.ts",
++    "test": "bun test --timeout 30000 --only-failures",
+     "typecheck": "tsgo --noEmit"
+   },
+   "dependencies": {
+diff --git a/packages/cli/src/commands/handlers/service/restart.ts b/packages/cli/src/commands/handlers/service/restart.ts
+index d348987..b8df147 100644
+--- a/packages/cli/src/commands/handlers/service/restart.ts
++++ b/packages/cli/src/commands/handlers/service/restart.ts
+@@ -8,7 +8,6 @@ export default Runtime.handler(
+   Commands.commands.service.commands.restart,
+   Effect.fn("cli.service.restart")(function* () {
+     const daemon = yield* Daemon.Service
+-    yield* daemon.stop()
+-    process.stdout.write((yield* daemon.start()) + EOL)
++    process.stdout.write((yield* daemon.restart()) + EOL)
+   }),
+ )
+diff --git a/packages/cli/src/services/daemon.ts b/packages/cli/src/services/daemon.ts
+index 895f5f3..555047c 100644
+--- a/packages/cli/src/services/daemon.ts
++++ b/packages/cli/src/services/daemon.ts
+@@ -14,6 +14,7 @@ export interface Interface {
+   readonly client: () => Effect.Effect<ReturnType<typeof createOpencodeClient>, unknown>
+   readonly transport: () => Effect.Effect<{ url: string; headers: RequestInit["headers"] }, unknown>
+   readonly start: () => Effect.Effect<string, Error>
++  readonly restart: () => Effect.Effect<string, unknown>
+   readonly status: () => Effect.Effect<string | undefined>
+   readonly stop: () => Effect.Effect<void, unknown>
+   readonly password: (value?: string) => Effect.Effect<string, unknown>
+@@ -22,6 +23,40 @@ export interface Interface {
+ 
+ export class Service extends Context.Service<Service, Interface>()("@opencode/cli/Daemon") {}
+ 
++export type StartDecision = "reuse" | "spawn" | "replace" | "refuse-active" | "refuse-unknown"
++
++// `activeRuns` is undefined when the active-run probe did not return a verified
++// answer (non-2xx, network error, timeout, or an unparseable body). Unknown is
++// never treated as idle: the service is neither stopped nor silently reused.
++export function decideStart(input: {
++  registered: boolean
++  sameVersion: boolean
++  compiled: boolean
++  factoryDefault: boolean
++  activeRuns: number | undefined
++}): StartDecision {
++  if (!input.registered) return "spawn"
++  if (input.activeRuns === undefined) return "refuse-unknown"
++  if (input.activeRuns > 0) return input.sameVersion ? "reuse" : "refuse-active"
++  if (input.sameVersion && input.compiled && !input.factoryDefault) return "reuse"
++  return "replace"
++}
++
++// Restart is stop-then-start, so it is refused unless the registered service is
++// verified idle. Explicit `service stop` remains the way to end a service on purpose.
++export function decideRestart(input: {
++  registered: boolean
++  activeRuns: number | undefined
++}): "proceed" | "refuse-active" | "refuse-unknown" {
++  if (!input.registered) return "proceed"
++  if (input.activeRuns === undefined) return "refuse-unknown"
++  if (input.activeRuns > 0) return "refuse-active"
++  return "proceed"
++}
++
++const ACTIVE_PROBE_TIMEOUT = "2 seconds"
++const ActiveBody = Schema.Struct({ data: Schema.Record(Schema.String, Schema.Unknown) })
++
+ const Registration = Schema.Struct({
+   id: Schema.optional(Schema.String),
+   version: Schema.optional(Schema.String),
+@@ -109,14 +144,56 @@ export const layer = Layer.effect(
+       )
+     })
+ 
++    // Number of foreground runs the registered server reports as active, or
++    // undefined when the probe fails (callers treat unknown as possibly active).
++    // Verified active-run count for the registered server. Only a 2xx response
++    // whose body decodes to `{ data: {...} }` yields a number. Non-2xx, network
++    // errors (the SDK returns them instead of throwing), timeouts, and bad bodies
++    // all yield undefined, which callers must treat as unknown, never as idle.
++    const probeActiveRuns = (info: Registration | undefined): Effect.Effect<number | undefined> =>
++      info === undefined
++        ? Effect.succeed(undefined)
++        : Effect.gen(function* () {
++            const client = yield* createClient(info.url)
++            const result = yield* Effect.tryPromise({
++              try: () => client.v2.session.active({ signal: AbortSignal.timeout(2_000) }),
++              catch: (cause) => cause,
++            }).pipe(Effect.timeout(ACTIVE_PROBE_TIMEOUT))
++            if (result.error !== undefined || result.response === undefined || !result.response.ok) return undefined
++            const body = yield* Schema.decodeUnknownEffect(ActiveBody)(result.data)
++            return Object.keys(body.data).length
++          }).pipe(Effect.catch(() => Effect.succeed(undefined)))
++
+     const start = Effect.fn("cli.daemon.start")(function* () {
+       const existing = yield* healthy().pipe(Effect.option)
+       const found = Option.getOrUndefined(existing)
+       const compiled = path.basename(process.execPath).replace(/\.exe$/, "") !== "bun"
+       const factoryDefault =
+         process.env.OPENCODE_FACTORY_DEFAULT === "1" || process.env.OPENCODE_FACTORY_DEFAULT === "true"
++      const activeCount = yield* probeActiveRuns(found)
+ 
+-      if (!factoryDefault && found?.version === InstallationVersion && compiled) return found.url
++      const decision = decideStart({
++        registered: found !== undefined,
++        sameVersion: found?.version === InstallationVersion,
++        compiled,
++        factoryDefault,
++        activeRuns: activeCount,
++      })
++      if (decision === "reuse" && found) return found.url
++      if (decision === "refuse-active" && found) {
++        return yield* Effect.fail(
++          new Error(
++            `Background service ${found.version ?? "unknown"} does not match this client and has ${activeCount} active run(s). Wait for them to finish, or run "service stop" to end them explicitly, then start again.`,
++          ),
++        )
++      }
++      if (decision === "refuse-unknown" && found) {
++        return yield* Effect.fail(
++          new Error(
++            "Could not confirm whether the background service has active runs (active-run probe failed). The service was left running. Retry, or run \"service stop\" to end it explicitly.",
++          ),
++        )
++      }
+       if (found) yield* stopProcess(found).pipe(Effect.ignore)
+ 
+       const entrypoint = compiled ? undefined : process.argv[1]
+@@ -139,6 +216,29 @@ export const layer = Layer.effect(
+       )
+     })
+ 
++    const restart = Effect.fn("cli.daemon.restart")(function* () {
++      const existing = yield* healthy().pipe(Effect.option)
++      const found = Option.getOrUndefined(existing)
++      const activeCount = yield* probeActiveRuns(found)
++      const restartDecision = decideRestart({ registered: found !== undefined, activeRuns: activeCount })
++      if (restartDecision === "refuse-active") {
++        return yield* Effect.fail(
++          new Error(
++            `Background service has ${activeCount} active run(s); restart refused so they are not interrupted. Wait for them to finish, or run "service stop" to end them explicitly.`,
++          ),
++        )
++      }
++      if (restartDecision === "refuse-unknown") {
++        return yield* Effect.fail(
++          new Error(
++            "Could not confirm the background service is idle (active-run probe failed); restart refused and the service was left running. Retry, or run \"service stop\" to end it explicitly.",
++          ),
++        )
++      }
++      yield* stop()
++      return yield* start()
++    })
++
+     const transport = Effect.fn("cli.daemon.transport")(function* () {
+       return { url: yield* start(), headers: ServerAuth.headers({ password: yield* password() }) }
+     })
+@@ -190,7 +290,7 @@ export const layer = Layer.effect(
+       )
+     })
+ 
+-    return Service.of({ client, transport, start, status, stop, password, register })
++    return Service.of({ client, transport, start, restart, status, stop, password, register })
+   }),
+ )
+ 
+diff --git a/packages/cli/test/services/daemon.test.ts b/packages/cli/test/services/daemon.test.ts
+new file mode 100644
+index 0000000..6048170
+--- /dev/null
++++ b/packages/cli/test/services/daemon.test.ts
+@@ -0,0 +1,283 @@
++import { afterAll, beforeAll, describe, expect, test } from "bun:test"
++import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "fs"
++import { tmpdir } from "os"
++import path from "path"
++import { randomUUID } from "crypto"
++import { Effect, Layer } from "effect"
++import { NodeFileSystem } from "@effect/platform-node"
++
++// The daemon state directory is resolved from XDG_STATE_HOME when the module is
++// first imported, so the isolated directory must be set before the import.
++const stateHome = mkdtempSync(path.join(tmpdir(), "alphacode-daemon-test-"))
++process.env.XDG_STATE_HOME = stateHome
++const serverFile = path.join(stateHome, "opencode", "server.json")
++const markerScript = path.join(stateHome, "spawn-marker.js")
++const markerOut = path.join(stateHome, "spawn-marker.out")
++
++import type { Interface as DaemonInterface } from "../../src/services/daemon"
++
++type DaemonModule = typeof import("../../src/services/daemon")
++let mod: DaemonModule
++let installationVersion: string
++
++beforeAll(async () => {
++  mod = await import("../../src/services/daemon")
++  installationVersion = (await import("@opencode-ai/core/installation/version")).InstallationVersion
++  // Replacement path spawns `<execPath> <argv[1]> serve --register`. The marker
++  // records that a spawn happened and exits, instead of starting a real server.
++  writeFileSync(markerScript, 'require("fs").writeFileSync(process.env.ALPHACODE_TEST_MARK, process.argv.slice(2).join(" "))\n')
++})
++
++afterAll(() => {
++  rmSync(stateHome, { recursive: true, force: true })
++})
++
++describe("decideStart", () => {
++  const base = { registered: true, sameVersion: true, compiled: true, factoryDefault: false }
++
++  test("spawns when nothing is registered, whatever the probe says", () => {
++    expect(mod.decideStart({ ...base, registered: false, activeRuns: undefined })).toBe("spawn")
++    expect(mod.decideStart({ ...base, registered: false, activeRuns: 3 })).toBe("spawn")
++  })
++
++  test("unknown probe result always refuses and never stops or reuses", () => {
++    for (const sameVersion of [true, false]) {
++      for (const compiled of [true, false]) {
++        for (const factoryDefault of [true, false]) {
++          expect(mod.decideStart({ ...base, sameVersion, compiled, factoryDefault, activeRuns: undefined })).toBe(
++            "refuse-unknown",
++          )
++        }
++      }
++    }
++  })
++
++  test("active runs: same-version reuses, version mismatch refuses", () => {
++    expect(mod.decideStart({ ...base, activeRuns: 1 })).toBe("reuse")
++    expect(mod.decideStart({ ...base, compiled: false, activeRuns: 1 })).toBe("reuse")
++    expect(mod.decideStart({ ...base, sameVersion: false, activeRuns: 1 })).toBe("refuse-active")
++  })
++
++  test("verified idle zero: reuses a same-version compiled service, replaces otherwise", () => {
++    expect(mod.decideStart({ ...base, activeRuns: 0 })).toBe("reuse")
++    expect(mod.decideStart({ ...base, compiled: false, activeRuns: 0 })).toBe("replace")
++    expect(mod.decideStart({ ...base, factoryDefault: true, activeRuns: 0 })).toBe("replace")
++    expect(mod.decideStart({ ...base, sameVersion: false, activeRuns: 0 })).toBe("replace")
++  })
++})
++
++describe("decideRestart", () => {
++  test("proceeds when nothing is registered", () => {
++    expect(mod.decideRestart({ registered: false, activeRuns: undefined })).toBe("proceed")
++  })
++
++  test("unknown probe result refuses", () => {
++    expect(mod.decideRestart({ registered: true, activeRuns: undefined })).toBe("refuse-unknown")
++  })
++
++  test("proceeds only when verified idle; refuses with active runs", () => {
++    expect(mod.decideRestart({ registered: true, activeRuns: 0 })).toBe("proceed")
++    expect(mod.decideRestart({ registered: true, activeRuns: 1 })).toBe("refuse-active")
++  })
++})
++
++function alive(pid: number) {
++  try {
++    process.kill(pid, 0)
++    return true
++  } catch {
++    return false
++  }
++}
++
++type ActiveMode =
++  | { kind: "ok"; runs: number }
++  | { kind: "status"; status: number }
++  | { kind: "body"; text: string }
++  | { kind: "hang" }
++  | { kind: "drop" }
++
++// Fake registered server. /api/health is always healthy so the probe is the only
++// variable; /api/session/active behaves according to `active`.
++function fakeServer(active: ActiveMode) {
++  const server = Bun.serve({
++    hostname: "127.0.0.1",
++    port: 0,
++    fetch(req) {
++      const url = new URL(req.url)
++      if (url.pathname === "/api/health") return Response.json({ healthy: true })
++      if (url.pathname !== "/api/session/active") return new Response("not found", { status: 404 })
++      if (active.kind === "ok") {
++        const sessions = Object.fromEntries(
++          Array.from({ length: active.runs }, (_, i) => [`ses_test_${i}`, { type: "running" }]),
++        )
++        return Response.json({ data: sessions })
++      }
++      if (active.kind === "status") return new Response("nope", { status: active.status })
++      if (active.kind === "body") return new Response(active.text, { status: 200 })
++      if (active.kind === "drop") return Response.error() // connection-level failure; listener stays up
++      return new Promise<Response>(() => {}) // hang: the client's 2 s timeout must fire
++    },
++  })
++  return server
++}
++
++function writeRegistration(input: { version: string; url: string; pid: number }) {
++  mkdirSync(path.dirname(serverFile), { recursive: true })
++  writeFileSync(serverFile, JSON.stringify({ id: randomUUID(), ...input }))
++}
++
++type Outcome = { ok: true; value: unknown } | { ok: false; message: string }
++
++function runDaemon<A, E>(program: (daemon: DaemonInterface) => Effect.Effect<A, E, never>): Promise<Outcome> {
++  const layer = mod.layer.pipe(Layer.provide(NodeFileSystem.layer))
++  const outcome = Effect.gen(function* () {
++    const daemon = yield* mod.Service
++    yield* daemon.password("test-password")
++    return yield* program(daemon)
++  }).pipe(
++    Effect.match({
++      onFailure: (error): Outcome => ({ ok: false, message: errorText(error) }),
++      onSuccess: (value): Outcome => ({ ok: true, value }),
++    }),
++  )
++  return Effect.runPromise(Effect.provide(outcome, layer))
++}
++
++function errorText(error: unknown) {
++  return error instanceof Error ? error.message : String(error)
++}
++
++async function withRegisteredService(
++  active: ActiveMode,
++  version: string,
++  body: (ctx: { child: ReturnType<typeof Bun.spawn>; url: string }) => Promise<void>,
++) {
++  const server = fakeServer(active)
++  const url = server.url.origin
++  // A real process stands in for the registered server so a stop is observable.
++  const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
++  writeRegistration({ version, url, pid: child.pid })
++  try {
++    await body({ child, url })
++    // Every refusal must leave the registered process and its registration in place.
++    expect(alive(child.pid)).toBe(true)
++    expect(existsSync(serverFile)).toBe(true)
++  } finally {
++    child.kill()
++    server.stop(true)
++    rmSync(serverFile, { force: true })
++  }
++}
++
++describe("daemon start/restart: verified active-run boundary (integration)", () => {
++  test("active run on a same-version service: start reuses, restart refuses, process stays alive", async () => {
++    await withRegisteredService({ kind: "ok", runs: 1 }, installationVersion, async ({ url }) => {
++      const started = await runDaemon((daemon) => daemon.start())
++      expect(started.ok).toBe(true)
++      if (started.ok) expect(started.value).toBe(url)
++
++      const restarted = await runDaemon((daemon) => daemon.restart())
++      expect(restarted.ok).toBe(false)
++      if (!restarted.ok) expect(restarted.message).toContain("1 active run(s)")
++    })
++  }, 60_000)
++
++  const unknownCases: Array<{ name: string; active: ActiveMode }> = [
++    { name: "HTTP 401 (auth mismatch)", active: { kind: "status", status: 401 } },
++    { name: "HTTP 404", active: { kind: "status", status: 404 } },
++    { name: "HTTP 500", active: { kind: "status", status: 500 } },
++    { name: "2xx with a body that does not decode", active: { kind: "body", text: "not-json" } },
++    { name: "timeout (no response)", active: { kind: "hang" } },
++    { name: "network error (connection dropped)", active: { kind: "drop" } },
++  ]
++
++  for (const item of unknownCases) {
++    test(`unknown probe (${item.name}): start and restart refuse, process and registration kept`, async () => {
++      await withRegisteredService(item.active, installationVersion, async () => {
++        const started = await runDaemon((daemon) => daemon.start())
++        expect(started.ok).toBe(false)
++        if (!started.ok) expect(started.message).toContain("Could not confirm")
++
++        const restarted = await runDaemon((daemon) => daemon.restart())
++        expect(restarted.ok).toBe(false)
++        if (!restarted.ok) expect(restarted.message).toContain("Could not confirm")
++      })
++    }, 60_000)
++  }
++
++  test("unknown probe on a version-mismatched service: start refuses, process kept", async () => {
++    await withRegisteredService({ kind: "status", status: 500 }, "0.0.0-old", async () => {
++      const started = await runDaemon((daemon) => daemon.start())
++      expect(started.ok).toBe(false)
++      if (!started.ok) expect(started.message).toContain("Could not confirm")
++    })
++  }, 60_000)
++
++  test("verified idle zero, version mismatch: start replaces (old process killed, new spawn attempted)", async () => {
++    const originalArgv1 = process.argv[1]
++    const originalMark = process.env.ALPHACODE_TEST_MARK
++    process.env.ALPHACODE_TEST_MARK = markerOut
++    process.argv[1] = markerScript
++    rmSync(markerOut, { force: true })
++    const server = fakeServer({ kind: "ok", runs: 0 })
++    const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
++    writeRegistration({ version: "0.0.0-old", url: server.url.origin, pid: child.pid })
++    try {
++      const started = await runDaemon((daemon) => daemon.start())
++      expect(started.ok).toBe(false)
++      if (!started.ok) expect(started.message).toContain("Failed to start server")
++      expect(await child.exited).not.toBe(null)
++      expect(alive(child.pid)).toBe(false)
++      expect(readFileSync(markerOut, "utf8")).toBe("serve --register")
++    } finally {
++      child.kill()
++      server.stop(true)
++      rmSync(serverFile, { force: true })
++      process.argv[1] = originalArgv1
++      if (originalMark === undefined) delete process.env.ALPHACODE_TEST_MARK
++      else process.env.ALPHACODE_TEST_MARK = originalMark
++    }
++  }, 60_000)
++
++  test("verified idle zero, version mismatch: restart stops the old process and spawns a new one", async () => {
++    const originalArgv1 = process.argv[1]
++    const originalMark = process.env.ALPHACODE_TEST_MARK
++    process.env.ALPHACODE_TEST_MARK = markerOut
++    process.argv[1] = markerScript
++    rmSync(markerOut, { force: true })
++    const server = fakeServer({ kind: "ok", runs: 0 })
++    const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
++    writeRegistration({ version: "0.0.0-old", url: server.url.origin, pid: child.pid })
++    try {
++      const restarted = await runDaemon((daemon) => daemon.restart())
++      expect(restarted.ok).toBe(false)
++      if (!restarted.ok) expect(restarted.message).toContain("Failed to start server")
++      expect(await child.exited).not.toBe(null)
++      expect(readFileSync(markerOut, "utf8")).toBe("serve --register")
++    } finally {
++      child.kill()
++      server.stop(true)
++      rmSync(serverFile, { force: true })
++      process.argv[1] = originalArgv1
++      if (originalMark === undefined) delete process.env.ALPHACODE_TEST_MARK
++      else process.env.ALPHACODE_TEST_MARK = originalMark
++    }
++  }, 60_000)
++
++  test("explicit service stop is unchanged: ends the process even with an active run", async () => {
++    const server = fakeServer({ kind: "ok", runs: 1 })
++    const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
++    writeRegistration({ version: installationVersion, url: server.url.origin, pid: child.pid })
++    try {
++      await runDaemon((daemon) => daemon.stop())
++      expect(await child.exited).not.toBe(null)
++      expect(alive(child.pid)).toBe(false)
++      expect(existsSync(serverFile)).toBe(false)
++    } finally {
++      child.kill()
++      server.stop(true)
++      rmSync(serverFile, { force: true })
++    }
++  }, 60_000)
++})
