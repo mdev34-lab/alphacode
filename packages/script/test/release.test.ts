@@ -517,4 +517,26 @@ describe("bump version rewrite", () => {
     expect(rewritten.length).toBe(manifest.length)
     expect(() => rewriteVersion(manifest, "9.9.9", "0.2.0", "package.json")).toThrow(/declares 0.1.0/)
   })
+
+  test("ignores lookalike text inside a string value", () => {
+    const tricky = [
+      "{",
+      '  "description": "nested \\\"version\\\": \\\"9.9.9\\\" example",',
+      '  "version": "0.1.0"',
+      "}",
+      "",
+    ].join("\n")
+    const rewritten = rewriteVersion(tricky, "0.1.0", "0.2.0", "package.json")
+    expect(rewritten).toContain('"version": "0.2.0"')
+    expect(rewritten).toContain('\\\"version\\\": \\\"9.9.9\\\"')
+    expect(() => rewriteVersion(tricky, "9.9.9", "0.2.0", "package.json")).toThrow(/declares 0.1.0/)
+  })
+
+  test("an escaped quote in the version value fails closed", () => {
+    // The JSON value would be 0.1.0"evil: the capture swallows the escape
+    // whole, so it can never be mistaken for (or rewritten as) a version.
+    const evil = '{\n  "version": "0.1.0\\"evil"\n}\n'
+    expect(() => rewriteVersion(evil, "0.1.0", "0.2.0", "package.json")).toThrow(/declares 0.1.0\\"/)
+    expect(() => rewriteVersion(evil, '0.1.0"evil', "0.2.0", "package.json")).toThrow(/declares 0.1.0\\"/)
+  })
 })

@@ -13,6 +13,8 @@ function git(cwd: string, ...args: string[]) {
 }
 
 describe("git release metadata", () => {
+  // Real git subprocesses (init, commits, two merges): on a contended Windows
+  // runner each spawn costs hundreds of ms, so the 5s default is marginal.
   test("selects stable version tags and reads only first-parent commits", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-test-"))
     try {
@@ -54,7 +56,7 @@ describe("git release metadata", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   test("recognizes a release tag at HEAD and ignores unrelated tags", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-tag-"))
@@ -80,5 +82,5 @@ describe("git release metadata", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 })

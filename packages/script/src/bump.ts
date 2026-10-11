@@ -23,13 +23,22 @@ export interface BumpTargets {
   executableText: string
 }
 
-const VERSION_FIELD = /"version"[ \t]*:[ \t]*"([^"]*)"/g
+// Escape-aware: the value capture swallows \" sequences whole, so an escaped
+// quote can never truncate the value (the capture then fails SemVer validation,
+// which is the fail-closed outcome).
+const VERSION_FIELD = /"version"[ \t]*:[ \t]*"((?:[^"\\]|\\.)*)"/g
+
+interface JsonPosition {
+  depth: number
+  inString: boolean
+}
 
 /**
- * JSON depth at `index`, counting braces outside strings. Used to tell the
- * top-level "version" field apart from a nested field with the same name.
+ * JSON depth and string state at `index`, counting braces outside strings.
+ * Used to tell the top-level "version" field apart from a nested field with
+ * the same name, and from text that merely looks like one inside a string.
  */
-function jsonDepthAt(text: string, index: number): number {
+function jsonPositionAt(text: string, index: number): JsonPosition {
   let depth = 0
   let inString = false
   let escaped = false
@@ -46,7 +55,7 @@ function jsonDepthAt(text: string, index: number): number {
       else if (char === "}" || char === "]") depth--
     }
   }
-  return depth
+  return { depth, inString }
 }
 
 interface VersionField {
@@ -58,14 +67,15 @@ interface VersionField {
 
 /**
  * Locates the top-level "version" field. A nested object may carry its own
- * "version" key; matching by line prefix alone could hit it, so only a field
- * at JSON depth 1 counts.
+ * "version" key and a string may contain lookalike text, so only a field at
+ * JSON depth 1 outside any string counts.
  */
 function topLevelVersionField(text: string, label: string): VersionField {
   VERSION_FIELD.lastIndex = 0
   let match: RegExpExecArray | null
   while ((match = VERSION_FIELD.exec(text))) {
-    if (jsonDepthAt(text, match.index) !== 1) continue
+    const position = jsonPositionAt(text, match.index)
+    if (position.depth !== 1 || position.inString) continue
     const value = match[1]!
     const end = match.index + match[0].length - 1
     return { value, start: end - value.length, end }
