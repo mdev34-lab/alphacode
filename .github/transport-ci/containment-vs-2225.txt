@@ -1,0 +1,102 @@
+diff --git a/.github/workflows/pr-management.yml b/.github/workflows/pr-management.yml
+index b6aa4e589d894b3c3c07953c9beb9aea03f79df6..d96fe905a350419bb9685e8b275da54d5209c704 100644
+--- a/.github/workflows/pr-management.yml
++++ b/.github/workflows/pr-management.yml
+@@ -5,72 +5,6 @@ on:
+     types: [opened]
+ 
+ jobs:
+-  check-duplicates:
+-    runs-on: blacksmith-4vcpu-ubuntu-2404
+-    permissions:
+-      contents: read
+-      pull-requests: write
+-    steps:
+-      - name: Checkout repository
+-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+-        with:
+-          fetch-depth: 1
+-
+-      - name: Check team membership
+-        id: team-check
+-        run: |
+-          LOGIN="${{ github.event.pull_request.user.login }}"
+-          if [ "$LOGIN" = "opencode-agent[bot]" ] || grep -qxF "$LOGIN" .github/TEAM_MEMBERS; then
+-            echo "is_team=true" >> "$GITHUB_OUTPUT"
+-            echo "Skipping: $LOGIN is a team member or bot"
+-          else
+-            echo "is_team=false" >> "$GITHUB_OUTPUT"
+-          fi
+-
+-      - name: Setup Bun
+-        if: steps.team-check.outputs.is_team != 'true'
+-        uses: ./.github/actions/setup-bun
+-
+-      - name: Install dependencies
+-        if: steps.team-check.outputs.is_team != 'true'
+-        run: bun install
+-
+-      - name: Install opencode
+-        if: steps.team-check.outputs.is_team != 'true'
+-        run: curl -fsSL https://opencode.ai/install | bash
+-
+-      - name: Build prompt
+-        if: steps.team-check.outputs.is_team != 'true'
+-        env:
+-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-          PR_NUMBER: ${{ github.event.pull_request.number }}
+-        run: |
+-          {
+-            echo "Check for duplicate PRs related to this new PR:"
+-            echo ""
+-            echo "CURRENT_PR_NUMBER: $PR_NUMBER"
+-            echo ""
+-            echo "Title: $(gh pr view "$PR_NUMBER" --json title --jq .title)"
+-            echo ""
+-            echo "Description:"
+-            gh pr view "$PR_NUMBER" --json body --jq .body
+-          } > pr_info.txt
+-
+-      - name: Check for duplicate PRs
+-        if: steps.team-check.outputs.is_team != 'true'
+-        env:
+-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-          PR_NUMBER: ${{ github.event.pull_request.number }}
+-        run: |
+-          COMMENT=$(bun script/duplicate-pr.ts -f pr_info.txt "Check the attached file for PR details and search for duplicates")
+-
+-          if [ "$COMMENT" != "No duplicate PRs found" ]; then
+-            gh pr comment "$PR_NUMBER" --body "_The following comment was made by an LLM, it may be inaccurate:_
+-
+-          $COMMENT"
+-          fi
+-
+   add-contributor-label:
+     runs-on: ubuntu-latest
+     permissions:
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+index e58b1c2019c8d345e1132d5c3013b21105f8e178..790daea8e957521f7a3dbaf6acf28a8f93811503 100644
+--- a/.github/workflows/test.yml
++++ b/.github/workflows/test.yml
+@@ -75,6 +75,7 @@ jobs:
+         run: bun run check:generated
+ 
+       - name: Run HttpApi exerciser gates
++        timeout-minutes: 20
+         if: runner.os == 'Linux'
+         working-directory: packages/opencode
+         run: bun run test:httpapi
+diff --git a/packages/opencode/package.json b/packages/opencode/package.json
+index 68febb8b1afb057d18ddf2333db84bbe04ebf987..337998c1e533e870b7b4cab6844965d835c78486 100644
+--- a/packages/opencode/package.json
++++ b/packages/opencode/package.json
+@@ -7,7 +7,7 @@
+   "scripts": {
+     "typecheck": "tsc --noEmit",
+     "test": "bun test --timeout 30000 --only-failures",
+-    "test:httpapi": "bun run script/httpapi-exercise.ts --mode coverage --fail-on-missing --fail-on-skip && bun run script/httpapi-exercise.ts --mode auth --fail-on-missing --fail-on-skip && bun run script/httpapi-exercise.ts --mode effect --fail-on-missing --fail-on-skip",
++    "test:httpapi": "bun run script/httpapi-exercise.ts --mode coverage --fail-on-missing --fail-on-skip && bun run script/httpapi-exercise.ts --mode auth --fail-on-missing --fail-on-skip --progress && bun run script/httpapi-exercise.ts --mode effect --fail-on-missing --fail-on-skip --progress",
+     "bench:test": "bun run script/bench-test-suite.ts",
+     "profile:test": "bun run script/profile-test-files.ts",
+     "build": "bun run script/build.ts",

@@ -1,0 +1,13 @@
+diff --git a/.github/workflows/nix-eval.yml b/.github/workflows/nix-eval.yml
+index 2e1be28..b67df2f 100644
+--- a/.github/workflows/nix-eval.yml
++++ b/.github/workflows/nix-eval.yml
+@@ -16,7 +16,7 @@ permissions:
+ 
+ jobs:
+   nix-eval:
+-    runs-on: blacksmith-4vcpu-ubuntu-2404
++    runs-on: ubuntu-latest
+     timeout-minutes: 15
+     steps:
+       - name: Checkout repository
