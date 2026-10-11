@@ -272,7 +272,8 @@ describe("session slash commands", () => {
   test("dispatches /details and globally toggles /working without affecting assistant text or thinking", async () => {
     const harness = await mountSlashHarness()
     const entries = harness.slashes()
-    const frame = () => harness.app.captureCharFrame()
+    const normalizePaths = (value: string) => value.replace(/\\/g, "/")
+    const frame = () => normalizePaths(harness.app.captureCharFrame())
 
     const details = entries.find((entry) => entry.display === "/details")
     const working = entries.find((entry) => entry.display === "/working")
@@ -301,10 +302,14 @@ describe("session slash commands", () => {
 
     expect(commandTitle("session.toggle.activity")).toBe("Expand working blocks")
     working?.onSelect()
-    await harness.app.waitForFrame(
-      (value: string) =>
-        value.includes("Read src/a.ts") && value.includes('Grep "todo"') && value.includes("Read src/c.ts"),
-    )
+    await harness.app.waitForFrame((value: string) => {
+      const normalized = normalizePaths(value)
+      return (
+        normalized.includes("Read src/a.ts") &&
+        normalized.includes('Grep "todo"') &&
+        normalized.includes("Read src/c.ts")
+      )
+    })
     expect(commandTitle("session.toggle.activity")).toBe("Collapse working blocks")
     const expanded = frame()
     expect(expanded).toContain("Read src/a.ts")
@@ -316,9 +321,10 @@ describe("session slash commands", () => {
     expect(expanded).not.toContain("Private reasoning body.")
 
     working?.onSelect()
-    await harness.app.waitForFrame(
-      (value: string) => !value.includes("Read src/a.ts") && !value.includes("Read src/c.ts"),
-    )
+    await harness.app.waitForFrame((value: string) => {
+      const normalized = normalizePaths(value)
+      return !normalized.includes("Read src/a.ts") && !normalized.includes("Read src/c.ts")
+    })
     expect(commandTitle("session.toggle.activity")).toBe("Expand working blocks")
     expect(frame()).not.toContain('Grep "todo"')
     expect(frame()).toContain("Assistant answer remains visible.")

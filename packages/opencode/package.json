@@ -6,7 +6,12 @@
   "license": "MIT",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test --timeout 30000 --only-failures",
+    "test": "bun test --timeout 30000 --path-ignore-patterns=test/session/prompt.test.ts && bun test --timeout 30000 test/session/prompt.test.ts",
+    "test:ci:cli": "bun test --timeout 30000 test/cli",
+    "test:ci:server": "bun test --timeout 30000 test/server",
+    "test:ci:session": "bun test --timeout 30000 --path-ignore-patterns=test/session/prompt.test.ts test/session",
+    "test:ci:session:prompt": "bun test --timeout 30000 test/session/prompt.test.ts",
+    "test:ci:rest": "bun test --timeout 30000 test/tool test/provider test/acp test/plugin test/util test/config test/project test/effect test/lsp test/account test/agent test/auth test/background test/command test/control-plane test/filesystem test/fixture test/format test/git test/ide test/image test/installation test/mcp test/patch test/permission test/question test/search test/share test/skill test/snapshot test/storage test/v2 test/event-manifest.test.ts test/permission-task.test.ts",
     "test:httpapi": "bun run script/httpapi-exercise.ts --mode coverage --fail-on-missing --fail-on-skip && bun run script/httpapi-exercise.ts --mode auth --fail-on-missing --fail-on-skip && bun run script/httpapi-exercise.ts --mode effect --fail-on-missing --fail-on-skip",
     "bench:test": "bun run script/bench-test-suite.ts",
     "profile:test": "bun run script/profile-test-files.ts",

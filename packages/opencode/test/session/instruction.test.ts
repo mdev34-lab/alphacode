@@ -1,11 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import path from "path"
 import { Effect, FileSystem, Layer } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
 import { Instruction } from "../../src/session/instruction"
-import type { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { Global } from "@opencode-ai/core/global"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
@@ -16,7 +15,9 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+import { httpClient, LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+// Effect 4 beta keeps the injectable HttpClient test seam under unstable/http.
+import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { Config } from "@/config/config"
@@ -31,18 +32,31 @@ const it = testEffect(
 )
 
 const configLayer = Layer.succeed(Config.Service, TestConfig.make())
+const unexpectedHttp = HttpClient.make((request) =>
+  Effect.die(`unexpected http request: ${request.method} ${request.url}`),
+)
 
-const instructionLayer = (global: Partial<Global.Interface>, flags: Partial<RuntimeFlags.Info> = {}) =>
+type InstructionOverrides = {
+  config?: Layer.Layer<Config.Service>
+  client?: HttpClient.HttpClient
+}
+
+const instructionLayer = (
+  global: Partial<Global.Interface>,
+  flags: Partial<RuntimeFlags.Info> = {},
+  overrides: InstructionOverrides = {},
+) =>
   AppNodeBuilder.build(Instruction.node, [
-    [Config.node, configLayer],
+    [Config.node, overrides.config ?? configLayer],
     [Global.node, Global.layerWith(global)],
     [RuntimeFlags.node, RuntimeFlags.layer(flags)],
+    [httpClient, Layer.succeed(HttpClient.HttpClient, overrides.client ?? unexpectedHttp)],
   ])
 
 const provideInstruction =
-  (global: Partial<Global.Interface>, flags?: Partial<RuntimeFlags.Info>) =>
+  (global: Partial<Global.Interface>, flags?: Partial<RuntimeFlags.Info>, overrides?: InstructionOverrides) =>
   <A, E, R>(self: Effect.Effect<A, E, R>) =>
-    self.pipe(Effect.provide(instructionLayer(global, flags)))
+    self.pipe(Effect.provide(instructionLayer(global, flags, overrides)))
 
 const write = (filepath: string, content: string) =>
   Effect.gen(function* () {
@@ -57,11 +71,15 @@ const writeFiles = (dir: string, files: Record<string, string>) =>
     { discard: true },
   )
 
-const withFiles = <A, E, R>(files: Record<string, string>, self: (dir: string) => Effect.Effect<A, E, R>) =>
+const withFiles = <A, E, R>(
+  files: Record<string, string>,
+  self: (dir: string) => Effect.Effect<A, E, R>,
+  overrides?: InstructionOverrides,
+) =>
   provideTmpdirInstance((dir) =>
     Effect.gen(function* () {
       yield* writeFiles(dir, files)
-      return yield* self(dir).pipe(provideInstruction({ home: dir, config: dir }))
+      return yield* self(dir).pipe(provideInstruction({ home: dir, config: dir }, undefined, overrides))
     }),
   )
 
@@ -205,11 +223,38 @@ describe("Instruction.resolve", () => {
       }),
     ),
   )
-
-  test.todo("fetches remote instructions from config URLs via HttpClient", () => {})
 })
 
 describe("Instruction.system", () => {
+  it.live("fetches remote instructions from config URLs via HttpClient", () => {
+    const urls = ["https://example.com/global.md", "http://example.com/project.md"]
+    const contents = new Map([
+      [urls[0], "# Global remote rules"],
+      [urls[1], "# Project remote rules"],
+    ])
+    const requests: string[] = []
+    const client = HttpClient.make((request) => {
+      requests.push(request.url)
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(request, new Response(contents.get(request.url) ?? "", { status: 200 })),
+      )
+    })
+    const config = Layer.succeed(Config.Service, TestConfig.make({ get: () => Effect.succeed({ instructions: urls }) }))
+
+    return withFiles(
+      {},
+      () =>
+        Effect.gen(function* () {
+          const svc = yield* Instruction.Service
+          const rules = yield* svc.system()
+
+          expect([...requests].sort()).toEqual([...urls].sort())
+          expect(rules).toEqual(urls.map((url) => `Instructions from: ${url}\n${contents.get(url)}`))
+        }),
+      { config, client },
+    )
+  })
+
   it.live("loads both project and global AGENTS.md when both exist", () =>
     Effect.gen(function* () {
       const globalTmp = yield* tmpWithFiles({ "AGENTS.md": "# Global Instructions" })

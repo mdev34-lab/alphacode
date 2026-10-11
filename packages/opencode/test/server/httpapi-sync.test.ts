@@ -122,7 +122,7 @@ describe("sync HttpApi", () => {
     { git: true, config: { formatter: false, lsp: false } },
   )
 
-  it.instance.skip(
+  it.instance(
     "returns structured validation errors",
     () =>
       Effect.gen(function* () {
@@ -141,8 +141,13 @@ describe("sync HttpApi", () => {
         expect(response.status).toBe(400)
         expect(response.headers.get("content-type") ?? "").toContain("application/json")
         const body = (yield* Effect.promise(() => response.json())) as Record<string, unknown>
-        expect(body.success).toBe(false)
-        expect(Array.isArray(body.error) || Array.isArray(body.errors)).toBe(true)
+        expect(body).toMatchObject({
+          name: "BadRequest",
+          data: {
+            kind: "Payload",
+            message: expect.stringContaining('["aggregate"]'),
+          },
+        })
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

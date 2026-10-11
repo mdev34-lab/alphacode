@@ -1117,17 +1117,16 @@ noLLMServer.instance(
       // Legacy shape: synthetic Read-tool note + the full decoded content.
       expect(syntheticTexts).toEqual(expect.arrayContaining([expect.stringContaining("Called the Read tool"), content]))
       expect(syntheticTexts.find((text) => text.includes("Large pasted text file"))).toBeUndefined()
-      // No managed paste file for inlined content.
-      const exists = yield* Effect.promise(() =>
+      // No managed paste file for inlined content. The session's shared
+      // attachments directory may already exist for other attachment storage.
+      const files = yield* Effect.promise(() =>
         readdir(pasteDir(chat.id)).then(
-          () => true,
+          (entries) => entries.filter((file) => file.startsWith("paste-")),
           (error) =>
-            error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT"
-              ? false
-              : Promise.reject(error),
+            error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT" ? [] : Promise.reject(error),
         ),
       )
-      expect(exists).toBe(false)
+      expect(files).toHaveLength(0)
     }),
   { config: cfg },
 )

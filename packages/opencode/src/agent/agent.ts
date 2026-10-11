@@ -229,7 +229,7 @@ const layer = Layer.effect(
           },
           plan: {
             name: "plan",
-            description: "Plan mode. Disallows all edit tools.",
+            description: "Plan mode. Can edit plan files only.",
             options: {},
             permission: Permission.merge(defaults, planPermissions, user),
             mode: "primary",

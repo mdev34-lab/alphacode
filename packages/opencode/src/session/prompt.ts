@@ -78,10 +78,15 @@ globalThis.AI_SDK_LOG_WARNINGS = false
 const decodeMessageInfo = Schema.decodeUnknownExit(SessionV1.Info)
 const decodeMessagePart = Schema.decodeUnknownExit(SessionV1.Part)
 const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
-// Agent step limits are optional; cap finish-tool recovery separately so a
-// model that ignores every nudge cannot keep one prompt alive forever. The
-// counter is per runLoop invocation and is not persisted across re-prompts.
+// Agent step limits are optional; bound both the generic finish reminder and
+// review-stagnation recovery so a model that ignores every nudge cannot keep
+// one prompt alive forever. Their independent budgets let a review recover
+// after real progress without weakening the generic finish gate.
 const MAX_FINISH_NUDGES = 3
+const MAX_REVIEW_RECOVERY_NUDGES = 3
+// Synthetic review completion has no model stream to cancel; the empty input is
+// intentional, so this signal never aborts.
+const NO_ABORT_SIGNAL = AbortSignal.any([])
 const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "application/pdf",
   "image/gif",
@@ -1221,7 +1226,7 @@ const layer = Layer.effect(
           sessionID: input.sessionID,
           messageID: input.messageID,
           agent: input.agent,
-          abort: new AbortController().signal,
+          abort: NO_ABORT_SIGNAL,
           messages: input.messages,
           metadata: () => Effect.void,
           ask: () => Effect.void,
@@ -1270,6 +1275,7 @@ const layer = Layer.effect(
         let structured: unknown
         let step = 0
         let finishNudges = 0
+        let reviewRecoveryNudges = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1411,9 +1417,12 @@ const layer = Layer.effect(
                 })
                 break
               }
-              if (finishNudges >= MAX_FINISH_NUDGES) {
+              const recoveryNudge = stagnated
+              const nudges = recoveryNudge ? reviewRecoveryNudges : finishNudges
+              const nudgeLimit = recoveryNudge ? MAX_REVIEW_RECOVERY_NUDGES : MAX_FINISH_NUDGES
+              if (nudges >= nudgeLimit) {
                 const error = new NamedError.Unknown({
-                  message: `The assistant did not complete the required finish tool after ${MAX_FINISH_NUDGES} nudges. The turn was stopped to prevent an unbounded continuation loop. Set agent.<name>.finishTool to false for agents that must end turns without finish.`,
+                  message: `The assistant did not complete the required finish tool after ${nudgeLimit} ${recoveryNudge ? "review recovery " : ""}nudges. The turn was stopped to prevent an unbounded continuation loop. Set agent.<name>.finishTool to false for agents that must end turns without finish.`,
                 }).toObject()
                 yield* sessions.updateMessage({
                   ...lastAssistant,
@@ -1427,7 +1436,9 @@ const layer = Layer.effect(
                   {
                     "session.id": sessionID,
                     messageID: lastAssistant.id,
-                    nudges: finishNudges,
+                    finishNudges,
+                    reviewRecoveryNudges,
+                    recoveryNudge,
                   },
                 )
                 break
@@ -1445,7 +1456,8 @@ const layer = Layer.effect(
                   messageID: lastAssistant.id,
                 })
               }
-              finishNudges++
+              if (recoveryNudge) reviewRecoveryNudges++
+              else finishNudges++
               const nudge: SessionV1.User = {
                 id: MessageID.ascending(),
                 sessionID,
@@ -1471,7 +1483,8 @@ const layer = Layer.effect(
                 messageID: lastAssistant.id,
                 step,
                 maxSteps: activeAgent.steps,
-                nudges: finishNudges,
+                finishNudges,
+                reviewRecoveryNudges,
               })
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })

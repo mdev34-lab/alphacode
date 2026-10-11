@@ -1,10 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import {
-  hasDisplay,
-  QwenWebBrowser,
-  type QwenWebContext,
-  type QwenWebPage,
-} from "@opencode-ai/webchat/adapters/qwen/browser"
+import { QwenWebBrowser, type QwenWebContext, type QwenWebPage } from "@opencode-ai/webchat/adapters/qwen/browser"
 
 const savedEnv = { ...process.env }
 
@@ -44,8 +39,10 @@ function fakeContext(pages: QwenWebPage[]): QwenWebContext {
   }
 }
 
-test.skipIf(!hasDisplay())("challenge reveal does not reuse an incompatible in-flight headless launch", async () => {
+test("challenge reveal does not reuse an incompatible in-flight headless launch", async () => {
   delete process.env["QWEN_WEB_HEADLESS"]
+  // The injected launcher is a fake; a synthetic display exercises the headed path on Linux CI.
+  if (process.platform !== "darwin" && process.platform !== "win32") process.env["DISPLAY"] = ":1"
   const launchedHeadless: boolean[] = []
   let releaseInitialLaunch!: () => void
   const initialLaunchGate = new Promise<void>((resolve) => {
