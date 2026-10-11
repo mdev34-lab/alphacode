@@ -1,0 +1,1237 @@
+diff --git a/.github/workflows/publish.yml b/.github/workflows/publish.yml
+index a530e8f7b1f847d964fe6753f808d27cac744d92..bfaf98deaaac3f46aabb5c94814966b4a7c7dd24 100644
+--- a/.github/workflows/publish.yml
++++ b/.github/workflows/publish.yml
+@@ -1,18 +1,9 @@
+ name: publish
+-run-name: "${{ inputs.dry_run && 'dry-run ' || '' }}release ${{ inputs.version || inputs.bump }}"
++run-name: "${{ inputs.dry_run && 'dry-run ' || '' }}release"
+ 
+ on:
+   workflow_dispatch:
+     inputs:
+-      bump:
+-        description: "auto = derive from conventional commits since last tag"
+-        type: choice
+-        default: auto
+-        options: [auto, patch, minor, major]
+-      version:
+-        description: "Override version, e.g. 0.2.0 (required for the first release)"
+-        required: false
+-        type: string
+       dry_run:
+         description: "Compute version + notes only; create nothing"
+         type: boolean
+@@ -43,11 +34,11 @@ jobs:
+         with:
+           fetch-depth: 0
+       - uses: ./.github/actions/setup-bun
++      - name: Check package metadata
++        run: ./script/release-check.ts
+       - id: version
+         run: ./script/version.ts
+         env:
+-          OPENCODE_BUMP: ${{ inputs.bump }}
+-          OPENCODE_VERSION: ${{ inputs.version }}
+           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+     outputs:
+       version: ${{ steps.version.outputs.version }}
+@@ -60,13 +51,19 @@ jobs:
+     if: ${{ !inputs.dry_run }}
+     runs-on: ubuntu-latest
+     steps:
++      # Build the exact tag, not the moving branch, so the artifacts are reproducible.
+       - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
++        with:
++          ref: ${{ needs.version.outputs.tag }}
++          fetch-depth: 0
+       - uses: ./.github/actions/setup-bun
++      - name: Check tag against package metadata
++        run: ./script/release-check.ts --tag "${{ needs.version.outputs.tag }}"
+       - name: Build all targets and upload archives to the draft release
+         run: ./packages/opencode/script/build.ts
+         env:
+-          OPENCODE_VERSION: ${{ needs.version.outputs.version }}
+-          OPENCODE_RELEASE_ID: ${{ needs.version.outputs.release_id }}
++          ALPHACODE_VERSION: ${{ needs.version.outputs.version }}
++          ALPHACODE_RELEASE: "1"
+       - name: Attach install script
+         run: gh release upload "${{ needs.version.outputs.tag }}" ./install --clobber
+ 
+diff --git a/docs/releasing.md b/docs/releasing.md
+index 264d4526b5f6f8f25482f1a476440eb2742acecf..6d4e50c6b65310729dd3d7a46690b97f3ae800b0 100644
+--- a/docs/releasing.md
++++ b/docs/releasing.md
+@@ -1,12 +1,62 @@
+ # Releasing AlphaCode
+ 
+-Releases are GitHub Releases built from tags. No package version file is edited and no bot commits back to `dev`.
++Releases are GitHub Releases built from tags. The release version is committed to the
++repository before the release is cut: no release step rewrites history and nothing
++commits back to `dev` on your behalf.
++
++## The version source
++
++Root `package.json` holds the one authoritative version. Everything else derives from it
++and is checked against it:
++
++| Surface | Example | Enforced by |
++| --- | --- | --- |
++| `package.json` (root) | `0.1.0` | `./script/bump.ts` is the only writer |
++| `packages/opencode/package.json` (executable) | `0.1.0` | `./script/bump.ts`, `./script/release-check.ts` |
++| Build / runtime (`alphacode --version`) | `0.1.0` | release guard in `@opencode-ai/script`, `--version` smoke test in `script/build.ts` |
++| Git tag | `v0.1.0` | `./script/release-check.ts --tag v0.1.0` (runs in the publish workflow) |
++
++A release build is always built from the exact tag, so a clean checkout of `vX.Y.Z`
++reports `X.Y.Z` both from package metadata and from `alphacode --version`.
++
++`0.1.0` is the inherited baseline. Local-only builds that were never committed, tagged
++or released stay that way - no historical releases are manufactured for them.
+ 
+ ## Cut a release
+ 
+-Use **Actions → publish → Run workflow** and select `dev`. Normally run `script/release` (auto bump), or choose an explicit `patch`, `minor`, or `major` bump. To preview first, run `script/release minor --dry-run`; dry runs are allowed from any ref and create no release. You can also set `VERSION=1.2.3` to override the version.
++From a clean `dev` checkout, in this exact order:
++
++```bash
++# 1. Bump the authoritative version (deterministic SemVer; rewrites both package.json files)
++./script/bump.ts patch                 # or minor / major / auto / X.Y.Z
++
++# 2. Commit and push - the release tag is created at this commit
++git add package.json packages/opencode/package.json
++git commit -m "chore(release): v<version>"
++git push origin dev
++
++# 3. Preview the release notes (allowed from any ref; creates nothing)
++./script/release --dry-run
++
++# 4. Cut the release (dev only): creates the draft release and the tag, builds every
++#    target from that tag, attaches the archives, then publishes
++./script/release
++```
++
++Step 4 is a `gh workflow run publish.yml --ref dev` dispatch; the workflow itself runs
++`./script/version.ts` (notes + draft release + tag) and then
++`./packages/opencode/script/build.ts` from a checkout of the tag.
+ 
+-Auto bump examines conventional commits on the first-parent history since the last `vX.Y.Z` tag:
++### Choosing the bump
++
++- `patch` / `minor` / `major`: explicit SemVer bump of the committed version.
++- `auto`: derives the bump from conventional commits on the first-parent history since
++  the last `vX.Y.Z` tag.
++- `X.Y.Z`: explicit target version.
++
++`auto` needs a previous tag, so the first AlphaCode release must be an explicit
++`patch`, `minor`, `major`, or `X.Y.Z`. `./script/bump.ts` refuses to move the version
++backwards, to bump to a prerelease, or to reuse a version that already has a tag.
+ 
+ | Commit | Bump |
+ | --- | --- |
+@@ -15,18 +65,58 @@ Auto bump examines conventional commits on the first-parent history since the la
+ | `type!:` or a `BREAKING CHANGE:` footer | minor while the current major is 0; major once it is at least 1 |
+ | Other types | no bump |
+ 
+-`auto` fails when there are no releasable commits. Auto bump never moves version 0 to 1; use an explicit `version=1.0.0` when making that transition.
++`auto` fails when there are no releasable commits. It never moves version 0 to 1; use an
++explicit version for that transition.
++
++## Version checks
++
++```bash
++./script/release-check.ts                 # package metadata, plus the tag at HEAD if any
++./script/release-check.ts --tag v0.1.1    # package metadata against an exact tag
++```
++
++The check exits non-zero and lists every disagreement (root vs executable package,
++package vs tag, package vs runtime). It runs in both publish jobs, so a release whose
++tag, package metadata and embedded version disagree cannot be built.
++
++A development build can never publish a release: the build only uploads artifacts when
++`ALPHACODE_RELEASE` is set, and `@opencode-ai/script` refuses to start a release build
++whose version is not the exact, stable, committed package version.
++
++## Environment variables
++
++| Variable | Meaning |
++| --- | --- |
++| `ALPHACODE_VERSION` | Version to build/embed; in a release build it must equal `package.json` |
++| `ALPHACODE_BUMP` | `auto`, `patch`, `minor` or `major`; forces the release channel |
++| `ALPHACODE_CHANNEL` | `latest` for release builds; anything else is a development build |
++| `ALPHACODE_RELEASE` | Truthy to attach build artifacts to the release |
++
++The inherited `OPENCODE_VERSION`, `OPENCODE_BUMP`, `OPENCODE_CHANNEL` and
++`OPENCODE_RELEASE_ID` names are still accepted as compatibility aliases (the nix
++derivation uses them), but setting an alias and its `ALPHACODE_*` name to different
++values is an error, not a silent choice.
+ 
+-## First tracked release
++## Reproduce a release
+ 
+-The first release establishes the tag baseline. On `dev`, run the workflow once with `version=0.2.0` and `dry_run=true`; verify the summary, then repeat with `dry_run=false`. Do not create a tag or edit a `package.json` by hand.
++```bash
++git checkout v<version>
++./script/release-check.ts --tag v<version>
++cd packages/opencode && bun run script/build.ts --single
++./dist/alphacode-linux-x64/bin/alphacode --version   # prints <version>
++```
+ 
+ ## Builds and updates
+ 
+-Non-release builds are versioned `X.Y.(Z+1)-dev.N+<sha7>[.dirty]` (`0.0.1-dev.N+<sha7>` before the first tag). Preview/local builds do not check for or install updates.
++Non-release builds are versioned `X.Y.(Z+1)-dev.N+<sha7>[.dirty]` (`0.0.1-dev.N+<sha7>`
++before the first tag). Preview/local builds do not check for or install updates.
+ 
+-Release builds check this repository's latest GitHub Release. Patch updates install automatically by default; major and minor updates notify instead. Set `autoupdate: "notify"` in the user config to notify for patch updates too.
++Release builds check this repository's latest GitHub Release. Patch updates install
++automatically by default; major and minor updates notify instead. Set
++`autoupdate: "notify"` in the user config to notify for patch updates too.
+ 
+ ## Failures and hotfixes
+ 
+-A failed build leaves no published release: the `cleanup` job deletes a leftover draft. A hotfix is an ordinary release from `dev`: merge or cherry-pick the fix into `dev`, then cut a normal patch release.
++A failed build leaves no published release: the `cleanup` job deletes a leftover draft.
++A hotfix is an ordinary release from `dev`: merge or cherry-pick the fix into `dev`,
++then cut a normal patch release.
+diff --git a/packages/cli/script/build.ts b/packages/cli/script/build.ts
+index f42d8b07b0d308a5f4cba63c7a3add54916d933d..277bd9bdb8ab8e7e19e4ef51f6fd0275e9ce6da9 100755
+--- a/packages/cli/script/build.ts
++++ b/packages/cli/script/build.ts
+@@ -82,6 +82,8 @@ for (const item of targets) {
+       windows: {},
+     },
+     define: {
++      ALPHACODE_VERSION: `'${Script.version}'`,
++      ALPHACODE_CHANNEL: `'${Script.channel}'`,
+       OPENCODE_VERSION: `'${Script.version}'`,
+       OPENCODE_CLI_NAME: `'${binary}'`,
+       OPENCODE_MODELS_DEV: modelsData,
+diff --git a/packages/core/src/installation/version.ts b/packages/core/src/installation/version.ts
+index 25d9cd99aa6c0e4110a3efba8696c36bfcfaadb1..56d344c992f0ad5afa0c5c945d36474d3aca65cf 100644
+--- a/packages/core/src/installation/version.ts
++++ b/packages/core/src/installation/version.ts
+@@ -1,8 +1,22 @@
+ declare global {
++  const ALPHACODE_VERSION: string
++  const ALPHACODE_CHANNEL: string
+   const OPENCODE_VERSION: string
+   const OPENCODE_CHANNEL: string
+ }
+ 
+-export const InstallationVersion = typeof OPENCODE_VERSION === "string" ? OPENCODE_VERSION : "local"
+-export const InstallationChannel = typeof OPENCODE_CHANNEL === "string" ? OPENCODE_CHANNEL : "local"
++// The AlphaCode build injects ALPHACODE_*; OPENCODE_* is the inherited alias and
++// stays as a fallback so unchanged OpenCode code keeps resolving its globals.
++export const InstallationVersion =
++  typeof ALPHACODE_VERSION === "string"
++    ? ALPHACODE_VERSION
++    : typeof OPENCODE_VERSION === "string"
++      ? OPENCODE_VERSION
++      : "local"
++export const InstallationChannel =
++  typeof ALPHACODE_CHANNEL === "string"
++    ? ALPHACODE_CHANNEL
++    : typeof OPENCODE_CHANNEL === "string"
++      ? OPENCODE_CHANNEL
++      : "local"
+ export const InstallationLocal = InstallationChannel === "local"
+diff --git a/packages/opencode/script/build-node.ts b/packages/opencode/script/build-node.ts
+index d4c5bdea52122a12e91b2086776c071f6e96df4b..61cdef4826709c83f0b72612324648ca9b2b291b 100755
+--- a/packages/opencode/script/build-node.ts
++++ b/packages/opencode/script/build-node.ts
+@@ -21,6 +21,8 @@ await Bun.build({
+   external: ["jsonc-parser", "@lydell/node-pty"],
+   define: {
+     OPENCODE_MODELS_DEV: generated.modelsData,
++    ALPHACODE_VERSION: `'${Script.version}'`,
++    ALPHACODE_CHANNEL: `'${Script.channel}'`,
+     OPENCODE_VERSION: `'${Script.version}'`,
+     OPENCODE_CHANNEL: `'${Script.channel}'`,
+   },
+diff --git a/packages/opencode/script/build.ts b/packages/opencode/script/build.ts
+index b26bc0af801cafd5b9bbff896b2656cf11c8a23c..7cf110f86f2365bf02d4c3c694394138be2ec221 100755
+--- a/packages/opencode/script/build.ts
++++ b/packages/opencode/script/build.ts
+@@ -11,11 +11,21 @@ const dir = path.resolve(__dirname, "..")
+ 
+ process.chdir(dir)
+ 
+-const generated = await import("./generate.ts")
+-
+-import { Script } from "@opencode-ai/script"
++import { assertReleaseVersions, Script } from "@opencode-ai/script"
+ import pkg from "../package.json"
+ 
++// A published build must be an exact, stable, committed version - never a dev build.
++if (Script.release) {
++  if (Script.preview) {
++    throw new Error(
++      `Refusing to publish a preview build (channel "${Script.channel}"). Build from the release tag or set ALPHACODE_CHANNEL=latest.`,
++    )
++  }
++  assertReleaseVersions({ packageVersion: Script.packageVersion, runtimeVersion: Script.version })
++}
++
++const generated = await import("./generate.ts")
++
+ const singleFlag = process.argv.includes("--single")
+ const baselineFlag = process.argv.includes("--baseline")
+ const skipInstall = process.argv.includes("--skip-install")
+@@ -159,6 +169,10 @@ for (const item of targets) {
+     entrypoints: ["./src/index.ts", workerPath, treeSitterWorkerPath],
+     define: {
+       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
++      // ALPHACODE_* is the AlphaCode runtime version; OPENCODE_* stays as the
++      // inherited alias so unchanged OpenCode code keeps resolving its globals.
++      ALPHACODE_VERSION: `'${Script.version}'`,
++      ALPHACODE_CHANNEL: `'${Script.channel}'`,
+       OPENCODE_VERSION: `'${Script.version}'`,
+       OPENCODE_MODELS_DEV: generated.modelsData,
+       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
+diff --git a/packages/script/src/env.ts b/packages/script/src/env.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5c0ef3eb615cf4141934a0d7e3d2212fff7a6c8e
+--- /dev/null
++++ b/packages/script/src/env.ts
+@@ -0,0 +1,90 @@
++import { parseVersion, type BumpInput } from "./version"
++
++/**
++ * AlphaCode release environment variables.
++ *
++ * `ALPHACODE_*` is the documented interface. The `OPENCODE_*` names survive as
++ * compatibility aliases for inherited OpenCode tooling (nix derivations, older
++ * workflow snippets), but they must never disagree with the AlphaCode name.
++ */
++export const ENV_NAMES = {
++  version: ["ALPHACODE_VERSION", "OPENCODE_VERSION"],
++  bump: ["ALPHACODE_BUMP", "OPENCODE_BUMP"],
++  channel: ["ALPHACODE_CHANNEL", "OPENCODE_CHANNEL"],
++  release: ["ALPHACODE_RELEASE", "ALPHACODE_RELEASE_ID", "OPENCODE_RELEASE", "OPENCODE_RELEASE_ID"],
++} as const
++
++export type Env = Record<string, string | undefined>
++
++export class EnvConflictError extends Error {
++  constructor(message: string) {
++    super(message)
++    this.name = "EnvConflictError"
++  }
++}
++
++/**
++ * Reads the first populated name, rejecting disagreeing aliases.
++ */
++export function envValue(env: Env, names: readonly string[]): string | undefined {
++  const found = names
++    .map((name) => ({ name, value: env[name]?.trim() }))
++    .filter((entry): entry is { name: string; value: string } => entry.value !== undefined && entry.value !== "")
++
++  if (found.length === 0) return undefined
++
++  const distinct = [...new Set(found.map((entry) => entry.value))]
++  if (distinct.length > 1) {
++    throw new EnvConflictError(
++      `Conflicting environment values: ${found.map((entry) => `${entry.name}=${entry.value}`).join(", ")}. Set exactly one of ${names.join(", ")}.`,
++    )
++  }
++
++  return distinct[0]
++}
++
++export function resolveBump(raw: string | undefined): BumpInput | undefined {
++  const input = raw?.trim().toLowerCase()
++  if (!input) return undefined
++  if (input === "auto" || input === "patch" || input === "minor" || input === "major") return input
++  throw new Error(`Invalid bump: ${raw}. Expected auto, patch, minor, or major.`)
++}
++
++export function resolveVersion(raw: string | undefined): string | undefined {
++  const input = raw?.trim()
++  if (!input) return undefined
++  // Throws when the override is not SemVer.
++  parseVersion(input)
++  return input.replace(/^v/, "")
++}
++
++export function resolveRelease(env: Env): boolean {
++  return ENV_NAMES.release.some((name) => {
++    const value = env[name]?.trim()
++    return value !== undefined && value !== "" && value !== "0" && value !== "false"
++  })
++}
++
++export interface ReleaseEnv {
++  version?: string
++  bump?: BumpInput
++  channel?: string
++  release: boolean
++}
++
++/**
++ * Resolves every release input from the environment. Pure: safe to unit test
++ * and free of git or filesystem access.
++ */
++export function resolveEnv(env: Env = process.env as Env): ReleaseEnv {
++  const version = resolveVersion(envValue(env, ENV_NAMES.version))
++  const bump = resolveBump(envValue(env, ENV_NAMES.bump))
++  const channel = envValue(env, ENV_NAMES.channel)
++
++  return {
++    ...(version === undefined ? {} : { version }),
++    ...(bump === undefined ? {} : { bump }),
++    ...(channel === undefined ? {} : { channel }),
++    release: resolveRelease(env),
++  }
++}
+diff --git a/packages/script/src/git.ts b/packages/script/src/git.ts
+index dbd5d36f67eaf2a19f6ceb393253221960587f52..06baec430c56a3d4b61dbe56d07f2e09e592322f 100644
+--- a/packages/script/src/git.ts
++++ b/packages/script/src/git.ts
+@@ -9,6 +9,23 @@ export async function lastTag(sha: string, cwd = process.cwd()): Promise<string
+     .find((tag) => TAG_RE.test(tag)) ?? null
+ }
+ 
++/**
++ * The release tag pointing at `sha`, if any. Used to recognise a release build
++ * from an exact tag checkout, where `git branch --show-current` is empty.
++ */
++export async function tagAtHead(sha: string = "HEAD", cwd = process.cwd()): Promise<string | null> {
++  const tags = await $`git tag --points-at ${sha} --list 'v[0-9]*' --sort=-v:refname`
++    .cwd(cwd)
++    .nothrow()
++    .text()
++  return (
++    tags
++      .split(/\r?\n/)
++      .map((tag) => tag.trim())
++      .find((tag) => TAG_RE.test(tag)) ?? null
++  )
++}
++
+ export async function commitsSince(tag: string | null, sha: string, cwd = process.cwd()): Promise<Commit[]> {
+   const output = tag
+     ? await $`git log --first-parent --format=%H%x1f%s%x1f%b%x1e ${tag}..${sha}`.cwd(cwd).text()
+diff --git a/packages/script/src/index.ts b/packages/script/src/index.ts
+index 5bc9601636072ce2f61e2392dbde4f01b5dca0e9..739490d8df071319baeaeb4d60350e8386b3e70f 100644
+--- a/packages/script/src/index.ts
++++ b/packages/script/src/index.ts
+@@ -1,10 +1,22 @@
+ import { $ } from "bun"
+ import semver from "semver"
+ import path from "path"
+-import { commitCount, commitsSince, isDirty, lastTag, shortSha } from "./git"
+-import { devVersion, nextVersion, parseVersion, type BumpInput, type Commit } from "./version"
++import { commitCount, commitsSince, isDirty, lastTag, shortSha, tagAtHead } from "./git"
++import { devVersion, parseVersion, type Commit } from "./version"
++import { resolveEnv } from "./env"
++import { assertReleaseVersions, tagForVersion } from "./release"
+ 
+ export { formatNotes, toChange } from "./version"
++export { ENV_NAMES, envValue, resolveBump, resolveEnv, resolveRelease, resolveVersion, EnvConflictError } from "./env"
++export {
++  assertReleaseVersions,
++  isReleaseVersion,
++  tagForVersion,
++  validateReleaseVersions,
++  ReleaseValidationError,
++} from "./release"
++export type { Env, ReleaseEnv } from "./env"
++export type { ReleaseFacts } from "./release"
+ 
+ const rootPkgPath = path.resolve(import.meta.dir, "../../../package.json")
+ const rootPkg = await Bun.file(rootPkgPath).json()
+@@ -21,35 +33,30 @@ if (!semver.satisfies(process.versions.bun, expectedBunVersionRange)) {
+   throw new Error(`This script requires bun@${expectedBunVersionRange}, but you are using bun@${process.versions.bun}`)
+ }
+ 
+-const env = {
+-  OPENCODE_CHANNEL: process.env["OPENCODE_CHANNEL"],
+-  OPENCODE_BUMP: process.env["OPENCODE_BUMP"],
+-  OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
+-  OPENCODE_RELEASE_ID: process.env["OPENCODE_RELEASE_ID"],
+-}
+-const bumpInput = env.OPENCODE_BUMP?.trim().toLowerCase()
+-const BUMP: BumpInput | undefined = (() => {
+-  if (!bumpInput) return undefined
+-  if (bumpInput === "auto" || bumpInput === "patch" || bumpInput === "minor" || bumpInput === "major") return bumpInput
+-  throw new Error(`Invalid OPENCODE_BUMP: ${env.OPENCODE_BUMP}. Expected auto, patch, minor, or major.`)
+-})()
+-
+-const VERSION_OVERRIDE = (() => {
+-  const input = env.OPENCODE_VERSION
+-  if (!input) return undefined
++// Root package.json is the single authoritative version source. Package metadata,
++// the runtime version and the release tag must all agree with it.
++const PACKAGE_VERSION = (() => {
++  const value = rootPkg.version
+   try {
+-    parseVersion(input)
++    parseVersion(value)
+   } catch {
+-    throw new Error(`Invalid OPENCODE_VERSION: ${input}`)
++    throw new Error(`Invalid version in root package.json: ${value}`)
+   }
+-  return input.replace(/^v/, "")
++  return value as string
+ })()
+ 
++const env = resolveEnv()
++const BUMP = env.bump
++const VERSION_OVERRIDE = env.version
++const RELEASE = env.release
++
+ const CHANNEL = await (async () => {
+-  if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
++  if (env.channel) return env.channel
+   if (BUMP) return "latest"
+   // An explicit version is authoritative and avoids Git calls in shallow build jobs.
+   if (VERSION_OVERRIDE) return "latest"
++  // A checkout of a release tag is a release build even when it is detached.
++  if (await tagAtHead()) return "latest"
+   return await $`git branch --show-current`.text().then((x) => x.trim())
+ })()
+ const IS_PREVIEW = CHANNEL !== "latest"
+@@ -67,17 +74,15 @@ const getCommits = () => (commitsPromise ??= (async () => commitsSince(await get
+ 
+ const VERSION = await (async () => {
+   if (VERSION_OVERRIDE) return VERSION_OVERRIDE
+-  if (IS_PREVIEW) {
+-    const [last, count, short, dirty] = await Promise.all([getPreviousTag(), getCommitCount(), shortSha(), isDirty()])
+-    return devVersion(last, count, short, dirty)
+-  }
+-
+-  const last = await getPreviousTag()
+-  if (!last) throw new Error("No v* tag found. Cut the baseline once with OPENCODE_VERSION=0.2.0")
+-  if ((await getCommitCount()) === 0) throw new Error(`Nothing new since ${last}`)
+-  return nextVersion(last, await getCommits(), BUMP ?? "auto")
++  // Release builds report exactly the version committed in root package.json.
++  if (!IS_PREVIEW) return PACKAGE_VERSION
++  const [last, count, short, dirty] = await Promise.all([getPreviousTag(), getCommitCount(), shortSha(), isDirty()])
++  return devVersion(last, count, short, dirty)
+ })()
+ 
++// Publishing a release is only ever allowed for an exact, stable, committed version.
++if (RELEASE) assertReleaseVersions({ packageVersion: PACKAGE_VERSION, runtimeVersion: VERSION })
++
+ const bot = ["actions-user", "opencode", "opencode-agent[bot]"]
+ const teamPath = path.resolve(import.meta.dir, "../../../.github/TEAM_MEMBERS")
+ const team = [
+@@ -95,11 +100,14 @@ export const Script = {
+   get version() {
+     return VERSION
+   },
++  get packageVersion() {
++    return PACKAGE_VERSION
++  },
+   get preview() {
+     return IS_PREVIEW
+   },
+   get release(): boolean {
+-    return !!env.OPENCODE_RELEASE_ID
++    return RELEASE
+   },
+   get team() {
+     return team
+@@ -112,6 +120,10 @@ export const Script = {
+   },
+ }
+ console.log(
+-  `opencode script`,
+-  JSON.stringify({ channel: CHANNEL, version: VERSION, preview: IS_PREVIEW, release: Script.release, team }, null, 2),
++  `alphacode script`,
++  JSON.stringify(
++    { channel: CHANNEL, version: VERSION, packageVersion: PACKAGE_VERSION, preview: IS_PREVIEW, release: RELEASE, team },
++    null,
++    2,
++  ),
+ )
+diff --git a/packages/script/src/release.ts b/packages/script/src/release.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..82476ca43f5d23a3542480a26d75a09fa2f47051
+--- /dev/null
++++ b/packages/script/src/release.ts
+@@ -0,0 +1,83 @@
++import { parseVersion, TAG_RE } from "./version"
++
++/**
++ * A release version is an exact SemVer release: no prerelease, no build
++ * metadata. Development builds (`X.Y.Z-dev.N+<sha>`) are never release versions.
++ */
++export function isReleaseVersion(version: string): boolean {
++  return parseVersion(version).pre === undefined
++}
++
++export function tagForVersion(version: string): string {
++  return `v${version}`
++}
++
++export class ReleaseValidationError extends Error {
++  readonly problems: string[]
++
++  constructor(problems: string[]) {
++    super(`Release version validation failed:\n${problems.map((problem) => `  - ${problem}`).join("\n")}`)
++    this.name = "ReleaseValidationError"
++    this.problems = problems
++  }
++}
++
++export interface ReleaseFacts {
++  /** Root `package.json` version: the single authoritative metadata source. */
++  packageVersion: string
++  /** `packages/opencode/package.json` version: the executable package metadata. */
++  executableVersion?: string
++  /** Version reported at runtime (`alphacode --version` / `Script.version`). */
++  runtimeVersion?: string
++  /** Git tag the release is built from, e.g. `v0.1.1`. */
++  tag?: string
++}
++
++/**
++ * Collects every package/runtime/tag disagreement. Returns an empty array when
++ * all supplied facts describe one and the same release version.
++ */
++export function validateReleaseVersions(facts: ReleaseFacts): string[] {
++  const problems: string[] = []
++  const packageVersion = facts.packageVersion
++
++  try {
++    parseVersion(packageVersion)
++  } catch {
++    problems.push(`root package.json version ${JSON.stringify(packageVersion)} is not valid SemVer`)
++    return problems
++  }
++
++  if (!isReleaseVersion(packageVersion)) {
++    problems.push(
++      `root package.json version ${packageVersion} is a prerelease; a release builds from a stable version (run ./script/bump.ts)`,
++    )
++  }
++
++  if (facts.executableVersion !== undefined && facts.executableVersion !== packageVersion) {
++    problems.push(
++      `packages/opencode/package.json version ${facts.executableVersion} does not match root package.json version ${packageVersion}`,
++    )
++  }
++
++  if (facts.tag !== undefined) {
++    if (!TAG_RE.test(facts.tag)) {
++      problems.push(`tag ${facts.tag} is not a release tag (expected vX.Y.Z)`)
++    } else if (facts.tag !== tagForVersion(packageVersion)) {
++      problems.push(
++        `tag ${facts.tag} does not match root package.json version ${packageVersion} (expected ${tagForVersion(packageVersion)})`,
++      )
++    }
++  }
++
++  if (facts.runtimeVersion !== undefined && facts.runtimeVersion !== packageVersion) {
++    problems.push(`runtime version ${facts.runtimeVersion} does not match root package.json version ${packageVersion}`)
++  }
++
++  return problems
++}
++
++export function assertReleaseVersions(facts: ReleaseFacts): void {
++  const problems = validateReleaseVersions(facts)
++  if (problems.length > 0) throw new ReleaseValidationError(problems)
++}
+diff --git a/packages/script/test/git.test.ts b/packages/script/test/git.test.ts
+index 08019b9264c7bcd895e67fc43895b70e96b84ead..06b1ca74801b426d800d62dd0de5826d0e61b127 100644
+--- a/packages/script/test/git.test.ts
++++ b/packages/script/test/git.test.ts
+@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
+ import { tmpdir } from "node:os"
+ import path from "node:path"
+ import { describe, expect, test } from "bun:test"
+-import { commitCount, commitsSince, lastTag } from "../src/git"
++import { commitCount, commitsSince, lastTag, tagAtHead } from "../src/git"
+ 
+ function git(cwd: string, ...args: string[]) {
+   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
+@@ -55,4 +55,30 @@ describe("git release metadata", () => {
+       await rm(cwd, { recursive: true, force: true })
+     }
+   })
++
++  test("recognizes a release tag at HEAD and ignores unrelated tags", async () => {
++    const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-tag-"))
++    try {
++      git(cwd, "init", "--quiet", "--initial-branch=main")
++      git(cwd, "config", "user.name", "AlphaCode Test")
++      git(cwd, "config", "user.email", "alphacode-test@example.com")
++
++      await writeFile(path.join(cwd, "base.txt"), "base\n")
++      git(cwd, "add", "--all")
++      git(cwd, "commit", "--quiet", "-m", "feat: establish history")
++      git(cwd, "tag", "v0.1.0")
++      git(cwd, "tag", "vscode-v9.9.9")
++
++      expect(await tagAtHead("HEAD", cwd)).toBe("v0.1.0")
++
++      await writeFile(path.join(cwd, "next.txt"), "next\n")
++      git(cwd, "add", "--all")
++      git(cwd, "commit", "--quiet", "-m", "fix: move on")
++
++      expect(await tagAtHead("HEAD", cwd)).toBeNull()
++      expect(await tagAtHead("v0.1.0", cwd)).toBe("v0.1.0")
++    } finally {
++      await rm(cwd, { recursive: true, force: true })
++    }
++  })
+ })
+diff --git a/packages/script/test/release.test.ts b/packages/script/test/release.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..efc190aa09189608e0740451719307650a36d695
+--- /dev/null
++++ b/packages/script/test/release.test.ts
+@@ -0,0 +1,248 @@
++import path from "node:path"
++import { describe, expect, test } from "bun:test"
++import { ENV_NAMES, EnvConflictError, envValue, resolveBump, resolveEnv, resolveRelease, resolveVersion } from "../src/env"
++import {
++  assertReleaseVersions,
++  isReleaseVersion,
++  ReleaseValidationError,
++  tagForVersion,
++  validateReleaseVersions,
++} from "../src/release"
++import { bumpVersion, devVersion, type BumpInput } from "../src/version"
++
++const repoRoot = path.resolve(import.meta.dir, "../../..")
++const packageVersion = (await Bun.file(path.join(repoRoot, "package.json")).json()).version as string
++// Guaranteed to disagree with whatever the repository currently declares.
++const otherVersion = packageVersion === "9.9.9" ? "8.8.8" : "9.9.9"
++
++const cleanEnv = (extra: Record<string, string> = {}) => {
++  const env: Record<string, string> = { ...process.env } as Record<string, string>
++  for (const names of Object.values(ENV_NAMES)) {
++    for (const name of names) delete env[name]
++  }
++  delete env.GITHUB_REF
++  delete env.GITHUB_REF_NAME
++  return { ...env, ...extra }
++}
++
++describe("release environment", () => {
++  test("reads ALPHACODE_* and falls back to the OPENCODE_* alias", () => {
++    expect(resolveEnv({ ALPHACODE_VERSION: "0.1.1" }).version).toBe("0.1.1")
++    expect(resolveEnv({ OPENCODE_VERSION: "v0.1.1" }).version).toBe("0.1.1")
++    expect(resolveEnv({ ALPHACODE_VERSION: "0.1.1", OPENCODE_VERSION: "0.1.1" }).version).toBe("0.1.1")
++    expect(resolveEnv({ ALPHACODE_CHANNEL: "latest" }).channel).toBe("latest")
++    expect(resolveEnv({ OPENCODE_CHANNEL: "prod" }).channel).toBe("prod")
++  })
++
++  test("leaves every release input unset when nothing is configured", () => {
++    expect(resolveEnv({})).toEqual({ release: false })
++  })
++
++  test("rejects disagreeing aliases instead of picking one silently", () => {
++    expect(() => resolveEnv({ ALPHACODE_VERSION: "0.1.1", OPENCODE_VERSION: "0.2.0" })).toThrow(EnvConflictError)
++    expect(() => resolveEnv({ ALPHACODE_CHANNEL: "latest", OPENCODE_CHANNEL: "dev" })).toThrow(EnvConflictError)
++    expect(() => envValue({ A: "1", B: "2" }, ["A", "B"])).toThrow(EnvConflictError)
++  })
++
++  test("rejects versions that are not SemVer", () => {
++    expect(resolveVersion("v1.2.3")).toBe("1.2.3")
++    expect(resolveVersion(undefined)).toBeUndefined()
++    expect(resolveVersion("   ")).toBeUndefined()
++    expect(() => resolveVersion("1.2")).toThrow()
++    expect(() => resolveVersion("01.2.3")).toThrow()
++  })
++
++  test.each(["auto", "PATCH", " minor ", "major"])("normalizes the bump %s", (input) => {
++    const expected = input.trim().toLowerCase() as BumpInput
++    expect(resolveBump(input)).toBe(expected)
++  })
++
++  test("rejects unknown bumps and leaves an unset bump unset", () => {
++    expect(resolveBump(undefined)).toBeUndefined()
++    expect(resolveBump("   ")).toBeUndefined()
++    expect(() => resolveBump("huge")).toThrow(/Invalid bump/)
++  })
++
++  test("treats a release id or flag as a release build", () => {
++    expect(resolveEnv({ ALPHACODE_RELEASE: "1" }).release).toBe(true)
++    expect(resolveEnv({ OPENCODE_RELEASE_ID: "12345" }).release).toBe(true)
++    expect(resolveEnv({ ALPHACODE_RELEASE: "false" }).release).toBe(false)
++    expect(resolveRelease({})).toBe(false)
++  })
++})
++
++describe("release version validation", () => {
++  test("accepts facts that describe one version", () => {
++    expect(
++      validateReleaseVersions({
++        packageVersion: "0.1.1",
++        executableVersion: "0.1.1",
++        runtimeVersion: "0.1.1",
++        tag: "v0.1.1",
++      }),
++    ).toEqual([])
++  })
++
++  test("rejects a package/tag/runtime mismatch", () => {
++    expect(
++      validateReleaseVersions({ packageVersion: "0.1.1", executableVersion: "0.1.0", tag: "v0.1.2", runtimeVersion: "0.1.3" }),
++    ).toEqual([
++      "packages/opencode/package.json version 0.1.0 does not match root package.json version 0.1.1",
++      "tag v0.1.2 does not match root package.json version 0.1.1 (expected v0.1.1)",
++      "runtime version 0.1.3 does not match root package.json version 0.1.1",
++    ])
++  })
++
++  test("rejects a tag that is not a release tag", () => {
++    expect(validateReleaseVersions({ packageVersion: "0.1.1", tag: "vscode-v9.9.9" })).toEqual([
++      "tag vscode-v9.9.9 is not a release tag (expected vX.Y.Z)",
++    ])
++    expect(validateReleaseVersions({ packageVersion: "0.1.1", tag: "v0.1.1-rc.1" })).toEqual([
++      "tag v0.1.1-rc.1 is not a release tag (expected vX.Y.Z)",
++    ])
++  })
++
++  test("rejects package metadata that is not a stable SemVer release", () => {
++    expect(validateReleaseVersions({ packageVersion: "0.1.1-dev.3+abc1234" })).toEqual([
++      "root package.json version 0.1.1-dev.3+abc1234 is a prerelease; a release builds from a stable version (run ./script/bump.ts)",
++    ])
++    expect(validateReleaseVersions({ packageVersion: "nope" })).toEqual([
++      'root package.json version "nope" is not valid SemVer',
++    ])
++  })
++
++  test("throws with every problem listed", () => {
++    try {
++      assertReleaseVersions({ packageVersion: "0.1.1", tag: "v0.1.2" })
++      throw new Error("expected a ReleaseValidationError")
++    } catch (error) {
++      expect(error).toBeInstanceOf(ReleaseValidationError)
++      const failure = error as ReleaseValidationError
++      expect(failure.problems).toHaveLength(1)
++      expect(failure.message).toContain("does not match root package.json version 0.1.1")
++    }
++  })
++})
++
++describe("release vs development versions", () => {
++  test("a development version is never a release version", () => {
++    const dev = devVersion("v0.1.0", 3, "abc1234", false)
++    expect(dev).toBe("0.1.1-dev.3+abc1234")
++    expect(isReleaseVersion(dev)).toBe(false)
++    expect(isReleaseVersion(devVersion("v0.1.0", 3, "abc1234", true))).toBe(false)
++  })
++
++  test("a bumped version is a release version", () => {
++    expect(isReleaseVersion(bumpVersion("0.1.0", "patch"))).toBe(true)
++    expect(isReleaseVersion("0.1.0")).toBe(true)
++    expect(isReleaseVersion("1.2.3-rc.1")).toBe(false)
++    expect(tagForVersion("0.1.1")).toBe("v0.1.1")
++  })
++
++  test("a development version cannot be published as a release", () => {
++    expect(() =>
++      assertReleaseVersions({ packageVersion: "0.1.1", runtimeVersion: devVersion("v0.1.1", 1, "abc1234", false) }),
++    ).toThrow(ReleaseValidationError)
++  })
++})
++
++const probe = async (extra: Record<string, string> = {}) => {
++  const proc = Bun.spawn(
++    [
++      "bun",
++      "-e",
++      'const { Script } = await import("@opencode-ai/script"); console.log("PROBE " + JSON.stringify({ channel: Script.channel, version: Script.version, packageVersion: Script.packageVersion, preview: Script.preview, release: Script.release }))',
++    ],
++    { cwd: repoRoot, stdout: "pipe", stderr: "pipe", env: cleanEnv(extra) },
++  )
++  const [stdout, stderr, exitCode] = await Promise.all([
++    new Response(proc.stdout).text(),
++    new Response(proc.stderr).text(),
++    proc.exited,
++  ])
++  const line = stdout.split(/\r?\n/).find((item) => item.startsWith("PROBE "))
++  return {
++    exitCode,
++    stderr,
++    ...(line
++      ? { result: JSON.parse(line.slice("PROBE ".length)) as Record<string, string | boolean> }
++      : { result: undefined }),
++  }
++}
++
++const runCheck = async (args: string[]) => {
++  const proc = Bun.spawn(["bun", "run", path.join(repoRoot, "script", "release-check.ts"), ...args], {
++    cwd: repoRoot,
++    stdout: "pipe",
++    stderr: "pipe",
++    env: cleanEnv(),
++  })
++  const [stdout, stderr, exitCode] = await Promise.all([
++    new Response(proc.stdout).text(),
++    new Response(proc.stderr).text(),
++    proc.exited,
++  ])
++  return { exitCode, stdout, stderr }
++}
++
++describe("release scripts", () => {
++  test(
++    "a release build reports the committed package version",
++    async () => {
++      const { exitCode, result, stderr } = await probe({ ALPHACODE_VERSION: packageVersion })
++      expect(exitCode).toBe(0)
++      expect(result).toEqual({
++        channel: "latest",
++        version: packageVersion,
++        packageVersion,
++        preview: false,
++        release: false,
++      })
++      expect(stderr).not.toContain("Release version validation failed")
++
++      const alias = await probe({ OPENCODE_VERSION: packageVersion })
++      expect(alias.exitCode).toBe(0)
++      expect(alias.result).toEqual(result)
++    },
++    120_000,
++  )
++
++  test(
++    "a development build never reports a stable release version",
++    async () => {
++      const { exitCode, result } = await probe({ ALPHACODE_CHANNEL: "dev" })
++      expect(exitCode).toBe(0)
++      expect(result?.preview).toBe(true)
++      expect(result?.release).toBe(false)
++      expect(result?.packageVersion).toBe(packageVersion)
++      expect(String(result?.version)).toMatch(/-dev\./)
++    },
++    120_000,
++  )
++
++  test(
++    "publishing is refused when the runtime version disagrees with package metadata",
++    async () => {
++      const { exitCode, stderr } = await probe({ ALPHACODE_RELEASE: "1", ALPHACODE_VERSION: otherVersion })
++      expect(exitCode).not.toBe(0)
++      expect(stderr).toContain("Release version validation failed")
++      expect(stderr).toContain("does not match root package.json version")
++    },
++    120_000,
++  )
++
++  test(
++    "release-check accepts the repository version and rejects a mismatched tag",
++    async () => {
++      const ok = await runCheck(["--tag", tagForVersion(packageVersion)])
++      expect(ok.exitCode).toBe(0)
++      expect(ok.stdout).toContain(`release-check ok: ${packageVersion}`)
++
++      const mismatch = await runCheck(["--tag", tagForVersion(otherVersion)])
++      expect(mismatch.exitCode).toBe(1)
++      expect(mismatch.stderr).toContain("does not match root package.json version")
++    },
++    120_000,
++  )
++
++})
+diff --git a/script/bump.ts b/script/bump.ts
+new file mode 100755
+index 0000000000000000000000000000000000000000..4fa02f1a1ece0d718c519ab4b2e4c2657c129dd0
+--- /dev/null
++++ b/script/bump.ts
+@@ -0,0 +1,108 @@
++#!/usr/bin/env bun
++
++/**
++ * Deterministic SemVer bump of the single authoritative version source.
++ *
++ *   ./script/bump.ts patch            # 0.1.0 -> 0.1.1
++ *   ./script/bump.ts minor            # 0.1.0 -> 0.2.0
++ *   ./script/bump.ts major            # 0.1.0 -> 1.0.0
++ *   ./script/bump.ts auto             # derive the bump from conventional commits since the last vX.Y.Z tag
++ *   ./script/bump.ts 0.2.0            # explicit version
++ *   ./script/bump.ts patch --dry-run  # print only, write nothing
++ *
++ * Root `package.json` and the executable package (`packages/opencode/package.json`)
++ * are written together so package metadata can never disagree with itself.
++ */
++
++import { $ } from "bun"
++import path from "path"
++import { commitsSince, lastTag } from "../packages/script/src/git"
++import { bumpVersion, nextVersion, parseVersion, type Bump } from "../packages/script/src/version"
++import { isReleaseVersion, tagForVersion } from "../packages/script/src/release"
++
++const root = path.resolve(import.meta.dir, "..")
++const rootPkgPath = path.join(root, "package.json")
++const executablePkgPath = path.join(root, "packages", "opencode", "package.json")
++
++const args = process.argv.slice(2)
++const dryRun = args.includes("--dry-run")
++const input = args.find((arg) => !arg.startsWith("--")) ?? "patch"
++
++const BUMP_TYPES: string[] = ["auto", "patch", "minor", "major"]
++const readVersion = async (file: string): Promise<string> => (await Bun.file(file).json()).version
++
++const compare = (left: string, right: string): number => {
++  const a = parseVersion(left)
++  const b = parseVersion(right)
++  for (const key of ["major", "minor", "patch"] as const) {
++    if (a[key] !== b[key]) return a[key] - b[key]
++  }
++  return 0
++}
++
++const current = await readVersion(rootPkgPath)
++try {
++  parseVersion(current)
++} catch {
++  throw new Error(`Root package.json version ${current} is not valid SemVer`)
++}
++
++const next = await (async (): Promise<string> => {
++  if (!BUMP_TYPES.includes(input)) {
++    const candidate = input.replace(/^v/, "")
++    parseVersion(candidate)
++    if (!isReleaseVersion(candidate)) throw new Error(`Refusing to bump to a prerelease version: ${candidate}`)
++    return candidate
++  }
++
++  if (input === "auto") {
++    const last = await lastTag("HEAD")
++    if (!last) {
++      throw new Error(
++        "No v* tag found; pass an explicit bump (patch, minor, major) or version instead of auto for the first release.",
++      )
++    }
++    return nextVersion(last, await commitsSince(last, "HEAD"), "auto")
++  }
++
++  return bumpVersion(current, input as Bump)
++})()
++
++if (!isReleaseVersion(next)) throw new Error(`Refusing to bump to a prerelease version: ${next}`)
++if (compare(next, current) <= 0) {
++  throw new Error(`Refusing to move the version backwards: ${current} -> ${next}. Pass a higher version.`)
++}
++
++const tag = tagForVersion(next)
++const existing = await $`git rev-parse -q --verify refs/tags/${tag}`.nothrow().text()
++if (existing.trim()) {
++  throw new Error(`Tag ${tag} already exists at ${existing.trim()}. Choose a higher version.`)
++}
++
++const writeVersion = async (file: string) => {
++  const text = await Bun.file(file).text()
++  const pattern = /^([ \t]*"version"[ \t]*:[ \t]*")([^"]*)(")/m
++  const match = pattern.exec(text)
++  if (!match) throw new Error(`No version field found in ${file}`)
++  if (match[2] !== current) throw new Error(`${file} declares ${match[2]}, expected ${current}`)
++  const updated = text.replace(pattern, (_, prefix: string, _value: string, suffix: string) => `${prefix}${next}${suffix}`)
++  if (!dryRun) await Bun.file(file).write(updated)
++}
++
++await writeVersion(rootPkgPath)
++await writeVersion(executablePkgPath)
++
++if (!dryRun) {
++  for (const file of [rootPkgPath, executablePkgPath]) {
++    const written = await readVersion(file)
++    if (written !== next) throw new Error(`${file} reports ${written} after the bump, expected ${next}`)
++  }
++}
++
++const label = dryRun ? "dry-run" : "bump"
++console.log(`${label}: ${current} -> ${next} (${input})`)
++if (dryRun) process.exit(0)
++
++console.log(`updated ${path.relative(root, rootPkgPath)}`)
++console.log(`updated ${path.relative(root, executablePkgPath)}`)
++console.log(`next: git commit -am "chore(release): ${tag}" && git push origin dev, then run ./script/release`)
+diff --git a/script/release b/script/release
+index 1a6331776bd5802a039792497a1f9b5f508b6fe9..9539e3ce8efa5f167f826300fbc146a39ba78138 100755
+--- a/script/release
++++ b/script/release
+@@ -1,22 +1,19 @@
+ #!/usr/bin/env bash
+-# usage: [VERSION=0.2.0] script/release [auto|patch|minor|major] [--dry-run]
++# usage: script/release [--dry-run]
++#
++# Dispatches the publish workflow on dev. The release version is the one already
++# committed in package.json; bump it first with ./script/bump.ts.
+ set -euo pipefail
+ 
+-BUMP=auto
+ DRY=false
+ for a in "$@"; do
+   case "$a" in
+     --dry-run) DRY=true ;;
+-    auto|patch|minor|major) BUMP="$a" ;;
+     *)
+-      echo "Unknown release argument '$a'; expected auto, patch, minor, major, or --dry-run." >&2
++      echo "Unknown release argument '$a'; expected --dry-run." >&2
+       exit 2
+       ;;
+   esac
+ done
+ 
+-args=(gh workflow run publish.yml --ref dev -f "bump=$BUMP" -f "dry_run=$DRY")
+-if [[ -n "${VERSION:-}" ]]; then
+-  args+=(-f "version=$VERSION")
+-fi
+-"${args[@]}"
++gh workflow run publish.yml --ref dev -f "dry_run=$DRY"
+diff --git a/script/release-check.ts b/script/release-check.ts
+new file mode 100755
+index 0000000000000000000000000000000000000000..406586248b2e1d97ebbd95a51fe4b06362987455
+--- /dev/null
++++ b/script/release-check.ts
+@@ -0,0 +1,59 @@
++#!/usr/bin/env bun
++
++/**
++ * Release version check.
++ *
++ * Validates that package metadata and the release tag describe the same version:
++ *
++ *   ./script/release-check.ts                 # package metadata (+ the tag at HEAD)
++ *   ./script/release-check.ts --tag v0.1.1    # package metadata against an exact tag
++ *
++ * Exits non-zero and lists every disagreement. Reads and writes nothing.
++ * The runtime half of the chain is enforced by the release guard in
++ * `@opencode-ai/script` and by the `--version` smoke test in the build.
++ */
++
++import { $ } from "bun"
++import path from "path"
++import { TAG_RE } from "../packages/script/src/version"
++import { assertReleaseVersions, ReleaseValidationError } from "../packages/script/src/release"
++
++const root = path.resolve(import.meta.dir, "..")
++
++const args = process.argv.slice(2)
++const readFlag = (name: string) => {
++  const index = args.indexOf(name)
++  return index === -1 ? undefined : args[index + 1]
++}
++
++let tag = readFlag("--tag")
++
++const rootPkg = await Bun.file(path.join(root, "package.json")).json()
++const executablePkg = await Bun.file(path.join(root, "packages", "opencode", "package.json")).json()
++
++// CI builds run from an exact tag checkout; locally fall back to the tag at HEAD.
++if (!tag && process.env.GITHUB_REF?.startsWith("refs/tags/")) tag = process.env.GITHUB_REF_NAME
++if (!tag) {
++  const tags = await $`git tag --points-at HEAD --list 'v[0-9]*' --sort=-v:refname`.nothrow().text()
++  tag =
++    tags
++      .split(/\r?\n/)
++      .map((item) => item.trim())
++      .find((item) => TAG_RE.test(item)) || undefined
++}
++
++try {
++  assertReleaseVersions({
++    packageVersion: rootPkg.version,
++    executableVersion: executablePkg.version,
++    ...(tag ? { tag } : {}),
++  })
++} catch (error) {
++  if (error instanceof ReleaseValidationError) {
++    console.error(error.message)
++    process.exit(1)
++  }
++  throw error
++}
++
++console.log(`release-check ok: ${rootPkg.version}${tag ? ` (tag ${tag})` : ""}`)
+diff --git a/script/version.ts b/script/version.ts
+index 3bb5a0fdaa3f8cd5d4f397fd7e196d76fa332ebe..105ce5975c37d45ab83454c8f8467ec37beec135 100755
+--- a/script/version.ts
++++ b/script/version.ts
+@@ -2,13 +2,42 @@
+ 
+ import { appendFile } from "node:fs/promises"
+ import { $ } from "bun"
+-import { formatNotes, Script, toChange } from "@opencode-ai/script"
++import path from "path"
++import {
++  assertReleaseVersions,
++  formatNotes,
++  isReleaseVersion,
++  Script,
++  tagForVersion,
++  toChange,
++} from "@opencode-ai/script"
+ 
+-if (Script.preview) throw new Error("publish workflow only supports release builds")
++// Root package.json is the single authoritative version source: the release
++// version is committed, never derived from the branch or from local history.
++const version = Script.packageVersion
++const tag = tagForVersion(version)
++
++if (!isReleaseVersion(version)) {
++  throw new Error(`Refusing to release ${version}: root package.json must hold a stable SemVer version.`)
++}
++
++const executablePkg = await Bun.file(path.resolve(import.meta.dir, "../packages/opencode/package.json")).json()
++assertReleaseVersions({ packageVersion: version, executableVersion: executablePkg.version })
++
++// Only the publish workflow creates a release; a local run is always a dry run.
++if (process.env.DRY_RUN !== "1" && process.env.GITHUB_ACTIONS !== "true") {
++  throw new Error("Refusing to create a release outside the publish workflow. Use DRY_RUN=1 ./script/version.ts to preview.")
++}
+ 
+ const repo = process.env.GH_REPO ?? "mdev34-lab/alphacode"
+ const sha = process.env.GITHUB_SHA ?? "HEAD"
+-const bump = process.env.OPENCODE_BUMP?.trim().toLowerCase() || "auto"
++
++// A tag is immutable: never re-release a version that already has one.
++const existing = await $`git rev-parse -q --verify refs/tags/${tag}`.nothrow().text()
++if (existing.trim()) {
++  throw new Error(`Tag ${tag} already exists at ${existing.trim()}. Bump first: ./script/bump.ts patch`)
++}
++
+ const previousTag = await Script.previousTag
+ const notes = previousTag
+   ? formatNotes(
+@@ -16,7 +45,7 @@ const notes = previousTag
+         const change = toChange(commit)
+         return change ? [change] : []
+       }),
+-      { repo, prev: previousTag, next: `v${Script.version}` },
++      { repo, prev: previousTag, next: tag },
+     )
+   : "Initial tracked release."
+ const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/alphacode-release-notes.txt`
+@@ -31,9 +60,9 @@ if (process.env.DRY_RUN === "1") {
+   const summary = [
+     "## Release dry run",
+     "",
+-    `- Version: v${Script.version}`,
++    `- Version: ${tag}`,
++    `- Version source: root package.json`,
+     `- Previous tag: ${previousTag ?? "none"}`,
+-    `- Bump: ${bump}${process.env.OPENCODE_VERSION ? " (version override takes precedence)" : ""}`,
+     "",
+     notes,
+     "",
+@@ -43,14 +72,14 @@ if (process.env.DRY_RUN === "1") {
+   } else {
+     console.log(summary)
+   }
+-  await writeOutput([`version=${Script.version}`, `repo=${repo}`])
++  await writeOutput([`version=${version}`, `tag=${tag}`, `repo=${repo}`])
+   process.exit(0)
+ }
+ 
+-await $`gh release create v${Script.version} -d --target ${sha} --title v${Script.version} --notes-file ${notesFile} --repo ${repo}`
+-const release = await $`gh release view v${Script.version} --json tagName,databaseId --repo ${repo}`.json()
++await $`gh release create ${tag} -d --target ${sha} --title ${tag} --notes-file ${notesFile} --repo ${repo}`
++const release = await $`gh release view ${tag} --json tagName,databaseId --repo ${repo}`.json()
+ await writeOutput([
+-  `version=${Script.version}`,
++  `version=${version}`,
+   `release_id=${release.databaseId}`,
+   `tag=${release.tagName}`,
+   `repo=${repo}`,
