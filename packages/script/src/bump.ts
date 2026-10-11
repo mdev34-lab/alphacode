@@ -23,7 +23,55 @@ export interface BumpTargets {
   executableText: string
 }
 
-const VERSION_FIELD = /^([ \t]*"version"[ \t]*:[ \t]*")([^"]*)(")/m
+const VERSION_FIELD = /"version"[ \t]*:[ \t]*"([^"]*)"/g
+
+/**
+ * JSON depth at `index`, counting braces outside strings. Used to tell the
+ * top-level "version" field apart from a nested field with the same name.
+ */
+function jsonDepthAt(text: string, index: number): number {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < index; i++) {
+    const char = text[i]!
+    if (escaped) {
+      escaped = false
+    } else if (char === "\\") {
+      escaped = true
+    } else if (char === '"') {
+      inString = !inString
+    } else if (!inString) {
+      if (char === "{" || char === "[") depth++
+      else if (char === "}" || char === "]") depth--
+    }
+  }
+  return depth
+}
+
+interface VersionField {
+  value: string
+  /** Start and end offsets of the quoted value, for surgical rewrites. */
+  start: number
+  end: number
+}
+
+/**
+ * Locates the top-level "version" field. A nested object may carry its own
+ * "version" key; matching by line prefix alone could hit it, so only a field
+ * at JSON depth 1 counts.
+ */
+function topLevelVersionField(text: string, label: string): VersionField {
+  VERSION_FIELD.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = VERSION_FIELD.exec(text))) {
+    if (jsonDepthAt(text, match.index) !== 1) continue
+    const value = match[1]!
+    const end = match.index + match[0].length - 1
+    return { value, start: end - value.length, end }
+  }
+  throw new Error(`No top-level "version" field found in ${label}`)
+}
 
 export function bumpPaths(root: string): BumpPaths {
   return {
@@ -33,9 +81,7 @@ export function bumpPaths(root: string): BumpPaths {
 }
 
 function declaredVersion(text: string, label: string): string {
-  const match = VERSION_FIELD.exec(text)
-  if (!match) throw new Error(`No "version" field found in ${label}`)
-  return match[2]
+  return topLevelVersionField(text, label).value
 }
 
 /**
@@ -78,8 +124,7 @@ export async function preflightBump(root: string): Promise<BumpTargets> {
  * Rewrites only the `"version"` field, leaving the rest of the file byte-identical.
  */
 export function rewriteVersion(text: string, from: string, to: string, label: string): string {
-  const match = VERSION_FIELD.exec(text)
-  if (!match) throw new Error(`No "version" field found in ${label}`)
-  if (match[2] !== from) throw new Error(`${label} declares ${match[2]}, expected ${from}`)
-  return text.replace(VERSION_FIELD, (_full, prefix: string, _value: string, suffix: string) => `${prefix}${to}${suffix}`)
+  const field = topLevelVersionField(text, label)
+  if (field.value !== from) throw new Error(`${label} declares ${field.value}, expected ${from}`)
+  return `${text.slice(0, field.start)}${to}${text.slice(field.end)}`
 }

@@ -127,6 +127,21 @@ export interface BumpArgs {
   dryRun: boolean
 }
 
+/** Classic Levenshtein distance: small inputs only, no early exit needed. */
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_unused, index) => index)
+  for (let i = 1; i <= a.length; i++) {
+    let previous = row[0]!
+    row[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const current = row[j]!
+      row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1))
+      previous = current
+    }
+  }
+  return row[b.length]!
+}
+
 /**
  * Parses `./script/bump.ts` arguments. Unknown flags are rejected instead of
  * being ignored, so a typo such as `--dry-rnu` can never silently turn into a
@@ -143,7 +158,9 @@ export function parseBumpArgs(args: string[]): BumpArgs {
     }
     if (arg.startsWith("-")) {
       const bare = arg.replace(/^-+/, "").toLowerCase()
-      const hint = bare.includes("dry") || bare.includes("run") || bare.includes("rnu") ? " (did you mean --dry-run?)" : ""
+      // A hint only for what is plausibly a typo of the flag (one or two
+      // edits away), never for an unrelated word that shares a substring.
+      const hint = editDistance(bare, "dry-run") <= 2 ? " (did you mean --dry-run?)" : ""
       throw new Error(`Unknown flag "${arg}"${hint}. Supported flags: ${BUMP_FLAGS.join(", ")}`)
     }
     positional.push(arg)

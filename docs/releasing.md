@@ -123,7 +123,7 @@ checked before either is written, so a half-bumped tree is impossible.
 
 | Variable | Meaning |
 | --- | --- |
-| `ALPHACODE_VERSION` | Version to build/embed; in a release build it must equal `package.json` |
+| `ALPHACODE_VERSION` | Version to build/embed; in a release build it must equal `package.json`. Implies the `latest` channel: combining it with an explicit non-`latest` channel is an error |
 | `ALPHACODE_BUMP` | `auto`, `patch`, `minor` or `major`; forces the release channel |
 | `ALPHACODE_CHANNEL` | `latest` for release builds; anything else is a development build |
 | `ALPHACODE_RELEASE` | Truthy to attach build artifacts to the release |

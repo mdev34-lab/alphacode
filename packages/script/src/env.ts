@@ -111,6 +111,16 @@ export function resolveEnv(env: Env = process.env as Env): ReleaseEnv {
   const bump = resolveBump(envValue(env, ENV_NAMES.bump))
   const channel = envValue(env, ENV_NAMES.channel)
 
+  // An explicit version pins the release version and implies the "latest"
+  // channel. Pairing it with an explicit preview channel would report a
+  // stable-looking version from a dev build, so the combination is a
+  // conflict, not a decision.
+  if (version !== undefined && channel !== undefined && channel !== "latest") {
+    throw new EnvConflictError(
+      `Conflicting environment values: version ${version} with channel "${channel}". An explicit version is only valid for a release (channel "latest"); drop the version override for a ${channel} build.`,
+    )
+  }
+
   return {
     ...(version === undefined ? {} : { version }),
     ...(bump === undefined ? {} : { bump }),

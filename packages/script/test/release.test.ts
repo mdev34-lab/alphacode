@@ -20,6 +20,7 @@ import {
   validateReleaseVersions,
 } from "../src/release"
 import { bumpVersion, devVersion, type BumpInput } from "../src/version"
+import { rewriteVersion } from "../src/bump"
 
 const repoRoot = path.resolve(import.meta.dir, "../../..")
 const packageVersion = (await Bun.file(path.join(repoRoot, "package.json")).json()).version as string
@@ -95,6 +96,14 @@ describe("release environment", () => {
     )
   })
 })
+
+  test("rejects a version override on a non-release channel", () => {
+    expect(() => resolveEnv({ ALPHACODE_VERSION: "0.1.1", ALPHACODE_CHANNEL: "dev" })).toThrow(EnvConflictError)
+    expect(() => resolveEnv({ OPENCODE_VERSION: "0.1.1", OPENCODE_CHANNEL: "beta" })).toThrow(EnvConflictError)
+    expect(resolveEnv({ ALPHACODE_VERSION: "0.1.1", ALPHACODE_CHANNEL: "latest" }).version).toBe("0.1.1")
+    expect(resolveEnv({ ALPHACODE_VERSION: "0.1.1" }).version).toBe("0.1.1")
+    expect(resolveEnv({ ALPHACODE_CHANNEL: "dev" }).channel).toBe("dev")
+  })
 
 describe("release version validation", () => {
   test("accepts facts that describe one version", () => {
@@ -179,6 +188,12 @@ describe("release version validation", () => {
     expect(parseBumpArgs(["--dry-run"])).toEqual({ bump: "patch", dryRun: true })
     expect(parseBumpArgs(["minor", "--dry-run"])).toEqual({ bump: "minor", dryRun: true })
     expect(() => parseBumpArgs(["patch", "minor"])).toThrow(/at most one bump argument/)
+  })
+
+  test("the typo hint stays quiet for flags that merely share a substring", () => {
+    expect(() => parseBumpArgs(["--dry-runner"])).toThrow(/^Unknown flag "--dry-runner"\. Supported flags:/)
+    expect(() => parseBumpArgs(["--rundown"])).toThrow(/^Unknown flag "--rundown"\. Supported flags:/)
+    expect(() => parseBumpArgs(["--dryrun"])).toThrow(/did you mean --dry-run/)
   })
 
   test("throws with every problem listed", () => {
@@ -477,4 +492,29 @@ describe("implicit release builds from a tag checkout", () => {
       gitRoot("tag", "-d", tag)
     }
   }, 120_000)
+})
+
+describe("bump version rewrite", () => {
+  const manifest = [
+    "{",
+    '  "name": "demo",',
+    '  "config": {',
+    '    "version": "9.9.9"',
+    "  },",
+    '  "version": "0.1.0",',
+    '  "dependencies": {',
+    '    "left-pad": "1.0.0"',
+    "  }",
+    "}",
+    "",
+  ].join("\n")
+
+  test("reads and rewrites only the top-level version field", () => {
+    const rewritten = rewriteVersion(manifest, "0.1.0", "0.2.0", "package.json")
+    expect(rewritten).toContain('"version": "0.2.0"')
+    // The nested field is untouched, byte for byte.
+    expect(rewritten).toContain('"version": "9.9.9"')
+    expect(rewritten.length).toBe(manifest.length)
+    expect(() => rewriteVersion(manifest, "9.9.9", "0.2.0", "package.json")).toThrow(/declares 0.1.0/)
+  })
 })

@@ -151,8 +151,20 @@ try {
   // a published release and a tag we did not push are never touched.
   if (pushedTag) {
     const leftover = await viewRelease()
-    if (leftover?.isDraft) await $`gh release delete ${tag} --yes --repo ${repo}`.nothrow()
-    await $`git push origin --delete refs/tags/${tag}`.nothrow()
+    if (leftover?.isDraft) {
+      const deleted = await $`gh release delete ${tag} --yes --repo ${repo}`.nothrow().quiet()
+      if (deleted.exitCode !== 0) {
+        console.error(
+          `rollback: could not delete draft release ${tag}: ${deleted.stderr.toString().trim()}. Remove it with ./script/release-cleanup.ts ${tag}`,
+        )
+      }
+    }
+    const untagged = await $`git push origin --delete refs/tags/${tag}`.nothrow().quiet()
+    if (untagged.exitCode !== 0) {
+      console.error(
+        `rollback: could not delete remote tag ${tag}: ${untagged.stderr.toString().trim()}. Remove it with ./script/release-cleanup.ts ${tag}`,
+      )
+    }
   }
   throw error
 }

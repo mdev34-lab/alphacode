@@ -7,6 +7,64 @@ import { archiveName, archivePath } from "../src/artifacts"
 const repoRoot = path.resolve(import.meta.dir, "../../..")
 const stubGh = path.join(import.meta.dir, "helpers", "gh-stub.bash")
 
+const isWindows = process.platform === "win32"
+
+/**
+ * Fails with the subprocess output attached, so a red CI run shows the real
+ * error instead of a bare exit-code diff.
+ */
+function expectOk(run: { exitCode: number; stdout: string; stderr: string }) {
+  if (run.exitCode !== 0) {
+    throw new Error(
+      `expected exit code 0, got ${run.exitCode}\n--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`,
+    )
+  }
+}
+
+/** Git Bash, resolved once per call so the shim never depends on the ambient PATH. */
+function bashForStub() {
+  return (Bun.which("bash") ?? "bash").replace(/\\/g, "/")
+}
+
+/**
+ * Installs the gh stub into `bin`.
+ *
+ * POSIX executes the bash script directly. Windows cannot exec a shebang
+ * file, so no extensionless `gh` is written there at all (an exact-name match
+ * would shadow PATHEXT lookup); instead `gh.cmd` hands the bash script to
+ * Git Bash. Line endings are normalized so a CRLF checkout cannot corrupt
+ * the script.
+ */
+async function installGhStub(bin: string) {
+  const script = (await Bun.file(stubGh).text()).replace(/\r\n/g, "\n")
+  if (isWindows) {
+    const target = path.join(bin, "gh-stub.bash").replace(/\\/g, "/")
+    await Bun.write(target, script)
+    const shim = ["@echo off", `"${bashForStub()}" "${target}" %*`, ""].join("\r\n")
+    await Bun.write(path.join(bin, "gh.cmd"), shim)
+  } else {
+    const target = path.join(bin, "gh")
+    await Bun.write(target, script)
+    Bun.spawnSync(["chmod", "+x", target])
+  }
+}
+
+/** The command that invokes the stubbed gh on this platform. */
+function ghCommand(bin: string, args: string[]) {
+  if (isWindows) return [bashForStub(), path.join(bin, "gh-stub.bash").replace(/\\/g, "/"), ...args]
+  return [path.join(bin, "gh"), ...args]
+}
+
+/**
+ * Prepends `dir` to PATH inside `env`. The variable is spelled `Path` on
+ * Windows and entries split on `;` there: reusing the existing key and the
+ * platform delimiter is what lets the child find the stub at all.
+ */
+function withPathPrefix(env: Record<string, string>, dir: string) {
+  const key = Object.keys(env).find((name) => name.toLowerCase() === "path") ?? "PATH"
+  return { ...env, [key]: `${dir}${path.delimiter}${env[key] ?? ""}` }
+}
+
 function git(cwd: string, ...args: string[]) {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
   if (result.exitCode !== 0) {
@@ -20,6 +78,7 @@ interface Sandbox {
   origin: string
   work: string
   state: string
+  bin: string
   out: string
   cleanup: () => Promise<void>
 }
@@ -33,8 +92,7 @@ async function makeSandbox(): Promise<Sandbox> {
   const out = path.join(dir, "github-output.txt")
   await mkdir(state, { recursive: true })
   await mkdir(bin, { recursive: true })
-  await Bun.write(path.join(bin, "gh"), await Bun.file(stubGh).text())
-  Bun.spawnSync(["chmod", "+x", path.join(bin, "gh")])
+  await installGhStub(bin)
 
   git(dir, "init", "--quiet", "--bare", origin)
   git(dir, "clone", "--quiet", origin, work)
@@ -51,6 +109,7 @@ async function makeSandbox(): Promise<Sandbox> {
     origin,
     work,
     state,
+    bin,
     out,
     cleanup: () => rm(dir, { recursive: true, force: true }),
   }
@@ -61,11 +120,11 @@ function flowEnv(sandbox: Sandbox, extra: Record<string, string> = {}) {
   for (const name of Object.keys(env)) {
     if (/^(ALPHACODE|OPENCODE)_/.test(name) || name.startsWith("GITHUB_")) delete env[name]
   }
+  const pathed = withPathPrefix(env, sandbox.bin)
   return {
-    ...env,
-    PATH: `${path.join(sandbox.dir, "bin")}:${env.PATH}`,
-    GH_STUB_STATE: sandbox.state,
-    GH_STUB_ORIGIN: sandbox.origin,
+    ...pathed,
+    GH_STUB_STATE: sandbox.state.replace(/\\/g, "/"),
+    GH_STUB_ORIGIN: sandbox.origin.replace(/\\/g, "/"),
     GITHUB_ACTIONS: "true",
     GH_REPO: "stub/alphacode",
     GITHUB_OUTPUT: sandbox.out,
@@ -110,7 +169,7 @@ const stubLog = async (sandbox: Sandbox) => {
 }
 
 async function gh(sandbox: Sandbox, ...args: string[]) {
-  const proc = Bun.spawn([path.join(sandbox.dir, "bin", "gh"), ...args], {
+  const proc = Bun.spawn(ghCommand(sandbox.bin, args), {
     cwd: sandbox.work,
     stdout: "pipe",
     stderr: "pipe",
@@ -132,7 +191,7 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
       try {
         const head = git(sandbox.work, "rev-parse", "HEAD")
         const run = await runVersion(sandbox)
-        expect(run.exitCode).toBe(0)
+        expectOk(run)
 
         // The ref exists on the remote immediately, pointing at the released commit.
         expect(remoteTagSha(sandbox, "v0.1.0")).toBe(head)
@@ -167,9 +226,9 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
       const sandbox = await makeSandbox()
       try {
         const first = await runVersion(sandbox)
-        expect(first.exitCode).toBe(0)
+        expectOk(first)
         const second = await runVersion(sandbox)
-        expect(second.exitCode).toBe(0)
+        expectOk(second)
 
         const releases = (await stubLog(sandbox)).filter((line) => line.startsWith("release create"))
         expect(releases).toHaveLength(1)
@@ -189,8 +248,8 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
     async () => {
       const sandbox = await makeSandbox()
       try {
-        expect((await runVersion(sandbox)).exitCode).toBe(0)
-        expect((await gh(sandbox, "release", "edit", "v0.1.0", "--draft=false", "--latest")).exitCode).toBe(0)
+        expectOk(await runVersion(sandbox))
+        expectOk(await gh(sandbox, "release", "edit", "v0.1.0", "--draft=false", "--latest"))
         expect((await stubRelease(sandbox, "v0.1.0"))?.isDraft).toBe(false)
 
         const rerun = await runVersion(sandbox)
@@ -215,7 +274,7 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
 
         // The rolled-back run can be retried cleanly (local leftover tag is replaced).
         const retry = await runVersion(sandbox)
-        expect(retry.exitCode).toBe(0)
+        expectOk(retry)
         expect(remoteTagSha(sandbox, "v0.1.0")).toBe(git(sandbox.work, "rev-parse", "HEAD"))
       } finally {
         await sandbox.cleanup()
@@ -229,15 +288,14 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
     async () => {
       const sandbox = await makeSandbox()
       try {
-        expect((await runVersion(sandbox)).exitCode).toBe(0)
+        expectOk(await runVersion(sandbox))
         const cleanup = await runCleanup(sandbox, "v0.1.0")
-        expect(cleanup.exitCode).toBe(0)
+        expectOk(cleanup)
         expect(cleanup.stdout).toContain("deleted draft release v0.1.0 and its tag")
         expect(await stubRelease(sandbox, "v0.1.0")).toBeNull()
         expect(remoteTagSha(sandbox, "v0.1.0")).toBe("")
 
-        const retry = await runVersion(sandbox)
-        expect(retry.exitCode).toBe(0)
+        expectOk(await runVersion(sandbox))
       } finally {
         await sandbox.cleanup()
       }
@@ -255,7 +313,7 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
         expect(remoteTagSha(sandbox, "v0.1.0")).not.toBe("")
 
         const cleanup = await runCleanup(sandbox, "v0.1.0")
-        expect(cleanup.exitCode).toBe(0)
+        expectOk(cleanup)
         expect(cleanup.stdout).toContain("deleted orphan tag v0.1.0")
         expect(remoteTagSha(sandbox, "v0.1.0")).toBe("")
       } finally {
@@ -270,11 +328,11 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
     async () => {
       const sandbox = await makeSandbox()
       try {
-        expect((await runVersion(sandbox)).exitCode).toBe(0)
-        expect((await gh(sandbox, "release", "edit", "v0.1.0", "--draft=false", "--latest")).exitCode).toBe(0)
+        expectOk(await runVersion(sandbox))
+        expectOk(await gh(sandbox, "release", "edit", "v0.1.0", "--draft=false", "--latest"))
 
         const cleanup = await runCleanup(sandbox, "v0.1.0")
-        expect(cleanup.exitCode).toBe(0)
+        expectOk(cleanup)
         expect(cleanup.stdout).toContain("published")
         expect((await stubRelease(sandbox, "v0.1.0"))?.isDraft).toBe(false)
         expect(remoteTagSha(sandbox, "v0.1.0")).not.toBe("")
@@ -331,8 +389,7 @@ describe("release archive upload", () => {
     await mkdir(path.join(state, "releases"), { recursive: true })
     await mkdir(path.join(dir, "dist"), { recursive: true })
     await mkdir(bin, { recursive: true })
-    await Bun.write(path.join(bin, "gh"), await Bun.file(stubGh).text())
-    Bun.spawnSync(["chmod", "+x", path.join(bin, "gh")])
+    await installGhStub(bin)
     await Bun.write(path.join(state, "releases", "v0.1.0.json"), '{"tagName":"v0.1.0","databaseId":1001,"isDraft":true}\n')
     return {
       dir,
@@ -353,7 +410,7 @@ describe("release archive upload", () => {
       cwd: sandbox.dir,
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...env, PATH: `${path.join(sandbox.dir, "bin")}:${env.PATH}`, GH_STUB_STATE: sandbox.state },
+      env: { ...withPathPrefix(env, path.join(sandbox.dir, "bin")), GH_STUB_STATE: sandbox.state.replace(/\\/g, "/") },
     })
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -376,7 +433,7 @@ describe("release archive upload", () => {
       const target = { name: "alphacode-linux-x64", os: "linux" }
       await Bun.write(path.join(sandbox.dir, "dist", archiveName(target)), "archive")
       const run = await runUpload(sandbox, "v0.1.0", [archivePath(target)])
-      expect(run.exitCode).toBe(0)
+      expectOk(run)
       const uploaded = await readFile(path.join(sandbox.state, "uploads"), "utf8")
       expect(uploaded.trim().split("\n")).toEqual(["./dist/alphacode-linux-x64.tar.gz"])
     } finally {
@@ -392,7 +449,7 @@ describe("release archive upload", () => {
         await Bun.write(path.join(sandbox.dir, "dist", archiveName(target)), "archive")
       }
       const run = await runUpload(sandbox, "v0.1.0", expected)
-      expect(run.exitCode).toBe(0)
+      expectOk(run)
       const uploaded = (await readFile(path.join(sandbox.state, "uploads"), "utf8")).trim().split("\n")
       expect(uploaded).toEqual(expected)
       expect(uploaded.filter((item) => item.endsWith(".tar.gz"))).toHaveLength(6)
