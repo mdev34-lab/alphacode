@@ -1,4 +1,30 @@
 #!/usr/bin/env bun
+// Temporary SDK-build diagnostics. No forced exit, retries, or budget changes.
+const sdkDiagnosticsProcess = process as typeof process & {
+  _getActiveHandles?: () => unknown[]
+  _getActiveRequests?: () => unknown[]
+}
+let sdkBuildPhase = "starting"
+const sdkBuildStartedAt = Date.now()
+function sdkBuildDiagnostic(event: string) {
+  const names = (items: unknown[] | undefined) => items?.map((item) =>
+    (item as { constructor?: { name?: string } })?.constructor?.name ?? "unknown")
+  console.error("[sdk-build]", JSON.stringify({
+    event, phase: sdkBuildPhase, pid: process.pid, ppid: process.ppid,
+    elapsedMs: Date.now() - sdkBuildStartedAt,
+    handles: names(sdkDiagnosticsProcess._getActiveHandles?.()),
+    requests: names(sdkDiagnosticsProcess._getActiveRequests?.()),
+  }))
+}
+function sdkBuildPhaseStart(phase: string) {
+  sdkBuildPhase = phase
+  sdkBuildDiagnostic("start")
+}
+const sdkBuildHeartbeat = setInterval(() => sdkBuildDiagnostic("pending"), 30_000)
+sdkBuildHeartbeat.unref()
+process.on("beforeExit", () => sdkBuildDiagnostic("beforeExit"))
+process.on("exit", () => sdkBuildDiagnostic("exit"))
+
 import { fileURLToPath } from "url"
 
 const dir = fileURLToPath(new URL("..", import.meta.url))
@@ -11,7 +37,9 @@ import { createClient } from "@hey-api/openapi-ts"
 
 const opencode = path.resolve(dir, "../../opencode")
 
+sdkBuildPhaseStart("generate")
 await $`bun dev generate > ${dir}/openapi.json`.cwd(opencode)
+sdkBuildDiagnostic("done")
 
 const document = (await Bun.file("./openapi.json").json()) as {
   components?: { schemas?: Record<string, unknown> }
@@ -44,6 +72,7 @@ if (schemas) {
   await Bun.write("./openapi.json", JSON.stringify(document))
 }
 
+sdkBuildPhaseStart("create-client")
 await createClient({
   input: "./openapi.json",
   output: {
@@ -71,6 +100,8 @@ await createClient({
   ],
 })
 
+sdkBuildDiagnostic("done")
+sdkBuildPhaseStart("patch-generated")
 const generatedTypes = await Bun.file("./src/v2/gen/types.gen.ts").text()
 if (/export type SessionNext\w+1 =/.test(generatedTypes)) {
   throw new Error("Session history generated duplicate Session event variants")
@@ -112,8 +143,21 @@ if (sseTypesPatched === sseTypesSource) {
 }
 await Bun.write(sseTypesPath, sseTypesPatched)
 
+sdkBuildPhaseStart("prettier-gen")
 await $`bun prettier --write src/gen`
+sdkBuildDiagnostic("done")
+sdkBuildPhaseStart("prettier-v2")
 await $`bun prettier --write src/v2`
+sdkBuildDiagnostic("done")
+sdkBuildPhaseStart("remove-dist")
 await $`rm -rf dist`
+sdkBuildDiagnostic("done")
+sdkBuildPhaseStart("tsc")
 await $`bun tsc`
+sdkBuildDiagnostic("done")
+sdkBuildPhaseStart("remove-openapi")
 await $`rm openapi.json`
+sdkBuildDiagnostic("done")
+
+sdkBuildPhase = "complete"
+sdkBuildDiagnostic("script-end")
