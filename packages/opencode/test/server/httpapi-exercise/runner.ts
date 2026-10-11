@@ -79,8 +79,28 @@ function withContext<A, E>(
     (ctx) =>
       Effect.gen(function* () {
         yield* trace(options, scenario, `${label} tmpdir cleanup start`)
+        // Finalizers run uninterruptibly, so an Effect timeout could not bound
+        // this either: race the disposal against a plain timer instead. After
+        // a scenario timeout the run must move on even if cleanup is wedged.
         yield* Effect.promise(async () => {
-          await ctx.dir?.[Symbol.asyncDispose]()
+          const disposal = ctx.dir?.[Symbol.asyncDispose]()
+          if (disposal) {
+            // Same reasoning as bounded(): the timer is cancelled when the
+            // disposal settles, and errors stay ignored via Effect.ignore.
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 60_000)
+              disposal.then(
+                () => {
+                  clearTimeout(timer)
+                  resolve()
+                },
+                () => {
+                  clearTimeout(timer)
+                  resolve()
+                },
+              )
+            })
+          }
         }).pipe(Effect.ignore)
         yield* trace(options, scenario, `${label} tmpdir cleanup done`)
       }),
@@ -266,12 +286,38 @@ function fakeLlmConfig(url: string): Partial<ConfigV1.Info> {
   }
 }
 
+// Finalizers run uninterruptibly, so an Effect timeout cannot bound cleanup:
+// race each async disposal against a plain timer instead. The timer is
+// cancelled as soon as the disposal settles, so a fast success logs nothing
+// and leaves no timer pending. When the bound fires we log and continue
+// without the disposal having finished: safe here because these are
+// best-effort global resets of test-scoped state (scratch db/tmp per run),
+// the promise still completes in the background, and the bound can only fire
+// on a genuine wedge, which is exactly what must not hang the whole run.
+const bounded = <A>(label: string, promise: Promise<A>) =>
+  new Promise<A | void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      console.error(`[reset] ${label} did not finish within 60s; continuing`)
+      resolve()
+    }, 60_000)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+
 const resetState = Effect.promise(async () => {
   const modules = await runtime()
   Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
   Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
-  await disposeApps()
-  await modules.disposeAllInstances()
-  await modules.resetDatabase()
+  await bounded("disposeApps", disposeApps())
+  await bounded("disposeAllInstances", modules.disposeAllInstances())
+  await bounded("resetDatabase", modules.resetDatabase())
   await Bun.sleep(25)
 })
