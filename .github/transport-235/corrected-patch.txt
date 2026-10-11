@@ -332,7 +332,7 @@ index 000000000..93d5036e4
 +  }
 +}
 diff --git a/packages/core/src/review-loop.ts b/packages/core/src/review-loop.ts
-index 74d6adda0..6cc160a1f 100644
+index 74d6adda0..f646fbea2 100644
 --- a/packages/core/src/review-loop.ts
 +++ b/packages/core/src/review-loop.ts
 @@ -1,3 +1,4 @@
@@ -591,7 +591,7 @@ index 74d6adda0..6cc160a1f 100644
    let termination: ReviewTermination | undefined
  
    for (const part of current.flatMap((message) => message.parts)) {
-@@ -266,6 +343,9 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+@@ -266,8 +343,15 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
        // already on record.
        if (isUnreportedReviewTask(part)) continue
  
@@ -600,8 +600,14 @@ index 74d6adda0..6cc160a1f 100644
 +      // requirement honestly (never as an approval).
        if (part.state?.status === "error") {
          reviews++
++        // An approval covers only the tree it reviewed. If work landed after it and
++        // a review attempt then errored, the errored attempt clears the work flag, so
++        // the approval must be dropped here or it would revive as "approved".
++        if (workSinceReview && lastReviewVerdict === "approved") lastReviewVerdict = undefined
          latest = undefined
-@@ -285,23 +365,36 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+         workSinceReview = false
+         reviewInProgress = false
+@@ -285,23 +369,36 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
          continue
        }
  
@@ -649,7 +655,7 @@ index 74d6adda0..6cc160a1f 100644
      }
  
      if (isFinishNudge(part)) {
-@@ -315,7 +408,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+@@ -315,7 +412,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
        continue
      }
  
@@ -658,7 +664,7 @@ index 74d6adda0..6cc160a1f 100644
        workSeen = true
        workSinceReview = true
        reviewInProgress = false
-@@ -345,6 +438,11 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
+@@ -345,6 +442,11 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
      reviewInProgress,
      nudged,
      phase,
@@ -670,7 +676,7 @@ index 74d6adda0..6cc160a1f 100644
      ...(termination ? { termination } : {}),
    }
  }
-@@ -354,16 +452,12 @@ const REVIEW_DISPATCH =
+@@ -354,16 +456,12 @@ const REVIEW_DISPATCH =
    'call the `task` tool with `subagent_type: "review"` and `background: false`, and give it the request, the changed files, and the diff for this work'
  
  /**
@@ -840,10 +846,10 @@ index fbd2ecdb1..11a510730 100644
  export function migrateAgent(info: ConfigAgentV1.Info) {
 diff --git a/packages/core/test/agent-effort.test.ts b/packages/core/test/agent-effort.test.ts
 new file mode 100644
-index 000000000..5ecdf842d
+index 000000000..d18e8636b
 --- /dev/null
 +++ b/packages/core/test/agent-effort.test.ts
-@@ -0,0 +1,933 @@
+@@ -0,0 +1,982 @@
 +import path from "path"
 +import fs from "fs/promises"
 +import { describe, expect } from "bun:test"
@@ -1777,6 +1783,78 @@ index 000000000..5ecdf842d
 +    ),
 +  )
 +})
++
++describe("effort policy – an approval never survives later work and an errored attempt", () => {
++  const erroredReviewTask = () =>
++    ({
++      info: { role: "assistant" },
++      parts: [
++        {
++          type: "tool",
++          tool: "task",
++          state: {
++            status: "error",
++            input: { subagent_type: "review", background: false },
++            error: "the review dispatch failed",
++          },
++        },
++      ],
++    }) as unknown as ReviewHistoryMessage
++
++  // Approved, then more file writes, then a review attempt that errored.
++  const staleThenErrored = (effort: AgentEffort.Level) =>
++    reviewLoopState([userTurn(), writeTask(), reviewTask("approved"), writeTask(), erroredReviewTask()], { effort })
++
++  it.effect("medium reaches its cap as budget-exhausted, never approved", () =>
++    Effect.sync(() => {
++      const state = staleThenErrored("medium")
++      expect(state.lastReviewVerdict).toBeUndefined()
++      const outcome = evaluate("medium", state)
++      expect(outcome.deliver).toBe(true)
++      expect(outcome.termination).toBe("budget-exhausted")
++    }),
++  )
++
++  it.effect("thorough declines again rather than delivering an approval", () =>
++    Effect.sync(() => {
++      const state = staleThenErrored("thorough")
++      const outcome = evaluate("thorough", state)
++      expect(outcome.deliver).toBe(false)
++      expect(outcome.termination).not.toBe("approved")
++    }),
++  )
++
++  it.effect("fast labels the delivery unreviewed, never approved", () =>
++    Effect.sync(() => {
++      const outcome = evaluate("fast", staleThenErrored("fast"))
++      expect(outcome.deliver).toBe(true)
++      expect(outcome.termination).toBe("unreviewed")
++    }),
++  )
++})
+diff --git a/packages/core/test/review-loop.test.ts b/packages/core/test/review-loop.test.ts
+index b051da024..67790d480 100644
+--- a/packages/core/test/review-loop.test.ts
++++ b/packages/core/test/review-loop.test.ts
+@@ -340,6 +340,18 @@ describe("review loop - conservative task evidence", () => {
+     expect(state.verdict).toBe("cap")
+     expect(state.reviewInProgress).toBe(false)
+   })
++  // An approval covers only the tree it reviewed. Work after it, then an errored
++  // attempt (which clears the work flag), must not revive the approval.
++  test("an errored attempt after later work does not revive an earlier approval", () => {
++    const state = reviewLoopState(
++      [userMessage, editMessage, reviewMessage(), editMessage, reviewMessage({ status: "error" })],
++      { effort: "medium" },
++    )
++    expect(state.reviews).toBe(2)
++    expect(state.lastReviewVerdict).toBeUndefined()
++    expect(state.verdict).not.toBe("approved")
++  })
++
+   test("errored review stays unapproved before cap", () => {
+     const state = reviewLoopState([userMessage, editMessage, reviewMessage({ status: "error" })], 2)
+     expect(state.reviews).toBe(1)
 diff --git a/packages/opencode/src/agent/agent.ts b/packages/opencode/src/agent/agent.ts
 index e6d7bbfda..bf787e3a3 100644
 --- a/packages/opencode/src/agent/agent.ts
@@ -4013,7 +4091,7 @@ index 000000000..783854621
 +  )
 +})
 diff --git a/packages/opencode/test/tool/finish.test.ts b/packages/opencode/test/tool/finish.test.ts
-index 94aab10dc..0b3eabcef 100644
+index 94aab10dc..4796c639b 100644
 --- a/packages/opencode/test/tool/finish.test.ts
 +++ b/packages/opencode/test/tool/finish.test.ts
 @@ -17,6 +17,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
@@ -4286,6 +4364,89 @@ index 94aab10dc..0b3eabcef 100644
    )
  
    // Below the cap the same errored attempt leaves the work unapproved: counting
+@@ -1744,3 +1765,82 @@ describe("tool.finish – errored review attempts reach the cap", () => {
+     }),
+   )
+ })
++
++// An approval covers only the tree it reviewed. Approved review, then more
++// file writes, then a review attempt that errored: the errored attempt clears
++// the work flag, so the earlier approval must not revive as a delivered verdict.
++describe("tool.finish – stale approval after later work and an errored attempt", () => {
++  const addErroredTask = Effect.fn("FinishTest.addErroredTask")(function* (
++    sessionID: SessionID,
++    messageID: MessageID,
++  ) {
++    const session = yield* Session.Service
++    const now = Date.now()
++    yield* session.updatePart({
++      id: PartID.ascending(),
++      messageID,
++      sessionID,
++      type: "tool",
++      tool: "task",
++      callID: "review-errored-stale",
++      state: {
++        status: "error",
++        input: { subagent_type: "review", background: false },
++        error: "the review dispatch failed",
++        title: "task",
++        metadata: {},
++        time: { start: now, end: now },
++      },
++    })
++  })
++
++  const staleSetup = Effect.fn("FinishTest.staleSetup")(function* (chatID: SessionID, assistantID: MessageID) {
++    yield* addToolPart(chatID, assistantID, "edit")
++    yield* addReview(chatID, assistantID, "Approved")
++    yield* addToolPart(chatID, assistantID, "edit")
++    yield* addErroredTask(chatID, assistantID)
++  })
++
++  it.instance("medium: delivers budget-exhausted, never approved", () =>
++    Effect.gen(function* () {
++      const { chat, assistant } = yield* seedSession()
++      yield* staleSetup(chat.id, assistant.id)
++      const def = yield* (yield* FinishTool).init()
++      const result = yield* def.execute({ reason: "success", result: "done" }, workCtx(chat.id, assistant.id))
++      expect(result.metadata.review).toMatchObject({
++        termination: "budget-exhausted",
++        disposition: "unreviewed",
++        reviews: 2,
++        maxIterations: 2,
++      })
++      expect(result.metadata.review).not.toMatchObject({ termination: "approved" })
++    }),
++  )
++
++  it.instance(
++    "thorough: declines again, never delivered as approved",
++    () =>
++      Effect.gen(function* () {
++        const { chat, assistant } = yield* seedSession()
++        yield* staleSetup(chat.id, assistant.id)
++        const declined = yield* declineOf({ reason: "success", result: "done" }, chat.id, assistant.id)
++        expect(declined.message).toContain('effort is "thorough"')
++        expect(declined.metadata.review).not.toMatchObject({ termination: "approved" })
++        expect(declined.metadata.review).not.toMatchObject({ disposition: "reviewed" })
++      }),
++    { config: { agent: { effort: "thorough" } } },
++  )
++
++  it.instance(
++    "fast: delivers unreviewed, never approved",
++    () =>
++      Effect.gen(function* () {
++        const { chat, assistant } = yield* seedSession()
++        yield* staleSetup(chat.id, assistant.id)
++        const def = yield* (yield* FinishTool).init()
++        const result = yield* def.execute({ reason: "success", result: "done" }, workCtx(chat.id, assistant.id))
++        expect(result.metadata.review).toMatchObject({ termination: "unreviewed", disposition: "unreviewed" })
++      }),
++    { config: { agent: { effort: "fast" } } },
++  )
++})
 diff --git a/packages/opencode/test/tool/review-finish-history.test.ts b/packages/opencode/test/tool/review-finish-history.test.ts
 index 6e5ac0b40..bf5d77f54 100644
 --- a/packages/opencode/test/tool/review-finish-history.test.ts
