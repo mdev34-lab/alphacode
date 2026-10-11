@@ -1,18 +1,19 @@
-import { sessionAgent } from "../session/session-agent"
 import * as Tool from "./tool"
 import { ToolFailure } from "@opencode-ai/llm"
 import { ReviewReport } from "@opencode-ai/core/review-report"
+import { EffortPolicy } from "@opencode-ai/core/effort-policy"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 import DESCRIPTION from "./finish.txt"
 import { Effect, Option, Schema } from "effect"
 import { Todo } from "../session/todo"
-import { Session } from "../session/session"
+import { Session, readAgentEffort } from "../session/session"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
+import { reviewLoopState } from "../session/review-loop"
 import { BackgroundJob } from "@/background/job"
-import { Permission } from "@/permission"
-import { Agent } from "../agent/agent"
-import { finishGateError, reviewLoopState, type ReviewTermination } from "../session/review-loop"
 import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
+import { Agent } from "../agent/agent"
+import { Permission } from "@/permission"
 
 const DeclaredReasons = ["success", "waiting_for_subagent", "subagent_wait", "failure"] as const
 
@@ -47,6 +48,20 @@ export const Parameters = Schema.Struct({
   result: Schema.String.annotate({
     description:
       "The final result of the task: a concise summary of what was accomplished, presented to the user as the task outcome.",
+  }),
+  validation: Schema.optional(
+    Schema.Struct({
+      checks: Schema.Array(
+        Schema.Struct({
+          category: Schema.Literals(["syntax", "smoke", "tests", "typecheck", "parity"]),
+          status: Schema.Literals(["passed", "failed", "not-run", "not-applicable"]),
+          detail: Schema.String,
+        }),
+      ),
+    }),
+  ).annotate({
+    description:
+      "Optional agent-reported validation evidence: one entry per check. finish records it and never executes checks itself.",
   }),
 })
 
@@ -97,7 +112,40 @@ export function deliveredReason(reason: Reason | undefined): TerminationReason |
  * and the set is the contract both read: every reason `reviewUnavailable` below
  * can report must be declared here, or the metadata assignment fails to type.
  */
-export type ReviewUnavailable = "subagent-depth" | "task-hidden" | "reviewer-missing" | "permission-denied"
+export type ReviewUnavailable =
+  | "subagent-depth"
+  | "task-hidden"
+  | "reviewer-missing"
+  | "permission-denied"
+  | "session-unreadable"
+  | "caller-unreadable"
+
+/**
+ * Persisted `metadata` of a finish result. The waiting branch sets only `waiting`;
+ * the delivered and declined branches set `review` (and `termination`/`validation`
+ * on delivery). Declared here so the execute result is typed, not inferred from
+ * the two branches, which would collapse the optional fields to `undefined`.
+ */
+type FinishMetadata = {
+  waiting?: boolean
+  termination?: { reason: Reason }
+  review?: {
+    nudged?: boolean
+    effort: AgentEffort.Level
+    disposition: EffortPolicy.Disposition
+    verdict: string
+    reviews: number
+    maxIterations?: number
+    termination?: EffortPolicy.Termination
+    unavailable?: ReviewUnavailable
+    unavailableReason?: string
+    openFindings: number
+    blockingFindings: number
+    workSinceReview: boolean
+    stale?: boolean
+  }
+  validation?: EffortPolicy.ValidationReport
+}
 
 export const FinishTool = Tool.define(
   "finish",
@@ -107,86 +155,15 @@ export const FinishTool = Tool.define(
     const config = yield* Config.Service
     const background = yield* BackgroundJob.Service
     const agents = yield* Agent.Service
-
-    /**
-     * Why this session cannot dispatch the Review subagent, when it cannot.
-     *
-     * This is dispatch evidence, not a waiver of the review requirement, and it is read from
-     * the facts the task tool refuses a `review` dispatch on - never from the
-     * finish result or anything else the model says about the work:
-     *
-     * - `subagent-depth`: the session sits at the configured subagent depth,
-     *   so the task tool refuses any delegation from it. Under the default
-     *   `subagent_depth` of 1 that is every task child.
-     * - `task-hidden`: the newest user message hides the `task` tool for this
-     *   turn. That is a per-message decision, so it blocks a dispatch the
-     *   session's own ruleset would otherwise allow.
-     * - `reviewer-missing`: the reviewer a `review` request routes to is not a
-     *   delegable agent here (disabled, or reconfigured as a primary agent).
-     * - `permission-denied`: the session's effective ruleset denies `task` for
-     *   that reviewer. A child whose agent declares no task rule gets a
-     *   blanket deny that also hides the task tool from it.
-     *
-     * The checks mirror the task tool's own, in its order; keep them in step.
-     */
-    const reviewUnavailable = Effect.fn("FinishTool.reviewUnavailable")(function* (
-      ctx: Tool.Context,
-      subagentDepth: number,
-    ) {
-      const session = yield* sessions.get(ctx.sessionID)
-      let current = session
-      let depth = 0
-      while (current.parentID) {
-        depth++
-        current = yield* sessions.get(current.parentID)
-      }
-      if (depth >= subagentDepth) return "subagent-depth" as const
-      const latestUser = (yield* sessions.messages({ sessionID: session.id })).findLast(
-        (message) => message.info.role === "user",
-      )
-      if (latestUser?.info.role === "user" && latestUser.info.tools?.task === false) return "task-hidden" as const
-      // The task tool routes by the pinned session agent and falls back to the
-      // newest user message's agent, which is the agent running this turn.
-      const reviewer = resolveReviewer("review", yield* sessionAgent(sessions, session))
-      const target = yield* agents.get(reviewer)
-      if (!target || target.mode === "primary") return "reviewer-missing" as const
-      const running = yield* agents.get(ctx.agent)
-      const ruleset = Permission.merge(running?.permission ?? [], session.permission ?? [])
-      // A blanket deny hides the task tool from the model; an explicit agent
-      // invocation skips the permission prompt, but not that visibility filter.
-      if (Permission.disabled(["task"], ruleset).has("task")) return "permission-denied" as const
-      if (ctx.extra?.bypassAgentCheck) return undefined
-      const patterns = reviewer === "review" ? ["review"] : ["review", reviewer]
-      if (patterns.some((pattern) => Permission.evaluate("task", pattern, ruleset).action === "deny"))
-        return "permission-denied" as const
-      return undefined
-    })
+    const permission = yield* Permission.Service
 
     return {
       description: DESCRIPTION,
       parameters: Parameters,
-      // A yield and a terminal result are two success shapes. Naming the fields
-      // the tool can return keeps `metadata` checked for consumers instead of
-      // widening it to the index signature, while still letting inference see a
-      // single contract rather than collapsing both branches into one shape
-      // whose every field is optional.
       execute: (
         params: Schema.Schema.Type<typeof Parameters>,
         ctx: Tool.Context,
-      ): Effect.Effect<
-        Tool.ExecuteResult<{
-          waiting?: boolean
-          termination?: { reason: Reason }
-          review?: {
-            verdict: string
-            reviews: number
-            maxIterations: number
-            termination: ReviewTermination
-            unavailable?: ReviewUnavailable
-          }
-        }>,
-        ToolFailure
-      > =>
+      ): Effect.Effect<Tool.ExecuteResult<FinishMetadata>, ToolFailure> =>
         Effect.gen(function* () {
           yield* ctx.waitForOtherTools ?? Effect.void
           const messages = yield* sessions
@@ -196,7 +173,9 @@ export const FinishTool = Tool.define(
           // tool, so the structured review result is gated here, at the
           // control-flow boundary: without a parseable report envelope the
           // call fails as recoverable model feedback and the run continues
-          // instead of completing without a verdict.
+          // instead of completing without a verdict. Reviewer sessions are
+          // never recursively reviewed by the effort policy below — their
+          // own report contract is the whole gate.
           if (isReviewAgent(ctx.agent)) {
             const currentMessage = messages.find((message) => message.info.id === ctx.messageID)
             const delivery = ReviewReport.extract([
@@ -219,6 +198,7 @@ export const FinishTool = Tool.define(
               )
             }
           }
+
           // Yielding for background work is not a termination. The turn ends so
           // the model stops polling for the subagents it launched, but the
           // session is woken by their notification, so a wait must leave
@@ -290,89 +270,166 @@ export const FinishTool = Tool.define(
           }
 
           const cfg = yield* config.get()
-          const maxIterations = cfg.review_loop?.max_iterations ?? 5
-          const reviewState = reviewLoopState(messages, maxIterations)
-          const gateError = finishGateError(reviewState)
-          // Only consulted when the gate would decline, so an approved or
-          // read-only turn never pays for the session walk.
-          const unavailable = gateError
-            ? yield* reviewUnavailable(ctx, cfg.subagent_depth ?? 1).pipe(
-                Effect.mapError((error) => new ToolFailure({ message: error.message })),
-              )
-            : undefined
-          // A handoff needs a parent to hand to, so it is only ever a child's
-          // ending. The read is mapped to a ToolFailure like every other session
-          // read in this tool: a raw NotFoundError would escape the tool's error
-          // contract and reach the model with no actionable message.
-          const handoff =
-            gateError !== undefined &&
-            unavailable === "subagent-depth" &&
-            (yield* sessions
-              .get(ctx.sessionID)
-              .pipe(Effect.mapError((error) => new ToolFailure({ message: error.message })))).parentID !== undefined
-          const blockedFailure =
-            gateError !== undefined && unavailable !== undefined && !handoff && params.reason === "failure"
-          if (gateError && !handoff && !blockedFailure) {
-            const phase = reviewState.workSinceReview
-              ? "work"
-              : reviewState.verdict === "needs-fixes"
-                ? "work"
-                : "review"
-            yield* Effect.logWarning(
-              reviewState.nudged ? "finish retried without review, declined again" : "finish declined: review required",
-              {
-                sessionID: ctx.sessionID,
-                verdict: reviewState.verdict,
-                phase,
-                reviews: reviewState.reviews,
-                maxIterations: reviewState.maxIterations,
-                workSinceReview: reviewState.workSinceReview,
-              },
-            )
-            // Persist the decline on the failed part. It is not a waiver: the
-            // next finish for the same work is declined again, and the record
-            // only lets that decline say that retrying does not skip review.
+          const session = yield* sessions.get(ctx.sessionID).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+          // Effective level: session-persisted selection, then configured
+          // default, then medium. The model never supplies a level here —
+          // finish must not accept a model-selected effort or pass budget.
+          const configEffort = typeof cfg.agent?.effort === "string" ? cfg.agent.effort : undefined
+          const effort = AgentEffort.resolve(readAgentEffort(session?.metadata), AgentEffort.resolve(configEffort))
+          const reviewState = reviewLoopState(messages, { effort })
+
+          // Reviewer availability is dispatch evidence taken from the same
+          // context a real `task` dispatch would use: the routed reviewer for
+          // this session's agent, its existence/primary status, the CALLING
+          // agent's permission ruleset exactly as `ctx.ask` composes it, the
+          // session's rules, and the subagent depth limit. It is only
+          // consulted when the policy could actually need a review.
+          const availability =
+            effort === "fast" || !reviewState.workSeen
+              ? ({ available: true } as const)
+              : yield* Effect.gen(function* () {
+                  if (!session)
+                    return {
+                      available: false as const, code: "session-unreadable" as const,
+                      reason: "the session could not be read to verify reviewer dispatch context",
+                    }
+                  // Same routing tier as task(): the pinned session agent,
+                  // falling back to the newest user message's agent — read
+                  // over task's dispatch window: task's fallback reads
+                  // sessions.messages({limit:50}), the newest 50 rows. The
+                  // full-history read above is ascending, so its final 50
+                  // entries are exactly that newest page (same rows, same
+                  // (time_created, id) order), keeping this verdict on the
+                  // window dispatch actually routes from; reviewLoopState
+                  // above still consumes the full history.
+                  const routed =
+                    session.agent ?? messages.slice(-50).findLast((message) => message.info.role === "user")?.info.agent
+                  const resolved = resolveReviewer("review", routed)
+                  const requested = yield* agents.get("review")
+                  const reviewer = yield* agents.get(resolved)
+                  if (!requested || !reviewer)
+                    return {
+                      available: false as const, code: "reviewer-missing" as const,
+                      reason: `reviewer agent "${!requested ? "review" : resolved}" is not available`,
+                    }
+                  if (reviewer.mode === "primary")
+                    return {
+                      available: false as const, code: "reviewer-missing" as const,
+                      reason: `reviewer agent "${resolved}" is a primary agent and cannot be delegated to`,
+                    }
+                  // The dispatch permission gate asks through `ctx.ask`,
+                  // whose ruleset is the RUNNING agent's permissions merged
+                  // with the session's (session/tools.ts), and finish runs
+                  // inside that same running agent — `ctx.agent` is the
+                  // caller. The requested reviewer's own permissions are not
+                  // part of that composition: a deny on the generic `review`
+                  // agent gates nothing at dispatch, and a caller-scoped
+                  // deny must not be hidden behind it.
+                  const caller = yield* agents.get(ctx.agent)
+                  if (!caller)
+                    return {
+                      available: false as const, code: "caller-unreadable" as const,
+                      reason: `running agent "${ctx.agent}" could not be read to verify its dispatch permissions`,
+                    }
+                  const ruleset = Permission.merge(caller.permission, session.permission ?? [])
+                  const patterns = resolved === "review" ? ["review"] : ["review", resolved]
+                  // Same deny verdict as the real dispatch: `Permission.denies`
+                  // evaluates this ruleset against the instance-approved grants
+                  // exactly as `Permission.ask` does, so an always-grant that
+                  // would mask a deny at dispatch cannot make finish claim
+                  // review-unavailable while dispatch stays allowed — and an
+                  // ungranted deny still reports unavailable honestly.
+                  // An explicit agent invocation (bypassAgentCheck) lets task skip its
+                  // permission prompt, so the same deny does not stop that dispatch and
+                  // must not read as unavailable here either.
+                  const bypassAgentCheck = ctx.extra?.bypassAgentCheck === true
+                  if (!bypassAgentCheck && (yield* permission.denies({ permission: "task", patterns, ruleset })))
+                    return {
+                      available: false as const, code: "permission-denied" as const,
+                      reason: `permission config denies task "${resolved}"`,
+                    }
+                  let depth = 0
+                  let current: Session.Info | undefined = session
+                  while (current?.parentID) {
+                    depth++
+                    const parent: Session.Info | undefined = yield* sessions
+                      .get(current.parentID)
+                      .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+                    if (!parent)
+                      return {
+                        available: false as const, code: "session-unreadable" as const,
+                        reason: "session ancestry could not be read to verify the subagent depth limit",
+                      }
+                    current = parent
+                  }
+                  // 233: the newest user message hides the task tool for this turn.
+                  // A per-message decision, so it blocks a dispatch the ruleset would allow.
+                  const latestUser = messages.findLast((message) => message.info.role === "user")
+                  if (latestUser?.info.role === "user" && latestUser.info.tools?.task === false)
+                    return {
+                      available: false as const, code: "task-hidden" as const,
+                      reason: "the newest user message hides the task tool for this turn",
+                    }
+                  if (depth >= (cfg.subagent_depth ?? 1))
+                    return {
+                      available: false as const, code: "subagent-depth" as const,
+                      reason: `subagent depth limit reached (${cfg.subagent_depth ?? 1})`,
+                    }
+                  return { available: true as const }
+                })
+
+          const outcome = EffortPolicy.evaluateFinish({
+            effort,
+            reason: params.reason,
+            state: reviewState,
+            reviewerAvailable: availability.available,
+            ...(availability.available ? {} : { unavailableReason: availability.reason }),
+            ...(availability.available ? {} : { unavailableCode: availability.code }),
+            // #233 handoff: a child that cannot dispatch review because of the depth limit hands
+            // its unreviewed writes to its parent (review-pending), never claims approval.
+            handoff: !availability.available && session?.parentID !== undefined && availability.reason.startsWith("subagent depth"),
+          })
+
+          if (!outcome.deliver) {
+            yield* Effect.logWarning("finish declined by effort policy", {
+              sessionID: ctx.sessionID,
+              effort,
+              reason: params.reason,
+              verdict: reviewState.verdict,
+              reviews: reviewState.reviews,
+              feedback: outcome.feedback,
+            })
+            // Persist the attempt on the failed part so the transcript shows
+            // the review demand. Declining depends only on the persisted review
+            // state, so repeating this call never becomes a review bypass.
             yield* ctx.metadata({
               title: "Review required",
               metadata: {
                 review: {
                   nudged: true,
+                  ...(availability.available ? {} : { unavailable: availability.code }),
+                  effort,
+                  disposition: outcome.disposition,
                   verdict: reviewState.verdict,
                   reviews: reviewState.reviews,
-                  maxIterations: reviewState.maxIterations,
-                  ...(unavailable ? { termination: "review-blocked", unavailable } : {}),
+                  ...(outcome.maxIterations !== undefined ? { maxIterations: outcome.maxIterations } : {}),
+                  openFindings: reviewState.openFindings,
+                  blockingFindings: reviewState.blockingFindings,
+                  workSinceReview: reviewState.workSinceReview,
+                  ...(reviewState.stale ? { stale: true } : {}),
                 },
               },
             })
-            return yield* Effect.fail(
-              new ToolFailure({
-                message: unavailable
-                  ? `Review blocked (${unavailable}): success cannot be reported without review. Restore Review dispatch or report failure honestly. ${gateError.message}`
-                  : gateError.message,
-              }),
-            )
+            return yield* Effect.fail(new ToolFailure({ message: outcome.feedback ?? "Review required." }))
           }
 
-          if (handoff || blockedFailure) {
-            yield* Effect.logWarning(
-              handoff ? "unreviewed child writes handed to parent" : "review blocked: declared failure",
-              {
-                sessionID: ctx.sessionID,
-                reason: unavailable,
-                verdict: reviewState.verdict,
-                reviews: reviewState.reviews,
-                maxIterations: reviewState.maxIterations,
-              },
-            )
-          }
-
-          if (reviewState.verdict === "cap") {
-            yield* Effect.logWarning("review loop terminated at cap", {
+          if (outcome.termination === "budget-exhausted" || outcome.termination === "review-unavailable") {
+            yield* Effect.logWarning("finish delivered without a clean review", {
               sessionID: ctx.sessionID,
-              phase: "review",
-              reason: "review-cap",
+              effort,
+              termination: outcome.termination,
               reviews: reviewState.reviews,
-              maxIterations: reviewState.maxIterations,
+              ...(outcome.unavailableReason ? { unavailableReason: outcome.unavailableReason } : {}),
             })
           }
 
@@ -393,25 +450,51 @@ export const FinishTool = Tool.define(
             ),
           )
 
+          // Agent-reported evidence only: finish never executes validation and
+          // never claims a check ran because a gate was selected. Missing or
+          // failed evidence stays visible in both output and metadata.
+          const validation = EffortPolicy.deriveValidation({ effort, declaration: params.validation })
+          // Fast requires no passes: render its zero as the honest "none
+          // required" rather than an until-clean or N-cap budget it does not have.
+          const passes = `passes ${reviewState.reviews}${
+            effort === "fast"
+              ? " (none required)"
+              : outcome.maxIterations !== undefined
+                ? `/${outcome.maxIterations}`
+                : " until-clean"
+          }`
+          const status = [
+            `effort ${effort}`,
+            [
+              `review ${outcome.disposition}/${outcome.termination}, ${passes}${reviewState.openFindings > 0 ? `, open findings ${reviewState.openFindings}` : ""}${
+                reviewState.blockingFindings > 0 ? `, blocking ${reviewState.blockingFindings}` : ""
+              }${reviewState.stale ? ", stale work after review" : ""}${
+                outcome.unavailableReason ? `, reviewer unavailable: ${outcome.unavailableReason}` : ""
+              }`,
+            ].join(""),
+            `validation ${validation.gate}/${validation.status}`,
+          ].join(" | ")
+
           return {
             title: "Task completed",
-            output: params.result,
+            output: `${params.result}\n\n[${status}]`,
             metadata: {
               termination: { reason: params.reason },
-              ...(handoff ? { reviewLoop: { writesFiles: true, handoff: "pending", sessionId: ctx.sessionID } } : {}),
               review: {
+                effort,
+                disposition: outcome.disposition,
+                ...(availability.available ? {} : { unavailable: availability.code }),
                 verdict: reviewState.verdict,
                 reviews: reviewState.reviews,
-                maxIterations: reviewState.maxIterations,
-                termination: handoff
-                  ? "review-pending"
-                  : blockedFailure
-                    ? "review-blocked"
-                    : reviewState.verdict === "cap"
-                      ? "review-cap"
-                      : "approved",
-                ...(unavailable ? { unavailable } : {}),
+                ...(outcome.maxIterations !== undefined ? { maxIterations: outcome.maxIterations } : {}),
+                termination: outcome.termination,
+                openFindings: reviewState.openFindings,
+                blockingFindings: reviewState.blockingFindings,
+                workSinceReview: reviewState.workSinceReview,
+                ...(reviewState.stale ? { stale: true } : {}),
+                ...(outcome.unavailableReason ? { unavailableReason: outcome.unavailableReason } : {}),
               },
+              validation,
             },
           }
         }),

@@ -44,6 +44,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
@@ -220,6 +221,26 @@ export const Model = Schema.Struct({
 })
 
 export const Metadata = Schema.Record(Schema.String, Schema.Any)
+
+/** Session metadata key holding the persisted agent-effort selection. */
+export const AGENT_EFFORT_KEY = "agentEffort"
+
+/**
+ * Read the persisted effort through a schema decoder, so invalid legacy
+ * metadata resolves to `undefined` instead of poisoning effort resolution.
+ */
+export function readAgentEffort(metadata: typeof Metadata.Type | undefined) {
+  if (!metadata) return undefined
+  return Option.getOrUndefined(Schema.decodeUnknownOption(AgentEffort.Level)(metadata[AGENT_EFFORT_KEY]))
+}
+
+/** Merge an effort selection into session metadata, preserving unrelated keys. */
+export function withAgentEffort(
+  metadata: typeof Metadata.Type | undefined,
+  effort: AgentEffort.Level,
+): typeof Metadata.Type {
+  return { ...metadata, [AGENT_EFFORT_KEY]: effort }
+}
 
 export const Info = Schema.Struct({
   id: SessionID,

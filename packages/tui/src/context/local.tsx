@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createEffect, createMemo, on } from "solid-js"
+import { batch, createEffect, createMemo, createSignal, on } from "solid-js"
 import { useSync } from "./sync"
 import { useEvent } from "./event"
 import path from "path"
@@ -16,6 +16,15 @@ import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 import { usePermission } from "./permission"
 import { supportsVision } from "../util/model"
+import {
+  coupledThinking,
+  isRecord,
+  mergeEffortMetadata,
+  metadataLevel,
+  nextLevel,
+  resolveEffort,
+  type Level,
+} from "../util/agent-effort"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -76,6 +85,30 @@ export function recentModels(
     })
     .slice(0, 10)
     .map((item) => ({ providerID: item.providerID, modelID: item.modelID }))
+}
+
+// Effective effort for the active session: a pending local write wins over
+// the synced row, the persisted session selection wins over configuration,
+// and configuration wins over the schema default. A session without a row
+// (a brand-new session) falls straight through to configuration, so new work
+// starts from the configured default and a lookup can never leak another
+// session's pending selection into the current one.
+export function effortSelection(input: { override?: unknown; metadata?: unknown; config?: unknown }): Level {
+  return metadataLevel(input.override) ?? resolveEffort({ metadata: input.metadata, config: input.config })
+}
+
+// Computes the session metadata update for a selection. Returns undefined
+// when the effective record already carries the level, which keeps repeated
+// selections idempotent. The merge base unions the pending overlay over the
+// synced row so two rapid selections cannot lose the first write (or any
+// concurrently synced key) before its sync event lands.
+export function effortUpdateFor(input: { sessionID: string; override?: unknown; metadata?: unknown; level: Level }) {
+  const base =
+    input.override !== undefined && input.metadata !== undefined
+      ? { ...(isRecord(input.metadata) ? input.metadata : {}), ...(isRecord(input.override) ? input.override : {}) }
+      : (input.override ?? input.metadata)
+  if (metadataLevel(base) === input.level) return undefined
+  return { sessionID: input.sessionID, metadata: mergeEffortMetadata(base, input.level) }
 }
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
@@ -185,12 +218,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           modelID: string
         }[]
         variant: Record<string, string | undefined>
+        // Provenance for the variant record: the value the effort dial
+        // machine-coupled for a model key. A stored value that matches it is
+        // still machine-owned (so a later effort change may re-couple);
+        // anything else is an explicit selector choice and stays protected.
+        coupled: Record<string, string | undefined>
       }>({
         ready: false,
         model: {},
         recent: [],
         favorite: [],
         variant: {},
+        coupled: {},
       })
 
       const filePath = path.join(paths.state, "model.json")
@@ -208,6 +247,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           recent: modelStore.recent,
           favorite: modelStore.favorite,
           variant: modelStore.variant,
+          coupled: modelStore.coupled,
         })
       }
 
@@ -219,6 +259,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (Array.isArray(value.favorite)) setModelStore("favorite", value.favorite)
           if (typeof value.variant === "object" && value.variant !== null)
             setModelStore("variant", value.variant as Record<string, string | undefined>)
+          if (typeof value.coupled === "object" && value.coupled !== null)
+            setModelStore("coupled", value.coupled as Record<string, string | undefined>)
         })
         .catch(() => {})
         .finally(() => {
@@ -402,9 +444,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           },
           current() {
             const v = this.selected()
-            if (!v) return undefined
-            if (!this.list().includes(v)) return undefined
-            return v
+            // An explicit selector choice — including explicit default/off —
+            // always wins over configuration, and only a value the model
+            // actually offers is shown.
+            if (v) return this.list().includes(v) ? v : undefined
+            // Display-only fallback: surface the effective configured agent
+            // variant without writing it as an explicit selection. It applies
+            // only under the existing matching rules (the agent's configured
+            // model is the active model and that model offers the variant).
+            const info = agent.current()
+            const configured = info?.variant
+            const m = currentModel()
+            if (!configured || !info?.model || !m) return undefined
+            if (info.model.providerID !== m.providerID || info.model.modelID !== m.modelID) return undefined
+            return this.list().includes(configured) ? configured : undefined
           },
           list() {
             const m = currentModel()
@@ -414,11 +467,21 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             if (!info?.variants) return []
             return Object.keys(info.variants)
           },
-          set(value: string | undefined) {
+          set(value: string | undefined, source: "user" | "session" | "coupled" = "user") {
             const m = currentModel()
             if (!m) return
             const key = `${m.providerID}/${m.modelID}`
-            setModelStore("variant", key, value ?? "default")
+            const stored = value ?? "default"
+            setModelStore("variant", key, stored)
+            // Provenance follows the write: the effort dial records its own
+            // coupled value so successive effort changes can re-couple it; a
+            // direct selector choice clears ownership so every explicit
+            // choice (including default/off) stays protected; a session
+            // restore keeps ownership only for the exact coupled value it
+            // mirrors.
+            if (source === "coupled") setModelStore("coupled", key, stored)
+            if (source === "user") setModelStore("coupled", key, undefined)
+            if (source === "session" && modelStore.coupled[key] !== stored) setModelStore("coupled", key, undefined)
             save()
           },
           cycle() {
@@ -435,6 +498,28 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               return
             }
             this.set(variants[index + 1])
+          },
+          // Applies the coupled thinking default for an effort change. It is
+          // only a default: an explicit selector choice (including explicit
+          // default/off) or a configured agent variant is never overwritten,
+          // and models without the coupled variant keep their behavior. A
+          // stored value that still matches the machine-coupled marker is
+          // machine-owned, so successive effort changes re-couple it until
+          // the selector is really used.
+          couple(effort: Level) {
+            const m = currentModel()
+            if (!m) return undefined
+            const key = `${m.providerID}/${m.modelID}`
+            const stored = modelStore.variant[key]
+            const wanted = coupledThinking({
+              effort,
+              variants: this.list(),
+              chosen: stored !== undefined && modelStore.coupled[key] !== stored ? stored : undefined,
+              configured: agent.current()?.variant,
+            })
+            if (wanted === undefined) return undefined
+            this.set(wanted, "coupled")
+            return wanted
           },
         },
       }
@@ -538,6 +623,102 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const session = createSession()
 
+    function createEffort() {
+      // Session-scoped optimistic metadata overlay. Entries are keyed by
+      // session ID, so a selection made in one session can never surface in
+      // another, and each write merges over the synced row (session.update
+      // replaces metadata wholesale) until the server event confirms it.
+      const pending = new Map<string, Record<string, unknown>>()
+      const [pendingVersion, setPendingVersion] = createSignal(0)
+
+      function activeSessionID() {
+        return route.data.type === "session" ? route.data.sessionID : undefined
+      }
+
+      // Drop overlay entries once the synced row reflects the written level;
+      // the row becomes the source of truth again at that point.
+      createEffect(() => {
+        pendingVersion()
+        for (const [sessionID, metadata] of pending) {
+          const row = sync.session.get(sessionID)
+          if (row && metadataLevel(row.metadata) === metadataLevel(metadata)) pending.delete(sessionID)
+        }
+      })
+
+      return {
+        current(): Level {
+          const sessionID = activeSessionID()
+          const row = sessionID ? sync.session.get(sessionID) : undefined
+          // Subscribe renders to the optimistic overlay: a pending local
+          // write must be visible immediately, before the sync event that
+          // confirms it lands on the session row.
+          pendingVersion()
+          return effortSelection({
+            override: sessionID ? pending.get(sessionID) : undefined,
+            metadata: row?.metadata,
+            config: sync.data.config,
+          })
+        },
+        // Whether the selection is session-scoped right now. On the home
+        // route there is no session to persist into, so the configured
+        // default stays authoritative for new work.
+        scoped() {
+          return activeSessionID() !== undefined
+        },
+        set(level: Level) {
+          const sessionID = activeSessionID()
+          if (!sessionID) {
+            toast.show({
+              variant: "info",
+              message: "Agent effort applies per session; open a session to change it.",
+              duration: 3000,
+            })
+            return
+          }
+          const row = sync.session.get(sessionID)
+          if (!row) {
+            toast.show({
+              variant: "warning",
+              message: "Session is still loading; agent effort unchanged.",
+              duration: 3000,
+            })
+            return
+          }
+          const update = effortUpdateFor({
+            sessionID,
+            override: pending.get(sessionID),
+            metadata: row.metadata,
+            level,
+          })
+          if (update) {
+            pending.set(sessionID, update.metadata)
+            setPendingVersion((version) => version + 1)
+            void sdk.client.session
+              .update({ sessionID, metadata: update.metadata }, { throwOnError: true })
+              .catch((error) => {
+                // Only roll back this write: a newer selection may already
+                // have replaced the overlay for the same session.
+                if (pending.get(sessionID) === update.metadata) {
+                  pending.delete(sessionID)
+                  setPendingVersion((version) => version + 1)
+                }
+                toast.show({
+                  variant: "warning",
+                  message: `Failed to save agent effort: ${errorMessage(error)}`,
+                  duration: 3000,
+                })
+              })
+          }
+          model.variant.couple(level)
+        },
+        cycle() {
+          this.set(nextLevel(this.current()))
+        },
+      }
+    }
+
+    const effort = createEffort()
+
     const mcp = {
       isEnabled(name: string) {
         const status = sync.data.mcp[name]
@@ -623,6 +804,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       agent,
       mcp,
       session,
+      effort,
       permission,
     }
     return result

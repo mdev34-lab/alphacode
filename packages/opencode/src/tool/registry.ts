@@ -473,6 +473,7 @@ export const node = LayerNode.make({
     Instruction.node,
     FSUtil.node,
     EventV2Bridge.node,
+    Permission.node,
     httpClient,
     CrossSpawnSpawner.node,
     Format.node,

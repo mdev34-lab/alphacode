@@ -5,6 +5,7 @@ import path from "path"
 import { type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { Permission } from "@opencode-ai/schema/permission"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 import { FSUtil } from "./fs-util"
 import { Global } from "./global"
 import { Location } from "./location"
@@ -39,6 +40,15 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   default_agent: Schema.String.pipe(Schema.optional).annotate({
     description: "Default primary agent to use when no session agent is selected",
   }),
+  agent: Schema.Struct({
+    effort: AgentEffort.Level.pipe(Schema.optional).annotate({
+      description: "Default agent effort policy (fast | medium | thorough) when no session-scoped selection exists",
+    }),
+  })
+    .pipe(Schema.optional)
+    .annotate({
+      description: "Session-wide agent behavior settings; named agent definitions live in `agents`",
+    }),
   autoupdate: Schema.Union([Schema.Boolean, Schema.Literal("notify")])
     .pipe(Schema.optional)
     .annotate({
@@ -154,7 +164,10 @@ const layer = Layer.effect(
 
       const info = Option.getOrUndefined(
         ConfigMigrateV1.isV1(input)
-          ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
+          ? decodeV1Info(input).pipe(
+              Option.map((v1) => ConfigMigrateV1.migrate(v1, input)),
+              Option.flatMap(decodeInfo),
+            )
           : decodeInfo(input),
       )
       if (!info) return

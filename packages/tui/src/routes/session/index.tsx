@@ -42,6 +42,7 @@ import { ReviewReport } from "@opencode-ai/core/review-report"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
+import { finishStatus, finishStatusLines } from "../../util/agent-effort"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
@@ -2212,22 +2213,28 @@ export function finishResult(input: Record<string, unknown>, output?: string) {
 
 /**
  * The part-to-view mapping, kept separate from the component so the wiring is
- * testable without mounting the route. The wait flag only exists on a completed
- * part: the tool returns it as the call's metadata, so it is stamped when the
- * tool part settles and there is no earlier status that can carry it.
+ * testable without mounting the route. The wait flag and the effort status come
+ * from the completed part's metadata, so they are only stamped on a settled call.
  */
 export function finishToolViewForPart(part: ToolPart, result?: string) {
   return finishToolView(
     part.state.status,
     result,
-    part.state.status === "completed" && "metadata" in part.state && part.state.metadata?.waiting === true,
+    part.state.status === "completed" && "metadata" in part.state ? part.state.metadata : undefined,
   )
 }
 
-export function finishToolView(status: FinishToolStatus, result?: string, waiting = false) {
+export function finishToolView(
+  status: FinishToolStatus,
+  result?: string,
+  // A boolean is the #233 `waiting` flag; an object is the completed part's metadata.
+  metadataOrWaiting?: Record<string, unknown> | boolean,
+) {
+  const metadata = typeof metadataOrWaiting === "boolean" ? { waiting: metadataOrWaiting } : metadataOrWaiting
   // A wait is not a completion: the agent yielded the turn while the background
-  // subagents it launched still run, so the block must not read as done — a
-  // paused icon, not the check the completed finish uses.
+  // subagents it launched still run, so the block must not read as done. The
+  // waiting state is a paused icon, not the check the completed finish uses.
+  const waiting = metadata?.waiting === true
   const completed = waiting ? WAITING_LABEL : "Task completed"
   if (status === "pending") {
     return {
@@ -2249,13 +2256,18 @@ export function finishToolView(status: FinishToolStatus, result?: string, waitin
       children: "Completing task...",
     }
   }
+  // Completed (or failed) finish results expose their honest review and
+  // validation status inline; transcripts without those fields keep the
+  // original rendering.
+  const summary = result ? `${completed}\n↳ ${result}` : completed
+  const statusLines = finishStatus(metadata)
   return {
     icon: waiting ? WAITING_ICON : "✓",
     pending: "Completing task...",
     complete: status === "completed",
     spinner: false,
     failure: "Finish failed",
-    children: result ? `${completed}\n↳ ${result}` : completed,
+    children: statusLines ? `${summary}\n${finishStatusLines(statusLines).join("\n")}` : summary,
   }
 }
 

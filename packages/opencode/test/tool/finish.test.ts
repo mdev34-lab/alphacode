@@ -17,6 +17,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { FinishTool } from "@/tool/finish"
 import type { Tool } from "@/tool/tool"
 import { BackgroundJob } from "@/background/job"
+import { Permission } from "@/permission"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -37,6 +38,7 @@ const layer = () =>
       Agent.node,
       Config.node,
       EventV2Bridge.node,
+      Permission.node,
       CrossSpawnSpawner.node,
       BackgroundJob.node,
     ]),
@@ -129,34 +131,6 @@ const workCtx = (
   ...(extra ? { extra } : {}),
 })
 
-// Records a declined finish the way the runtime persists a failed tool call:
-// an errored part carrying the metadata the tool reported before failing.
-const recordDeclinedFinish = Effect.fn("FinishTest.recordDeclinedFinish")(function* (
-  sessionID: SessionID,
-  messageID: MessageID,
-  input: Record<string, unknown>,
-  failure: { message: string; metadata: Record<string, unknown> },
-) {
-  const session = yield* Session.Service
-  const id = PartID.ascending()
-  const now = Date.now()
-  yield* session.updatePart({
-    id,
-    messageID,
-    sessionID,
-    type: "tool",
-    tool: "finish",
-    callID: `finish-declined-${id}`,
-    state: {
-      status: "error",
-      input,
-      error: failure.message,
-      metadata: failure.metadata,
-      time: { start: now, end: now },
-    },
-  })
-})
-
 // Runs finish once and returns the decline along with the metadata the tool
 // reported for the failed part, which is what the runtime persists.
 const declineOf = Effect.fn("FinishTest.declineOf")(function* (
@@ -185,8 +159,6 @@ const declineOf = Effect.fn("FinishTest.declineOf")(function* (
 const addReview = (sessionID: SessionID, messageID: MessageID, assessment: "Approved" | "Needs fixes") =>
   addToolPart(sessionID, messageID, "task", { subagent_type: "review", background: false }, `Assessment: ${assessment}`)
 
-const PENDING_DECLINE = { review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } }
-
 // Finish requires an explicit Approved review of file-writing work (#231). The
 // decline names the Review subagent and how to dispatch it, and it is not a
 // waiver: a retried finish - whatever its result says about the work - is
@@ -200,8 +172,7 @@ describe("tool.finish – review requirement", () => {
       const def = yield* tool.init()
       const recorded: Record<string, unknown>[] = []
 
-      const failure = reviewFailure(
-        yield* def
+      const exit = yield* def
           .execute(
             { reason: "success", result: "done" },
             workCtx(chat.id, assistant.id, (input) => {
@@ -209,76 +180,92 @@ describe("tool.finish – review requirement", () => {
               return Effect.void
             }),
           )
-          .pipe(Effect.exit),
-      )
+          .pipe(Effect.exit)
 
-      expect(failure?.message).toContain("no explicit Approved review")
-      expect(failure?.message).toContain("Review subagent")
-      expect(failure?.message).toContain('`subagent_type: "review"`')
-      expect(failure?.message).toContain("`background: false`")
-      expect(failure?.message).not.toMatch(/skip review and deliver|call finish again to skip/i)
-      expect(failure?.message).not.toContain("retrying finish does not skip review")
-      expect(recorded).toEqual([PENDING_DECLINE])
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
+      expect(failure).toBeInstanceOf(ToolFailure)
+      if (!(failure instanceof ToolFailure)) return
+      expect(failure.message).toContain("requires at least one independent review")
+      expect(failure.message).toContain('subagent_type: "review"')
+      // The old skip-on-repeat hint is gone: repeating finish is never the way out.
+      expect(failure.message).not.toContain("skip")
+      expect(recorded).toEqual([
+        {
+          review: {
+            nudged: true,
+            effort: "medium",
+            disposition: "unreviewed",
+            verdict: "pending",
+            reviews: 0,
+            maxIterations: 2,
+            openFindings: 0,
+            blockingFindings: 0,
+            workSinceReview: true,
+          },
+        },
+      ])
     }),
   )
 
-  // The eval-3 regression: the first finish was declined, and the second one
-  // was accepted as an explicit skip.
-  it.instance("declines a retried finish without a review instead of treating it as a skip", () =>
+  it.instance("declines a repeated finish call too: the persisted nudge is not a skip path", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seedSession()
       yield* addToolPart(chat.id, assistant.id, "edit")
-      const input = { reason: "success" as const, result: "done" }
-
-      const first = yield* declineOf(input, chat.id, assistant.id)
-      expect(first.recorded).toEqual([PENDING_DECLINE])
-      yield* recordDeclinedFinish(chat.id, assistant.id, input, first)
-      const retry = yield* declineOf(input, chat.id, assistant.id)
-
-      expect(retry.message).toContain("finish declined again")
-      expect(retry.message).toContain("retrying finish does not skip review")
-      expect(retry.message).toContain('`subagent_type: "review"`')
-      expect(retry.recorded).toEqual([PENDING_DECLINE])
-    }),
-  )
-
-  // The rationale the model gave in eval-3. The result is never read by the
-  // gate, so the HTML asset is declined exactly like any other unreviewed work,
-  // on the first call and on the retry, and completes once a review approves.
-  it.instance("does not exempt an HTML asset described as creative rather than production code", () =>
-    Effect.gen(function* () {
-      const { chat, assistant } = yield* seedSession()
-      yield* addToolPart(chat.id, assistant.id, "write", {
-        filePath: "scene.html",
-        content: "<!doctype html><canvas id='scene'></canvas>",
+      const session = yield* Session.Service
+      const now = Date.now()
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: assistant.id,
+        sessionID: chat.id,
+        type: "tool",
+        tool: "finish",
+        callID: "finish-call-1",
+        state: {
+          status: "error",
+          input: { reason: "success", result: "done" },
+          error: "Review required",
+          metadata: {
+            review: {
+              nudged: true,
+              effort: "medium",
+              disposition: "unreviewed",
+              verdict: "pending",
+              reviews: 0,
+              maxIterations: 2,
+              openFindings: 0,
+              blockingFindings: 0,
+              workSinceReview: true,
+            },
+          },
+          time: { start: now, end: now },
+        },
       })
       const tool = yield* FinishTool
       const def = yield* tool.init()
-      const creative = {
-        reason: "success" as const,
-        result:
-          "Created scene.html, an animated HTML scene. Review skipped: this is a creative asset, not production code.",
-      }
+      const exit = yield* def
+        .execute(
+          { reason: "success", result: "done" },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
 
-      const first = yield* declineOf(creative, chat.id, assistant.id)
-      expect(first.message).toContain("no explicit Approved review")
-      yield* recordDeclinedFinish(chat.id, assistant.id, creative, first)
-      const retry = yield* declineOf(creative, chat.id, assistant.id)
-      expect(retry.message).toContain("finish declined again")
-      expect(retry.message).toContain("does not exempt it")
-
-      yield* addReview(chat.id, assistant.id, "Approved")
-      const result = yield* def.execute(
-        { reason: "success", result: "Created scene.html; the Review subagent approved it." },
-        workCtx(chat.id, assistant.id),
-      )
-      expect(result.title).toBe("Task completed")
-      expect(result.metadata.review).toEqual({
-        verdict: "approved",
-        reviews: 1,
-        maxIterations: 5,
-        termination: "approved",
-      })
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const failure = exit.cause.reasons.find(Cause.isFailReason)?.error
+      expect(failure).toBeInstanceOf(ToolFailure)
+      if (!(failure instanceof ToolFailure)) return
+      expect(failure.message).toContain("requires at least one independent review")
+      expect(failure.message).not.toContain("skip")
     }),
   )
 
@@ -362,11 +349,14 @@ describe("tool.finish – review requirement exemptions", () => {
   )
 
   it.instance(
-    "the review cap completes as review-cap, not as an approval",
+    "the review cap completes as budget-exhausted, not as an approval",
     () =>
       Effect.gen(function* () {
         const { chat, assistant } = yield* seedSession()
         yield* addToolPart(chat.id, assistant.id, "edit")
+        yield* addReview(chat.id, assistant.id, "Needs fixes")
+        // Medium's canonical budget is two completed passes: the second
+        // non-approving pass reaches the cap.
         yield* addReview(chat.id, assistant.id, "Needs fixes")
         const tool = yield* FinishTool
         const def = yield* tool.init()
@@ -376,14 +366,13 @@ describe("tool.finish – review requirement exemptions", () => {
           workCtx(chat.id, assistant.id),
         )
 
-        expect(result.metadata.review).toEqual({
+        expect(result.metadata.review).toMatchObject({
           verdict: "cap",
-          reviews: 1,
-          maxIterations: 1,
-          termination: "review-cap",
+          reviews: 2,
+          maxIterations: 2,
+          termination: "budget-exhausted",
         })
       }),
-    { config: { review_loop: { max_iterations: 1 } } },
   )
 
   // The task tool refuses any delegation from a session at the subagent depth
@@ -405,10 +394,10 @@ describe("tool.finish – review requirement exemptions", () => {
       )
 
       expect(result.title).toBe("Task completed")
-      expect(result.metadata.review).toEqual({
+      expect(result.metadata.review).toMatchObject({
         verdict: "pending",
         reviews: 0,
-        maxIterations: 5,
+        maxIterations: 2, // medium's canonical pass budget
         termination: "review-pending",
         unavailable: "subagent-depth",
       })
@@ -1521,10 +1510,10 @@ describe("tool.finish – review blocked at the root", () => {
           { reason: "failure", result: "Review cannot run at this depth." },
           workCtx(chat.id, assistant.id),
         )
-        expect(result.metadata.review).toEqual({
+        expect(result.metadata.review).toMatchObject({
           verdict: "pending",
           reviews: 0,
-          maxIterations: 5,
+          maxIterations: 2, // medium's canonical pass budget
           termination: "review-blocked",
           unavailable: "subagent-depth",
         })
@@ -1712,20 +1701,22 @@ describe("tool.finish – errored review attempts reach the cap", () => {
         const { chat, assistant } = yield* seedSession()
         yield* addToolPart(chat.id, assistant.id, "edit")
         yield* addErroredReview(chat.id, assistant.id)
+        yield* addErroredReview(chat.id, assistant.id)
         const def = yield* (yield* FinishTool).init()
 
+        // Two failed dispatches spend medium's two-pass budget: the cap ends the
+        // requirement honestly, never as a verdict.
         const result = yield* def.execute(
           { reason: "success", result: "Stopped at the cap after the review dispatch failed." },
           workCtx(chat.id, assistant.id),
         )
-        expect(result.metadata.review).toEqual({
+        expect(result.metadata.review).toMatchObject({
           verdict: "cap",
-          reviews: 1,
-          maxIterations: 1,
-          termination: "review-cap",
+          reviews: 2,
+          maxIterations: 2,
+          termination: "budget-exhausted",
         })
       }),
-    { config: { review_loop: { max_iterations: 1 } } },
   )
 
   // Below the cap the same errored attempt leaves the work unapproved: counting
@@ -1742,5 +1733,84 @@ describe("tool.finish – errored review attempts reach the cap", () => {
       )
       expect(failure?.message).toContain("no explicit Approved review")
     }),
+  )
+})
+
+// An approval covers only the tree it reviewed. Approved review, then more
+// file writes, then a review attempt that errored: the errored attempt clears
+// the work flag, so the earlier approval must not revive as a delivered verdict.
+describe("tool.finish – stale approval after later work and an errored attempt", () => {
+  const addErroredTask = Effect.fn("FinishTest.addErroredTask")(function* (
+    sessionID: SessionID,
+    messageID: MessageID,
+  ) {
+    const session = yield* Session.Service
+    const now = Date.now()
+    yield* session.updatePart({
+      id: PartID.ascending(),
+      messageID,
+      sessionID,
+      type: "tool",
+      tool: "task",
+      callID: "review-errored-stale",
+      state: {
+        status: "error",
+        input: { subagent_type: "review", background: false },
+        error: "the review dispatch failed",
+        title: "task",
+        metadata: {},
+        time: { start: now, end: now },
+      },
+    })
+  })
+
+  const staleSetup = Effect.fn("FinishTest.staleSetup")(function* (chatID: SessionID, assistantID: MessageID) {
+    yield* addToolPart(chatID, assistantID, "edit")
+    yield* addReview(chatID, assistantID, "Approved")
+    yield* addToolPart(chatID, assistantID, "edit")
+    yield* addErroredTask(chatID, assistantID)
+  })
+
+  it.instance("medium: delivers budget-exhausted, never approved", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seedSession()
+      yield* staleSetup(chat.id, assistant.id)
+      const def = yield* (yield* FinishTool).init()
+      const result = yield* def.execute({ reason: "success", result: "done" }, workCtx(chat.id, assistant.id))
+      expect(result.metadata.review).toMatchObject({
+        termination: "budget-exhausted",
+        disposition: "unreviewed",
+        reviews: 2,
+        maxIterations: 2,
+      })
+      expect(result.metadata.review).not.toMatchObject({ termination: "approved" })
+    }),
+  )
+
+  it.instance(
+    "thorough: declines again, never delivered as approved",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seedSession()
+        yield* staleSetup(chat.id, assistant.id)
+        const declined = yield* declineOf({ reason: "success", result: "done" }, chat.id, assistant.id)
+        expect(declined.message).toContain('effort is "thorough"')
+        expect(declined.metadata.review).not.toMatchObject({ termination: "approved" })
+        expect(declined.metadata.review).not.toMatchObject({ disposition: "reviewed" })
+      }),
+    { config: { agent: { effort: "thorough" } } },
+  )
+
+  it.instance(
+    "fast: delivers unreviewed, never approved",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seedSession()
+        yield* staleSetup(chat.id, assistant.id)
+        const def = yield* (yield* FinishTool).init()
+        const result = yield* def.execute({ reason: "success", result: "done" }, workCtx(chat.id, assistant.id))
+        expect(result.metadata.review).toMatchObject({ termination: "unreviewed", disposition: "unreviewed" })
+      }),
+    { config: { agent: { effort: "fast" } } },
   )
 })
