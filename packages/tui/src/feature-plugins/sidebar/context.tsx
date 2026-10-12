@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, Model } from "@opencode-ai/sdk/v2"
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { BuiltinTuiPlugin } from "../builtins"
 import { createMemo } from "solid-js"
@@ -43,7 +43,7 @@ export function contextBarGlyphs(usage: ContextUsage): string {
   return "█".repeat(filled) + "░".repeat(CONTEXT_BAR_WIDTH - filled)
 }
 
-export function contextUsageFrom(messages: readonly AssistantMessage[], findModel: (providerID: string, modelID: string) => { limit: { context: number } } | undefined): ContextUsage {
+export function contextUsageFrom(messages: readonly AssistantMessage[], findModel: (providerID: string, modelID: string) => { limit: Pick<Model["limit"], "context"> } | undefined): ContextUsage {
   // Input, reasoning and cache usage are measured even when output is zero.
   // Do not treat an all-zero placeholder as a measured empty context.
   const last = messages.findLast((item): item is AssistantMessage => item.role === "assistant" &&
