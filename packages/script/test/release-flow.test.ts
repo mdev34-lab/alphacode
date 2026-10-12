@@ -1,8 +1,17 @@
-import { mkdtemp, rm, mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
 import { archiveName, archivePath } from "../src/artifacts"
+import {
+  describeSubprocess,
+  expectSubprocessOk,
+  git,
+  removeFixture,
+  runAsync,
+  runSync,
+  type SubprocessRecord,
+} from "./helpers/subprocess"
 
 const repoRoot = path.resolve(import.meta.dir, "../../..")
 const stubGh = path.join(import.meta.dir, "helpers", "gh-stub.bash")
@@ -10,15 +19,12 @@ const stubGh = path.join(import.meta.dir, "helpers", "gh-stub.bash")
 const isWindows = process.platform === "win32"
 
 /**
- * Fails with the subprocess output attached, so a red CI run shows the real
- * error instead of a bare exit-code diff.
+ * Fails with the subprocess exit code, signal, spawn error and stdout/stderr
+ * attached, so a red CI run names the real cause instead of showing a bare
+ * exit-code diff (#286). The condition is unchanged: the child must exit cleanly.
  */
-function expectOk(run: { exitCode: number; stdout: string; stderr: string }) {
-  if (run.exitCode !== 0) {
-    throw new Error(
-      `expected exit code 0, got ${run.exitCode}\n--- stdout ---\n${run.stdout}\n--- stderr ---\n${run.stderr}`,
-    )
-  }
+function expectOk(run: SubprocessRecord) {
+  expectSubprocessOk(run, "expected exit code 0")
 }
 
 /** Git Bash, resolved once per call so the shim never depends on the ambient PATH. */
@@ -45,7 +51,9 @@ async function installGhStub(bin: string) {
   } else {
     const target = path.join(bin, "gh")
     await Bun.write(target, script)
-    Bun.spawnSync(["chmod", "+x", target])
+    // A silent chmod failure would surface later as a confusing "permission
+    // denied" from the stub; record it at the source instead (#286).
+    expectSubprocessOk(runSync(["chmod", "+x", target]), `chmod +x ${target} failed`)
   }
 }
 
@@ -63,14 +71,6 @@ function ghCommand(bin: string, args: string[]) {
 function withPathPrefix(env: Record<string, string>, dir: string) {
   const key = Object.keys(env).find((name) => name.toLowerCase() === "path") ?? "PATH"
   return { ...env, [key]: `${dir}${path.delimiter}${env[key] ?? ""}` }
-}
-
-function git(cwd: string, ...args: string[]) {
-  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
-  if (result.exitCode !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`)
-  }
-  return result.stdout.toString().trim()
 }
 
 interface Sandbox {
@@ -111,7 +111,7 @@ async function makeSandbox(): Promise<Sandbox> {
     state,
     bin,
     out,
-    cleanup: () => rm(dir, { recursive: true, force: true }),
+    cleanup: () => removeFixture(dir),
   }
 }
 
@@ -134,28 +134,26 @@ function flowEnv(sandbox: Sandbox, extra: Record<string, string> = {}) {
 }
 
 async function runScript(sandbox: Sandbox, script: string, args: string[] = [], extra: Record<string, string> = {}) {
-  const proc = Bun.spawn(["bun", "run", path.join(repoRoot, "script", script), ...args], {
+  return runAsync(["bun", "run", path.join(repoRoot, "script", script), ...args], {
     cwd: sandbox.work,
-    stdout: "pipe",
-    stderr: "pipe",
     env: flowEnv(sandbox, extra),
   })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-  return { exitCode, stdout, stderr }
 }
 
 const runVersion = (sandbox: Sandbox, extra: Record<string, string> = {}) => runScript(sandbox, "version.ts", [], extra)
 const runCleanup = (sandbox: Sandbox, tag: string) => runScript(sandbox, "release-cleanup.ts", [tag])
 
-const remoteTagSha = (sandbox: Sandbox, tag: string) =>
-  Bun.spawnSync(["git", `--git-dir=${sandbox.origin}`, "rev-parse", "-q", "--verify", `refs/tags/${tag}`], {
-    stdout: "pipe",
-    stderr: "pipe",
-  }).stdout.toString().trim()
+const remoteTagSha = (sandbox: Sandbox, tag: string) => {
+  const record = runSync(["git", `--git-dir=${sandbox.origin}`, "rev-parse", "-q", "--verify", `refs/tags/${tag}`])
+  // A missing ref is the expected, non-fatal result: `rev-parse --verify` exits 1
+  // and prints nothing, which reads as an empty sha. A signal, a spawn error or a
+  // host process fault is NOT "the tag is absent" and must be surfaced with its
+  // cause instead of being silently read as empty (#286).
+  if (record.spawnError === null && record.signalCode === null && (record.exitCode === 0 || record.exitCode === 1)) {
+    return record.stdout.trim()
+  }
+  throw new Error(`git rev-parse for refs/tags/${tag} failed unexpectedly\n${describeSubprocess(record)}`)
+}
 
 async function stubRelease(sandbox: Sandbox, tag: string) {
   const file = Bun.file(path.join(sandbox.state, "releases", `${tag}.json`))
@@ -169,18 +167,7 @@ const stubLog = async (sandbox: Sandbox) => {
 }
 
 async function gh(sandbox: Sandbox, ...args: string[]) {
-  const proc = Bun.spawn(ghCommand(sandbox.bin, args), {
-    cwd: sandbox.work,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: flowEnv(sandbox),
-  })
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-  return { exitCode, stdout, stderr }
+  return runAsync(ghCommand(sandbox.bin, args), { cwd: sandbox.work, env: flowEnv(sandbox) })
 }
 
 describe("release lifecycle with stubbed gh and a real git remote", () => {
@@ -206,12 +193,21 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
         expect(output).toContain("tag=v0.1.0")
         expect(output).toContain("repo=stub/silvercode")
 
-        // The build job's checkout of the tag succeeds against the remote.
-        const checkout = Bun.spawnSync(
-          ["git", "clone", "--quiet", "--branch", "v0.1.0", sandbox.origin, path.join(sandbox.dir, "bld")],
-          { stdout: "pipe", stderr: "pipe" },
-        )
-        expect(checkout.exitCode).toBe(0)
+        // The build job's checkout of the tag succeeds against the remote. The
+        // clone is recorded with its exit code, signal, spawn error and
+        // stdout/stderr so a non-zero exit names its cause instead of showing a
+        // bare `128` with the captured stderr left unprinted (#286). The
+        // assertion is unchanged: the clone must exit cleanly.
+        const checkout = runSync([
+          "git",
+          "clone",
+          "--quiet",
+          "--branch",
+          "v0.1.0",
+          sandbox.origin,
+          path.join(sandbox.dir, "bld"),
+        ])
+        expectSubprocessOk(checkout, "the build job's tag checkout must clone cleanly")
         expect(git(path.join(sandbox.dir, "bld"), "tag", "--points-at", "HEAD")).toContain("v0.1.0")
       } finally {
         await sandbox.cleanup()
@@ -394,7 +390,7 @@ describe("release archive upload", () => {
     return {
       dir,
       state,
-      cleanup: () => rm(dir, { recursive: true, force: true }),
+      cleanup: () => removeFixture(dir),
     }
   }
 
@@ -406,18 +402,10 @@ describe("release archive upload", () => {
       `await uploadReleaseArchives(${JSON.stringify(tag)}, ${JSON.stringify(archives)}, "stub/silvercode")`,
     ].join("\n")
     const env: Record<string, string> = { ...process.env } as Record<string, string>
-    const proc = Bun.spawn(["bun", "-e", runner], {
+    return runAsync(["bun", "-e", runner], {
       cwd: sandbox.dir,
-      stdout: "pipe",
-      stderr: "pipe",
       env: { ...withPathPrefix(env, path.join(sandbox.dir, "bin")), GH_STUB_STATE: sandbox.state.replace(/\\/g, "/") },
     })
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ])
-    return { exitCode, stdout, stderr }
   }
 
   test("linux targets are tarballs, every other target is a zip", () => {

@@ -1,16 +1,9 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
 import { commitCount, commitsSince, lastTag, tagAtHead } from "../src/git"
-
-function git(cwd: string, ...args: string[]) {
-  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
-  if (result.exitCode !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString()}`)
-  }
-  return result.stdout.toString().trim()
-}
+import { git, removeFixture } from "./helpers/subprocess"
 
 describe("git release metadata", () => {
   // Real git subprocesses (init, commits, two merges): on a contended Windows
@@ -54,7 +47,7 @@ describe("git release metadata", () => {
       expect(commits.map((item) => item.sha)).not.toContain(innerCommit)
       expect(await commitCount("v0.2.0", mergeCommit, cwd)).toBe(2)
     } finally {
-      await rm(cwd, { recursive: true, force: true })
+      await removeFixture(cwd)
     }
   }, 30_000)
 
@@ -80,7 +73,7 @@ describe("git release metadata", () => {
       expect(await tagAtHead("HEAD", cwd)).toBeNull()
       expect(await tagAtHead("v0.1.0", cwd)).toBe("v0.1.0")
     } finally {
-      await rm(cwd, { recursive: true, force: true })
+      await removeFixture(cwd)
     }
   }, 30_000)
 })
