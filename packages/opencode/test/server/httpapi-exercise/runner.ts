@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -18,31 +19,28 @@ const CLEANUP_BOUND_MS = 60_000
 
 // Finalizers run uninterruptibly, so an Effect timeout cannot bound cleanup:
 // race each async disposal against a plain timer instead. The timer is
-// cancelled as soon as the disposal settles, so a fast success logs nothing
+// aborted as soon as the race settles, so a fast success logs nothing
 // and leaves no timer pending. Wedges and disposal errors are logged and
 // swallowed rather than propagated: these are best-effort resets of
 // test-scoped state (scratch db/tmp per run) that must neither hang the run
 // nor mask the scenario's own result - resetState runs under
 // Effect.ensuring, and in this Effect version a failing finalizer replaces
 // the scenario's original cause.
-const bounded = (label: string, promise: Promise<unknown>) =>
-  new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      console.error(`[reset] ${label} did not finish within ${CLEANUP_BOUND_MS / 1000}s; continuing`)
-      resolve()
-    }, CLEANUP_BOUND_MS)
-    promise.then(
-      () => {
-        clearTimeout(timer)
-        resolve()
-      },
-      (error) => {
-        clearTimeout(timer)
-        console.error(`[reset] ${label} failed; continuing`, error)
-        resolve()
-      },
-    )
+const bounded = (label: string, promise: Promise<unknown>): Promise<void> => {
+  const cancel = new AbortController()
+  const bound = sleep(CLEANUP_BOUND_MS, undefined, { signal: cancel.signal }).then(() => {
+    console.error(`[reset] ${label} did not finish within ${CLEANUP_BOUND_MS / 1000}s; continuing`)
   })
+  return Promise.race([
+    promise.then(
+      () => {},
+      (error) => {
+        console.error(`[reset] ${label} failed; continuing`, error)
+      },
+    ),
+    bound,
+  ]).finally(() => cancel.abort())
+}
 
 export function runScenario(options: Options) {
   return (scenario: Scenario) => {
