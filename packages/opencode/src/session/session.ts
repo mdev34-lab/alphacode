@@ -29,6 +29,7 @@ import type { SQL } from "drizzle-orm"
 import { PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
+import { makePartLock } from "./part-lock"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
@@ -656,29 +657,7 @@ const layer: Layer.Layer<
     // lands on the parent's task part while the processor is completing that
     // same part. Both are read-modify-writes over one row, so they serialize per
     // part rather than racing to overwrite each other.
-    const partLocks = new Map<string, Promise<void>>()
-
-    const withPartLock = <A, E, R>(partID: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-      Effect.acquireUseRelease(
-        Effect.sync(() => {
-          const previous = partLocks.get(partID) ?? Promise.resolve()
-          let release!: () => void
-          const owned = new Promise<void>((done) => {
-            release = done
-          })
-          partLocks.set(
-            partID,
-            previous.then(() => owned),
-          )
-          return { previous, release }
-        }),
-        ({ previous }) =>
-          Effect.gen(function* () {
-            yield* Effect.promise(() => previous)
-            return yield* effect
-          }),
-        ({ release }) => Effect.sync(release),
-      )
+    const withPartLock = makePartLock().withLock
 
     const updatePart: Interface["updatePart"] = (part) => withPartLock(part.id, persistPart(part))
 

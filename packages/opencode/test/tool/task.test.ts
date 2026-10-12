@@ -2237,3 +2237,142 @@ describe("tool.task - child write handoff", () => {
     )
   }
 })
+
+// Force the reverse ordering through the real store: projectWrites captures a
+// running snapshot, completion commits, then the projection resumes.
+const reverseGate: {
+  current?: { partID: PartID; sessionID: SessionID; ready: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+} = {}
+const reverseBase = LayerNode.make({
+  name: "@opencode/Session.reverseBase",
+  layer: Session.node.implementation!,
+  deps: Session.node.dependencies as unknown as [LayerNode.Node<never>],
+}) as unknown as LayerNode.Node<Session.Service>
+const reverseSession = LayerNode.make({
+  service: Session.Service,
+  layer: Layer.effect(
+    Session.Service,
+    Effect.gen(function* () {
+      const base = yield* Session.Service
+      return Session.Service.of({
+        ...base,
+        messages: (input) =>
+          Effect.gen(function* () {
+            const messages = yield* base.messages(input)
+            const gate = reverseGate.current
+            if (
+              gate &&
+              input.sessionID === gate.sessionID &&
+              messages
+                .flatMap((message) => message.parts)
+                .some((part) => part.id === gate.partID && part.type === "tool" && part.state.status === "running")
+            ) {
+              reverseGate.current = undefined
+              yield* Deferred.succeed(gate.ready, undefined)
+              yield* Deferred.await(gate.release)
+            }
+            return messages
+          }),
+      })
+    }),
+  ),
+  deps: [reverseBase],
+})
+const itReverse = testEffect(layer({}, [[Session.node, reverseSession]]))
+
+itReverse.instance("child write projection preserves completion committed after its running snapshot", () =>
+  Effect.gen(function* () {
+    const { chat, assistant } = yield* seed()
+    const sessions = yield* Session.Service
+    const tool = yield* TaskTool
+    const def = yield* tool.init()
+    const running: SessionV1.ToolPart = {
+      id: PartID.ascending(),
+      sessionID: chat.id,
+      messageID: assistant.id,
+      type: "tool",
+      tool: "task",
+      callID: "reverse-order",
+      state: { status: "running", input: { subagent_type: "general" }, time: { start: 1 } },
+    }
+    yield* sessions.updatePart(running)
+    const ready = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const timeline: string[] = []
+    const run = yield* def
+      .execute(
+        { description: "write", prompt: "write", subagent_type: "general", background: false },
+        {
+          callID: running.callID,
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+          extra: {
+            promptOps: {
+              ...stubOps(),
+              prompt: (input: SessionPrompt.PromptInput) =>
+                Effect.gen(function* () {
+                  const response = reply(input, "changed files")
+                  yield* sessions.updateMessage(response.info)
+                  reverseGate.current = { partID: running.id, sessionID: chat.id, ready, release }
+                  yield* sessions.updatePart({
+                    id: PartID.ascending(),
+                    sessionID: input.sessionID,
+                    messageID: response.info.id,
+                    type: "tool",
+                    tool: "write",
+                    callID: "child-reverse-write",
+                    state: {
+                      status: "completed",
+                      input: {},
+                      output: "written",
+                      title: "write",
+                      metadata: { reviewLoop: { writesFiles: true } },
+                      time: { start: 1, end: 2 },
+                    },
+                  })
+                  timeline.push("projection persisted")
+                  return response
+                }),
+            } satisfies TaskPromptOps,
+          },
+        },
+      )
+      .pipe(Effect.forkChild)
+    yield* Deferred.await(ready)
+    timeline.push("running snapshot captured")
+    yield* sessions.modifyPart({ partID: running.id, messageID: assistant.id, sessionID: chat.id }, (part) =>
+      part?.type === "tool"
+        ? {
+            ...part,
+            state: {
+              status: "completed",
+              input: part.state.input,
+              output: "canonical result",
+              title: "canonical title",
+              time: { start: 1, end: 99 },
+              metadata: { completion: "kept", reviewLoop: { report: "kept" } },
+            },
+          }
+        : undefined,
+    )
+    timeline.push("completion persisted")
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(run)
+    const persisted = yield* sessions.getPart({ partID: running.id, messageID: assistant.id, sessionID: chat.id })
+    expect(timeline).toEqual(["running snapshot captured", "completion persisted", "projection persisted"])
+    expect(persisted?.type).toBe("tool")
+    if (persisted?.type !== "tool") return
+    expect(persisted.state.status).toBe("completed")
+    if (persisted.state.status !== "completed") return
+    expect(persisted.state.output).toBe("canonical result")
+    expect(persisted.state.title).toBe("canonical title")
+    expect(persisted.state.time).toEqual({ start: 1, end: 99 })
+    expect(persisted.state.metadata.completion).toBe("kept")
+    expect(persisted.state.metadata.reviewLoop).toMatchObject({ writesFiles: true, report: "kept" })
+  }),
+)

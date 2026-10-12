@@ -327,10 +327,28 @@ export const TaskTool = Tool.define(
           .flatMap((message) => message.parts)
           .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.callID === ctx.callID)
         if (taskPart && taskPart.state.status !== "pending") {
-          yield* sessions.updatePart({
-            ...taskPart,
-            state: { ...taskPart.state, metadata: { ...taskPart.state.metadata, ...metadata } },
-          })
+          // The history lookup identifies the row only. Completion may land
+          // after that lookup, so read the state again under the part lock.
+          yield* sessions.modifyPart(
+            { partID: taskPart.id, messageID: taskPart.messageID, sessionID: taskPart.sessionID },
+            (current) => {
+              if (current?.type !== "tool" || current.state.status === "pending") return
+              return {
+                ...current,
+                state: {
+                  ...current.state,
+                  metadata: {
+                    ...current.state.metadata,
+                    ...metadata,
+                    [REVIEW_LOOP_METADATA]: {
+                      ...current.state.metadata?.[REVIEW_LOOP_METADATA],
+                      ...metadata[REVIEW_LOOP_METADATA],
+                    },
+                  },
+                },
+              }
+            },
+          )
         } else {
           yield* ctx.metadata({ title: params.description, metadata: { ...metadata } })
         }
