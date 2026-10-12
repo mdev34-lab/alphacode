@@ -629,17 +629,22 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       // another, and each write merges over the synced row (session.update
       // replaces metadata wholesale) until the server event confirms it.
       const pending = new Map<string, Record<string, unknown>>()
+      // Tail of the in-flight session.update chain per session (see set()).
+      const writes = new Map<string, Promise<void>>()
       const [pendingVersion, setPendingVersion] = createSignal(0)
 
       function activeSessionID() {
         return route.data.type === "session" ? route.data.sessionID : undefined
       }
 
-      // Drop overlay entries once the synced row reflects the written level;
-      // the row becomes the source of truth again at that point.
+      // Drop overlay entries once the synced row reflects the written level
+      // AND no write for the session is still queued or in flight: an older
+      // in-flight write will still move the row, so a row that merely equals
+      // the latest choice right now is not confirmation yet.
       createEffect(() => {
         pendingVersion()
         for (const [sessionID, metadata] of pending) {
+          if (writes.has(sessionID)) continue
           const row = sync.session.get(sessionID)
           if (row && metadataLevel(row.metadata) === metadataLevel(metadata)) pending.delete(sessionID)
         }
@@ -693,21 +698,39 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (update) {
             pending.set(sessionID, update.metadata)
             setPendingVersion((version) => version + 1)
-            void sdk.client.session
-              .update({ sessionID, metadata: update.metadata }, { throwOnError: true })
-              .catch((error) => {
-                // Only roll back this write: a newer selection may already
-                // have replaced the overlay for the same session.
-                if (pending.get(sessionID) === update.metadata) {
-                  pending.delete(sessionID)
+            // session.update replaces metadata wholesale and carries no
+            // revision, so concurrent PATCHes can complete out of order and
+            // let an older write overwrite the newer choice. Serialize the
+            // writes per session: each starts only after the previous one
+            // settled, so the server applies them in selection order and the
+            // last choice always wins. A failed write never blocks the queue.
+            const previous = writes.get(sessionID) ?? Promise.resolve()
+            const next: Promise<void> = previous
+              .then(() => sdk.client.session.update({ sessionID, metadata: update.metadata }, { throwOnError: true }))
+              .then(
+                () => {},
+                (error) => {
+                  // Only roll back this write: a newer selection may already
+                  // have replaced the overlay for the same session.
+                  if (pending.get(sessionID) === update.metadata) {
+                    pending.delete(sessionID)
+                    setPendingVersion((version) => version + 1)
+                  }
+                  toast.show({
+                    variant: "warning",
+                    message: `Failed to save agent effort: ${errorMessage(error)}`,
+                    duration: 3000,
+                  })
+                },
+              )
+              .finally(() => {
+                if (writes.get(sessionID) === next) {
+                  writes.delete(sessionID)
+                  // Re-evaluate the overlay now that the queue is idle.
                   setPendingVersion((version) => version + 1)
                 }
-                toast.show({
-                  variant: "warning",
-                  message: `Failed to save agent effort: ${errorMessage(error)}`,
-                  duration: 3000,
-                })
               })
+            writes.set(sessionID, next)
           }
           model.variant.couple(level)
         },

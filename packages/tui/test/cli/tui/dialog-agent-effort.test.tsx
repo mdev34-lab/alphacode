@@ -123,6 +123,8 @@ type Harness = {
   route: ReturnType<typeof useRoute>
   sync: ReturnType<typeof useSync>
   updates: { sessionID: string; body: Record<string, unknown> }[]
+  // Gated mode only: answer PATCH number `index` (and emit its session.updated event), or fail it.
+  release: (index: number, outcome?: "ok" | "fail") => void
   dispose: () => Promise<void>
 }
 
@@ -131,6 +133,8 @@ async function mountEffort(input: {
   model: string
   children: () => JSX.Element
   agentVariant?: string
+  // Hold every session.update PATCH until the test releases it.
+  gated?: boolean
 }): Promise<Harness> {
   const tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
@@ -143,6 +147,7 @@ async function mountEffort(input: {
     sessionRow(SESSION_PLAIN),
   ]
   const updates: { sessionID: string; body: Record<string, unknown> }[] = []
+  const gates: Array<(outcome: "ok" | "fail") => void> = []
 
   const calls = createFetch((url) => {
     if (url.pathname === "/config") return json({ agent: { effort: "fast" } })
@@ -177,6 +182,14 @@ async function mountEffort(input: {
       const body = (await request.clone().json()) as Record<string, unknown>
       updates.push({ sessionID, body })
       const row = sessions.find((item) => item.id === sessionID)
+      if (input.gated) {
+        const outcome = await new Promise<"ok" | "fail">((resolve) => gates.push(resolve))
+        if (outcome === "fail") return new Response("boom", { status: 500 })
+        events.emit({
+          directory,
+          payload: { type: "session.updated", properties: { info: { ...row, metadata: body.metadata } } },
+        } as any)
+      }
       return json(row ? { ...row, metadata: body.metadata ?? row.metadata } : { id: sessionID })
     }
     return calls.fetch(request)
@@ -281,6 +294,9 @@ async function mountEffort(input: {
     route: captured!.route,
     sync: captured!.sync,
     updates,
+    release(index, outcome = "ok") {
+      gates[index](outcome)
+    },
     async dispose() {
       app.renderer.destroy()
       await tmp[Symbol.asyncDispose]()
@@ -519,6 +535,66 @@ describe("agent effort selector", () => {
       await wait(() => harness.updates.length >= 1, 3000)
       expect(harness.updates[0].body.metadata).toEqual({ agentEffort: "fast", task: "keep-me" })
       expect(harness.local.effort.current()).toBe("fast")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("serializes effort writes so the last selection wins when completions would be reversed", async () => {
+    const harness = await mountEffort({
+      route: { type: "session", sessionID: SESSION_THOROUGH },
+      model: "test-provider/variant-model",
+      children: () => <DialogAgentEffort />,
+      gated: true,
+    })
+    try {
+      harness.local.effort.set("fast")
+      harness.local.effort.set("thorough")
+      await wait(() => harness.updates.length >= 1, 3000)
+      // The second PATCH must not be in flight while the first is pending:
+      // that concurrency is what let a stale write land last.
+      await Bun.sleep(100)
+      expect(harness.updates.length).toBe(1)
+      expect(harness.local.effort.current()).toBe("thorough")
+
+      harness.release(0)
+      await wait(() => harness.updates.length >= 2, 3000)
+      expect(harness.local.effort.current()).toBe("thorough")
+      harness.release(1)
+      await Bun.sleep(100)
+
+      expect(harness.updates.map((update) => update.body.metadata)).toEqual([
+        { agentEffort: "fast", task: "keep-me" },
+        { agentEffort: "thorough", task: "keep-me" },
+      ])
+      expect(harness.local.effort.current()).toBe("thorough")
+      expect(
+        (harness.sync.session.get(SESSION_THOROUGH)?.metadata as { agentEffort?: string } | undefined)?.agentEffort,
+      ).toBe("thorough")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test("a failed effort write does not block the queued newer selection", async () => {
+    const harness = await mountEffort({
+      route: { type: "session", sessionID: SESSION_THOROUGH },
+      model: "test-provider/variant-model",
+      children: () => <DialogAgentEffort />,
+      gated: true,
+    })
+    try {
+      harness.local.effort.set("fast")
+      harness.local.effort.set("thorough")
+      await wait(() => harness.updates.length >= 1, 3000)
+      harness.release(0, "fail")
+      await wait(() => harness.updates.length >= 2, 3000)
+      harness.release(1)
+      await Bun.sleep(100)
+      expect(harness.local.effort.current()).toBe("thorough")
+      expect(
+        (harness.sync.session.get(SESSION_THOROUGH)?.metadata as { agentEffort?: string } | undefined)?.agentEffort,
+      ).toBe("thorough")
     } finally {
       await harness.dispose()
     }
