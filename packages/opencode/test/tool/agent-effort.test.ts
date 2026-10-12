@@ -5,6 +5,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { Cause, Effect, Exit, Fiber } from "effect"
 import { ToolFailure } from "@opencode-ai/llm"
 import { Session, readAgentEffort } from "@/session/session"
+import { NotFoundError } from "@/storage/storage"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
@@ -282,6 +283,40 @@ describe("tool.finish – effort-labelled delivery", () => {
         expect(review.termination).toBe("approved")
       }),
     { config: { agent: { effort: "fast" } } },
+  )
+
+  it.instance("finish treats only a missing session row as 'no session' and lets storage defects propagate", () =>
+    Effect.gen(function* () {
+      const real = yield* Session.Service
+      const { chat, assistant } = yield* seedSession()
+      yield* addToolPart(chat.id, assistant.id, "edit")
+
+      // A typed NotFound (row vanished after the history read) reads as "no
+      // session": reviewer dispatch cannot be verified, so a success with
+      // unreviewed writes is declined as session-unreadable (not crashed).
+      const missing = yield* (yield* FinishTool.pipe(
+        Effect.provideService(Session.Service, {
+          ...real,
+          get: () => Effect.fail(new NotFoundError({ message: "Session not found" })),
+        }),
+      )).init()
+      const gone = yield* missing
+        .execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(gone)).toBe(true)
+      if (Exit.isFailure(gone)) expect(String(Cause.squash(gone.cause))).toContain("session-unreadable")
+
+      // A storage defect is not "no session": it must reach the caller intact.
+      const sentinel = new Error("storage-defect-sentinel")
+      const broken = yield* (yield* FinishTool.pipe(
+        Effect.provideService(Session.Service, { ...real, get: () => Effect.die(sentinel) }),
+      )).init()
+      const exit = yield* broken
+        .execute({ reason: "success", result: "done" }, finishContext(chat.id, assistant.id))
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.hasDies(exit.cause) ? Cause.squash(exit.cause) : undefined).toBe(sentinel)
+    }),
   )
 
   it.instance(

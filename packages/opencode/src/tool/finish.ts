@@ -7,6 +7,7 @@ import DESCRIPTION from "./finish.txt"
 import { Effect, Option, Schema } from "effect"
 import { Todo } from "../session/todo"
 import { Session, readAgentEffort } from "../session/session"
+import { NotFoundError } from "@/storage/storage"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
 import { reviewLoopState } from "../session/review-loop"
@@ -270,7 +271,12 @@ export const FinishTool = Tool.define(
           }
 
           const cfg = yield* config.get()
-          const session = yield* sessions.get(ctx.sessionID).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+          // Only a missing row reads as "no session". Storage failures reach
+          // here as defects and must propagate instead of silently resolving the
+          // effort and reviewer availability against no session.
+          const session = yield* sessions
+            .get(ctx.sessionID)
+            .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
           // Effective level: session-persisted selection, then configured
           // default, then medium. The model never supplies a level here —
           // finish must not accept a model-selected effort or pass budget.
@@ -354,7 +360,7 @@ export const FinishTool = Tool.define(
                     depth++
                     const parent: Session.Info | undefined = yield* sessions
                       .get(current.parentID)
-                      .pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+                      .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
                     if (!parent)
                       return {
                         available: false as const, code: "session-unreadable" as const,
@@ -370,10 +376,11 @@ export const FinishTool = Tool.define(
                       available: false as const, code: "task-hidden" as const,
                       reason: "the newest user message hides the task tool for this turn",
                     }
-                  if (depth >= (cfg.subagent_depth ?? 1))
+                  const depthLimit = cfg.subagent_depth ?? 1
+                  if (depth >= depthLimit)
                     return {
                       available: false as const, code: "subagent-depth" as const,
-                      reason: `subagent depth limit reached (${cfg.subagent_depth ?? 1})`,
+                      reason: `subagent depth limit reached (${depthLimit})`,
                     }
                   return { available: true as const }
                 })
@@ -387,7 +394,7 @@ export const FinishTool = Tool.define(
             ...(availability.available ? {} : { unavailableCode: availability.code }),
             // #233 handoff: a child that cannot dispatch review because of the depth limit hands
             // its unreviewed writes to its parent (review-pending), never claims approval.
-            handoff: !availability.available && session?.parentID !== undefined && availability.reason.startsWith("subagent depth"),
+            handoff: !availability.available && session?.parentID !== undefined && availability.code === "subagent-depth",
           })
 
           if (!outcome.deliver) {
