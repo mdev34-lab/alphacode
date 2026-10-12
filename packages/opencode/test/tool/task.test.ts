@@ -2392,3 +2392,169 @@ itReverse.instance("child write projection preserves completion committed after 
     expect(persisted.state.metadata.reviewLoop).toMatchObject({ writesFiles: true, report: "kept" })
   }),
 )
+
+// The dispatch reads the session store on both sides of a child run: it
+// resolves a requested child before dispatching one, and it reads the child's
+// transcript when the run ends to recover write evidence. Neither read may turn
+// a broken store into a usable answer, so each failure mode is injected through
+// a replacement that keeps the real service for every other call.
+class ReadFault extends Context.Service<
+  ReadFault,
+  {
+    /** `get` dies for this session id, the way an unreadable store does. */
+    getFailsFor?: SessionID
+    /** `messages` dies for this session id, the way an unreadable transcript does. */
+    historyFailsFor?: SessionID
+    /** Every `messages` read the run performed, in order. */
+    reads: SessionID[]
+  }
+>()("TaskTest.ReadFault") {}
+const readFaultNode = LayerNode.make({
+  service: ReadFault,
+  layer: Layer.sync(ReadFault, () => ({ reads: [] as SessionID[] })),
+  deps: [],
+})
+// Preserve the real node's service, implementation, dependency array and types.
+// Only its resolver identity changes, preventing the replacement from cycling.
+const faultBase = { ...Session.node, name: "@opencode/Session.faultBase" }
+const faultSession = LayerNode.make({
+  service: Session.Service,
+  layer: Layer.effect(
+    Session.Service,
+    Effect.gen(function* () {
+      const base = yield* Session.Service
+      const fault = yield* ReadFault
+      return Session.Service.of({
+        ...base,
+        get: (id) => (fault.getFailsFor === id ? Effect.die(new Error("session store unreadable")) : base.get(id)),
+        messages: (input) =>
+          Effect.sync(() => {
+            fault.reads.push(input.sessionID)
+          }).pipe(
+            Effect.andThen(
+              fault.historyFailsFor === input.sessionID
+                ? Effect.die(new Error("child history unreadable"))
+                : base.messages(input),
+            ),
+          ),
+      })
+    }),
+  ),
+  deps: [faultBase, readFaultNode],
+})
+const itFaults = testEffect(layer({}, [[Session.node, faultSession]], [readFaultNode]))
+
+describe("tool.task - storage faults", () => {
+  // The run-end history read is the recovery path for the live write listener.
+  // A failure there is not "the child wrote nothing": the run must reach its
+  // caller as a failure, and the listener must still be unsubscribed (#284).
+  itFaults.instance("an unreadable child history fails the run and still unsubscribes the write listener", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const fault = yield* ReadFault
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
+      const user = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: child.id,
+        agent: "general",
+        model: ref,
+        time: { created: Date.now() },
+      })
+      fault.historyFailsFor = child.id
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            task_id: child.id,
+            background: false,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ text: "done" }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "").toContain("child history unreadable")
+
+      // A write the child publishes after the run must not re-run the
+      // projection: the failed recovery still owns the listener's lifetime.
+      const reads = fault.reads.filter((id) => id === chat.id).length
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        sessionID: child.id,
+        messageID: user.id,
+        type: "tool",
+        tool: "write",
+        callID: "late-write",
+        state: {
+          status: "completed",
+          input: {},
+          output: "written",
+          title: "write",
+          metadata: { reviewLoop: { writesFiles: true } },
+          time: { start: 1, end: 2 },
+        },
+      } satisfies SessionV1.ToolPart)
+      expect(fault.reads.filter((id) => id === chat.id).length).toBe(reads)
+    }),
+  )
+
+  // A failed run is not replaced by the recovery's failure: both causes stay in
+  // the run's outcome, and the caller still reads the failure it was waiting on.
+  itFaults.instance("a failed child run keeps its own failure when the history read also fails", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const fault = yield* ReadFault
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
+      fault.historyFailsFor = child.id
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            task_id: child.id,
+            background: false,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: {
+                ...stubOps(),
+                prompt: () => Effect.die(new Error("child run exploded")),
+              } satisfies TaskPromptOps,
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "").toContain("child run exploded")
+    }),
+  )
+})

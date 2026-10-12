@@ -15,7 +15,7 @@ import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Option, Ref, Schema, Scope } from "effect"
+import { Cause, Effect, Exit, Option, Ref, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { AgentEffort } from "@opencode-ai/schema/agent-effort"
@@ -589,22 +589,47 @@ export const TaskTool = Tool.define(
         )
       })
 
+      // The run's end reads the child's transcript, which is the recovery path
+      // for the live listener above: a dropped event still leaves the writes in
+      // history, so evidence cannot be missed. That read can fail, and an
+      // unreadable transcript is not "nothing was written": the caller must see
+      // the storage cause instead of a completed run whose evidence was never
+      // recovered (#284). The listener is unsubscribed either way.
+      const projectHistoryWrites = Effect.gen(function* () {
+        const history = yield* sessions.messages({ sessionID: nextSession.id })
+        yield* projectWrites(history.flatMap((message) => message.parts))
+      }).pipe(Effect.ensuring(unsubscribeWrites))
+
+      // Combining the run's outcome with the recovery's, so neither hides the
+      // other: a run that succeeded fails on the recovery's cause, a run that
+      // failed keeps its own cause alongside it, and a cancelled run stays a
+      // cancellation - the interrupt is the control signal its caller waits on -
+      // while the failed recovery is still reported as a log rather than as
+      // nothing. The finalizer itself must not throw that log away.
+      const recoverChildWrites = (exit: Exit.Exit<string, unknown>) =>
+        projectHistoryWrites.pipe(
+          Effect.exit,
+          Effect.flatMap((recovery) => {
+            if (Exit.isSuccess(recovery)) return Effect.void
+            const logged = Effect.logError("Child write evidence history unavailable", {
+              sessionID: nextSession.id,
+              cause: recovery.cause,
+            })
+            if (Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)) return logged
+            return logged.pipe(
+              Effect.andThen(
+                Effect.failCause(Exit.isFailure(exit) ? Cause.combine(exit.cause, recovery.cause) : recovery.cause),
+              ),
+            )
+          }),
+        )
+
       // Each continuation owns its listener until that continuation ends.
       // Extending an existing background job must clean up too.
       const runWithEvidence = () =>
         runTask().pipe(
           Effect.onInterrupt(() => ops.cancel(nextSession.id)),
-          Effect.ensuring(
-            Effect.gen(function* () {
-              const history = yield* sessions.messages({ sessionID: nextSession.id })
-              yield* projectWrites(history.flatMap((message) => message.parts))
-            }).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logError("Child write evidence history unavailable", { sessionID: nextSession.id, cause }),
-              ),
-              Effect.ensuring(unsubscribeWrites),
-            ),
-          ),
+          Effect.onExit(recoverChildWrites),
         )
 
       if (yield* background.extend({ id: nextSession.id, run: runWithEvidence() })) {
