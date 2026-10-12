@@ -123,6 +123,95 @@ describe("tool.webfetch", () => {
     ),
   )
 
+  it.instance("strips navigation, header, footer and cookie boilerplate before markdown conversion", () =>
+    withFetch(
+      () =>
+        new Response(
+          [
+            "<html><body>",
+            "<nav>docs menu</nav>",
+            "<header>site header</header>",
+            "<main><h1>Real content</h1><p>keep this</p></main>",
+            "<aside>sidebar promo</aside>",
+            "<div role='navigation'>role menu</div>",
+            "<div role='banner'>role banner</div>",
+            "<div role='contentinfo'>role contentinfo</div>",
+            "<div class='cookie-banner'>accept cookies</div>",
+            "<div class='page-footer-notes'>footer note</div>",
+            "<footer>footer links</footer>",
+            "</body></html>",
+          ].join(""),
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          },
+        ),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/page.html", url).toString(), format: "markdown" })
+          expect(result.output).toContain("Real content")
+          expect(result.output).toContain("keep this")
+          for (const chrome of [
+            "docs menu",
+            "site header",
+            "sidebar promo",
+            "role menu",
+            "role banner",
+            "role contentinfo",
+            "accept cookies",
+            "footer note",
+            "footer links",
+          ]) {
+            expect(result.output).not.toContain(chrome)
+          }
+        }),
+    ),
+  )
+
+  it.instance("strips boilerplate from text output as well", () =>
+    withFetch(
+      () =>
+        new Response(
+          "<html><body><nav>docs menu</nav><main>Real content</main><div class='cookie-banner'>accept cookies</div></body></html>",
+          {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          },
+        ),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/page.html", url).toString(), format: "text" })
+          expect(result.output).toBe("Real content")
+        }),
+    ),
+  )
+
+  it.instance("leaves raw html untouched when format is html", () =>
+    withFetch(
+      () =>
+        new Response("<html><body><nav>docs menu</nav><main>Real content</main></body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/page.html", url).toString(), format: "html" })
+          expect(result.output).toContain("<nav>docs menu</nav>")
+          expect(result.output).toContain("Real content")
+        }),
+    ),
+  )
+
+  it.instance("tells the model to prefer API endpoints over rendered pages", () =>
+    Effect.gen(function* () {
+      const info = yield* WebFetchTool
+      const tool = yield* info.init()
+      expect(tool.description).toContain("HTML pages carry heavy navigation/footer chrome.")
+      expect(tool.description).toContain("A 404 from an API endpoint usually means authentication")
+      expect(tool.description).toContain("do not retry variants of the same unauthenticated request")
+    }),
+  )
+
   it.instance("returns the full body unchanged when offset and limit are omitted", () =>
     withFetch(
       () => new Response("alpha\nbeta\ngamma\n", { status: 200, headers: { "content-type": "text/plain" } }),

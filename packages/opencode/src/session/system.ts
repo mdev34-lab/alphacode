@@ -22,6 +22,7 @@ import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 import { Reference } from "@opencode-ai/core/reference"
@@ -82,6 +83,7 @@ const layer = Layer.effect(
     const mcp = yield* MCP.Service
     const locations = yield* LocationServiceMap.Service
     const config = yield* Config.Service
+    const global = yield* Global.Service
 
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
@@ -96,6 +98,7 @@ const layer = Layer.effect(
             `Here is some useful information about the environment you are running in:`,
             `<env>`,
             `  Working directory: ${ctx.directory}`,
+            `  Desktop directory: ${global.desktop ?? "unavailable (do not infer a path)"}`,
             `  Workspace root folder: ${ctx.worktree}`,
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  OS: ${os.type()} ${os.release()}; Shell: ${shell}`,
@@ -167,7 +170,7 @@ const locationServiceMapNode = LayerNode.make({
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Skill.node, MCP.node, Config.node, locationServiceMapNode],
+  deps: [Skill.node, MCP.node, Config.node, Global.node, locationServiceMapNode],
 })
 
 export * as SystemPrompt from "./system"

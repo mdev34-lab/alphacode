@@ -19,7 +19,6 @@ const keys = new Set([
   "enabled_providers",
   "small_model",
   "mode",
-  "agent",
   "provider",
   "permission",
   "tools",
@@ -29,21 +28,46 @@ const keys = new Set([
 
 export function isV1(input: unknown) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return false
-  return Object.keys(input).some((key) => keys.has(key))
+  const record = input as Record<string, unknown>
+  return Object.keys(record).some((key) => (key === "agent" ? isLegacyAgentMap(record.agent) : keys.has(key)))
 }
 
-export function migrate(info: typeof ConfigV1.Info.Type) {
+/**
+ * The `agent` key is ambiguous by design: v2 nests the reserved `effort`
+ * setting under it, while v1 uses it as a named-agent map. A map is legacy
+ * evidence unless its only meaningful entry is the scalar `effort` setting —
+ * a key named `effort` with a non-string value is a named agent, and any
+ * other key is a named agent that only the v1 shape carries.
+ */
+function isLegacyAgentMap(value: unknown) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  return Object.entries(value).some(([key, entry]) => (key === "effort" ? typeof entry !== "string" : true))
+}
+
+/**
+ * `native` is the raw config document: the v1 decode cannot see v2-only
+ * `agents`/`providers` entries, so migration carries them across explicitly.
+ * Native entries win over same-named legacy definitions; legacy-only
+ * definitions survive unchanged.
+ */
+export function migrate(info: typeof ConfigV1.Info.Type, native?: unknown) {
+  const raw: Record<string, unknown> =
+    typeof native === "object" && native !== null && !Array.isArray(native) ? (native as Record<string, unknown>) : {}
+  const nativeAgents = typeof raw.agents === "object" && raw.agents !== null ? (raw.agents as Record<string, unknown>) : undefined
+  const nativeProviders =
+    typeof raw.providers === "object" && raw.providers !== null ? (raw.providers as Record<string, unknown>) : undefined
   return {
     $schema: info.$schema,
     shell: info.shell,
     model: info.model,
     default_agent: info.default_agent,
+    agent: agentSettings(info.agent),
     autoupdate: info.autoupdate,
     share: info.share ?? (info.autoshare ? "auto" : undefined),
     enterprise: info.enterprise,
     username: info.username,
     permissions: permissions(info.permission, info.tools),
-    agents: agents(info),
+    agents: withNative(agents(info), nativeAgents),
     snapshots: info.snapshot,
     watcher: info.watcher,
     formatter: info.formatter,
@@ -67,7 +91,7 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
       typeof plugin === "string" ? plugin : { package: plugin[0], options: plugin[1] },
     ),
     experimental: info.experimental?.policies && { policies: info.experimental.policies },
-    providers: providers(info.provider),
+    providers: withNative(providers(info.provider), nativeProviders),
   }
 }
 
@@ -100,7 +124,35 @@ function agents(info: typeof ConfigV1.Info.Type) {
     ...Object.entries(info.mode ?? {}).map(([name, agent]) => [name, { ...agent, mode: "primary" as const }] as const),
   ]
   if (!entries.length) return undefined
-  return Object.fromEntries(entries.flatMap(([name, agent]) => (agent ? [[name, migrateAgent(agent)]] : [])))
+  return Object.fromEntries(
+    entries.flatMap(([name, agent]) =>
+      // The reserved scalar effort policy is a setting, not an agent
+      // definition: filter only scalar values so a legacy named agent whose
+      // `effort` entry is an object still migrates as a named agent.
+      typeof agent === "string" ? [] : agent ? [[name, migrateAgent(agent)]] : [],
+    ),
+  )
+}
+
+/** The reserved scalar `agent.effort` policy, if configured. A legacy object-valued `effort` entry is a named agent, not the setting. */
+function agentEffort(agent: typeof ConfigV1.Info.Type.agent) {
+  const value = agent?.effort
+  return typeof value === "string" ? value : undefined
+}
+
+/** The reserved scalar migrates to the canonical nested v2 `agent` settings object. */
+function agentSettings(agent: typeof ConfigV1.Info.Type.agent) {
+  const effort = agentEffort(agent)
+  return effort !== undefined ? { effort } : undefined
+}
+
+/** Carry native v2 entries across migration with precedence over same-named legacy entries. */
+function withNative<T extends Readonly<Record<string, unknown>>>(
+  legacy: T | undefined,
+  native: Record<string, unknown> | undefined,
+): T | undefined {
+  if (!native) return legacy
+  return { ...(legacy ?? {}), ...native } as T
 }
 
 export function migrateAgent(info: ConfigAgentV1.Info) {
@@ -189,27 +241,82 @@ function migrateProvider(info: ConfigProviderV1.Info) {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 function migrateModel(info: typeof ConfigProviderV1.Model.Type, packageName?: string) {
   const packageID = info.provider?.npm ?? packageName
   const lowerer = ConfigProviderOptionsV1.get(packageID)
   const request = info.options && lowerer.request(info.options)
-  const costs = info.cost && [
-    {
-      input: info.cost.input,
-      output: info.cost.output,
-      cache: { read: info.cost.cache_read, write: info.cost.cache_write },
-    },
-    ...(info.cost.context_over_200k
-      ? [
-          {
-            tier: { type: "context" as const, size: 200_000 },
-            input: info.cost.context_over_200k.input,
-            output: info.cost.context_over_200k.output,
-            cache: { read: info.cost.context_over_200k.cache_read, write: info.cost.context_over_200k.cache_write },
+  const rawCost = info.cost
+  const costs = (() => {
+    if (!rawCost) return undefined
+    if (Array.isArray(rawCost)) {
+      return (rawCost as readonly (typeof ConfigProviderV1.CostTier.Type)[]).map((t) => {
+        const rawSize =
+          typeof t.tier === "number"
+            ? t.tier
+            : isRecord(t.tier) && typeof t.tier.size === "number"
+              ? t.tier.size
+              : undefined
+        return {
+          ...(rawSize !== undefined && Number.isFinite(rawSize)
+            ? { tier: { type: "context" as const, size: int(rawSize) } }
+            : {}),
+          input: t.input,
+          output: t.output,
+          cache: {
+            read: t.cache?.read ?? t.cache_read,
+            write: t.cache?.write ?? t.cache_write,
           },
-        ]
-      : []),
-  ]
+        }
+      })
+    }
+    const struct = rawCost as Exclude<typeof rawCost, readonly any[]>
+    return [
+      {
+        input: struct.input,
+        output: struct.output,
+        cache: {
+          read: struct.cache?.read ?? struct.cache_read,
+          write: struct.cache?.write ?? struct.cache_write,
+        },
+      },
+      ...(struct.tiers?.map((t) => {
+        const rawSize =
+          typeof t.tier === "number"
+            ? t.tier
+            : isRecord(t.tier) && typeof t.tier.size === "number"
+              ? t.tier.size
+              : undefined
+        return {
+          ...(rawSize !== undefined && Number.isFinite(rawSize)
+            ? { tier: { type: "context" as const, size: int(rawSize) } }
+            : {}),
+          input: t.input,
+          output: t.output,
+          cache: {
+            read: t.cache?.read ?? t.cache_read,
+            write: t.cache?.write ?? t.cache_write,
+          },
+        }
+      }) ?? []),
+      ...(struct.context_over_200k
+        ? [
+            {
+              tier: { type: "context" as const, size: 200_000 },
+              input: struct.context_over_200k.input,
+              output: struct.context_over_200k.output,
+              cache: {
+                read: struct.context_over_200k.cache_read,
+                write: struct.context_over_200k.cache_write,
+              },
+            },
+          ]
+        : []),
+    ]
+  })()
   const capabilities =
     info.tool_call !== undefined || info.modalities?.input !== undefined || info.modalities?.output !== undefined
       ? { tools: info.tool_call ?? false, input: info.modalities?.input ?? [], output: info.modalities?.output ?? [] }

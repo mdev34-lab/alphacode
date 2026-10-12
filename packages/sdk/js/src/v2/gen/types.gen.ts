@@ -672,6 +672,8 @@ export type Todo = {
   priority: string
 }
 
+export type PermissionReplyOutcome = "once" | "always" | "reject" | "timeout"
+
 export type SessionStatus =
   | {
       type: "idle"
@@ -1391,6 +1393,7 @@ export type GlobalEvent = {
             messageID: string
             callID: string
           }
+          expiresAt?: number
         }
       }
     | {
@@ -1399,7 +1402,7 @@ export type GlobalEvent = {
         properties: {
           sessionID: string
           requestID: string
-          reply: "once" | "always" | "reject"
+          reply: PermissionReplyOutcome
         }
       }
     | {
@@ -1955,7 +1958,8 @@ export type Config = {
     title?: AgentConfig
     summary?: AgentConfig
     compaction?: AgentConfig
-    [key: string]: AgentConfig | undefined
+    effort?: AgentEffortLevel | AgentConfig
+    [key: string]: AgentConfig | AgentEffortLevel | AgentConfig | AgentEffortLevel | AgentConfig | undefined
   }
   provider?: {
     [key: string]: ProviderConfig
@@ -2009,6 +2013,10 @@ export type Config = {
   ste_lite?: boolean
   layout?: LayoutConfig
   permission?: PermissionConfig
+  permission_timeout?: {
+    enabled?: boolean
+    seconds?: number
+  }
   tools?: {
     [key: string]: boolean
   }
@@ -2494,6 +2502,7 @@ export type PermissionRequest = {
     messageID: string
     callID: string
   }
+  expiresAt?: number
 }
 
 export type PermissionNotFoundError = {
@@ -3854,6 +3863,8 @@ export type ConfigV2ReferenceLocal = {
   description?: string
   hidden?: boolean
 }
+
+export type AgentEffortLevel = "fast" | "medium" | "thorough"
 
 export type PolicyEffect = "allow" | "deny"
 
@@ -5749,6 +5760,7 @@ export type PermissionAsked = {
       messageID: string
       callID: string
     }
+    expiresAt?: number
   }
 }
 
@@ -5767,7 +5779,7 @@ export type PermissionReplied = {
   data: {
     sessionID: string
     requestID: string
-    reply: "once" | "always" | "reject"
+    reply: PermissionReplyOutcome
   }
 }
 
@@ -6914,6 +6926,7 @@ export type EventPermissionAsked = {
       messageID: string
       callID: string
     }
+    expiresAt?: number
   }
 }
 
@@ -6923,7 +6936,7 @@ export type EventPermissionReplied = {
   properties: {
     sessionID: string
     requestID: string
-    reply: "once" | "always" | "reject"
+    reply: PermissionReplyOutcome
   }
 }
 

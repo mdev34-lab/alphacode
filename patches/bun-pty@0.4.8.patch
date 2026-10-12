@@ -1,0 +1,82 @@
+diff --git a/src/terminal.ts b/src/terminal.ts
+index ec248d46a939f8a09cd669e853cefb126922c80a..4c0df020527e7cdf301878c7f7a2212032c52fa5 100644
+--- a/src/terminal.ts
++++ b/src/terminal.ts
+@@ -3,7 +3,7 @@
+ import { dlopen, FFIType, ptr } from "bun:ffi";
+ import { Buffer } from "node:buffer";
+ import { EventEmitter } from "./interfaces";
+-import type { IPty, IPtyForkOptions, IExitEvent } from "./interfaces";
++import type { IPty, IPtyForkOptions, IExitEvent, IDisposable } from "./interfaces";
+ import { join, dirname, basename } from "node:path";
+ import { existsSync } from "node:fs";
+ 
+@@ -193,8 +193,54 @@ export class Terminal implements IPty {
+ 	get onData() {
+ 		return this._onData.event;
+ 	}
++	// Exit that fired before any listener was registered (fast-exiting child:
++	// the first read inside the constructor can already see CHILD_EXITED).
++	private _pendingExit?: IExitEvent;
++
++	// Live onExit subscriptions, counted by onExit itself (it is the only
++	// public way to subscribe), so no private emitter state is introspected.
++	private _exitListenerCount = 0;
++
++	// Replay-on-subscribe: the first listener registered after such an exit
++	// receives it once, asynchronously (microtask), so the subscriber's own
++	// registration code finishes before its callback runs. If that listener
++	// is disposed before its replay ran, the exit is put back as pending
++	// SYNCHRONOUSLY inside dispose(), so a subscriber that registers right
++	// after (before the microtask) still sees it; the exit is never lost.
+ 	get onExit() {
+-		return this._onExit.event;
++		return (listener: (e: IExitEvent) => void): IDisposable => {
++			const inner = this._onExit.event(listener);
++			this._exitListenerCount++;
++			let disposed = false;
++			let replayed = false;
++			const pending = this._pendingExit;
++			if (pending) {
++				this._pendingExit = undefined;
++				queueMicrotask(() => {
++					if (disposed) return;
++					replayed = true;
++					try {
++						listener(pending);
++					} catch (error) {
++						// The replay has no caller to throw to (the live path lets
++						// a throwing listener reject the read loop). Report it on
++						// stderr instead of rethrowing from a microtask, which
++						// would surface as an unhandled error and could take the
++						// process down.
++						console.error("[bun-pty] replayed exit listener threw", error);
++					}
++				});
++			}
++			return {
++				dispose: () => {
++					if (disposed) return;
++					disposed = true;
++					this._exitListenerCount--;
++					inner.dispose();
++					if (pending && !replayed) this._pendingExit ??= pending;
++				},
++			};
++		};
+ 	}
+ 
+ 	/* ------------- IO methods ------------- */
+@@ -244,6 +290,12 @@ export class Terminal implements IPty {
+ 					this._onData.fire(remaining);
+ 				}
+ 				const exitCode = lib.symbols.bun_pty_get_exit_code(this.handle);
++				// No subscriber yet (fast-exiting child): keep the exit for the
++				// first onExit subscriber. The count is owned by onExit below,
++				// not read from the emitter's private listener list.
++				if (this._exitListenerCount === 0) {
++					this._pendingExit = { exitCode };
++				}
+ 				this._onExit.fire({ exitCode });
+ 				break;
+ 			} else if (n < 0) {

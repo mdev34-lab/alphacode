@@ -187,18 +187,49 @@ const layer = Layer.effect(
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
-        yield* session.updatePart({
-          ...match.part,
-          state: {
-            status: "completed",
-            input: match.part.state.input,
-            output: output.output,
-            metadata: output.metadata,
-            title: output.title,
-            time: { start: match.part.state.time.start, end: Date.now() },
-            attachments: output.attachments,
+        // The commit is a read-modify-write, and a child's write projection can
+        // land on this part from another fiber while the tool is running. Merge
+        // against what is actually stored, under the part's lock, so the commit
+        // cannot erase evidence that was written after the read above.
+        //
+        // Background output can predate a child's write projection. Keep
+        // persisted evidence and never let a stale false erase a known write.
+        const committed = yield* session.modifyPart(
+          {
+            sessionID: match.call.sessionID,
+            messageID: match.call.messageID,
+            partID: match.call.partID,
           },
-        })
+          (part): SessionV1.ToolPart | undefined => {
+            if (!part || part.type !== "tool" || part.state.status !== "running") return undefined
+            const metadata = { ...part.state.metadata, ...output.metadata }
+            const previousReview = part.state.metadata?.reviewLoop
+            const returnedReview = output.metadata.reviewLoop
+            if (isRecord(previousReview) || isRecord(returnedReview)) {
+              metadata.reviewLoop = {
+                ...(isRecord(previousReview) ? previousReview : {}),
+                ...(isRecord(returnedReview) ? returnedReview : {}),
+                ...((isRecord(previousReview) && previousReview.writesFiles === true) ||
+                (isRecord(returnedReview) && returnedReview.writesFiles === true)
+                  ? { writesFiles: true }
+                  : {}),
+              }
+            }
+            return {
+              ...part,
+              state: {
+                status: "completed",
+                input: part.state.input,
+                output: output.output,
+                metadata,
+                title: output.title,
+                time: { start: part.state.time.start, end: Date.now() },
+                attachments: output.attachments,
+              },
+            }
+          },
+        )
+        if (!committed) return
         yield* settleToolCall(toolCallID)
       })
 
@@ -216,6 +247,9 @@ const layer = Layer.effect(
             time: { start: match.part.state.time.start, end: Date.now() },
           },
         })
+        // `PermissionV1.TimedOutError` is deliberately absent: an unanswered prompt
+        // fails only this tool call so the model can pick another approach, while a
+        // rejection ends the turn unless `experimental.continue_loop_on_deny` is set.
         if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
@@ -389,6 +423,11 @@ const layer = Layer.effect(
             }
 
             const agent = yield* agents.get(ctx.assistantMessage.agent)
+            // Unlike a tool permission this ask runs inside the event stream, not inside a
+            // tool, so a failure here halts the turn instead of failing one tool call. That
+            // is intentional for the countdown too: nobody answering "keep going after three
+            // identical failures?" is treated like a "no", which is the bounded outcome for
+            // an agent that is already stuck. See issue #186.
             yield* permission.ask({
               permission: "doom_loop",
               patterns: [value.name],
@@ -713,10 +752,7 @@ const layer = Layer.effect(
                     if (Option.isNone(current)) return false
                     const currentModel = current.value.model
                     if (!currentModel) return false
-                    return (
-                      currentModel.providerID !== input.model.providerID ||
-                      currentModel.id !== input.model.id
-                    )
+                    return currentModel.providerID !== input.model.providerID || currentModel.id !== input.model.id
                   }),
               }),
             ),

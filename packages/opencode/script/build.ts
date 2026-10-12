@@ -11,10 +11,27 @@ const dir = path.resolve(__dirname, "..")
 
 process.chdir(dir)
 
-const generated = await import("./generate.ts")
-
-import { Script } from "@opencode-ai/script"
+import { archiveName, assertReleaseGate, assertReleaseVersions, Script, tagForVersion, uploadReleaseArchives } from "@opencode-ai/script"
 import pkg from "../package.json"
+
+// A published build must be an exact, stable, committed version built from the
+// release tag on a clean tree - never a dev build and never an untagged tree.
+if (Script.release) {
+  if (Script.preview) {
+    throw new Error(
+      `Refusing to publish a preview build (channel "${Script.channel}"). Build from the release tag or set SILVERCODE_CHANNEL=latest.`,
+    )
+  }
+  const packageVersion = Script.packageVersion
+  assertReleaseVersions({ packageVersion, runtimeVersion: Script.version })
+  assertReleaseGate({
+    expectedTag: tagForVersion(packageVersion),
+    tagAtHead: await Script.tagAtHead,
+    dirty: await Script.dirty,
+  })
+}
+
+const generated = await import("./generate.ts")
 
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
@@ -111,6 +128,7 @@ const targets = singleFlag
 await $`rm -rf dist`
 
 const binaries: Record<string, string> = {}
+const releaseTargets: { name: string; os: string }[] = []
 if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
   await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
@@ -159,12 +177,19 @@ for (const item of targets) {
     entrypoints: ["./src/index.ts", workerPath, treeSitterWorkerPath],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
+      // SILVERCODE_* is the SilverCode runtime version; ALPHACODE_* (pre-rename) and
+      // OPENCODE_* stay as aliases so unchanged OpenCode code keeps resolving its globals.
+      SILVERCODE_VERSION: `'${Script.version}'`,
+      SILVERCODE_CHANNEL: `'${Script.channel}'`,
+      ALPHACODE_VERSION: `'${Script.version}'`,
+      ALPHACODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + treeSitterWorkerPath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
-      OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
+      // "undefined" (not "") so the watcher fallback reads it as unset.
+      OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "undefined",
       ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
     },
   })
@@ -201,17 +226,24 @@ for (const item of targets) {
     ),
   )
   binaries[name] = Script.version
+  releaseTargets.push({ name, os: item.os })
 }
 
 if (Script.release) {
-  for (const key of Object.keys(binaries)) {
-    if (key.includes("linux")) {
-      await $`tar -czf ../../${key}.tar.gz *`.cwd(`dist/${key}/bin`)
+  // Upload exactly the archives this build produced. Globbing both extensions
+  // breaks a single-target build: one of the two globs matches nothing and the
+  // shell fails with "no matches".
+  const archives: string[] = []
+  for (const target of releaseTargets) {
+    const archive = archiveName(target)
+    if (target.os === "linux") {
+      await $`tar -czf ../../${archive} *`.cwd(`dist/${target.name}/bin`)
     } else {
-      await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
+      await $`zip -r ../../${archive} *`.cwd(`dist/${target.name}/bin`)
     }
+    archives.push(`./dist/${archive}`)
   }
-  await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
+  await uploadReleaseArchives(tagForVersion(Script.version), archives)
 }
 
 export { binaries }

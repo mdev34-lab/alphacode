@@ -63,8 +63,30 @@ function finishNudgeMessage() {
         state: {
           status: "error",
           input: { result: "done" },
-          error: "Review nudge",
+          error: "Review required",
           metadata: { review: { nudged: true, verdict: "pending", reviews: 0, maxIterations: 5 } },
+        },
+      },
+    ],
+  } as unknown as SessionV1.WithParts
+}
+
+function waitingFinishMessage() {
+  return finishPart({ reason: "waiting_for_subagent", result: "Waiting on the children." }, { waiting: true })
+}
+
+function finishPart(input: Record<string, unknown>, metadata: Record<string, unknown>) {
+  return {
+    info: { role: "assistant" },
+    parts: [
+      {
+        type: "tool",
+        tool: "finish",
+        state: {
+          status: "completed",
+          input,
+          output: "done",
+          metadata,
         },
       },
     ],
@@ -111,29 +133,79 @@ describe("review loop prompt contract", () => {
     )
   })
 
-  test("recommends a review after work that follows review findings", async () => {
+  test("requires a review after work that follows review findings", async () => {
     const prompt = await readPrompt("review-loop.txt")
 
     expect(prompt).toContain("After every Work pass made in response to findings, return to Review")
     expect(prompt).toContain("Prefer not to call `finish` until a later review explicitly approves")
-    expect(prompt).toContain("review-cap")
+    // The pass budget belongs to the effort policy; the old fixed `review-cap`
+    // termination is gone from the prompt contract.
+    expect(prompt).toContain("The effort policy owns the pass budget")
+    expect(prompt).toContain("`budget-exhausted` or `findings-open` status — never as approved")
+    expect(prompt).not.toContain("review-cap")
   })
 
-  test("presents review as a nudge the agent may explicitly skip", async () => {
+  test("makes finish the only enforcement checkpoint for the review requirement", async () => {
     const prompt = await readPrompt("review-loop.txt")
 
-    expect(prompt).toContain("Review is guidance, not an enforcement gate")
-    expect(prompt).toContain("call `finish` again to explicitly skip review")
+    expect(prompt).toContain("`finish` is the only enforcement checkpoint")
+    expect(prompt).toContain("Repeated `finish` calls never waive a required review")
+    expect(prompt).not.toContain("Review is guidance, not an enforcement gate")
+    expect(prompt).not.toContain("explicitly skip review")
     expect(prompt).not.toContain("Mandatory Review Loop")
   })
 
-  test("finish nudge preserves the review recommendation and the skip path", async () => {
+  test("finish nudge preserves the review recommendation and forbids a skip path", async () => {
     const nudge = await readPrompt("finish-nudge.txt")
 
-    expect(nudge).toContain("synchronous `review` task")
+    expect(nudge).toContain("explicit Approved review from the Review subagent")
+    expect(nudge).toContain('`subagent_type: "review"` and `background: false`')
     expect(nudge).toContain("latest review returned `Needs fixes`")
-    expect(nudge).toContain("call `finish` again to explicitly skip review")
-    expect(nudge).toContain("review-cap")
+    expect(nudge).toContain("repeating `finish` does not skip it")
+    expect(nudge).not.toContain("review-cap")
+  })
+
+  test("presents review as a requirement with no skip path", async () => {
+    const prompt = (await readPrompt("review-loop.txt")).replace(/\s+/g, " ")
+
+    expect(prompt).toContain("Review is required before finishing file-writing work.")
+    expect(prompt).toContain("A declined `finish` is not a waiver: retrying it is declined again")
+    // #233 replaced the runtime waiver with three outcomes, none of which is a
+    // skip: the attempt cap, a child's unreviewed handoff, and a blocked
+    // dispatch that only an honest failure may report.
+    expect(prompt).toContain("`budget-exhausted`")
+    expect(prompt).toContain("`review-pending`")
+    expect(prompt).toContain("`review-blocked`")
+    expect(prompt).toContain("None of these outcomes means the work was approved")
+    expect(prompt).not.toContain("`review-unavailable`")
+    expect(prompt).not.toContain("Review is guidance, not an enforcement gate")
+    expect(prompt).not.toMatch(/explicitly skip review|Skip review only/)
+  })
+
+  test("finish nudge names the Review subagent and offers no skip path", async () => {
+    const nudge = (await readPrompt("finish-nudge.txt")).replace(/\s+/g, " ")
+
+    expect(nudge).toContain("explicit Approved review from the Review subagent")
+    expect(nudge).toContain('`subagent_type: "review"` and `background: false`')
+    expect(nudge).toContain("latest review returned `Needs fixes`")
+    expect(nudge).toContain("calling `finish` again without running the Review subagent is declined again")
+    expect(nudge).toContain("budget-exhausted")
+    expect(nudge).not.toMatch(/explicitly skip review|strongly recommended/)
+  })
+
+  test("the finish tool description states the requirement and offers no skip path", async () => {
+    const description = (await readTool("finish.txt")).replace(/\s+/g, " ")
+
+    expect(description).toContain("finish requires an explicit Approved review of that work from the Review subagent")
+    expect(description).toContain('`subagent_type: "review"` and `background: false`')
+    expect(description).toContain("Retrying finish does not skip review")
+    expect(description).toContain("`budget-exhausted`")
+    // #233: the waiver is gone from the tool description too. A dispatch that
+    // cannot run blocks success and only an honest failure may report it.
+    expect(description).toContain("`review-blocked`")
+    expect(description).toContain("`review-pending`")
+    expect(description).not.toContain("`review-unavailable`")
+    expect(description).not.toMatch(/explicitly skip review|strongly recommended/)
   })
 
   test("the reviewer must end with one machine-readable report envelope", async () => {
@@ -178,7 +250,9 @@ describe("review loop prompt contract", () => {
 
     expect(finish).toContain("ctx.waitForOtherTools ?? Effect.void")
     expect(finish).toContain(".messages({ sessionID: ctx.sessionID })")
-    expect(finish).toContain("return yield* Effect.fail(new ToolFailure({ message: gateError.message }))")
+    expect(finish).toContain(
+      'return yield* Effect.fail(new ToolFailure({ message: outcome.feedback ?? "Review required." }))',
+    )
     expect(finish).not.toContain("Effect.orDie")
     expect(finish).not.toContain('termination: "blocked"')
   })
@@ -264,19 +338,45 @@ describe("runtime review gate", () => {
       expect(state.verdict).toBe("pending")
       expect(state.nudged).toBe(false)
       expect(finishGateError(state)).toBeInstanceOf(Error)
-      expect(finishGateError(state)?.message).toContain("call finish again to skip review")
+      expect(finishGateError(state)?.message).toContain('`subagent_type: "review"`')
     }
   })
 
-  test("lets a second finish call skip review after a nudge", () => {
+  // Yielding for a background subagent is not a terminal result: the run is
+  // still in flight through its children, so the transcript must not record a
+  // termination and the nudge stays armed for the finish that really ends it.
+  //
+  // These are evaluator fixtures, not a live wait: they pin what the loop reads
+  // out of a transcript that contains a waiting finish part. That such a part
+  // can exist at all, and what the tool returns for it, is guaranteed by
+  // `test/tool/finish.test.ts`; here the counter-case keeps the fixture honest
+  // by showing the evaluator does read a terminal finish's metadata.
+  test("a waiting finish leaves no termination and keeps the review gate armed", () => {
+    const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), waitingFinishMessage()])
+
+    expect(state.termination).toBeUndefined()
+    expect(state.nudged).toBe(false)
+    expect(state.verdict).toBe("pending")
+    expect(finishGateError(state)).toBeInstanceOf(Error)
+
+    const terminal = reviewLoopState([
+      userMessage(),
+      toolMessage("edit", { writesFiles: true }),
+      finishPart({ reason: "success", result: "done" }, { review: { termination: "approved" } }),
+    ])
+    expect(terminal.termination).toBe("approved")
+    expect(terminal.nudged).toBe(false)
+  })
+
+  test("declines a second finish call after a decline instead of skipping review", () => {
     const state = reviewLoopState([userMessage(), toolMessage("edit", { writesFiles: true }), finishNudgeMessage()])
 
     expect(state.verdict).toBe("pending")
     expect(state.nudged).toBe(true)
-    expect(finishGateError(state)).toBeUndefined()
+    expect(finishGateError(state)?.message).toContain("retrying finish does not skip review")
   })
 
-  test("lets a second finish call skip review after needs-fixes findings", () => {
+  test("declines a second finish call after needs-fixes findings instead of skipping review", () => {
     const findings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
     const state = reviewLoopState([
       userMessage(),
@@ -287,10 +387,11 @@ describe("runtime review gate", () => {
 
     expect(state.verdict).toBe("needs-fixes")
     expect(state.nudged).toBe(true)
-    expect(finishGateError(state)).toBeUndefined()
+    expect(finishGateError(state)?.message).toContain("returned Needs fixes")
+    expect(finishGateError(state)?.message).toContain("retrying finish does not skip review")
   })
 
-  test("new file writes after a nudge start a fresh nudge", () => {
+  test("new file writes after a decline start a fresh decline", () => {
     const state = reviewLoopState([
       userMessage(),
       toolMessage("edit", { writesFiles: true }),
@@ -300,9 +401,10 @@ describe("runtime review gate", () => {
 
     expect(state.nudged).toBe(false)
     expect(finishGateError(state)).toBeInstanceOf(Error)
+    expect(finishGateError(state)?.message).not.toContain("retrying finish does not skip review")
   })
 
-  test("a review after a nudge resets the nudge and is honoured", () => {
+  test("a review after a decline resets it and is honoured", () => {
     const findings = reviewMessage("### Assessment\n\n**Ready to proceed?** Needs fixes")
     const state = reviewLoopState([
       userMessage(),
@@ -316,7 +418,7 @@ describe("runtime review gate", () => {
     expect(finishGateError(state)).toBeInstanceOf(Error)
   })
 
-  test("does not carry a nudge across user turns", () => {
+  test("does not carry a decline across user turns", () => {
     const state = reviewLoopState([
       userMessage(),
       toolMessage("edit", { writesFiles: true }),
@@ -329,7 +431,9 @@ describe("runtime review gate", () => {
     expect(finishGateError(state)).toBeInstanceOf(Error)
   })
 
-  test("surfaces a skipped termination from a completed finish", () => {
+  // Finish no longer records `skipped`, but a transcript persisted before #231
+  // keeps the outcome it recorded.
+  test("still surfaces a legacy skipped termination from a completed finish", () => {
     const skipped = {
       info: { role: "assistant" },
       parts: [

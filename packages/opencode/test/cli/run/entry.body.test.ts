@@ -831,5 +831,20 @@ describe("run entry body", () => {
     )
     expect(okFinish.icon).toBe("✓")
     expect(okFinish.title).toBe("Task completed")
+
+    const waitingFinish = toolInlineInfo(
+      toolPart("finish", {
+        status: "completed",
+        input: { result: "Waiting on the delegated review." },
+        output: "Waiting on the delegated review.",
+        title: "Waiting for 1 background subagent(s)",
+        metadata: { waiting: true },
+        time: { start: 1, end: 2 },
+      }),
+    )
+    expect(waitingFinish.title).toBe("Waiting for subagent execution...")
+    // A wait is not a completion: it must not carry the completed check.
+    expect(waitingFinish.icon).toBe("◌")
+    expect(waitingFinish.body).toBe("Waiting on the delegated review.")
   })
 })

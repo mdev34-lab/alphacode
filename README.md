@@ -25,3 +25,7 @@ bun install
 ```
 
 > **Note:** the executable is now named `silvercode`. Config and data paths (`~/.opencode`) are unchanged.
+
+## Documentation
+
+- [Agent effort](specs/agent-effort.md) — the fast/medium/thorough dial: configuration, review passes, validation gates, and the `task()` override.

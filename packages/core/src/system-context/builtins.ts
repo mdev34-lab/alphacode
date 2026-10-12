@@ -12,10 +12,12 @@ import { Global } from "../global"
 const builtIns = Layer.effectDiscard(
   Effect.gen(function* () {
     const location = yield* Location.Service
+    const global = yield* Global.Service
     const registry = yield* SystemContextRegistry.Service
     const environment = [
       "<env>",
       `  Working directory: ${location.directory}`,
+      `  Desktop directory: ${global.desktop ?? "unavailable (do not infer a path)"}`,
       `  Workspace root folder: ${location.project.directory}`,
       `  Is directory a git repo: ${location.vcs?.type === "git" ? "yes" : "no"}`,
       `  Platform: ${process.platform}`,

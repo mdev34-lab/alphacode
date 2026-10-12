@@ -52,8 +52,10 @@ export const AcpCommand = effectCmd({
       },
     })
 
-    const stream = ndJsonStream(input, output)
     const agent = ACP.init({ sdk })
+    // The agent reads the JSON-RPC ids of its own requests off this stream, which is what lets
+    // it cancel a permission dialog the editor still has open.
+    const stream = agent.stream(ndJsonStream(input, output))
 
     new AgentSideConnection((conn) => {
       ACPProfile.mark("cli.acp.connection.create")

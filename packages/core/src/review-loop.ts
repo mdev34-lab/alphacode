@@ -1,10 +1,30 @@
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 import { ReviewReport } from "./review-report"
 
 export const REVIEW_LOOP_METADATA = "reviewLoop" as const
 
 export type ReviewVerdict = "approved" | "needs-fixes" | "pending" | "none" | "cap"
 export type ReviewPhase = "work" | "review"
-export type ReviewTermination = "approved" | "review-cap" | "skipped"
+/**
+ * How a finished turn left the review loop.
+ *
+ * - `approved`: the work carries an explicit Approved review, or the turn wrote no files.
+ * - `budget-exhausted`: the canonical medium pass budget ran without an approval (never approval).
+ * - `review-cap`: legacy label, read-only for persisted metadata: the configured number of review attempts, including failed dispatches and
+ *   malformed completed reviews, ran without an approval.
+ * - `review-unavailable`: legacy label for a delivered turn whose reviewer could not run.
+ * - `review-blocked`: review cannot run; only a declared failure may end this way.
+ * - `review-pending`: a depth-limited child hands unreviewed writes to its parent.
+ * - `skipped`: read from transcripts only; persisted completions keep their recorded outcome.
+ */
+export type ReviewTermination =
+  | "approved"
+  | "budget-exhausted"
+  | "review-cap"
+  | "review-unavailable"
+  | "review-blocked"
+  | "review-pending"
+  | "skipped"
 
 export type ReviewHistoryPart = {
   readonly type?: unknown
@@ -26,6 +46,17 @@ export type ReviewHistoryMessage = {
   readonly parts: readonly ReviewHistoryPart[]
 }
 
+export type ReviewLoopOptions = {
+  /**
+   * Legacy iteration cap for callers that predate the effort dial. Ignored when
+   * `effort` is supplied: the effort policy owns the pass budget, and the
+   * configured `review_loop.max_iterations` value does not override it.
+   */
+  readonly maxIterations?: number
+  /** When present, the pass budget is derived from the effort level instead. */
+  readonly effort?: AgentEffort.Level
+}
+
 export type ReviewLoopState = {
   readonly verdict: ReviewVerdict
   readonly reviews: number
@@ -36,6 +67,16 @@ export type ReviewLoopState = {
   readonly nudged: boolean
   readonly phase: ReviewPhase
   readonly termination?: ReviewTermination
+  /** Any declared file-writing work happened in the current user task. */
+  readonly workSeen: boolean
+  /** Verdict of the most recent completed valid review; not cleared by later writes. */
+  readonly lastReviewVerdict?: "approved" | "needs-fixes"
+  /** Findings listed by the most recent completed valid review report. */
+  readonly openFindings: number
+  /** Critical/important findings in that report (blockers), floored at 1 for a needs-fixes report with no findings. */
+  readonly blockingFindings: number
+  /** The latest approved review no longer describes the current tree. */
+  readonly stale: boolean
 }
 
 const ASSESSMENT = /(?:^|\b)(?:assessment|verdict)\s*(?:[:\-–—]\s*)?(approved|needs\s+fix(?:es)?)/gi
@@ -134,27 +175,59 @@ function taskTerminationReason(part: ReviewHistoryPart) {
  * counts a cancellation as a delivered review — and a few of them walk the turn
  * to the iteration cap and disable the review gate entirely.
  */
-function isCancelledReviewTask(part: ReviewHistoryPart) {
+/**
+ * A review task that delivered no verdict for this turn: a cancelled subagent, or a
+ * yielded one (`waiting_for_subagent`). Neither counts toward the cap, and a yielded
+ * report is provisional, so counting it would let an unfinished review satisfy the gate.
+ */
+function isUnreportedReviewTask(part: ReviewHistoryPart) {
   if (!isSynchronousReviewTask(part)) return false
   if (part.state?.status === "cancelled") return true
-  return taskTerminationReason(part) === "cancelled"
+  const reason = taskTerminationReason(part)
+  return reason === "cancelled" || reason === "waiting_for_subagent"
 }
 
-function isFileWritingTool(part: ReviewHistoryPart) {
-  if (part.type !== "tool" || typeof part.tool !== "string") return false
-  if (part.state?.status !== "completed") return false
+/** The persisted `reviewLoop` declaration on a part, from either metadata slot. */
+function reviewLoopDeclaration(part: ReviewHistoryPart) {
   const metadata = {
     ...(isRecord(part.metadata) ? part.metadata : {}),
     ...(isRecord(part.state?.metadata) ? part.state.metadata : {}),
   }
-  const reviewLoop = isRecord(metadata[REVIEW_LOOP_METADATA]) ? metadata[REVIEW_LOOP_METADATA] : undefined
-  return reviewLoop?.writesFiles === true
+  const reviewLoop = metadata[REVIEW_LOOP_METADATA]
+  return isRecord(reviewLoop) ? reviewLoop : undefined
 }
 
-function isPotentiallyMutatingTool(part: ReviewHistoryPart) {
-  if (part.type !== "tool" || typeof part.tool !== "string") return false
+/**
+ * True when a part declares that it wrote files. Tool parts must have
+ * completed; the marker also lives on non-tool parts (a background task
+ * notification carrying its child's delegated writes), where any occurrence
+ * counts. The declaration lives on the tool definition or is propagated by the
+ * task tool, so a new file-writing surface is classified where it is defined.
+ */
+export function declaresFileWrites(part: ReviewHistoryPart) {
+  const declared = reviewLoopDeclaration(part)?.writesFiles === true
+  if (!declared) return false
+  if (part.type !== "tool") return true
+  // Errored and still-running tools count: their writes may already be on disk.
+  return part.state?.status === "completed" || part.state?.status === "error" || part.state?.status === "running"
+}
+
+/** Name kept for callers that predate the effort policy; same relation as `declaresFileWrites`. */
+export function hasFileWrites(part: ReviewHistoryPart) {
+  return declaresFileWrites(part)
+}
+
+/**
+ * Work that invalidates a review: a completed file-writing tool, a delegated
+ * non-review child task that wrote files, or a background notification
+ * carrying its child's delegated writes. Finish and review dispatches are not
+ * work.
+ */
+function isMutatingPart(part: ReviewHistoryPart) {
+  if (part.type !== "tool") return declaresFileWrites(part)
+  if (typeof part.tool !== "string") return false
   if (part.tool === "finish" || isReviewTask(part)) return false
-  return isFileWritingTool(part)
+  return declaresFileWrites(part)
 }
 
 function finishReviewMetadata(part: ReviewHistoryPart) {
@@ -169,19 +242,44 @@ function finishReviewMetadata(part: ReviewHistoryPart) {
  * truncated in the parent's history, which could cut the envelope or the
  * prose assessment while the report itself survives in metadata.
  */
-function reviewReportVerdict(part: ReviewHistoryPart) {
+function reviewReportFromMetadata(part: ReviewHistoryPart) {
   if (part.type !== "tool" || part.tool !== "task") return undefined
   const metadata = isRecord(part.state?.metadata) ? part.state.metadata : undefined
   const review = isRecord(metadata?.review) ? metadata.review : undefined
   const report = isRecord(review?.report) ? review.report : undefined
   if (report?.version !== 1) return undefined
-  return report.assessment === "approved" || report.assessment === "needs-fixes" ? report.assessment : undefined
+  if (report.assessment !== "approved" && report.assessment !== "needs-fixes") return undefined
+  return report
+}
+
+function reviewReportVerdict(part: ReviewHistoryPart): "approved" | "needs-fixes" | undefined {
+  const assessment = reviewReportFromMetadata(part)?.assessment
+  return assessment === "approved" || assessment === "needs-fixes" ? assessment : undefined
+}
+
+/** Findings of the most recent completed valid review, envelope or metadata. */
+function reviewFindings(part: ReviewHistoryPart): readonly unknown[] {
+  const report = reviewReportFromMetadata(part)
+  if (report) return Array.isArray(report.findings) ? report.findings : []
+  const output = part.state?.output
+  if (typeof output !== "string") return []
+  const delivery = ReviewReport.extract([output])
+  return delivery.ok ? delivery.report.findings : []
 }
 
 function finishTermination(part: ReviewHistoryPart): ReviewTermination | undefined {
   if (part.state?.status !== "completed") return undefined
   const termination = finishReviewMetadata(part)?.termination
-  if (termination === "approved" || termination === "review-cap" || termination === "skipped") return termination
+  if (
+    termination === "approved" ||
+    termination === "budget-exhausted" ||
+    termination === "review-cap" ||
+    termination === "review-unavailable" ||
+    termination === "review-blocked" ||
+    termination === "review-pending" ||
+    termination === "skipped"
+  )
+    return termination
   return undefined
 }
 
@@ -189,20 +287,39 @@ function isFinishNudge(part: ReviewHistoryPart) {
   return part.state?.status === "error" && finishReviewMetadata(part)?.nudged === true
 }
 
+/** The pass budget the verdict's `cap` state is derived from. */
+function passBudget(options: number | ReviewLoopOptions | undefined) {
+  if (typeof options === "number" || options === undefined) {
+    const max = options ?? 5
+    return Number.isFinite(max) && max > 0 ? max : 1
+  }
+  if (options.effort === undefined) {
+    const max = options.maxIterations ?? 5
+    return Number.isFinite(max) && max > 0 ? max : 1
+  }
+  // fast performs no required passes and thorough is until-clean: neither has a
+  // finite cap. Medium is the bounded interactive level: two review passes.
+  return options.effort === "medium" ? 2 : Number.POSITIVE_INFINITY
+}
+
 /**
  * Evaluate the current user turn. Synthetic continuation messages are deliberately
  * ignored as turn boundaries so a review/fix cycle cannot reset its counter.
- * Only completed tools whose persisted metadata explicitly declares `writesFiles`
- * count as work that requires review. The declaration lives on the tool definition,
- * so a new file-writing tool is classified where it is defined. Unmarked tools,
- * including shell, do not trigger the review gate.
+ * Only completed parts whose persisted metadata explicitly declares `writesFiles`
+ * count as work that requires review — direct file-writing tools and delegated
+ * child writes alike.
  *
- * The gate is a nudge, not a hard block: a `finish` call declined for missing
- * review is remembered as `nudged`, and the next `finish` for the same work is
- * allowed through as an explicit skip. New file writes or a new review reset it.
+ * Passing `effort` (or an options object) switches the pass budget to the
+ * two-switch policy: medium caps at two passes, fast and thorough are uncapped
+ * in this evaluator, and the configured legacy `maxIterations` no longer
+ * overrides the dial. The numeric second argument keeps legacy callers
+ * (including the TUI footer) on the five-pass default.
  */
-export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIterations = 5): ReviewLoopState {
-  const max = Number.isFinite(maxIterations) && maxIterations > 0 ? maxIterations : 1
+export function reviewLoopState(
+  messages: readonly ReviewHistoryMessage[],
+  options?: number | ReviewLoopOptions,
+): ReviewLoopState {
+  const max = passBudget(options)
   const start = messages.findLastIndex((message) => messageRole(message) === "user" && !isSyntheticUser(message))
   const current = start < 0 ? messages : messages.slice(start + 1)
 
@@ -212,15 +329,36 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
   let reviewInProgress = false
   let nudged = false
   let latest: Exclude<ReviewVerdict, "pending" | "none" | "cap"> | undefined
+  let lastReviewVerdict: "approved" | "needs-fixes" | undefined
+  let approvedOnRecord = false
+  let openFindings = 0
+  let blockingFindings = 0
   let termination: ReviewTermination | undefined
 
   for (const part of current.flatMap((message) => message.parts)) {
     if (isReviewTask(part)) {
       if (!isSynchronousReviewTask(part)) continue
-      // A cancelled review is a non-event: it never delivered a verdict, so it
-      // neither counts toward the cap nor disturbs the verdict already on
-      // record.
-      if (isCancelledReviewTask(part)) continue
+      // A cancelled or yielded review is a non-event: it never delivered a
+      // verdict, so it neither counts toward the cap nor disturbs the verdict
+      // already on record.
+      if (isUnreportedReviewTask(part)) continue
+
+      // A failed dispatch is an attempt toward the cap. It is not a verdict and
+      // approves nothing; it clears the work so that reaching the cap can end the
+      // requirement honestly (never as an approval).
+      if (part.state?.status === "error") {
+        reviews++
+        // An approval covers only the tree it reviewed. If work landed after it and
+        // a review attempt then errored, the errored attempt clears the work flag, so
+        // the approval must be dropped here or it would revive as "approved".
+        if (workSinceReview && lastReviewVerdict === "approved") lastReviewVerdict = undefined
+        latest = undefined
+        workSinceReview = false
+        reviewInProgress = false
+        nudged = false
+        termination = undefined
+        continue
+      }
 
       if (part.state?.status !== "completed") {
         latest = undefined
@@ -231,14 +369,36 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
         continue
       }
 
-      reviews++
-      latest =
+      const verdict =
         reviewReportVerdict(part) ?? parseReviewVerdict(typeof part.state.output === "string" ? part.state.output : "")
-      workSinceReview = false
+      // A completed run without a readable verdict is a malformed attempt: it counts
+      // toward the cap, but it is never a verdict and never an approval.
+      reviews++
+      // Marker precedence before acceptance: a review run that wrote files hands
+      // those writes back unreviewed (`reviewLoop.writesFiles` on its task part).
+      // An Approved report cannot count for the child's edits, so they stand as
+      // work since this review and the gate stays armed until a review covers them.
+      const handedOffWrites = hasFileWrites(part)
+      if (handedOffWrites) workSeen = true
       reviewInProgress = false
       nudged = false
       termination = undefined
-      continue
+      if (!verdict) {
+        latest = undefined
+        workSinceReview = workSinceReview || handedOffWrites
+        continue
+      }
+
+      latest = verdict
+      lastReviewVerdict = verdict
+      if (verdict === "approved") approvedOnRecord = true
+      const findings = reviewFindings(part)
+      openFindings = findings.length
+      blockingFindings = findings.filter(
+        (finding) => isRecord(finding) && (finding.severity === "critical" || finding.severity === "important"),
+      ).length
+      if (verdict === "needs-fixes" && openFindings === 0) blockingFindings = Math.max(blockingFindings, 1)
+      workSinceReview = handedOffWrites
     }
 
     if (isFinishNudge(part)) {
@@ -252,7 +412,7 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
       continue
     }
 
-    if (isPotentiallyMutatingTool(part)) {
+    if (isMutatingPart(part)) {
       workSeen = true
       workSinceReview = true
       reviewInProgress = false
@@ -282,29 +442,37 @@ export function reviewLoopState(messages: readonly ReviewHistoryMessage[], maxIt
     reviewInProgress,
     nudged,
     phase,
+    workSeen,
+    openFindings,
+    blockingFindings,
+    stale: approvedOnRecord && workSinceReview,
+    ...(lastReviewVerdict ? { lastReviewVerdict } : {}),
     ...(termination ? { termination } : {}),
   }
 }
 
-const SKIP_HINT =
-  "If you have determined that another review pass is unnecessary, call finish again to skip review and deliver the result as-is."
+// The dispatch the model has to make, spelled the way the task tool takes it.
+const REVIEW_DISPATCH =
+  'call the `task` tool with `subagent_type: "review"` and `background: false`, and give it the request, the changed files, and the diff for this work'
 
 /**
- * Decide whether this `finish` call should be declined with a review nudge.
- * Only the first `finish` for a given unit of unreviewed work is declined; once
- * the agent has been nudged it keeps the agency to finish anyway.
+ * Decide whether a `finish` call is declined because the current work is not approved.
+ *
+ * Every `finish` for unapproved file-writing work is declined, not only the first one: a
+ * retry, or any account of the work in the finish result, cannot stand in for a review.
+ * This helper is the strict legacy relation; the effort policy (`EffortPolicy.evaluateFinish`)
+ * is the production checkpoint and owns the fast/medium/thorough differences.
  */
 export function finishGateError(state: ReviewLoopState): Error | undefined {
-  if (state.nudged) return undefined
-  if (state.verdict === "needs-fixes") {
-    return new Error(
-      `Review nudge: the latest review returned Needs fixes. It is strongly recommended to address the findings and run a new synchronous review before finishing. ${SKIP_HINT}`,
-    )
-  }
-  if (state.verdict === "pending") {
-    return new Error(
-      `Review nudge: the current work has no explicit Approved review yet. It is strongly recommended to run a synchronous review before finishing. ${SKIP_HINT}`,
-    )
-  }
-  return undefined
+  if (state.verdict !== "pending" && state.verdict !== "needs-fixes") return undefined
+  const declined = state.nudged
+    ? "Review required: finish declined again, because retrying finish does not skip review."
+    : "Review required: finish declined."
+  const status =
+    state.verdict === "needs-fixes"
+      ? "The latest report from the Review subagent returned Needs fixes, so the current work is not approved. Fix the findings, then run the Review subagent again:"
+      : "The current work changed files and has no explicit Approved review from the Review subagent. Run the Review subagent now:"
+  return new Error(
+    `${declined} ${status} ${REVIEW_DISPATCH}. Call finish after it returns Approved; if it returns Needs fixes, fix the findings and review again. Calling finish again without that review is declined again, and calling the work creative, a prototype, trivial, or not production code does not exempt it.`,
+  )
 }

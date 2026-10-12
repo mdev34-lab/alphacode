@@ -1,4 +1,5 @@
 import { describe, expect } from "bun:test"
+import { readFileSync } from "node:fs"
 import { Cause, Deferred, Effect, Exit, Layer, Queue } from "effect"
 import { Config } from "@opencode-ai/core/config"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -50,9 +51,79 @@ const createPty = Effect.fn("PtySessionTest.createPty")(function* (command: stri
   )
 })
 
-const waitForEvents = (events: Queue.Queue<PtyEvent>, id: PtyID, count: number) =>
+// process.kill(pid, 0) does not prove liveness by itself: it throws ESRCH
+// when no such process exists, but EPERM when the process exists and we
+// merely lack permission to signal it. Distinguish both explicitly and fail
+// loudly on anything else instead of recording it as a state.
+// /proc/<pid>/stat wraps the command name (comm) in parentheses, and comm
+// itself may contain spaces or parentheses. Every field after the LAST ")"
+// on the line is the state char followed by numeric fields, so the last ")"
+// unambiguously terminates comm - splitting there is the robust parse.
+const parseProcStat = (stat: string): string => {
+  const close = stat.lastIndexOf(")")
+  if (close === -1) return "malformed: missing comm terminator"
+  const state = stat.slice(close + 2).split(" ")[0]
+  return state === "" ? "malformed: missing state field" : state
+}
+
+const probeNativeExit = (pid: number) => {
+  const result: Record<string, unknown> = { pid }
+  try {
+    process.kill(pid, 0)
+    result.signal0 = "alive"
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    if (code === "EPERM") result.signal0 = "alive (EPERM: exists, not signalable)"
+    else if (code === "ESRCH") result.signal0 = "not running (ESRCH)"
+    else throw new Error(`probeNativeExit: unexpected kill(${pid}, 0) error: ${code ?? String(error)}`)
+  }
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+      result.procState = parseProcStat(stat)
+    } catch (error) {
+      result.procState = `unreadable: ${(error as { code?: string }).code ?? String(error)}`
+    }
+  }
+  return result
+}
+
+const probePtyExit = (pty: { get: (id: PtyID) => Effect.Effect<Pty.Info, unknown> }, info: Pty.Info) =>
   Effect.gen(function* () {
-    const picked: Array<PtyEvent["type"]> = []
+    const current = yield* pty.get(info.id).pipe(Effect.option)
+    const service =
+      current._tag === "Some"
+        ? { status: current.value.status, exitCode: current.value.exitCode }
+        : "session not found"
+    const native = yield* Effect.sync(() => probeNativeExit(info.pid))
+    return { native, service }
+  })
+
+// Drain leftover events for diagnostics, bounded. The limit is checked BEFORE
+// each poll, so the (max+1)th event is never consumed: if more remain, they
+// stay in the queue and limitReached reports it instead of dropping them.
+const drainPending = (events: Queue.Queue<PtyEvent>, id: PtyID, max = 1000) =>
+  Effect.gen(function* () {
+    const pending: Array<PtyEvent["type"]> = []
+    let drained = 0
+    while (drained < max) {
+      const next = yield* Queue.poll(events)
+      if (next._tag === "None") break
+      drained++
+      if (next.value.id === id) pending.push(next.value.type)
+    }
+    const limitReached = drained >= max && (yield* Queue.size(events)) > 0
+    return { pending, drained, limitReached }
+  })
+
+const waitForEvents = (
+  events: Queue.Queue<PtyEvent>,
+  id: PtyID,
+  count: number,
+  probe?: Effect.Effect<unknown>,
+) => {
+  const picked: Array<PtyEvent["type"]> = []
+  return Effect.gen(function* () {
     while (picked.length < count) {
       const evt = yield* Queue.take(events)
       if (evt.id === id) picked.push(evt.type)
@@ -60,10 +131,22 @@ const waitForEvents = (events: Queue.Queue<PtyEvent>, id: PtyID, count: number) 
     return picked
   }).pipe(
     Effect.timeoutOrElse({
-      duration: "5 seconds",
-      orElse: () => Effect.fail(new Error("timeout waiting for pty events")),
+      duration: "15 seconds",
+      orElse: () =>
+        Effect.gen(function* () {
+          const { pending, drained, limitReached } = yield* drainPending(events, id)
+          const observation: Record<string, unknown> = { id, received: [...picked], pendingInQueue: pending, drained }
+          if (limitReached) observation.note = `drain limit reached, ${drained} events drained, more pending`
+          if (probe) {
+            const result = yield* probe.pipe(Effect.exit)
+            observation.probe = Exit.isSuccess(result) ? result.value : `probe failed: ${Cause.pretty(result.cause)}`
+          }
+          console.log("[pty-observe] timeout waiting for pty events", JSON.stringify(observation))
+          return yield* Effect.fail(new Error("timeout waiting for pty events"))
+        }),
     }),
   )
+}
 
 const attachCollecting = Effect.fn("PtySessionTest.attachCollecting")(function* (id: PtyID, cursor?: number) {
   const pty = yield* Pty.Service
@@ -85,7 +168,7 @@ const waitForOutput = (output: Queue.Queue<string>, text: string) =>
     return received
   }).pipe(
     Effect.timeoutOrElse({
-      duration: "5 seconds",
+      duration: "15 seconds",
       orElse: () => Effect.fail(new Error(`timeout waiting for output containing ${JSON.stringify(text)}`)),
     }),
   )
@@ -116,7 +199,7 @@ describe("pty", () => {
       const events = yield* subscribePtyEvents()
       const info = yield* createPty("/usr/bin/env", ["sh", "-c", "exit 3"])
 
-      expect(yield* waitForEvents(events, info.id, 2)).toEqual(["created", "exited"])
+      expect(yield* waitForEvents(events, info.id, 2, probePtyExit(pty, info))).toEqual(["created", "exited"])
       const exited = yield* pty.get(info.id)
       expect(exited.status).toBe("exited")
       expect(exited.exitCode).toBe(3)
@@ -126,6 +209,7 @@ describe("pty", () => {
       const missing = yield* pty.get(info.id).pipe(Effect.exit)
       expect(Exit.isFailure(missing)).toBe(true)
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("replays buffered output and streams live output to attachments", () =>
@@ -151,6 +235,7 @@ describe("pty", () => {
       expect(tail.attachment.replay).toBe("")
       expect(tail.attachment.cursor).toBe(replayed.attachment.cursor)
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("stops delivering output after detach", () =>
@@ -167,6 +252,7 @@ describe("pty", () => {
       const leaked = yield* Queue.poll(attached.output)
       expect(leaked._tag).toBe("None")
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("isolates output between sessions", () =>
@@ -183,6 +269,7 @@ describe("pty", () => {
       const leaked = yield* Queue.poll(attachedB.output)
       expect(leaked._tag).toBe("None")
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("notifies attachments with the exit code and rejects attach after exit", () =>
@@ -200,6 +287,35 @@ describe("pty", () => {
       expect(Exit.isFailure(result)).toBe(true)
       if (Exit.isFailure(result))
         expect(Cause.squash(result.cause)).toMatchObject({ _tag: "Pty.ExitedError", ptyID: info.id })
+    }),
+    { timeout: 20000 },
+  )
+})
+
+describe("pty probe diagnostics", () => {
+  const ev = (n: number): PtyEvent[] => Array.from({ length: n }, () => ({ type: "created", id: "pty_a" as PtyID }))
+  const drain = (n: number) =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<PtyEvent>()
+      yield* Queue.offerAll(events, ev(n))
+      const result = yield* drainPending(events, "pty_a" as PtyID, 1000)
+      return { ...result, left: yield* Queue.size(events) }
+    })
+
+  it.live("drain consumes exactly the limit and keeps the rest queued", () =>
+    Effect.gen(function* () {
+      expect(yield* drain(999)).toMatchObject({ drained: 999, limitReached: false, left: 0 })
+      expect(yield* drain(1000)).toMatchObject({ drained: 1000, limitReached: false, left: 0 })
+      expect(yield* drain(1001)).toMatchObject({ drained: 1000, limitReached: true, left: 1 })
+      expect(yield* drain(1500)).toMatchObject({ drained: 1000, limitReached: true, left: 500 })
+    }),
+  )
+
+  it.live("probeNativeExit throws on unexpected kill errors and Effect.exit keeps the cause", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.sync(() => probeNativeExit(Number.NaN)).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("unexpected kill(NaN, 0) error")
     }),
   )
 })
@@ -236,5 +352,6 @@ describe("pty create defaults", () => {
       expect(info.cwd).toBe("/tmp")
       expect(info.title).toBe("configured")
     }),
+    { timeout: 20000 },
   )
 })

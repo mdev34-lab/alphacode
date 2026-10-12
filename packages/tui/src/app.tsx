@@ -81,6 +81,7 @@ import {
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
+import { DialogAgentEffort } from "./component/dialog-agent-effort"
 import { createTuiAttention } from "./attention"
 import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
@@ -725,6 +726,23 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             })
           }
           dialog.replace(() => <DialogVariant />)
+        },
+      },
+      {
+        name: "effort.cycle",
+        title: "Agent effort cycle",
+        category: "Agent",
+        run: () => {
+          local.effort.cycle()
+        },
+      },
+      {
+        name: "effort.list",
+        title: "Switch agent effort",
+        category: "Agent",
+        slashName: "agent-effort",
+        run: () => {
+          dialog.replace(() => <DialogAgentEffort />)
         },
       },
       {

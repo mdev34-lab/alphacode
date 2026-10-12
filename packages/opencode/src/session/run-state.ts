@@ -136,8 +136,7 @@ const cancelBackgroundJobs = Effect.fn("SessionRunState.cancelBackgroundJobs")(f
   // stop. Everything else the walk reaches - the jobs of descendants - is being
   // swept up because the session that owns it is going away, and a delivery from
   // those would prompt a session that is stopping.
-  const ownedBySession = (job: BackgroundJob.Info) =>
-    job.id === sessionID || job.metadata?.sessionId === sessionID
+  const ownedBySession = (job: BackgroundJob.Info) => BackgroundJob.runsSession(job, sessionID)
   let batch = jobs.filter(matches)
   while (batch.length > 0) {
     yield* Effect.forEach(

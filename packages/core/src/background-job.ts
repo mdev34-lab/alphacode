@@ -115,6 +115,31 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/BackgroundJob") {}
 
+/**
+ * A job that runs a session's own turn: the session is the job's subject.
+ */
+export function runsSession(job: Info, sessionID: string) {
+  return job.id === sessionID || job.metadata?.sessionId === sessionID
+}
+
+/**
+ * A job a session launched through the task tool. This is the relation a parent
+ * waits on, so it is the parent link alone - a session's own run is not work it
+ * can wait for.
+ */
+export function isSubagentOf(job: Info, sessionID: string) {
+  return job.metadata?.parentSessionId === sessionID
+}
+
+/**
+ * Any job a session owns: its own run or a subagent it launched. Cancellation
+ * and teardown walks use the union; waiting uses `isSubagentOf`, which is
+ * deliberately narrower, so the two relations cannot drift into one another.
+ */
+export function belongsToSession(job: Info, sessionID: string) {
+  return runsSession(job, sessionID) || isSubagentOf(job, sessionID)
+}
+
 function snapshot(job: Active): Info {
   return {
     ...job.info,

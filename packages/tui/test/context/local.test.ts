@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { parseModel, recentModels, selectionUpdate } from "../../src/context/local"
+import { effortSelection, effortUpdateFor, parseModel, recentModels, selectionUpdate } from "../../src/context/local"
 
 test("parses model IDs containing slashes", () => {
   expect(parseModel("provider/family/model")).toEqual({
@@ -141,4 +141,70 @@ test("does not push while the session is idle or the selection already matches",
       busy: true,
     }),
   ).toBeUndefined()
+})
+
+test("effort selection prefers the pending write, then session metadata, then config", () => {
+  const config = { agent: { effort: "thorough" } }
+  expect(effortSelection({ override: { agentEffort: "fast" }, metadata: { agentEffort: "thorough" }, config })).toBe(
+    "fast",
+  )
+  expect(effortSelection({ metadata: { agentEffort: "thorough" }, config })).toBe("thorough")
+  // Untrusted session metadata falls through to the configured default
+  // instead of masking it.
+  expect(effortSelection({ metadata: { agentEffort: "turbo" }, config })).toBe("thorough")
+  expect(effortSelection({ config: { agent: { effort: "fast" } } })).toBe("fast")
+  expect(effortSelection({})).toBe("medium")
+})
+
+test("a session without a persisted selection starts from config, not a leaked value", () => {
+  // Switching sessions only passes that session's own metadata and pending
+  // overlay: the previous session's selection is looked up by its session ID
+  // and can never bleed into this lookup.
+  expect(effortSelection({ metadata: {}, config: { agent: { effort: "fast" } } })).toBe("fast")
+  expect(effortSelection({ metadata: {} })).toBe("medium")
+  expect(effortSelection({ override: {}, metadata: { agentEffort: "thorough" } })).toBe("thorough")
+})
+
+test("effort updates merge over pending and synced metadata for one session", () => {
+  const merged = effortUpdateFor({
+    sessionID: "ses_a",
+    metadata: { agentEffort: "medium", task: "keep-me" },
+    level: "fast",
+  })
+  expect(merged).toEqual({
+    sessionID: "ses_a",
+    metadata: { agentEffort: "fast", task: "keep-me" },
+  })
+
+  // A second rapid selection unions the pending record over the still-stale
+  // row, so the first write's keys and any newly synced keys both survive.
+  expect(
+    effortUpdateFor({
+      sessionID: "ses_a",
+      override: { agentEffort: "fast", task: "keep-me" },
+      metadata: { agentEffort: "medium", task: "keep-me", synced: "new" },
+      level: "thorough",
+    }),
+  ).toEqual({
+    sessionID: "ses_a",
+    metadata: { agentEffort: "thorough", task: "keep-me", synced: "new" },
+  })
+})
+
+test("repeating the current effort is idempotent and targets only its session", () => {
+  expect(
+    effortUpdateFor({ sessionID: "ses_a", metadata: { agentEffort: "fast", other: 1 }, level: "fast" }),
+  ).toBeUndefined()
+  expect(
+    effortUpdateFor({
+      sessionID: "ses_a",
+      override: { agentEffort: "fast" },
+      metadata: { agentEffort: "medium" },
+      level: "fast",
+    }),
+  ).toBeUndefined()
+  expect(effortUpdateFor({ sessionID: "ses_b", metadata: { agentEffort: "fast" }, level: "thorough" })).toEqual({
+    sessionID: "ses_b",
+    metadata: { agentEffort: "thorough" },
+  })
 })

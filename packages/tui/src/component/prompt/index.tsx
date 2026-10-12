@@ -316,7 +316,10 @@ export function Prompt(props: PromptProps) {
         if (!args.agent) local.agent.set(msg.agent)
         if (msg.model) {
           local.model.set(msg.model)
-          local.model.variant.set(msg.model.variant)
+          // Restoring the session's stored variant is not a new user choice:
+          // provenance survives when it mirrors the value the effort dial
+          // coupled, so coupling can still follow later effort changes.
+          local.model.variant.set(msg.model.variant, "session")
         }
       }
     }
@@ -1455,6 +1458,14 @@ export function Prompt(props: PromptProps) {
                             {local.model.parsed().model}
                           </text>
                           <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{currentProviderLabel()}</text>
+                          {/* Agent effort is its own dial and shows even for
+                              models without thinking variants. */}
+                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
+                          <text>
+                            <span style={{ fg: fadeColor(theme.info, modelMetaAlpha()), bold: true }}>
+                              {local.effort.current()}
+                            </span>
+                          </text>
                           <Show when={showVariant()}>
                             <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
                             <text>

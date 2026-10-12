@@ -75,6 +75,7 @@ jobs:
         run: bun run check:generated
 
       - name: Run HttpApi exerciser gates
+        timeout-minutes: 20
         if: runner.os == 'Linux'
         working-directory: packages/opencode
         run: bun run test:httpapi

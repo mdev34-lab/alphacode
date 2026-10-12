@@ -12,6 +12,8 @@ import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FinishTool } from "@/tool/finish"
+import { BackgroundJob } from "@/background/job"
+import { Permission } from "@/permission"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { disposeAllInstances } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -27,7 +29,9 @@ const layer = () =>
       Agent.node,
       Config.node,
       EventV2Bridge.node,
+      Permission.node,
       CrossSpawnSpawner.node,
+      BackgroundJob.node,
     ]),
   )
 

@@ -3,7 +3,7 @@ export * as WebFetchTool from "./webfetch"
 import { ToolFailure } from "@opencode-ai/llm"
 import { Duration, Effect, Layer, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
-import { Parser } from "htmlparser2"
+import { DomUtils, Parser, parseDocument } from "htmlparser2"
 import TurndownService from "turndown"
 import { makeLocationNode } from "../effect/app-node"
 import { LayerNodePlatform } from "../effect/app-node-platform"
@@ -20,7 +20,9 @@ export const MAX_TIMEOUT_SECONDS = 120
 
 export const description = `Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default.
 
-Use a more targeted tool when one is available. This tool is read-only. Large text results may be replaced with a preview while the complete output is retained in managed storage.`
+Use a more targeted tool when one is available. This tool is read-only. Large text results may be replaced with a preview while the complete output is retained in managed storage.
+
+Prefer API endpoints or raw file URLs (raw.githubusercontent.com, api.github.com) over rendered pages for structured data. An API 404 can mean missing authentication, insufficient access, or an absent resource; do not retry variants of the same unauthenticated request.`
 
 const Timeout = Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(MAX_TIMEOUT_SECONDS))
 
@@ -108,10 +110,68 @@ const isTextualMime = (mime: string) =>
   mime.endsWith("+xml") ||
   mime === "application/javascript" ||
   mime === "application/x-javascript"
+
+const BOILERPLATE_TAGS = ["nav", "header", "footer", "aside"]
+const BOILERPLATE_ROLES = ["navigation", "banner", "contentinfo"]
+// Narrow cookie/footer-specific chrome tokens only. Broad substring matching (legacy
+// `.includes("cookie")` / `.includes("footer")`) removed legitimate content such as
+// `cookie-recipe` or `footer-note`; generic consent/gdpr tokens are intentionally NOT added
+// here because they can match legitimate content and would widen scope beyond this fix.
+const BOILERPLATE_CLASS_TOKENS = [
+  "cookie",
+  "cookies",
+  "cookie-banner",
+  "cookie-bar",
+  "cookie-consent",
+  "cookie-notice",
+  "cookie-notification",
+  "cookie-overlay",
+  "cookie-popup",
+  "cookie-warning",
+  "cookie-wall",
+  "cookie_accept",
+  "cookie_acceptance",
+  "cookie_alert",
+  "cookie_approve",
+  "cookie_approval",
+  "cookie_notice",
+  "cookie_ok",
+  "cookieconsent",
+  "cookie-consent-container",
+  "footer",
+  "site-footer",
+  "page-footer",
+  "global-footer",
+  "main-footer",
+]
+
+// HTML class attributes are whitespace-delimited; compare exact whole tokens only
+// (no comma splitting, no punctuation/edge trimming). A single token containing a comma
+// (e.g. "consent,cookie,banner") is not a recognized chrome token and is retained.
+const isBoilerplateClass = (value: string) => {
+  for (const token of value.toLowerCase().split(/\s+/)) {
+    if (BOILERPLATE_CLASS_TOKENS.includes(token)) return true
+  }
+  return false
+}
+
+function stripBoilerplate(html: string) {
+  const doc = parseDocument(html)
+  const boilerplate = DomUtils.findAll(
+    (element) =>
+      BOILERPLATE_TAGS.includes(element.name) ||
+      BOILERPLATE_ROLES.includes((element.attribs["role"] ?? "").toLowerCase()) ||
+      isBoilerplateClass(element.attribs["class"] ?? ""),
+    doc.children,
+  )
+  for (const element of boilerplate) DomUtils.removeElement(element)
+  return DomUtils.getOuterHTML(doc.children)
+}
+
 const convert = (content: string, contentType: string, format: Format) => {
   if (!contentType.includes("text/html")) return content
-  if (format === "markdown") return convertHTMLToMarkdown(content)
-  if (format === "text") return extractTextFromHTML(content)
+  if (format === "markdown") return convertHTMLToMarkdown(stripBoilerplate(content))
+  if (format === "text") return extractTextFromHTML(stripBoilerplate(content))
   return content
 }
 

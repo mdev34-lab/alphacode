@@ -1,6 +1,7 @@
 import type {
   AgentSideConnection,
   PermissionOption,
+  RequestPermissionRequest,
   RequestPermissionResponse,
   ToolCallContent,
   ToolCallLocation,
@@ -9,13 +10,26 @@ import type {
 import type { Event, OpencodeClient } from "@opencode-ai/sdk/v2"
 import { applyPatch } from "diff"
 import { exists, readText } from "@/util/filesystem"
+import { ACPRequests } from "./requests"
 import type { ACPSession } from "./session"
 import { pendingToolCall, toLocations, type ToolInput } from "./tool"
 import { Effect } from "effect"
+import { signal } from "@/util/signal"
 
 type PermissionEvent = Extract<Event, { type: "permission.asked" }>
+type RepliedEvent = Extract<Event, { type: "permission.replied" }>
 type Reply = "once" | "always" | "reject"
-type Connection = Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile">>
+type Connection = Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile" | "extNotification">>
+
+// Where one prompt is on the ACP side: `queued` while it waits behind the session's other
+// prompts, `waiting` while the editor has it open, `settled` once nothing more is expected
+// from the editor — either the server resolved the request itself or the editor's answer is
+// already on its way back. `params` is the `session/request_permission` request exactly as it
+// was sent, which is what the dialog is cancelled by.
+type Prompt =
+  | { readonly state: "queued" }
+  | { readonly state: "waiting"; readonly params: RequestPermissionRequest; readonly release: () => void }
+  | { readonly state: "settled" }
 
 const permissionOptions: PermissionOption[] = [
   { optionId: "once", kind: "allow_once", name: "Allow once" },
@@ -25,17 +39,27 @@ const permissionOptions: PermissionOption[] = [
 
 export class Handler {
   private readonly queues = new Map<string, Promise<void>>()
+  // A prompt the server settles by itself — a countdown expiring, another client answering,
+  // a reject cascading over the session — has to be let go of here, because prompts are
+  // serialized per session and one unanswered question would block every later prompt for
+  // that session. Releasing the wait frees OpenCode; `$/cancel_request` then asks the editor
+  // to close a dialog it already has open. Clients that do not implement that unstable
+  // notification ignore it, and the failed tool call part following a timeout is what tells
+  // them the operation was denied.
+  private readonly prompts = new Map<string, Prompt>()
 
   constructor(
     private readonly input: {
       sdk: OpencodeClient
       connection: Connection
       session: ACPSession.Interface
+      requests: ACPRequests.Interface
     },
   ) {}
 
   handle(event: PermissionEvent) {
     const permission = event.properties
+    this.prompts.set(permission.id, { state: "queued" })
     const previous = this.queues.get(permission.sessionID) ?? Promise.resolve()
     const next = previous
       .then(() => this.process(event))
@@ -48,44 +72,120 @@ export class Handler {
     this.queues.set(permission.sessionID, next)
   }
 
+  replied(event: RepliedEvent) {
+    const id = event.properties.requestID
+    const prompt = this.prompts.get(id)
+    if (!prompt) return
+    if (prompt.state === "waiting") {
+      prompt.release()
+      this.input.requests.cancel(prompt.params)
+    }
+    // Kept as `settled` rather than dropped: the prompt may still be queued behind another
+    // one for the session, in which case `process` has to skip it instead of asking the
+    // editor about a request the server already resolved.
+    this.prompts.set(id, { state: "settled" })
+  }
+
   private async process(event: PermissionEvent) {
     const permission = event.properties
-    const session = await Effect.runPromise(this.input.session.tryGet(permission.sessionID))
-    if (!session) return
+    // The request exactly as it goes out, kept so its pairing can be let go of at the end.
+    let params: RequestPermissionRequest | undefined
+    try {
+      // The server can settle the request during any of the awaits below, so the state is
+      // re-read after each one: asking the editor about a request that is already gone
+      // leaves a dialog nobody can answer and a session queue waiting behind it.
+      if (this.settled(permission.id)) return
 
-    if (!this.input.connection.requestPermission) {
-      await this.reply(permission.id, "reject", session.cwd)
-      return
-    }
+      const session = await Effect.runPromise(this.input.session.tryGet(permission.sessionID))
+      if (!session || this.settled(permission.id)) return
 
-    const result = await this.input.connection
-      .requestPermission({
-        sessionId: permission.sessionID,
-        toolCall: await permissionToolCall({
-          toolCallId: permission.tool?.callID ?? permission.id,
-          toolName: permission.permission,
-          input: permission.metadata,
-        }),
-        options: permissionOptions,
-      })
-      .catch(async () => {
+      if (!this.input.connection.requestPermission) {
         await this.reply(permission.id, "reject", session.cwd)
-        return undefined
+        return
+      }
+
+      // Read from disk, so it is awaited before the request is built rather than inside it.
+      const toolCall = await permissionToolCall({
+        toolCallId: permission.tool?.callID ?? permission.id,
+        toolName: permission.permission,
+        input: permission.metadata,
       })
 
-    if (!result) return
+      const settled = signal()
+      params = {
+        sessionId: permission.sessionID,
+        toolCall,
+        options: permissionOptions,
+      }
+      // Last gate before the editor is asked. The object below is also what the dialog is
+      // cancelled by, so it has to be the one sent: the SDK puts that same object on the wire,
+      // which is where its JSON-RPC id is read from.
+      if (!this.waiting(permission.id, params, () => settled.trigger())) return
 
-    const reply = selectedReply(result)
-    if (reply !== "once" && reply !== "always") {
-      await this.reply(permission.id, "reject", session.cwd)
-      return
+      const result = await Promise.race([
+        this.input.connection.requestPermission(params).catch(async () => {
+          this.answered(permission.id)
+          await this.reply(permission.id, "reject", session.cwd)
+          return undefined
+        }),
+        settled.wait().then(() => undefined),
+      ])
+
+      // Either the editor never answered or the server settled the request while it was
+      // open; both leave nothing for this handler to reply to.
+      if (!result) return
+
+      const reply = selectedReply(result)
+      this.answered(permission.id)
+      if (reply !== "once" && reply !== "always") {
+        await this.reply(permission.id, "reject", session.cwd)
+        return
+      }
+
+      if (permission.permission === "edit") {
+        await this.writeProposedEdit(session.id, permission.metadata).catch(() => {})
+      }
+
+      await this.reply(permission.id, reply, session.cwd)
+    } finally {
+      // A throw anywhere above — the filesystem work in `permissionToolCall` is the likely
+      // one — must not leave the prompt tracked, or the entry outlives the request it
+      // belongs to and a later `permission.replied` would be aimed at the wrong state. The
+      // pairing goes with it, unless a cancel is still owed to a request on its way out.
+      this.prompts.delete(permission.id)
+      if (params) this.input.requests.drop(params)
     }
+  }
 
-    if (permission.permission === "edit") {
-      await this.writeProposedEdit(session.id, permission.metadata).catch(() => {})
-    }
+  // Moves a prompt to `waiting` unless the server settled it first, in which case there is
+  // nothing left to ask the editor about. Pairing `params` here, before the send, is what lets
+  // a cancel that lands before the request reaches the wire still be honoured.
+  private waiting(id: string, params: RequestPermissionRequest, release: () => void) {
+    if (this.settled(id)) return false
+    this.input.requests.track(params, (requestID) => this.cancel(requestID))
+    this.prompts.set(id, { state: "waiting", params, release })
+    return true
+  }
 
-    await this.reply(permission.id, reply, session.cwd)
+  private settled(id: string) {
+    return this.prompts.get(id)?.state === "settled"
+  }
+
+  // Marks the prompt done with the editor before its answer is posted, not after: posting is
+  // what makes the server publish `permission.replied`, and that event arriving while the
+  // prompt still looks like it is waiting on the editor would cancel a dialog the editor has
+  // already completed.
+  private answered(id: string) {
+    if (this.prompts.get(id)?.state === "waiting") this.prompts.set(id, { state: "settled" })
+  }
+
+  // Best-effort by nature: only the editor can close its own dialog, and a client that does
+  // not implement the notification simply ignores it. `$/cancel_request` is UNSTABLE in the
+  // schema of the SDK pinned here (0.21.0), which no client of that version dispatches, and
+  // the schema is explicit that a `$/` notification is free to be ignored. A closed connection
+  // throws synchronously here, which is one more way this can only fail silently.
+  private cancel(requestID: ACPRequests.ID) {
+    void this.input.connection.extNotification?.("$/cancel_request", { requestId: requestID }).catch(() => {})
   }
 
   private async reply(requestID: string, reply: Reply, directory: string) {

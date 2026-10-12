@@ -9,6 +9,8 @@ import type {
   ToolPart,
 } from "@opencode-ai/sdk/v2"
 import { Effect } from "effect"
+import { signal } from "@/util/signal"
+import { ACPRequests } from "./requests"
 import { ACPSession } from "./session"
 import { ACPPermission } from "./permission"
 import { isInternalContextPart } from "@opencode-ai/schema/v1/session"
@@ -23,7 +25,7 @@ import {
 } from "./tool"
 
 type Connection = Pick<AgentSideConnection, "sessionUpdate"> &
-  Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile">>
+  Partial<Pick<AgentSideConnection, "requestPermission" | "writeTextFile" | "extNotification">>
 type GlobalEventEnvelope = {
   payload?: Event
 }
@@ -31,7 +33,12 @@ type GlobalEventStream = {
   stream: AsyncIterable<GlobalEventEnvelope>
 }
 
-export function start(input: { sdk: OpencodeClient; connection: Connection; session: ACPSession.Interface }) {
+export function start(input: {
+  sdk: OpencodeClient
+  connection: Connection
+  session: ACPSession.Interface
+  requests: ACPRequests.Interface
+}) {
   const subscription = new Subscription(input)
   subscription.start()
   return subscription
@@ -52,6 +59,12 @@ export class Subscription {
       sdk: OpencodeClient
       connection: Connection
       session: ACPSession.Interface
+      /**
+       * Where the JSON-RPC ids of outgoing requests come from, which is what lets a permission
+       * dialog be cancelled. A tracker whose stream was never wrapped around the connection
+       * learns no ids and so cancels nothing, which is what a caller without a wire wants.
+       */
+      requests: ACPRequests.Interface
     },
   ) {
     this.permission = new ACPPermission.Handler(input)
@@ -81,9 +94,9 @@ export class Subscription {
 
     try {
       // Idle is queued after the turn's events, and this subscription awaits each update in order.
-      void waiter.promise.catch(() => {})
+      void waiter.wait().catch(() => {})
       const response = await request()
-      await waiter.promise
+      await waiter.wait()
       return response
     } finally {
       waiters.delete(waiter)
@@ -98,6 +111,12 @@ export class Subscription {
         return
       case "permission.asked":
         this.permission.handle(event)
+        return
+      case "permission.replied":
+        // The server settled this one without the editor — a countdown expiring, another
+        // client answering, a reject cascading over the session — so the prompt ACP is
+        // waiting on has to be let go or it blocks every later prompt for the session.
+        this.permission.replied(event)
         return
       case "message.part.updated":
         return this.handlePartUpdated(event)
@@ -189,7 +208,7 @@ export class Subscription {
     this.connected = false
     const error = new Error("ACP event stream disconnected")
     for (const waiters of this.idleWaiters.values()) {
-      for (const waiter of waiters) waiter.reject(error)
+      for (const waiter of waiters) waiter.fail(error)
     }
     this.idleWaiters.clear()
   }
@@ -198,7 +217,7 @@ export class Subscription {
     const waiters = this.idleWaiters.get(sessionId)
     if (!waiters) return
     this.idleWaiters.delete(sessionId)
-    for (const waiter of waiters) waiter.resolve()
+    for (const waiter of waiters) waiter.trigger()
   }
 
   private async handlePartUpdated(event: EventMessagePartUpdated) {
@@ -409,25 +428,6 @@ export class Subscription {
   private clearTool(toolCallId: string) {
     this.toolStarts.delete(toolCallId)
     this.shellSnapshots.delete(toolCallId)
-  }
-}
-
-function signal() {
-  const state: {
-    resolve: () => void
-    reject: (reason?: unknown) => void
-  } = {
-    resolve: () => {},
-    reject: () => {},
-  }
-  const promise = new Promise<void>((resolve, reject) => {
-    state.resolve = resolve
-    state.reject = reject
-  })
-  return {
-    promise,
-    resolve: () => state.resolve(),
-    reject: (reason?: unknown) => state.reject(reason),
   }
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { Subscription } from "@/acp/event"
+import { ACPRequests } from "@/acp/requests"
 import type { ACPSession } from "@/acp/session"
 import type { Part, SessionMessageResponse } from "@opencode-ai/sdk/v2"
 
@@ -22,6 +23,7 @@ function harness() {
   const updates: Array<Record<string, unknown>> = []
   const subscription = new Subscription({
     sdk: {} as never,
+    requests: ACPRequests.make(),
     connection: {
       sessionUpdate: (input) => {
         updates.push(input.update as Record<string, unknown>)

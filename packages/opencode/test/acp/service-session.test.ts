@@ -15,6 +15,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Effect } from "effect"
 import * as ACPService from "@/acp/service"
+import { ACPRequests } from "@/acp/requests"
 import * as ACPError from "@/acp/error"
 import { UsageService } from "@/acp/usage"
 import type { Provider } from "@/provider/provider"
@@ -320,7 +321,7 @@ describe("ACP service sessions", () => {
     })
 
     return {
-      service: ACPService.make({ sdk, connection, usage }),
+      service: ACPService.make({ sdk, connection, usage, requests: ACPRequests.make() }),
       updates,
       mcpAdds,
       aborts,

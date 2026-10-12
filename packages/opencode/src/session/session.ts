@@ -29,6 +29,7 @@ import type { SQL } from "drizzle-orm"
 import { PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
+import { makePartLock } from "./part-lock"
 import type { InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
@@ -44,6 +45,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
@@ -220,6 +222,26 @@ export const Model = Schema.Struct({
 })
 
 export const Metadata = Schema.Record(Schema.String, Schema.Any)
+
+/** Session metadata key holding the persisted agent-effort selection. */
+export const AGENT_EFFORT_KEY = "agentEffort"
+
+/**
+ * Read the persisted effort through a schema decoder, so invalid legacy
+ * metadata resolves to `undefined` instead of poisoning effort resolution.
+ */
+export function readAgentEffort(metadata: typeof Metadata.Type | undefined) {
+  if (!metadata) return undefined
+  return Option.getOrUndefined(Schema.decodeUnknownOption(AgentEffort.Level)(metadata[AGENT_EFFORT_KEY]))
+}
+
+/** Merge an effort selection into session metadata, preserving unrelated keys. */
+export function withAgentEffort(
+  metadata: typeof Metadata.Type | undefined,
+  effort: AgentEffort.Level,
+): typeof Metadata.Type {
+  return { ...metadata, [AGENT_EFFORT_KEY]: effort }
+}
 
 export const Info = Schema.Struct({
   id: SessionID,
@@ -457,6 +479,16 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  /**
+   * Read-modify-write over one part, holding that part's lock across both
+   * halves. `modify` sees the part as it is stored, so a concurrent
+   * `updatePart` cannot land between the read and the write. Returning
+   * `undefined` writes nothing.
+   */
+  readonly modifyPart: <T extends SessionV1.Part>(
+    input: { readonly sessionID: SessionID; readonly messageID: MessageID; readonly partID: PartID },
+    modify: (part: SessionV1.Part | undefined) => T | undefined,
+  ) => Effect.Effect<T | undefined>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -632,7 +664,7 @@ const layer: Layer.Layer<
         return msg
       }).pipe(Effect.withSpan("Session.updateMessage"))
 
-    const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
+    const persistPart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
         yield* events.publish(SessionV1.Event.PartUpdated, {
           sessionID: part.sessionID,
@@ -641,6 +673,14 @@ const layer: Layer.Layer<
         })
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
+
+    // Parts are written from concurrent fibers: a child's live write projection
+    // lands on the parent's task part while the processor is completing that
+    // same part. Both are read-modify-writes over one row, so they serialize per
+    // part rather than racing to overwrite each other.
+    const withPartLock = makePartLock().withLock
+
+    const updatePart: Interface["updatePart"] = (part) => withPartLock(part.id, persistPart(part))
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
       const row = yield* db
@@ -663,6 +703,17 @@ const layer: Layer.Layer<
         messageID: row.message_id,
       } as SessionV1.Part
     })
+
+    const modifyPart: Interface["modifyPart"] = (input, modify) =>
+      withPartLock(
+        input.partID,
+        Effect.gen(function* () {
+          const current = yield* getPart(input)
+          const next = modify(current)
+          if (next === undefined) return undefined
+          return yield* persistPart(next)
+        }),
+      )
 
     const create = Effect.fn("Session.create")(function* (input?: {
       parentID?: SessionID
@@ -928,6 +979,7 @@ const layer: Layer.Layer<
       removeMessage,
       removePart,
       updatePart,
+      modifyPart,
       getPart,
       updatePartDelta,
       findMessage,
@@ -941,12 +993,7 @@ const cancelBackgroundJobs = Effect.fn("Session.cancelBackgroundJobs")(function*
 ) {
   const jobs = yield* background.list()
   yield* Effect.forEach(
-    jobs.filter((job) => {
-      if (job.status !== "running") return false
-      if (job.id === sessionID) return true
-      if (job.metadata?.sessionId === sessionID) return true
-      return job.metadata?.parentSessionId === sessionID
-    }),
+    jobs.filter((job) => job.status === "running" && BackgroundJob.belongsToSession(job, sessionID)),
     (job) => background.cancel(job.id),
     { concurrency: "unbounded", discard: true },
   )

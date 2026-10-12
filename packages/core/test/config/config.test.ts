@@ -1,7 +1,7 @@
 import path from "path"
 import fs from "fs/promises"
 import { describe, expect } from "bun:test"
-import { Effect, Layer, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import { FastCheck } from "effect/testing"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
@@ -9,7 +9,6 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
-import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
 import { Policy } from "@opencode-ai/core/policy"
@@ -87,6 +86,31 @@ describe("Config", () => {
     }),
   )
 
+  it.effect("bounds the permission timeout countdown to what one timer can express", () =>
+    Effect.sync(() => {
+      const decode = Schema.decodeUnknownOption(ConfigV1.Info)
+      const timeout = (seconds: number, enabled = true) => decode({ permission_timeout: { enabled, seconds } })
+      // The countdown is one `Effect.sleep`, and its timer takes a 32-bit millisecond
+      // timeout: past 2^31 - 1 ms it never resumes, so an unanswered prompt would hang its
+      // session forever instead of being denied. Rejecting the value at the schema keeps
+      // that out of reach rather than silently clamping it.
+      const maximum = Math.floor((2 ** 31 - 1) / 1000)
+      expect(Option.isSome(timeout(maximum))).toBe(true)
+      expect(Option.isNone(timeout(maximum + 1))).toBe(true)
+      expect(Option.isSome(timeout(45))).toBe(true)
+      expect(Option.isNone(timeout(0))).toBe(true)
+      // And with the timeout switched off, which is deliberate: the field is validated where
+      // it is written, like every other value in this schema (`PositiveInt` has rejected a
+      // non-positive `seconds` regardless of `enabled` since the key was added), and the
+      // value goes live the moment `enabled` flips. Accepting an unusable countdown while it
+      // is off would only hand that hang to whoever switches it back on. Depending on a
+      // sibling field would also make this the only cross-field refinement in the schema.
+      expect(Option.isNone(timeout(maximum + 1, false))).toBe(true)
+      expect(Option.isSome(timeout(maximum, false))).toBe(true)
+      expect(Option.isNone(timeout(0, false))).toBe(true)
+    }),
+  )
+
   it.effect("migrates v1 provider setup options into AISDK settings", () =>
     Effect.sync(() => {
       const migrated = ConfigMigrateV1.migrate({
@@ -112,6 +136,82 @@ describe("Config", () => {
         headers: { "x-test": "1" },
         body: { trace: true },
       })
+    }),
+  )
+
+  it.effect("migrates v1 model cost tiers into v2 pricing", () =>
+    Effect.sync(() => {
+      const migrated = ConfigMigrateV1.migrate({
+        provider: {
+          test: {
+            models: {
+              "tiered-model": {
+                cost: {
+                  input: 1,
+                  output: 2,
+                  cache_read: 0.1,
+                  cache_write: 0.2,
+                  tiers: [
+                    {
+                      input: 3,
+                      output: 4,
+                      cache_read: 0.3,
+                      cache_write: 0.4,
+                      tier: { type: "context", size: 100_000 },
+                    },
+                    {
+                      input: 5,
+                      output: 6,
+                      tier: 200_000,
+                    },
+                    {
+                      input: 7,
+                      output: 8,
+                      tier: { size: 300_000 },
+                    },
+                    {
+                      input: 9,
+                      output: 10,
+                      tier: {} as any, // missing size must be ignored rather than producing NaN
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      })
+
+      expect(migrated.providers?.test?.models?.["tiered-model"]?.cost).toEqual([
+        {
+          input: 1,
+          output: 2,
+          cache: { read: 0.1, write: 0.2 },
+        },
+        {
+          tier: { type: "context", size: 100_000 },
+          input: 3,
+          output: 4,
+          cache: { read: 0.3, write: 0.4 },
+        },
+        {
+          tier: { type: "context", size: 200_000 },
+          input: 5,
+          output: 6,
+          cache: { read: undefined, write: undefined },
+        },
+        {
+          tier: { type: "context", size: 300_000 },
+          input: 7,
+          output: 8,
+          cache: { read: undefined, write: undefined },
+        },
+        {
+          input: 9,
+          output: 10,
+          cache: { read: undefined, write: undefined },
+        },
+      ])
     }),
   )
 

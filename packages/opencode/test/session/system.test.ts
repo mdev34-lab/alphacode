@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer } from "effect"
 import os from "os"
+import { Global } from "@opencode-ai/core/global"
 import type { Agent } from "../../src/agent/agent"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Skill } from "../../src/skill"
@@ -11,6 +12,7 @@ import { SystemPrompt } from "../../src/session/system"
 import { MCP } from "../../src/mcp"
 import { testEffect } from "../lib/effect"
 
+const desktopDirectory = "C:\\Users\\Camila\\OneDrive - Contoso\\Área de Trabalho"
 const shellFixture =
   process.platform === "win32"
     ? { configured: "powershell", expected: "powershell" }
@@ -51,6 +53,7 @@ const build: Agent.Info = {
 
 const it = testEffect(
   LayerNode.compile(SystemPrompt.node, [
+    [Global.node, Global.layerWith({ desktop: desktopDirectory })],
     [
       MCP.node,
       Layer.mock(MCP.Service, {
@@ -116,7 +119,7 @@ describe("session.system", () => {
   })
 
   it.instance(
-    "environment reports an explicitly configured shell on one line",
+    "environment reports the configured shell and OS-resolved Desktop directory",
     () =>
       Effect.gen(function* () {
         const prompt = yield* SystemPrompt.Service
@@ -125,6 +128,7 @@ describe("session.system", () => {
         expect(output.split("\n").filter((line) => line.includes("  OS:"))).toEqual([
           `  OS: ${os.type()} ${os.release()}; Shell: ${shellFixture.expected}`,
         ])
+        expect(output).toContain(`  Desktop directory: ${desktopDirectory}`)
       }),
     { config: { shell: shellFixture.configured } },
   )

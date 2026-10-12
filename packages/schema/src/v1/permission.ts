@@ -4,7 +4,7 @@ import { Schema } from "effect"
 import { define, inventory } from "../event"
 import { ascending } from "../identifier"
 import { Project } from "../project"
-import { statics } from "../schema"
+import { NonNegativeInt, statics } from "../schema"
 import { SessionID } from "../session-id"
 
 export const ID = Schema.String.check(Schema.isStartsWith("per")).pipe(
@@ -32,11 +32,23 @@ export const Request = Schema.Struct({
   metadata: Schema.Record(Schema.String, Schema.Unknown),
   always: Schema.Array(Schema.String),
   tool: Schema.optional(Schema.Struct({ messageID: Schema.String, callID: Schema.String })),
+  // Epoch ms. Absent when the auto-deny countdown is disabled, which means the
+  // request waits for a human indefinitely. Clients render it as a countdown.
+  expiresAt: Schema.optional(NonNegativeInt).annotate({
+    description: "Epoch milliseconds after which the request is automatically denied. Absent when it never expires.",
+  }),
 }).annotate({ identifier: "PermissionRequest" })
 export type Request = typeof Request.Type
 
 export const Reply = Schema.Literals(["once", "always", "reject"])
 export type Reply = typeof Reply.Type
+
+// Wider than `Reply` because the server settles a request on its own when the
+// countdown expires; clients never send `timeout`.
+export const ReplyOutcome = Schema.Literals(["once", "always", "reject", "timeout"]).annotate({
+  identifier: "PermissionReplyOutcome",
+})
+export type ReplyOutcome = typeof ReplyOutcome.Type
 
 export const ReplyBody = Schema.Struct({ reply: Reply, message: Schema.optional(Schema.String) }).annotate({
   identifier: "PermissionReplyBody",
@@ -61,6 +73,6 @@ export type ReplyInput = typeof ReplyInput.Type
 const Asked = define({ type: "permission.asked", schema: Request.fields })
 const Replied = define({
   type: "permission.replied",
-  schema: { sessionID: SessionID, requestID: ID, reply: Reply },
+  schema: { sessionID: SessionID, requestID: ID, reply: ReplyOutcome },
 })
 export const Event = { Asked, Replied, Definitions: inventory(Asked, Replied) }

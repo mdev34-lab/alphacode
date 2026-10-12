@@ -1,6 +1,7 @@
 export * as ConfigV1 from "./config"
 
 import { Schema } from "effect"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema"
 import { ConfigExperimental } from "../../config/experimental"
 import { ConfigReference } from "../../config/reference"
@@ -28,6 +29,11 @@ const LogLevelRef = Schema.Literals(["DEBUG", "INFO", "WARN", "ERROR"]).annotate
   identifier: "LogLevel",
   description: "Log level",
 })
+
+// The longest permission countdown that can actually be waited out: the timer behind
+// `Effect.sleep` takes a 32-bit millisecond timeout, so past 2^31 - 1 ms it never resumes
+// and an unanswered prompt would hang its session forever instead of being denied.
+const MAX_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000)
 
 export const Info = Schema.Struct({
   $schema: Schema.optional(Schema.String).annotate({
@@ -91,7 +97,8 @@ export const Info = Schema.Struct({
       }),
     }),
   ).annotate({
-    description: "Work → Review loop configuration. Review is nudged before finish, not enforced.",
+    description:
+      "Work → Review loop configuration. Finish requires an Approved review of file-writing work until max_iterations completed reviews are reached.",
   }),
   username: Schema.optional(Schema.String).annotate({
     description: "Custom username to display in conversations instead of system username",
@@ -119,10 +126,23 @@ export const Info = Schema.Struct({
         title: Schema.optional(ConfigAgentV1.Info),
         summary: Schema.optional(ConfigAgentV1.Info),
         compaction: Schema.optional(ConfigAgentV1.Info),
+        // The reserved effort policy: a scalar level, or — for legacy
+        // compatibility — a named agent literally called `effort` defined as an
+        // object. The two are distinguished by shape at every consumer; the
+        // scalar form is never enumerated as a named agent.
+        effort: Schema.optional(Schema.Union([AgentEffort.Level, ConfigAgentV1.Info])),
       }),
-      [Schema.Record(Schema.String, ConfigAgentV1.Info)],
+      // StructWithRest intersects declared properties with the rest record for
+      // every key, so the rest value type must admit the scalar effort policy
+      // as well. Declared agent keys still require ConfigAgentV1.Info via their
+      // property signature, so only undeclared keys can resolve to a level and
+      // agent enumeration filters scalar values out.
+      [Schema.Record(Schema.String, Schema.Union([ConfigAgentV1.Info, AgentEffort.Level]))],
     ),
-  ).annotate({ description: "Agent configuration, see https://opencode.ai/docs/agents" }),
+  ).annotate({
+    description:
+      "Agent configuration, see https://opencode.ai/docs/agents. The reserved scalar `effort` entry selects the agent effort policy (fast | medium | thorough) and is not a named agent.",
+  }),
   provider: Schema.optional(Schema.Record(Schema.String, ConfigProviderV1.Info)).annotate({
     description: "Custom provider configurations and model overrides",
   }),
@@ -146,6 +166,19 @@ export const Info = Schema.Struct({
   }),
   layout: Schema.optional(ConfigLayoutV1.Layout).annotate({ description: "@deprecated Always uses stretch layout." }),
   permission: Schema.optional(ConfigPermissionV1.Info),
+  permission_timeout: Schema.optional(
+    Schema.Struct({
+      enabled: Schema.optional(Schema.Boolean).annotate({
+        description: "Automatically deny permission prompts nobody answers. Enabled by default.",
+      }),
+      seconds: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_TIMEOUT_SECONDS))).annotate({
+        description: `Countdown in seconds before an unanswered permission prompt is denied (default: 45, maximum: ${MAX_TIMEOUT_SECONDS})`,
+      }),
+    }),
+  ).annotate({
+    description:
+      "Auto-deny unanswered permission prompts after a countdown so unattended runs never hang. Set enabled to false to wait for a human indefinitely.",
+  }),
   tools: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   tool_search: Schema.optional(
     Schema.Struct({

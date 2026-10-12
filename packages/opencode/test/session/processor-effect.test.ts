@@ -1,4 +1,5 @@
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -103,7 +104,7 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const waitFor = <A>(check: Effect.Effect<A | undefined>, message: string) =>
+const waitFor = <A, E>(check: Effect.Effect<A | undefined, E>, message: string) =>
   Effect.gen(function* () {
     const stop = Date.now() + 500
     while (Date.now() < stop) {
@@ -225,6 +226,33 @@ const fragmentFailureLLM = Layer.succeed(
 )
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
+
+// One tool call whose execution fails with `error`: the shape the processor sees when a
+// permission ask inside a tool is rejected or left unanswered until the countdown expires.
+const failedToolCallEnv = (error: Error) =>
+  LayerNode.compile(root, [
+    ...replacements,
+    [
+      LLM.node,
+      Layer.succeed(
+        LLM.Service,
+        LLM.Service.of({
+          stream: () =>
+            Stream.make(
+              LLMEvent.stepStart({ index: 0 }),
+              LLMEvent.toolInputStart({ id: "call-1", name: "bash" }),
+              LLMEvent.toolInputEnd({ id: "call-1", name: "bash" }),
+              LLMEvent.toolCall({ id: "call-1", name: "bash", input: { command: "rm -rf /" } }),
+              LLMEvent.toolError({ id: "call-1", name: "bash", message: error.message, error }),
+              LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+              LLMEvent.finish({ reason: "stop" }),
+            ),
+        }),
+      ),
+    ],
+  ])
+const itPermissionTimeout = testEffect(failedToolCallEnv(new PermissionV1.TimedOutError({ seconds: 45 })))
+const itPermissionRejected = testEffect(failedToolCallEnv(new PermissionV1.RejectedError()))
 
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
@@ -1060,6 +1088,59 @@ itProviderError.live("session.processor effect tests fail provider-executed erro
   ),
 )
 
+// Shared body for the two permission failures: the only difference is whether the turn
+// survives the failed tool call.
+const permissionFailureTurn = (expected: SessionProcessor.Result, error: string) =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "permission failure")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "permission failure" }],
+          tools: {},
+        })
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
+
+        expect(value).toBe(expected)
+        expect(handle.message.error).toBeUndefined()
+        expect(call?.state.status).toBe("error")
+        if (call?.state.status !== "error") return
+        expect(call.state.error).toContain(error)
+      }),
+    { config: cfg },
+  )
+
+itPermissionTimeout.live("session.processor effect tests continue the turn when a permission prompt times out", () =>
+  // An expired countdown only fails the tool call, so `ctx.blocked` stays false and the
+  // model gets to pick another approach.
+  permissionFailureTurn("continue", "automatically denied"),
+)
+
+itPermissionRejected.live("session.processor effect tests stop the turn when permission is rejected", () =>
+  permissionFailureTurn("stop", "The user rejected permission"),
+)
+
 itFragmentFailure.live("session.processor effect tests retain partial legacy parts without v2 events", () =>
   provideTmpdirInstance(
     (dir) =>
@@ -1292,3 +1373,119 @@ itMissingOutputMetrics.live("session.processor omits generation metrics when no 
     { config: cfg },
   ),
 )
+
+for (const scenario of [
+  { name: "stale false output", persistedWrites: true, returnedReview: { writesFiles: false } },
+  { name: "output with no writes flag", persistedWrites: true, returnedReview: {} },
+  { name: "new true output", persistedWrites: false, returnedReview: { writesFiles: true } },
+]) {
+  it.live(`session.processor preserves child writes with ${scenario.name}`, () =>
+    provideTmpdirServer(
+      ({ dir, llm }) =>
+        Effect.gen(function* () {
+          const { processors, session, provider } = yield* boot()
+
+          yield* llm.tool("lookup", { query: "weather" })
+
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "tool")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model: mdl,
+          })
+
+          const delivery = defer<{ title: string; output: string; metadata: Record<string, unknown> }>()
+          const run = yield* handle
+            .process({
+              user: {
+                id: parent.id,
+                sessionID: chat.id,
+                role: "user",
+                time: parent.time,
+                agent: parent.agent,
+                model: { providerID: ref.providerID, modelID: ref.modelID },
+              } satisfies SessionV1.User,
+              sessionID: chat.id,
+              model: mdl,
+              agent: agent(),
+              system: [],
+              messages: [{ role: "user", content: "tool" }],
+              tools: {
+                lookup: tool({
+                  description: "Look up information",
+                  inputSchema: z.object({ query: z.string() }),
+                  execute: async () => delivery.promise,
+                }),
+              },
+            })
+            .pipe(Effect.forkChild)
+
+          // The background return was computed before the child's write event.
+          // Persist that late evidence before letting the stale return complete.
+          const running = yield* waitFor(
+            session
+              .messages({ sessionID: chat.id, limit: 50 })
+              .pipe(
+                Effect.map((messages) =>
+                  messages
+                    .flatMap((m) => m.parts)
+                    .find(
+                      (part): part is SessionV1.ToolPart => part.type === "tool" && part.state.status === "running",
+                    ),
+                ),
+              ),
+            "timed out waiting for running task",
+          )
+          if (running.state.status !== "running") throw new Error("expected running tool")
+          yield* session.updatePart({
+            ...running,
+            state: {
+              ...running.state,
+              metadata: {
+                source: "live",
+                lateEvidence: "child-write",
+                reviewLoop: { writesFiles: scenario.persistedWrites, childSession: "child" },
+              },
+            },
+          })
+          delivery.resolve({
+            title: "Weather lookup",
+            output: "result:weather",
+            metadata: {
+              source: "returned",
+              reviewLoop: { ...scenario.returnedReview, outcome: "background" },
+            },
+          })
+          const value = yield* Fiber.join(run)
+
+          const parts = yield* MessageV2.parts(msg.id)
+          const call = parts.find((part): part is SessionV1.ToolPart => part.type === "tool")
+
+          expect(value).toBe("continue")
+          expect(yield* llm.calls).toBe(1)
+          expect(call?.callID).toBe("call_1")
+          expect(call?.tool).toBe("lookup")
+          expect(call?.state.status).toBe("completed")
+          if (call?.state.status !== "completed") return
+          expect(call.state.input).toEqual({ query: "weather" })
+          expect(call.state.output).toBe("result:weather")
+          expect(call.state.title).toBe("Weather lookup")
+          expect(call.state.metadata).toEqual({
+            source: "returned",
+            lateEvidence: "child-write",
+            reviewLoop: {
+              writesFiles: true,
+              childSession: "child",
+              outcome: "background",
+            },
+          })
+          expect(call.state.time.start).toBeDefined()
+          expect(call.state.time.end).toBeDefined()
+        }),
+      { config: (url) => providerCfg(url) },
+    ),
+  )
+}

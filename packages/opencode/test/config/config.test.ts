@@ -665,7 +665,7 @@ it.instance("treats agent variant as model-scoped setting (not provider option)"
       },
     })
     const config = yield* Config.use.get()
-    const agent = config.agent?.["test_agent"]
+    const agent = named(config.agent?.["test_agent"])
 
     expect(agent?.variant).toBe("xhigh")
     expect(agent?.options).toMatchObject({
@@ -790,7 +790,7 @@ Ordered permissions`,
     )
 
     const config = yield* Config.use.get()
-    expect(Object.keys(config.agent?.ordered?.permission ?? {})).toEqual(["bash", "*", "edit"])
+    expect(Object.keys(named(config.agent?.ordered)?.permission ?? {})).toEqual(["bash", "*", "edit"])
   }),
 )
 
@@ -1152,7 +1152,7 @@ it.instance("migrates legacy tools config to permissions - allow", () =>
     })
 
     const config = yield* Config.use.get()
-    expect(config.agent?.["test"]?.permission).toEqual({
+    expect(named(config.agent?.["test"])?.permission).toEqual({
       bash: "allow",
       read: "allow",
     })
@@ -1168,7 +1168,7 @@ it.instance("migrates legacy tools config to permissions - deny", () =>
     })
 
     const config = yield* Config.use.get()
-    expect(config.agent?.["test"]?.permission).toEqual({
+    expect(named(config.agent?.["test"])?.permission).toEqual({
       bash: "deny",
       webfetch: "deny",
     })
@@ -1184,7 +1184,7 @@ it.instance("migrates legacy write tool to edit permission", () =>
     })
 
     const config = yield* Config.use.get()
-    expect(config.agent?.["test"]?.permission).toEqual({ edit: "allow" })
+    expect(named(config.agent?.["test"])?.permission).toEqual({ edit: "allow" })
   }),
 )
 
@@ -1252,7 +1252,7 @@ it.instance("migrates legacy edit tool to edit permission", () =>
     })
 
     const config = yield* Config.use.get()
-    expect(config.agent?.["test"]?.permission).toEqual({ edit: "deny" })
+    expect(named(config.agent?.["test"])?.permission).toEqual({ edit: "deny" })
   }),
 )
 
@@ -1265,7 +1265,7 @@ it.instance("migrates legacy patch tool to edit permission", () =>
     })
 
     const config = yield* Config.use.get()
-    expect(config.agent?.["test"]?.permission).toEqual({ edit: "allow" })
+    expect(named(config.agent?.["test"])?.permission).toEqual({ edit: "allow" })
   }),
 )
 
@@ -1278,7 +1278,7 @@ it.instance("migrates mixed legacy tools config", () =>
     })
 
     const config = yield* Config.use.get()
-    expect(config.agent?.["test"]?.permission).toEqual({
+    expect(named(config.agent?.["test"])?.permission).toEqual({
       bash: "allow",
       edit: "allow",
       read: "deny",
@@ -1296,7 +1296,7 @@ it.instance("merges legacy tools with existing permission config", () =>
     })
 
     const config = yield* Config.use.get()
-    expect(config.agent?.["test"]?.permission).toEqual({
+    expect(named(config.agent?.["test"])?.permission).toEqual({
       glob: "allow",
       bash: "allow",
     })
@@ -1679,6 +1679,12 @@ loginPageWellKnown.it.instance(
       expect((error as { data?: { url?: string } }).data?.url).toBe("https://example.com")
     }),
 )
+
+// The reserved scalar `agent.effort` shares the agent map with named agents. A
+// named agent is always an object, so the scalar is narrowed out by type here.
+function named<T extends object>(value: T | string | undefined): T | undefined {
+  return typeof value === "string" ? undefined : value
+}
 
 describe("resolvePluginSpec", () => {
   test("keeps package specs unchanged", async () => {

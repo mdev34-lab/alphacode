@@ -26,8 +26,19 @@ export class DeniedError extends Schema.TaggedErrorClass<DeniedError>()("Permiss
   }
 }
 
+// Distinct from RejectedError on purpose: a rejection ends the turn unless
+// `experimental.continue_loop_on_deny` is set, while a timeout only fails the
+// single tool call so the agent can pick another approach.
+export class TimedOutError extends Schema.TaggedErrorClass<TimedOutError>()("PermissionTimedOutError", {
+  seconds: Schema.Number,
+}) {
+  override get message() {
+    return `Nobody responded to this permission request within ${this.seconds} second${this.seconds === 1 ? "" : "s"}, so it was automatically denied. Do not repeat the same call; continue with a different approach that does not need this permission.`
+  }
+}
+
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Permission.NotFoundError", {
   requestID: ID,
 }) {}
 
-export type Error = DeniedError | RejectedError | CorrectedError
+export type Error = DeniedError | RejectedError | CorrectedError | TimedOutError

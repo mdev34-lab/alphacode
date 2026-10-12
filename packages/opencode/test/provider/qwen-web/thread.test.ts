@@ -6,7 +6,8 @@ import path from "node:path"
 import os from "node:os"
 
 const CREATED = (id: string, chatId: string) => `data: {"type":"response.created","response":{"id":"${id}","chat_id":"${chatId}"}}\n`
-const text = (content: string) => `data: {"response_id":"r1","choices":[{"delta":{"phase":"answer","content":"${content}"}}]}\n`
+const text = (content: string, responseId = "r1") =>
+  `data: {"response_id":"${responseId}","choices":[{"delta":{"phase":"answer","content":"${content}"}}]}\n`
 
 function byteStream(lines: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -128,7 +129,7 @@ describe("QwenWebSession thread engine", () => {
     expect(events).toContain("finish")
     expect((events.at(-1))).toBe("done")
 
-    const second = byteStream([CREATED("r2", "c1"), text("World"), "data: [DONE]\n"])
+    const second = byteStream([CREATED("r2", "c1"), text("World", "r2"), "data: [DONE]\n"])
     ;(sessionInstance as unknown as { transport: QwenWebTransport }).transport = {
       ...fakeTransport([], captured, false),
       rawRequestStream: async (method: string, requestPath: string, options?: { body?: string }) => {
@@ -170,7 +171,11 @@ describe("QwenWebSession thread engine", () => {
   })
 
   test("editMessage rewrites content and marks the node as edited locally", async () => {
-    const sessionInstance = session([], { payloads: [], chatCreated: 0, stops: [] })
+    const sessionInstance = session([CREATED("r1", "c1"), text("hello"), "data: [DONE]\n"], {
+      payloads: [],
+      chatCreated: 0,
+      stops: [],
+    })
     const thread = await sessionInstance.ensureThread({ model: "qwen3-max" })
     const events: string[] = []
     for await (const event of sessionInstance.runTurn({ thread, content: "hi" })) {
@@ -195,7 +200,7 @@ describe("QwenWebSession thread engine", () => {
 
   test("forkThread seeds the first turn and clears the seed", async () => {
     const captured: Captured = { payloads: [], chatCreated: 0, stops: [] }
-    const forkLines = byteStream([CREATED("r9", "c1"), text("Forked"), "data: [DONE]\n"])
+    const forkLines = byteStream([CREATED("r9", "c1"), text("Forked", "r9"), "data: [DONE]\n"])
     const sessionInstance = new QwenWebSession({
       transport: {
         ...fakeTransport([], captured, false),

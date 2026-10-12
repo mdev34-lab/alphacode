@@ -38,6 +38,7 @@ import { buildConfigOptions, parseModelSelection } from "./config-option"
 import { promptContentToParts } from "./content"
 import { Directory } from "./directory"
 import { ACPEvent } from "./event"
+import { ACPRequests } from "./requests"
 import { ACPSession } from "./session"
 import { UsageService } from "./usage"
 import { ACPProfile } from "./profile"
@@ -72,20 +73,28 @@ export type Interface = {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ACP/Service") {}
 
-export function make(input: {
-  sdk: OpencodeClient
-  connection?: ServiceConnection
-  directory?: Directory.Interface
-  session?: ACPSession.Interface
-  usage?: UsageService.Interface
-  eventSubscription?: (subscription: ACPEvent.Subscription) => void
-}): Interface {
+export function make(
+  input: {
+    sdk: OpencodeClient
+    directory?: Directory.Interface
+    session?: ACPSession.Interface
+    usage?: UsageService.Interface
+    eventSubscription?: (subscription: ACPEvent.Subscription) => void
+  } & (
+    | { readonly connection?: undefined; readonly requests?: undefined }
+    // Required together: a connection whose stream nothing observes has no JSON-RPC ids, so a
+    // permission dialog the server settles could never be closed on the editor's side. Making
+    // that a type error keeps the pairing from being dropped quietly, which is how it would
+    // fail — no error, no log, just a dialog left open.
+    | { readonly connection: ServiceConnection; readonly requests: ACPRequests.Interface }
+  ),
+): Interface {
   const session = input.session ?? makeSessionService()
   const directoryService = input.directory ?? makeDirectoryService(input.sdk)
   const registeredMcp = new Map<string, Set<string>>()
   const sessionSnapshots = new Map<string, Directory.Snapshot>()
   const events = input.connection
-    ? ACPEvent.start({ sdk: input.sdk, connection: input.connection, session })
+    ? ACPEvent.start({ sdk: input.sdk, connection: input.connection, session, requests: input.requests })
     : undefined
   if (events) input.eventSubscription?.(events)
   const runUntilIdle = <A>(sessionId: string, fn: () => Promise<A>) =>
