@@ -133,4 +133,70 @@ describe("bun-pty exit replay", () => {
       }),
     BUDGET,
   )
+
+  ptyTest(
+    "a throwing replay listener is reported on stderr, not as an unhandled error, and the exit is consumed",
+    () =>
+      withTerminal(exitedWithoutListeners, async (term) => {
+        const reported: unknown[][] = []
+        const unhandled: unknown[] = []
+        const original = console.error
+        const onUnhandled = (error: unknown) => unhandled.push(error)
+        console.error = (...args: unknown[]) => void reported.push(args)
+        process.on("unhandledRejection", onUnhandled)
+        process.on("uncaughtException", onUnhandled)
+        try {
+          term.onExit(() => {
+            throw new Error("listener boom")
+          })
+          await tick()
+          await tick()
+        } finally {
+          console.error = original
+          process.off("unhandledRejection", onUnhandled)
+          process.off("uncaughtException", onUnhandled)
+        }
+        expect(unhandled).toEqual([])
+        expect(reported.length).toBe(1)
+        expect(String(reported[0]?.[0])).toContain("replayed exit listener threw")
+        expect((reported[0]?.[1] as Error).message).toBe("listener boom")
+        const later: Exit[] = []
+        term.onExit((e) => later.push(e))
+        await tick()
+        expect(later).toEqual([])
+      }),
+    BUDGET,
+  )
+
+  ptyTest(
+    "disposing the only live listener before exit makes the exit cacheable again",
+    () =>
+      withTerminal(
+        async () => {
+          const term = new Terminal("/usr/bin/env", ["sh", "-c", "sleep 0.2; exit 3"], {
+            name: "xterm-256color",
+            cwd: "/tmp",
+            env: {},
+          })
+          const internals = term as unknown as { _readLoop: boolean; _startReadLoop: () => Promise<void> }
+          try {
+            term.onExit(() => {}).dispose()
+            internals._readLoop = false
+            await until(() => gone(term.pid), "child exit")
+            await internals._startReadLoop()
+            return term
+          } catch (error) {
+            release(term)
+            throw error
+          }
+        },
+        async (term) => {
+          const calls: Exit[] = []
+          term.onExit((e) => calls.push(e))
+          await tick()
+          expect(calls).toEqual([{ exitCode: 3 }])
+        },
+      ),
+    BUDGET,
+  )
 })
