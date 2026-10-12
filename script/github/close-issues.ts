@@ -11,7 +11,7 @@ if (!token) {
 }
 
 const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
-const agentLogin = "opencode-agent[bot]"
+const BOT_LOGINS = new Set(["arena-ai-coding-agent[bot]", "kilo-code-bot[bot]"])
 const teamMembers = new Set(
   (await Bun.file(new URL("../../.github/TEAM_MEMBERS", import.meta.url)).text())
     .split("\n")
@@ -36,7 +36,7 @@ const headers = {
 
 function shouldSkip(i: Issue) {
   const login = i.user?.login.toLowerCase()
-  return login === agentLogin || (login ? teamMembers.has(login) : false) || teamAssociations.has(i.author_association)
+  return (login ? BOT_LOGINS.has(login) : false) || (login ? teamMembers.has(login) : false) || teamAssociations.has(i.author_association)
 }
 
 async function close(num: number) {
