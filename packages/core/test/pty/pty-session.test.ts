@@ -77,7 +77,8 @@ const probePtyExit = (pty: { get: (id: PtyID) => Effect.Effect<Pty.Info, unknown
       current._tag === "Some"
         ? { status: current.value.status, exitCode: current.value.exitCode }
         : "session not found"
-    return { native: probeNativeExit(info.pid), service }
+    const native = yield* Effect.sync(() => probeNativeExit(info.pid))
+    return { native, service }
   })
 
 const waitForEvents = (
