@@ -82,6 +82,8 @@ for (const item of targets) {
       windows: {},
     },
     define: {
+      ALPHACODE_VERSION: `'${Script.version}'`,
+      ALPHACODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_CLI_NAME: `'${binary}'`,
       OPENCODE_MODELS_DEV: modelsData,
