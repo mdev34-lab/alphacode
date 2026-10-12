@@ -311,12 +311,15 @@ export const FinishTool = Tool.define(
                   // above still consumes the full history.
                   const routed = routedAgent(session, messages.slice(-ROUTING_WINDOW))
                   const resolved = resolveReviewer("review", routed)
-                  const requested = yield* agents.get("review")
+                  // Dispatch parity with task(): only the RESOLVED reviewer must
+                  // exist. The generic `review` request is a routing input, not a
+                  // dispatch target, so a disabled generic reviewer must not block
+                  // a usable specialist.
                   const reviewer = yield* agents.get(resolved)
-                  if (!requested || !reviewer)
+                  if (!reviewer)
                     return {
                       available: false as const, code: "reviewer-missing" as const,
-                      reason: `reviewer agent "${!requested ? "review" : resolved}" is not available`,
+                      reason: `reviewer agent "${resolved}" is not available`,
                     }
                   if (reviewer.mode === "primary")
                     return {

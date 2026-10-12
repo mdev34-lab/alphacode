@@ -505,6 +505,25 @@ describe("tool.finish – review requirement exemptions", () => {
   )
 
   it.instance(
+    "a disabled generic review agent does not block a usable specialist reviewer",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seedSession("owner", "work")
+        yield* addToolPart(chat.id, assistant.id, "edit")
+        const def = yield* (yield* FinishTool).init()
+
+        const failure = reviewFailure(
+          yield* def.execute({ reason: "success", result: "done" }, workCtx(chat.id, assistant.id)).pipe(Effect.exit),
+        )
+        // Declines for the missing verdict, exactly as dispatch would allow a
+        // review: never the false reviewer-missing block.
+        expect(failure?.message).toContain("no explicit Approved review")
+        expect(failure?.message).not.toContain("Review blocked")
+      }),
+    { config: { agent: { review: { disable: true } } } },
+  )
+
+  it.instance(
     "a disabled reviewer blocks success but can report failure",
     () =>
       Effect.gen(function* () {
