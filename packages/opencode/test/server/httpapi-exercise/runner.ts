@@ -14,6 +14,8 @@ import type { ActiveScenario, Options, ProjectOptions, Result, Scenario, Scenari
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
+const CLEANUP_BOUND_MS = 60_000
+
 // Finalizers run uninterruptibly, so an Effect timeout cannot bound cleanup:
 // race each async disposal against a plain timer instead. The timer is
 // cancelled as soon as the disposal settles, so a fast success logs nothing
@@ -23,16 +25,16 @@ import { ModelV2 } from "@opencode-ai/core/model"
 // nor mask the scenario's own result - resetState runs under
 // Effect.ensuring, and in this Effect version a failing finalizer replaces
 // the scenario's original cause.
-const bounded = <A>(label: string, promise: Promise<A>) =>
-  new Promise<A | void>((resolve) => {
+const bounded = (label: string, promise: Promise<unknown>) =>
+  new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
-      console.error(`[reset] ${label} did not finish within 60s; continuing`)
+      console.error(`[reset] ${label} did not finish within ${CLEANUP_BOUND_MS / 1000}s; continuing`)
       resolve()
-    }, 60_000)
+    }, CLEANUP_BOUND_MS)
     promise.then(
-      (value) => {
+      () => {
         clearTimeout(timer)
-        resolve(value)
+        resolve()
       },
       (error) => {
         clearTimeout(timer)
