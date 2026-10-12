@@ -183,29 +183,29 @@ describe("formatNotes", () => {
         change("chore", { description: "update tooling" }),
         change("chore", { description: "drop legacy config", breaking: true }),
       ],
-      { repo: "mdev34-lab/alphacode", prev: "v0.2.0", next: "v0.3.0" },
+      { repo: "mdev34-lab/silvercode", prev: "v0.2.0", next: "v0.3.0" },
     )
 
     expect(notes.indexOf("### Breaking changes")).toBeLessThan(notes.indexOf("### Features"))
     expect(notes.indexOf("### Features")).toBeLessThan(notes.indexOf("### Fixes"))
     expect(notes.indexOf("### Fixes")).toBeLessThan(notes.indexOf("### Performance"))
-    expect(notes).toContain("- **api:** change behavior ([#184](https://github.com/mdev34-lab/alphacode/pull/184))")
-    expect(notes).toContain("- drop legacy config ([`1af5cf3`](https://github.com/mdev34-lab/alphacode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))")
+    expect(notes).toContain("- **api:** change behavior ([#184](https://github.com/mdev34-lab/silvercode/pull/184))")
+    expect(notes).toContain("- drop legacy config ([`1af5cf3`](https://github.com/mdev34-lab/silvercode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))")
     expect(notes).toContain(
-      "- add feature ([`1af5cf3`](https://github.com/mdev34-lab/alphacode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))",
+      "- add feature ([`1af5cf3`](https://github.com/mdev34-lab/silvercode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))",
     )
-    expect(notes).toContain("- repair issue ([#180](https://github.com/mdev34-lab/alphacode/pull/180))")
+    expect(notes).toContain("- repair issue ([#180](https://github.com/mdev34-lab/silvercode/pull/180))")
     expect(notes).toContain(
-      "- restore behavior ([`1af5cf3`](https://github.com/mdev34-lab/alphacode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))",
+      "- restore behavior ([`1af5cf3`](https://github.com/mdev34-lab/silvercode/commit/1af5cf384aa3175aaca6e0fb7ce5279dc4bef8c3))",
     )
-    expect(notes).toContain("**Full diff:** https://github.com/mdev34-lab/alphacode/compare/v0.2.0...v0.3.0")
+    expect(notes).toContain("**Full diff:** https://github.com/mdev34-lab/silvercode/compare/v0.2.0...v0.3.0")
     expect(notes).not.toContain("add tests")
     expect(notes).not.toContain("update tooling")
   })
 
   test("omits the compare link without a previous tag", () => {
     const notes = formatNotes([change("feat", { description: "add feature" })], {
-      repo: "mdev34-lab/alphacode",
+      repo: "mdev34-lab/silvercode",
       next: "v0.3.0",
     })
     expect(notes).not.toContain("Full diff:")
@@ -214,7 +214,7 @@ describe("formatNotes", () => {
   test("uses a placeholder when no user-facing changes are listed", () => {
     expect(
       formatNotes([change("docs", { description: "update docs" })], {
-        repo: "mdev34-lab/alphacode",
+        repo: "mdev34-lab/silvercode",
         next: "v0.3.0",
       }),
     ).toBe("No user-facing changes recorded.")

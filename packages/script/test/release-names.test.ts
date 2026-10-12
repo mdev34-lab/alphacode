@@ -12,7 +12,7 @@ import { join } from "node:path"
 const root = join(import.meta.dir, "..", "..", "..")
 const read = (path: string) => readFileSync(join(root, path), "utf8")
 
-const REPO = "mdev34-lab/alphacode"
+const REPO = "mdev34-lab/silvercode"
 
 describe("release surface", () => {
   test("installer requests the artifact names that the build publishes", () => {
@@ -56,7 +56,7 @@ describe("release surface", () => {
   test("installer and updater point at the repository that actually exists", () => {
     const install = read("install")
     expect(install).toContain(`https://github.com/${REPO}/releases/latest/download/install`)
-    expect(install).not.toContain("/silvercode/releases")
+    expect(install).not.toContain("/alphacode/releases")
 
     const installation = read("packages/opencode/src/installation/index.ts")
     expect(installation).toContain(`const REPO = "${REPO}"`)
