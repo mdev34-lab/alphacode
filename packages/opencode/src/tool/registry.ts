@@ -4,6 +4,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { PlanExitTool } from "./plan"
 import { FinishTool } from "./finish"
 import { Session } from "@/session/session"
+import { SessionStatus } from "@/session/status"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
 import { EditTool } from "./edit"
@@ -467,6 +468,7 @@ export const node = LayerNode.make({
     Agent.node,
     Skill.node,
     Session.node,
+    SessionStatus.node,
     BackgroundJob.node,
     Provider.node,
     LSP.node,
