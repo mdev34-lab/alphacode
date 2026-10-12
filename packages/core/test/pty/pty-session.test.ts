@@ -1,4 +1,5 @@
 import { describe, expect } from "bun:test"
+import { readFileSync } from "node:fs"
 import { Cause, Deferred, Effect, Exit, Layer, Queue } from "effect"
 import { Config } from "@opencode-ai/core/config"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -50,9 +51,43 @@ const createPty = Effect.fn("PtySessionTest.createPty")(function* (command: stri
   )
 })
 
-const waitForEvents = (events: Queue.Queue<PtyEvent>, id: PtyID, count: number) =>
+const probeNativeExit = (pid: number) => {
+  const result: Record<string, unknown> = { pid }
+  try {
+    process.kill(pid, 0)
+    result.signal0 = "alive"
+  } catch (error) {
+    result.signal0 = (error as { code?: string }).code ?? String(error)
+  }
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+      result.procState = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0]
+    } catch (error) {
+      result.procState = `unreadable: ${(error as { code?: string }).code ?? String(error)}`
+    }
+  }
+  return result
+}
+
+const probePtyExit = (pty: { get: (id: PtyID) => Effect.Effect<Pty.Info, unknown> }, info: Pty.Info) =>
   Effect.gen(function* () {
-    const picked: Array<PtyEvent["type"]> = []
+    const current = yield* pty.get(info.id).pipe(Effect.option)
+    const service =
+      current._tag === "Some"
+        ? { status: current.value.status, exitCode: current.value.exitCode }
+        : "session not found"
+    return { native: probeNativeExit(info.pid), service }
+  })
+
+const waitForEvents = (
+  events: Queue.Queue<PtyEvent>,
+  id: PtyID,
+  count: number,
+  probe?: Effect.Effect<unknown>,
+) => {
+  const picked: Array<PtyEvent["type"]> = []
+  return Effect.gen(function* () {
     while (picked.length < count) {
       const evt = yield* Queue.take(events)
       if (evt.id === id) picked.push(evt.type)
@@ -61,9 +96,23 @@ const waitForEvents = (events: Queue.Queue<PtyEvent>, id: PtyID, count: number) 
   }).pipe(
     Effect.timeoutOrElse({
       duration: "15 seconds",
-      orElse: () => Effect.fail(new Error("timeout waiting for pty events")),
+      orElse: () =>
+        Effect.gen(function* () {
+          const pending: Array<PtyEvent["type"]> = []
+          for (let next = yield* Queue.poll(events); next._tag === "Some"; next = yield* Queue.poll(events)) {
+            if (next.value.id === id) pending.push(next.value.type)
+          }
+          const observation: Record<string, unknown> = { id, received: [...picked], pendingInQueue: pending }
+          if (probe) {
+            const result = yield* probe.pipe(Effect.option)
+            observation.probe = result._tag === "Some" ? result.value : "probe failed"
+          }
+          console.log("[pty-observe] timeout waiting for pty events", JSON.stringify(observation))
+          return yield* Effect.fail(new Error("timeout waiting for pty events"))
+        }),
     }),
   )
+}
 
 const attachCollecting = Effect.fn("PtySessionTest.attachCollecting")(function* (id: PtyID, cursor?: number) {
   const pty = yield* Pty.Service
@@ -116,7 +165,7 @@ describe("pty", () => {
       const events = yield* subscribePtyEvents()
       const info = yield* createPty("/usr/bin/env", ["sh", "-c", "exit 3"])
 
-      expect(yield* waitForEvents(events, info.id, 2)).toEqual(["created", "exited"])
+      expect(yield* waitForEvents(events, info.id, 2, probePtyExit(pty, info))).toEqual(["created", "exited"])
       const exited = yield* pty.get(info.id)
       expect(exited.status).toBe("exited")
       expect(exited.exitCode).toBe(3)
