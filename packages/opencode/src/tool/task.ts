@@ -17,6 +17,7 @@ import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Option, Ref, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
+import { NotFoundError } from "@/storage/storage"
 import { Database } from "@opencode-ai/core/database/database"
 import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 
@@ -251,8 +252,16 @@ export const TaskTool = Tool.define(
         })
       }
 
+      // Resume reads the requested child. Only a typed `NotFound` is a missing
+      // row: recovering any other cause here would report an unreadable store
+      // as "no such child" and create a replacement session for a child that
+      // still exists, silently abandoning the one that was asked for (#285).
+      // Storage defects are not `NotFound` - `Session.get` raises them as
+      // defects - so they stay failures either way.
       const session = params.task_id
-        ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        ? yield* sessions
+            .get(SessionID.make(params.task_id))
+            .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
         : undefined
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],

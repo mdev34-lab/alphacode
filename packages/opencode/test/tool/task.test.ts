@@ -2445,6 +2445,58 @@ const faultSession = LayerNode.make({
 const itFaults = testEffect(layer({}, [[Session.node, faultSession]], [readFaultNode]))
 
 describe("tool.task - storage faults", () => {
+  // A resume lookup that cannot read the store is not a missing child: the
+  // requested session still exists, so creating a replacement would silently
+  // abandon the work the caller asked to continue (#285).
+  itFaults.instance("a resume lookup that cannot read the store fails the dispatch instead of replacing the child", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const fault = yield* ReadFault
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
+      fault.getFailsFor = child.id
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let prompted = 0
+      const promptOps = stubOps({
+        onPrompt: () => {
+          prompted++
+        },
+      })
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            task_id: child.id,
+            background: false,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "work",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "").toContain("session store unreadable")
+      // Nothing ran for a child that could not be verified, and the requested
+      // child is untouched: no replacement was created for it.
+      expect(prompted).toBe(0)
+      const kids = yield* sessions.children(chat.id)
+      expect(kids.map((kid) => kid.id)).toEqual([child.id])
+      expect(kids[0]?.title).toBe("Existing child")
+    }),
+  )
+
   // The run-end history read is the recovery path for the live write listener.
   // A failure there is not "the child wrote nothing": the run must reach its
   // caller as a failure, and the listener must still be unsubscribed (#284).
