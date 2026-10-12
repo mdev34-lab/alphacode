@@ -352,18 +352,40 @@ export const TaskTool = Tool.define(
       const termination = yield* Ref.make<TerminationReason | undefined>(undefined)
       const projectWrites = Effect.fn("TaskTool.projectChildWrites")(function* (parts: readonly SessionV1.Part[]) {
         if (!parts.some(hasFileWrites)) return
-        metadata[REVIEW_LOOP_METADATA] = { writesFiles: true, handoff: "pending", sessionId: nextSession.id }
+        const evidence = { writesFiles: true, handoff: "pending", sessionId: nextSession.id }
+        metadata[REVIEW_LOOP_METADATA] = evidence
+        // Snapshot this projection before yielding; the locked callback must
+        // not depend on the shared delivery metadata object.
+        const projected = { ...metadata, [REVIEW_LOOP_METADATA]: evidence }
         const parentMessages = yield* sessions.messages({ sessionID: ctx.sessionID })
         const taskPart = parentMessages
           .flatMap((message) => message.parts)
           .find((part): part is SessionV1.ToolPart => part.type === "tool" && part.callID === ctx.callID)
         if (taskPart && taskPart.state.status !== "pending") {
-          yield* sessions.updatePart({
-            ...taskPart,
-            state: { ...taskPart.state, metadata: { ...taskPart.state.metadata, ...metadata } },
-          })
+          // The history lookup identifies the row only. Completion may land
+          // after that lookup, so read the state again under the part lock.
+          yield* sessions.modifyPart(
+            { partID: taskPart.id, messageID: taskPart.messageID, sessionID: taskPart.sessionID },
+            (current) => {
+              if (current?.type !== "tool" || current.state.status === "pending") return
+              return {
+                ...current,
+                state: {
+                  ...current.state,
+                  metadata: {
+                    ...current.state.metadata,
+                    ...projected,
+                    [REVIEW_LOOP_METADATA]: {
+                      ...current.state.metadata?.[REVIEW_LOOP_METADATA],
+                      ...evidence,
+                    },
+                  },
+                },
+              }
+            },
+          )
         } else {
-          yield* ctx.metadata({ title: params.description, metadata: { ...metadata } })
+          yield* ctx.metadata({ title: params.description, metadata: projected })
         }
       })
       // Observe writes while the child is running, not only after successful
