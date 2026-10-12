@@ -40,6 +40,7 @@ import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
+import { effortColor } from "../../util/agent-effort"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
 import { useDialog } from "../../ui/dialog"
@@ -990,6 +991,10 @@ export function Prompt(props: PromptProps) {
       if (move.pending() && !directory) return false
       finishMoveProgress = Boolean(move.progress())
 
+      // A home default becomes the new session's persisted selection, so the
+      // server enforces the same level the composer shows. Undefined when the
+      // user never picked one, which leaves configuration in charge.
+      const effortMetadata = local.effort.newSessionMetadata()
       const res = await sdk.client.session.create({
         directory,
         workspace: workspaceID,
@@ -999,6 +1004,7 @@ export function Prompt(props: PromptProps) {
           id: selectedModel.modelID,
           variant,
         },
+        metadata: effortMetadata,
       })
 
       if (res.error) {
@@ -1014,6 +1020,7 @@ export function Prompt(props: PromptProps) {
       }
 
       sessionID = res.data.id
+      local.effort.seed(sessionID, effortMetadata)
     }
 
     const inputText = expandTrackedPastedText(
@@ -1459,10 +1466,17 @@ export function Prompt(props: PromptProps) {
                           </text>
                           <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{currentProviderLabel()}</text>
                           {/* Agent effort is its own dial and shows even for
-                              models without thinking variants. */}
+                              models without thinking variants. Its hue (fast
+                              green, medium orange, thorough red) is drawn
+                              beside the always-visible level name. */}
                           <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
                           <text>
-                            <span style={{ fg: fadeColor(theme.info, modelMetaAlpha()), bold: true }}>
+                            <span
+                              style={{
+                                fg: fadeColor(effortColor(local.effort.current(), theme), modelMetaAlpha()),
+                                bold: true,
+                              }}
+                            >
                               {local.effort.current()}
                             </span>
                           </text>

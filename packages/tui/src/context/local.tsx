@@ -18,6 +18,8 @@ import { usePermission } from "./permission"
 import { supportsVision } from "../util/model"
 import {
   coupledThinking,
+  defaultLevel,
+  effortRecord,
   isRecord,
   mergeEffortMetadata,
   metadataLevel,
@@ -633,6 +635,55 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const writes = new Map<string, Promise<void>>()
       const [pendingVersion, setPendingVersion] = createSignal(0)
 
+      // Home default for new sessions, persisted for the TUI in the state
+      // directory. `stored` is the optimistic display value while `persisted`
+      // tracks what the file actually holds, so a failed write can roll the
+      // display back to a value that was really saved instead of reporting a
+      // selection that never landed.
+      const defaultFile = path.join(paths.state, "effort.json")
+      const [stored, setStored] = createSignal<Level | undefined>()
+      let persisted: Level | undefined
+      let touched = false
+      let defaultWrites: Promise<void> = Promise.resolve()
+      let defaultSequence = 0
+
+      void readJson<unknown>(defaultFile)
+        .then((value) => {
+          const level = metadataLevel(value)
+          if (!level) return
+          persisted = level
+          // A selection made while the file was still loading wins over the
+          // file: the user's choice is newer than what was on disk.
+          if (!touched) setStored(level)
+        })
+        .catch(() => {})
+
+      function persistDefault(level: Level) {
+        touched = true
+        setStored(level)
+        const attempt = ++defaultSequence
+        // Serialize default writes so two rapid selections persist in order
+        // and the last choice is what the file ends up holding.
+        const write = defaultWrites.then(() => writeJsonAtomic(defaultFile, effortRecord(level)))
+        defaultWrites = write.catch(() => {})
+        write.then(
+          () => {
+            persisted = level
+          },
+          (error) => {
+            // Only the newest selection owns the displayed default; an older
+            // failed write must not roll back a newer choice.
+            if (attempt !== defaultSequence) return
+            setStored(persisted)
+            toast.show({
+              variant: "warning",
+              message: `Failed to save the agent effort default: ${errorMessage(error)}`,
+              duration: 3000,
+            })
+          },
+        )
+      }
+
       function activeSessionID() {
         return route.data.type === "session" ? route.data.sessionID : undefined
       }
@@ -658,26 +709,45 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           // write must be visible immediately, before the sync event that
           // confirms it lands on the session row.
           pendingVersion()
+          // Home has no session to override, so the persisted new-session
+          // default (then configuration) is what a new session would use.
+          if (!sessionID) return defaultLevel({ selected: stored(), config: sync.data.config })
           return effortSelection({
-            override: sessionID ? pending.get(sessionID) : undefined,
+            override: pending.get(sessionID),
             metadata: row?.metadata,
             config: sync.data.config,
           })
         },
         // Whether the selection is session-scoped right now. On the home
-        // route there is no session to persist into, so the configured
-        // default stays authoritative for new work.
+        // route the persisted default is authoritative for new work.
         scoped() {
           return activeSessionID() !== undefined
+        },
+        // Metadata a session created right now starts from, so the home
+        // default is stored on the session (and enforced by the server)
+        // rather than only being displayed. Undefined when the user never
+        // picked one, which leaves the configured default in charge.
+        newSessionMetadata() {
+          const level = stored()
+          return level ? effortRecord(level) : undefined
+        },
+        // Show a newly created session's inherited selection immediately:
+        // its row syncs a moment later, and reading through the same overlay
+        // as a session write keeps the label from flashing the old default.
+        seed(sessionID: string, metadata: Record<string, unknown> | undefined) {
+          if (!metadata) return
+          if (metadataLevel(sync.session.get(sessionID)?.metadata) === metadataLevel(metadata)) return
+          pending.set(sessionID, metadata)
+          setPendingVersion((version) => version + 1)
         },
         set(level: Level) {
           const sessionID = activeSessionID()
           if (!sessionID) {
-            toast.show({
-              variant: "info",
-              message: "Agent effort applies per session; open a session to change it.",
-              duration: 3000,
-            })
+            // Home selection: a failed default write rolls the value back and
+            // reports the failure, so the label never claims a level that is
+            // not actually persisted.
+            persistDefault(level)
+            model.variant.couple(level)
             return
           }
           const row = sync.session.get(sessionID)
