@@ -25,9 +25,10 @@ const argv = process.argv.slice(2)
 const heartbeat = setInterval(() => log("pending"), 30_000)
 heartbeat.unref()
 try {
-  child = Bun.spawn([process.execPath, "test", ...argv], {
+  const spawned = Bun.spawn([process.execPath, "test", ...argv], {
     cwd: process.cwd(), env: process.env, stdin: "inherit", stdout: "pipe", stderr: "pipe",
   })
+  child = spawned
   log("child-spawned")
   const forward = async (source: ReadableStream<Uint8Array>, kind: "stdout" | "stderr") => {
     const reader = source.getReader()
@@ -47,9 +48,9 @@ try {
     } finally { reader.releaseLock() }
     log("stream-closed", { stream: kind })
   }
-  const output = [forward(child.stdout, "stdout"), forward(child.stderr, "stderr")]
-  const code = await child.exited
-  log("child-exited", { code, signalCode: child.signalCode })
+  const output = [forward(spawned.stdout, "stdout"), forward(spawned.stderr, "stderr")]
+  const code = await spawned.exited
+  log("child-exited", { code, signalCode: spawned.signalCode })
   await Promise.all(output)
   log("wrapper-complete", { code })
   process.exitCode = code
