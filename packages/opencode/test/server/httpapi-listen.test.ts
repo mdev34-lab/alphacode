@@ -330,7 +330,12 @@ describe("HttpApi Server.listen", () => {
       },
     })
     const previous = process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
+    const previousDepInstall = process.env.OPENCODE_DISABLE_CONFIG_DEP_INSTALL
     process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1"
+    // The test plugin imports nothing, so the background @opencode-ai/plugin
+    // install that config-with-plugins waits on is pure cost here - and on
+    // Windows CI (Arborist on NTFS + Defender) it exceeds the 30s test budget.
+    process.env.OPENCODE_DISABLE_CONFIG_DEP_INSTALL = "1"
     let listener: Awaited<ReturnType<typeof startListener>> | undefined
     try {
       listener = await startListener()
@@ -350,6 +355,8 @@ describe("HttpApi Server.listen", () => {
       if (listener) await stop(listener, "timed out cleaning up plugin client listener").catch(() => undefined)
       if (previous === undefined) delete process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS
       else process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = previous
+      if (previousDepInstall === undefined) delete process.env.OPENCODE_DISABLE_CONFIG_DEP_INSTALL
+      else process.env.OPENCODE_DISABLE_CONFIG_DEP_INSTALL = previousDepInstall
     }
   })
 
