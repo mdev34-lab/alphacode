@@ -1,13 +1,17 @@
 import { expect } from "bun:test"
 import { Deferred, Effect, Fiber, Layer } from "effect"
 import { makePartLock } from "../../src/session/part-lock"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.empty)
-// Promise-chain cleanup runs in microtasks, not on a timer.
-const flush = Effect.promise(async () => {
-  for (let i = 0; i < 20; i++) await Promise.resolve()
-})
+// A macrotask boundary drains pending promise reactions without assuming a
+// fixed chain length. Cleanup assertions additionally await observable size.
+const flush = Effect.promise(() => new Promise<void>((done) => setImmediate(done)))
+const awaitEmpty = (lock: ReturnType<typeof makePartLock>) =>
+  pollWithTimeout(
+    Effect.sync(() => (lock.size() === 0 ? true : undefined)),
+    "part lock did not clean up",
+  )
 
 it.live("part lock releases settled keys after success and failure", () =>
   Effect.gen(function* () {
@@ -16,7 +20,7 @@ it.live("part lock releases settled keys after success and failure", () =>
       yield* lock.withLock(String(i), Effect.void)
       yield* lock.withLock(String(i), Effect.fail("expected")).pipe(Effect.exit)
     }
-    yield* flush
+    yield* awaitEmpty(lock)
     expect(lock.size()).toBe(0)
   }),
 )
@@ -130,7 +134,7 @@ it.live("part lock cancellation of active owner releases its waiter and cleans t
     const next = yield* lock.withLock("part", Effect.succeed("next")).pipe(Effect.forkChild({ startImmediately: true }))
     yield* Fiber.interrupt(owner)
     expect(yield* Fiber.join(next)).toBe("next")
-    yield* flush
+    yield* awaitEmpty(lock)
     expect(lock.size()).toBe(0)
   }),
 )

@@ -3,7 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -37,7 +37,11 @@ const ref = {
   modelID: ModelV2.ID.make("test-model"),
 }
 
-const layer = (flags: Partial<RuntimeFlags.Info> = {}, extra: LayerNode.Replacement[] = []) =>
+const layer = <R = never>(
+  flags: Partial<RuntimeFlags.Info> = {},
+  extra: LayerNode.Replacement[] = [],
+  roots: LayerNode.Node<R>[] = [],
+) =>
   LayerNode.compile(
     LayerNode.group([
       Agent.node,
@@ -54,6 +58,7 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}, extra: LayerNode.Replacem
       Database.node,
       RuntimeFlags.node,
       Ripgrep.node,
+      ...roots,
     ]),
     [[RuntimeFlags.node, RuntimeFlags.layer(flags)], ...extra],
   )
@@ -2240,9 +2245,17 @@ describe("tool.task - child write handoff", () => {
 
 // Force the reverse ordering through the real store: projectWrites captures a
 // running snapshot, completion commits, then the projection resumes.
-const reverseGate: {
-  current?: { partID: PartID; sessionID: SessionID; ready: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
-} = {}
+class ReverseGate extends Context.Service<
+  ReverseGate,
+  {
+    current?: { partID: PartID; sessionID: SessionID; ready: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+  }
+>()("TaskTest.ReverseGate") {}
+const reverseGateNode = LayerNode.make({
+  service: ReverseGate,
+  layer: Layer.sync(ReverseGate, () => ({})),
+  deps: [],
+})
 const reverseBase = LayerNode.make({
   name: "@opencode/Session.reverseBase",
   layer: Session.node.implementation!,
@@ -2254,6 +2267,7 @@ const reverseSession = LayerNode.make({
     Session.Service,
     Effect.gen(function* () {
       const base = yield* Session.Service
+      const reverseGate = yield* ReverseGate
       return Session.Service.of({
         ...base,
         messages: (input) =>
@@ -2276,14 +2290,15 @@ const reverseSession = LayerNode.make({
       })
     }),
   ),
-  deps: [reverseBase],
+  deps: [reverseBase, reverseGateNode],
 })
-const itReverse = testEffect(layer({}, [[Session.node, reverseSession]]))
+const itReverse = testEffect(layer({}, [[Session.node, reverseSession]], [reverseGateNode]))
 
 itReverse.instance("child write projection preserves completion committed after its running snapshot", () =>
   Effect.gen(function* () {
     const { chat, assistant } = yield* seed()
     const sessions = yield* Session.Service
+    const reverseGate = yield* ReverseGate
     const tool = yield* TaskTool
     const def = yield* tool.init()
     const running: SessionV1.ToolPart = {

@@ -321,7 +321,11 @@ export const TaskTool = Tool.define(
       const termination = yield* Ref.make<TerminationReason | undefined>(undefined)
       const projectWrites = Effect.fn("TaskTool.projectChildWrites")(function* (parts: readonly SessionV1.Part[]) {
         if (!parts.some(hasFileWrites)) return
-        metadata[REVIEW_LOOP_METADATA] = { writesFiles: true, handoff: "pending", sessionId: nextSession.id }
+        const evidence = { writesFiles: true, handoff: "pending", sessionId: nextSession.id }
+        metadata[REVIEW_LOOP_METADATA] = evidence
+        // Snapshot this projection before yielding; the locked callback must
+        // not depend on the shared delivery metadata object.
+        const projected = { ...metadata, [REVIEW_LOOP_METADATA]: evidence }
         const parentMessages = yield* sessions.messages({ sessionID: ctx.sessionID })
         const taskPart = parentMessages
           .flatMap((message) => message.parts)
@@ -339,10 +343,10 @@ export const TaskTool = Tool.define(
                   ...current.state,
                   metadata: {
                     ...current.state.metadata,
-                    ...metadata,
+                    ...projected,
                     [REVIEW_LOOP_METADATA]: {
                       ...current.state.metadata?.[REVIEW_LOOP_METADATA],
-                      ...metadata[REVIEW_LOOP_METADATA],
+                      ...evidence,
                     },
                   },
                 },
@@ -350,7 +354,7 @@ export const TaskTool = Tool.define(
             },
           )
         } else {
-          yield* ctx.metadata({ title: params.description, metadata: { ...metadata } })
+          yield* ctx.metadata({ title: params.description, metadata: projected })
         }
       })
       // Observe writes while the child is running, not only after successful
