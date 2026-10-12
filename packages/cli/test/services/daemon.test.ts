@@ -25,7 +25,10 @@ beforeAll(async () => {
   installationVersion = (await import("@opencode-ai/core/installation/version")).InstallationVersion
   // Replacement path spawns `<execPath> <argv[1]> serve --register`. The marker
   // records that a spawn happened and exits, instead of starting a real server.
-  writeFileSync(markerScript, 'require("fs").writeFileSync(process.env.ALPHACODE_TEST_MARK, process.argv.slice(2).join(" "))\n')
+  writeFileSync(
+    markerScript,
+    'require("fs").writeFileSync(process.env.ALPHACODE_TEST_MARK, process.argv.slice(2).join(" "))\n',
+  )
 })
 
 afterAll(() => {
@@ -40,12 +43,12 @@ describe("decideStart", () => {
     expect(mod.decideStart({ ...base, registered: false, activeRuns: 3 })).toBe("spawn")
   })
 
-  test("unknown probe result always refuses and never stops or reuses", () => {
+  test("unknown reuses same-version non-destructively, refuses a version mismatch", () => {
     for (const sameVersion of [true, false]) {
       for (const compiled of [true, false]) {
         for (const factoryDefault of [true, false]) {
           expect(mod.decideStart({ ...base, sameVersion, compiled, factoryDefault, activeRuns: undefined })).toBe(
-            "refuse-unknown",
+            sameVersion ? "reuse" : "refuse-unknown",
           )
         }
       }
@@ -100,11 +103,13 @@ type ActiveMode =
 // Fake registered server. /api/health is always healthy so the probe is the only
 // variable; /api/session/active behaves according to `active`.
 function fakeServer(active: ActiveMode) {
+  const requests: Array<{ path: string; authorization: string | null }> = []
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(req) {
       const url = new URL(req.url)
+      requests.push({ path: url.pathname, authorization: req.headers.get("Authorization") })
       if (url.pathname === "/api/health") return Response.json({ healthy: true })
       if (url.pathname !== "/api/session/active") return new Response("not found", { status: 404 })
       if (active.kind === "ok") {
@@ -119,7 +124,7 @@ function fakeServer(active: ActiveMode) {
       return new Promise<Response>(() => {}) // hang: the client's 2 s timeout must fire
     },
   })
-  return server
+  return Object.assign(server, { requests })
 }
 
 function writeRegistration(input: { version: string; url: string; pid: number }) {
@@ -151,19 +156,33 @@ function errorText(error: unknown) {
 async function withRegisteredService(
   active: ActiveMode,
   version: string,
-  body: (ctx: { child: ReturnType<typeof Bun.spawn>; url: string }) => Promise<void>,
+  body: (ctx: {
+    child: ReturnType<typeof Bun.spawn>
+    url: string
+    requests: ReturnType<typeof fakeServer>["requests"]
+  }) => Promise<void>,
 ) {
   const server = fakeServer(active)
   const url = server.url.origin
   // A real process stands in for the registered server so a stop is observable.
   const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
   writeRegistration({ version, url, pid: child.pid })
+  const originalArgv1 = process.argv[1]
+  const originalMark = process.env.ALPHACODE_TEST_MARK
+  process.argv[1] = markerScript
+  process.env.ALPHACODE_TEST_MARK = markerOut
+  rmSync(markerOut, { force: true })
+  const originalRegistration = readFileSync(serverFile, "utf8")
   try {
-    await body({ child, url })
-    // Every refusal must leave the registered process and its registration in place.
+    await body({ child, url, requests: server.requests })
+    // Neither reuse nor refusal may signal, spawn, or change registration.
     expect(alive(child.pid)).toBe(true)
-    expect(existsSync(serverFile)).toBe(true)
+    expect(existsSync(markerOut)).toBe(false)
+    expect(readFileSync(serverFile, "utf8")).toBe(originalRegistration)
   } finally {
+    process.argv[1] = originalArgv1
+    if (originalMark === undefined) delete process.env.ALPHACODE_TEST_MARK
+    else process.env.ALPHACODE_TEST_MARK = originalMark
     child.kill()
     server.stop(true)
     rmSync(serverFile, { force: true })
@@ -185,34 +204,56 @@ describe("daemon start/restart: verified active-run boundary (integration)", () 
 
   const unknownCases: Array<{ name: string; active: ActiveMode }> = [
     { name: "HTTP 401 (auth mismatch)", active: { kind: "status", status: 401 } },
+    { name: "HTTP 403 (forbidden)", active: { kind: "status", status: 403 } },
     { name: "HTTP 404", active: { kind: "status", status: 404 } },
     { name: "HTTP 500", active: { kind: "status", status: 500 } },
     { name: "2xx with a body that does not decode", active: { kind: "body", text: "not-json" } },
+    { name: "JSON with missing data", active: { kind: "body", text: "{}" } },
+    { name: "JSON with null data", active: { kind: "body", text: '{"data":null}' } },
+    { name: "JSON with array data", active: { kind: "body", text: '{"data":[]}' } },
     { name: "timeout (no response)", active: { kind: "hang" } },
     { name: "network error (connection dropped)", active: { kind: "drop" } },
   ]
 
   for (const item of unknownCases) {
-    test(`unknown probe (${item.name}): start and restart refuse, process and registration kept`, async () => {
-      await withRegisteredService(item.active, installationVersion, async () => {
+    test(`unknown probe (${item.name}): same-version start/transport reuse, restart refuses`, async () => {
+      await withRegisteredService(item.active, installationVersion, async ({ url, requests }) => {
         const started = await runDaemon((daemon) => daemon.start())
-        expect(started.ok).toBe(false)
-        if (!started.ok) expect(started.message).toContain("Could not confirm")
+        expect(started).toEqual({ ok: true, value: url })
+        expect(requests.filter((req) => req.path === "/api/session/active")).toHaveLength(1)
+
+        const transported = await runDaemon((daemon) => daemon.transport())
+        const headers = { Authorization: `Basic ${Buffer.from("opencode:test-password").toString("base64")}` }
+        expect(transported).toEqual({ ok: true, value: { url, headers } })
+        expect(requests.filter((req) => req.path === "/api/session/active")).toHaveLength(2)
+        expect(requests.every((req) => req.authorization === headers.Authorization)).toBe(true)
 
         const restarted = await runDaemon((daemon) => daemon.restart())
         expect(restarted.ok).toBe(false)
         if (!restarted.ok) expect(restarted.message).toContain("Could not confirm")
+        expect(requests.filter((req) => req.path === "/api/session/active")).toHaveLength(3)
+      })
+    }, 60_000)
+
+    test(`unknown probe (${item.name}): version mismatch start/transport/restart refuse`, async () => {
+      await withRegisteredService(item.active, "0.0.0-old", async ({ requests }) => {
+        for (const operation of ["start", "transport", "restart"] as const) {
+          const result = await runDaemon<unknown, unknown>((daemon) => daemon[operation]())
+          expect(result.ok).toBe(false)
+          if (!result.ok) expect(result.message).toContain("Could not confirm")
+        }
+        expect(requests.filter((req) => req.path === "/api/session/active")).toHaveLength(3)
       })
     }, 60_000)
   }
 
-  test("unknown probe on a version-mismatched service: start refuses, process kept", async () => {
-    await withRegisteredService({ kind: "status", status: 500 }, "0.0.0-old", async () => {
+  test("verified active run on a mismatched service: start refuses without replacement", async () => {
+    await withRegisteredService({ kind: "ok", runs: 1 }, "0.0.0-old", async () => {
       const started = await runDaemon((daemon) => daemon.start())
       expect(started.ok).toBe(false)
-      if (!started.ok) expect(started.message).toContain("Could not confirm")
+      if (!started.ok) expect(started.message).toContain("1 active run(s)")
     })
-  }, 60_000)
+  })
 
   test("verified idle zero, version mismatch: start replaces (old process killed, new spawn attempted)", async () => {
     const originalArgv1 = process.argv[1]

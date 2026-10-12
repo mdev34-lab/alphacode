@@ -27,7 +27,8 @@ export type StartDecision = "reuse" | "spawn" | "replace" | "refuse-active" | "r
 
 // `activeRuns` is undefined when the active-run probe did not return a verified
 // answer (non-2xx, network error, timeout, or an unparseable body). Unknown is
-// never treated as idle: the service is neither stopped nor silently reused.
+// never treated as idle: replacement is refused. A healthy same-version service
+// can still be reused without stopping it, regardless of its active-run count.
 export function decideStart(input: {
   registered: boolean
   sameVersion: boolean
@@ -36,14 +37,17 @@ export function decideStart(input: {
   activeRuns: number | undefined
 }): StartDecision {
   if (!input.registered) return "spawn"
-  if (input.activeRuns === undefined) return "refuse-unknown"
+  if (input.activeRuns === undefined) return input.sameVersion ? "reuse" : "refuse-unknown"
   if (input.activeRuns > 0) return input.sameVersion ? "reuse" : "refuse-active"
   if (input.sameVersion && input.compiled && !input.factoryDefault) return "reuse"
   return "replace"
 }
 
 // Restart is stop-then-start, so it is refused unless the registered service is
-// verified idle. Explicit `service stop` remains the way to end a service on purpose.
+// verified idle. This client-side probe is not atomic with the later signal: a
+// run may begin between them. A server-side stop-if-idle/drain contract is needed
+// to close that gap. If spawning fails after stopping, the service stays stopped.
+// Explicit `service stop` remains the way to end a service on purpose.
 export function decideRestart(input: {
   registered: boolean
   activeRuns: number | undefined
@@ -144,8 +148,6 @@ export const layer = Layer.effect(
       )
     })
 
-    // Number of foreground runs the registered server reports as active, or
-    // undefined when the probe fails (callers treat unknown as possibly active).
     // Verified active-run count for the registered server. Only a 2xx response
     // whose body decodes to `{ data: {...} }` yields a number. Non-2xx, network
     // errors (the SDK returns them instead of throwing), timeouts, and bad bodies
@@ -170,6 +172,9 @@ export const layer = Layer.effect(
       const compiled = path.basename(process.execPath).replace(/\.exe$/, "") !== "bun"
       const factoryDefault =
         process.env.OPENCODE_FACTORY_DEFAULT === "1" || process.env.OPENCODE_FACTORY_DEFAULT === "true"
+      // Keep probing even for compatible servers: verified idle retains the
+      // development/factory replacement behavior. Unknown permits only reuse,
+      // not replacement, and is never converted to a zero active-run count.
       const activeCount = yield* probeActiveRuns(found)
 
       const decision = decideStart({
@@ -190,7 +195,7 @@ export const layer = Layer.effect(
       if (decision === "refuse-unknown" && found) {
         return yield* Effect.fail(
           new Error(
-            "Could not confirm whether the background service has active runs (active-run probe failed). The service was left running. Retry, or run \"service stop\" to end it explicitly.",
+            'Could not confirm whether the background service has active runs (active-run probe failed). The service was left running. Retry, or run "service stop" to end it explicitly.',
           ),
         )
       }
@@ -231,7 +236,7 @@ export const layer = Layer.effect(
       if (restartDecision === "refuse-unknown") {
         return yield* Effect.fail(
           new Error(
-            "Could not confirm the background service is idle (active-run probe failed); restart refused and the service was left running. Retry, or run \"service stop\" to end it explicitly.",
+            'Could not confirm the background service is idle (active-run probe failed); restart refused and the service was left running. Retry, or run "service stop" to end it explicitly.',
           ),
         )
       }
