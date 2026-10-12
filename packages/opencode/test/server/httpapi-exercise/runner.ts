@@ -14,6 +14,34 @@ import type { ActiveScenario, Options, ProjectOptions, Result, Scenario, Scenari
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
+// Finalizers run uninterruptibly, so an Effect timeout cannot bound cleanup:
+// race each async disposal against a plain timer instead. The timer is
+// cancelled as soon as the disposal settles, so a fast success logs nothing
+// and leaves no timer pending. Wedges and disposal errors are logged and
+// swallowed rather than propagated: these are best-effort resets of
+// test-scoped state (scratch db/tmp per run) that must neither hang the run
+// nor mask the scenario's own result - resetState runs under
+// Effect.ensuring, and in this Effect version a failing finalizer replaces
+// the scenario's original cause.
+const bounded = <A>(label: string, promise: Promise<A>) =>
+  new Promise<A | void>((resolve) => {
+    const timer = setTimeout(() => {
+      console.error(`[reset] ${label} did not finish within 60s; continuing`)
+      resolve()
+    }, 60_000)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        console.error(`[reset] ${label} failed; continuing`, error)
+        resolve()
+      },
+    )
+  })
+
 export function runScenario(options: Options) {
   return (scenario: Scenario) => {
     if (scenario.kind === "todo") return Effect.succeed({ status: "skip", scenario } as Result)
@@ -80,27 +108,13 @@ function withContext<A, E>(
       Effect.gen(function* () {
         yield* trace(options, scenario, `${label} tmpdir cleanup start`)
         // Finalizers run uninterruptibly, so an Effect timeout could not bound
-        // this either: race the disposal against a plain timer instead. After
-        // a scenario timeout the run must move on even if cleanup is wedged.
+        // this either: bounded() races the disposal against a plain timer.
+        // After a scenario timeout the run must move on even if cleanup is
+        // wedged. Effect.ignore still guards a synchronous throw from the
+        // asyncDispose call itself.
         yield* Effect.promise(async () => {
           const disposal = ctx.dir?.[Symbol.asyncDispose]()
-          if (disposal) {
-            // Same reasoning as bounded(): the timer is cancelled when the
-            // disposal settles, and errors stay ignored via Effect.ignore.
-            await new Promise<void>((resolve) => {
-              const timer = setTimeout(resolve, 60_000)
-              disposal.then(
-                () => {
-                  clearTimeout(timer)
-                  resolve()
-                },
-                () => {
-                  clearTimeout(timer)
-                  resolve()
-                },
-              )
-            })
-          }
+          if (disposal) await bounded(`${label} tmpdir disposal`, disposal)
         }).pipe(Effect.ignore)
         yield* trace(options, scenario, `${label} tmpdir cleanup done`)
       }),
@@ -285,32 +299,6 @@ function fakeLlmConfig(url: string): Partial<ConfigV1.Info> {
     },
   }
 }
-
-// Finalizers run uninterruptibly, so an Effect timeout cannot bound cleanup:
-// race each async disposal against a plain timer instead. The timer is
-// cancelled as soon as the disposal settles, so a fast success logs nothing
-// and leaves no timer pending. When the bound fires we log and continue
-// without the disposal having finished: safe here because these are
-// best-effort global resets of test-scoped state (scratch db/tmp per run),
-// the promise still completes in the background, and the bound can only fire
-// on a genuine wedge, which is exactly what must not hang the whole run.
-const bounded = <A>(label: string, promise: Promise<A>) =>
-  new Promise<A | void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      console.error(`[reset] ${label} did not finish within 60s; continuing`)
-      resolve()
-    }, 60_000)
-    promise.then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      (error) => {
-        clearTimeout(timer)
-        reject(error)
-      },
-    )
-  })
 
 const resetState = Effect.promise(async () => {
   const modules = await runtime()
