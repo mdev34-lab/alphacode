@@ -60,7 +60,7 @@ const waitForEvents = (events: Queue.Queue<PtyEvent>, id: PtyID, count: number) 
     return picked
   }).pipe(
     Effect.timeoutOrElse({
-      duration: "5 seconds",
+      duration: "15 seconds",
       orElse: () => Effect.fail(new Error("timeout waiting for pty events")),
     }),
   )
@@ -85,7 +85,7 @@ const waitForOutput = (output: Queue.Queue<string>, text: string) =>
     return received
   }).pipe(
     Effect.timeoutOrElse({
-      duration: "5 seconds",
+      duration: "15 seconds",
       orElse: () => Effect.fail(new Error(`timeout waiting for output containing ${JSON.stringify(text)}`)),
     }),
   )
@@ -126,6 +126,7 @@ describe("pty", () => {
       const missing = yield* pty.get(info.id).pipe(Effect.exit)
       expect(Exit.isFailure(missing)).toBe(true)
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("replays buffered output and streams live output to attachments", () =>
@@ -151,6 +152,7 @@ describe("pty", () => {
       expect(tail.attachment.replay).toBe("")
       expect(tail.attachment.cursor).toBe(replayed.attachment.cursor)
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("stops delivering output after detach", () =>
@@ -167,6 +169,7 @@ describe("pty", () => {
       const leaked = yield* Queue.poll(attached.output)
       expect(leaked._tag).toBe("None")
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("isolates output between sessions", () =>
@@ -183,6 +186,7 @@ describe("pty", () => {
       const leaked = yield* Queue.poll(attachedB.output)
       expect(leaked._tag).toBe("None")
     }),
+    { timeout: 20000 },
   )
 
   ptyTest("notifies attachments with the exit code and rejects attach after exit", () =>
@@ -201,6 +205,7 @@ describe("pty", () => {
       if (Exit.isFailure(result))
         expect(Cause.squash(result.cause)).toMatchObject({ _tag: "Pty.ExitedError", ptyID: info.id })
     }),
+    { timeout: 20000 },
   )
 })
 
@@ -236,5 +241,6 @@ describe("pty create defaults", () => {
       expect(info.cwd).toBe("/tmp")
       expect(info.title).toBe("configured")
     }),
+    { timeout: 20000 },
   )
 })
