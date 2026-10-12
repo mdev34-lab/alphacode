@@ -1,51 +1,19 @@
-import { setTimeout as sleep } from "node:timers/promises"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Duration, Effect, Layer, Scope } from "effect"
+import { Cause, Duration, Effect, Exit, Layer, Scope } from "effect"
 import { TestLLMServer } from "../../lib/llm-server"
 import type { Config } from "../../../src/config/config"
 
 import type { MessageV2 } from "../../../src/session/message-v2"
 import { MessageID, PartID } from "../../../src/session/schema"
+import { boundedCleanup } from "./cleanup"
 import { call, callAuthProbe, disposeApps } from "./backend"
 import { original } from "./environment"
 import { runtime } from "./runtime"
 import type { ActiveScenario, Options, ProjectOptions, Result, Scenario, ScenarioContext, SeededContext } from "./types"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-
-const CLEANUP_BOUND_MS = 60_000
-
-// Finalizers run uninterruptibly, so an Effect timeout cannot bound cleanup:
-// race each async disposal against a plain timer instead. The timer is
-// aborted as soon as the race settles, so a fast success logs nothing
-// and leaves no timer pending. Wedges and disposal errors are logged and
-// swallowed rather than propagated: these are best-effort resets of
-// test-scoped state (scratch db/tmp per run) that must neither hang the run
-// nor mask the scenario's own result - resetState runs under
-// Effect.ensuring, and in this Effect version a failing finalizer replaces
-// the scenario's original cause.
-const bounded = (label: string, promise: Promise<unknown>): Promise<void> => {
-  const cancel = new AbortController()
-  const bound = sleep(CLEANUP_BOUND_MS, undefined, { signal: cancel.signal })
-    .then(() => {
-      console.error(`[reset] ${label} did not finish within ${CLEANUP_BOUND_MS / 1000}s; continuing`)
-    })
-    // The finally below aborts this timer once the race settles; the race
-    // already observes the resulting AbortError, and this catch swallows it
-    // explicitly so static review sees the rejection as handled.
-    .catch(() => {})
-  return Promise.race([
-    promise.then(
-      () => {},
-      (error) => {
-        console.error(`[reset] ${label} failed; continuing`, error)
-      },
-    ),
-    bound,
-  ]).finally(() => cancel.abort())
-}
 
 export function runScenario(options: Options) {
   return (scenario: Scenario) => {
@@ -98,6 +66,21 @@ function withContext<A, E>(
   label: string,
   use: (ctx: SeededContext<unknown>) => Effect.Effect<A, E>,
 ) {
+  // The AppLayer gets its own scope so its finalizers can be bounded like the
+  // other cleanups. Closing it last keeps the order of the original scope close.
+  return Effect.gen(function* () {
+    const appScope = yield* Scope.make()
+    return yield* withContextScope(options, scenario, label, appScope, use)
+  })
+}
+
+function withContextScope<A, E>(
+  options: Options,
+  scenario: ActiveScenario,
+  label: string,
+  appScope: Scope.Closeable,
+  use: (ctx: SeededContext<unknown>) => Effect.Effect<A, E>,
+) {
   return Effect.acquireRelease(
     Effect.gen(function* () {
       yield* trace(options, scenario, `${label} context acquire start`)
@@ -113,13 +96,13 @@ function withContext<A, E>(
       Effect.gen(function* () {
         yield* trace(options, scenario, `${label} tmpdir cleanup start`)
         // Finalizers run uninterruptibly, so an Effect timeout could not bound
-        // this either: bounded() races the disposal against a plain timer.
+        // this either: boundedCleanup() races the disposal against a plain timer.
         // After a scenario timeout the run must move on even if cleanup is
         // wedged. Effect.ignore still guards a synchronous throw from the
         // asyncDispose call itself.
         yield* Effect.promise(async () => {
           const disposal = ctx.dir?.[Symbol.asyncDispose]()
-          if (disposal) await bounded(`${label} tmpdir disposal`, disposal)
+          if (disposal) await boundedCleanup(`${label} tmpdir disposal`, disposal)
         }).pipe(Effect.ignore)
         yield* trace(options, scenario, `${label} tmpdir cleanup done`)
       }),
@@ -128,8 +111,7 @@ function withContext<A, E>(
       Effect.gen(function* () {
         yield* trace(options, scenario, `${label} runtime start`)
         const modules = yield* Effect.promise(() => runtime())
-        const scope = yield* Scope.Scope
-        const app = yield* Layer.buildWithMemoMap(modules.AppLayer, modules.memoMap, scope)
+        const app = yield* Layer.buildWithMemoMap(modules.AppLayer, modules.memoMap, appScope)
         yield* trace(options, scenario, `${label} runtime done`)
         const path = context.dir?.path
         const instance = path
@@ -238,6 +220,17 @@ function withContext<A, E>(
       }).pipe(Effect.ensuring(context.llm ? context.llm.reset : Effect.void)),
     ),
     Effect.ensuring(scenario.reset ? resetState : Effect.void),
+    Effect.ensuring(
+      Effect.gen(function* () {
+        yield* trace(options, scenario, `${label} app scope close start`)
+        // Closing the scope runs the AppLayer finalizers, which Effect.scoped
+        // used to close without any bound. Failures are logged by boundedCleanup.
+        yield* Effect.promise(() =>
+          boundedCleanup(`${label} app scope close`, Effect.runPromise(Scope.close(appScope, Exit.void))),
+        )
+        yield* trace(options, scenario, `${label} app scope close done`)
+      }),
+    ),
   )
 }
 
@@ -309,8 +302,8 @@ const resetState = Effect.promise(async () => {
   const modules = await runtime()
   Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
   Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
-  await bounded("disposeApps", disposeApps())
-  await bounded("disposeAllInstances", modules.disposeAllInstances())
-  await bounded("resetDatabase", modules.resetDatabase())
+  await boundedCleanup("disposeApps", disposeApps())
+  await boundedCleanup("disposeAllInstances", modules.disposeAllInstances())
+  await boundedCleanup("resetDatabase", modules.resetDatabase())
   await Bun.sleep(25)
 })
