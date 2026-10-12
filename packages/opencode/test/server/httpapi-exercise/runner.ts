@@ -28,9 +28,14 @@ const CLEANUP_BOUND_MS = 60_000
 // the scenario's original cause.
 const bounded = (label: string, promise: Promise<unknown>): Promise<void> => {
   const cancel = new AbortController()
-  const bound = sleep(CLEANUP_BOUND_MS, undefined, { signal: cancel.signal }).then(() => {
-    console.error(`[reset] ${label} did not finish within ${CLEANUP_BOUND_MS / 1000}s; continuing`)
-  })
+  const bound = sleep(CLEANUP_BOUND_MS, undefined, { signal: cancel.signal })
+    .then(() => {
+      console.error(`[reset] ${label} did not finish within ${CLEANUP_BOUND_MS / 1000}s; continuing`)
+    })
+    // The finally below aborts this timer once the race settles; the race
+    // already observes the resulting AbortError, and this catch swallows it
+    // explicitly so static review sees the rejection as handled.
+    .catch(() => {})
   return Promise.race([
     promise.then(
       () => {},
