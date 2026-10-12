@@ -14,6 +14,7 @@ export interface Interface {
   readonly client: () => Effect.Effect<ReturnType<typeof createOpencodeClient>, unknown>
   readonly transport: () => Effect.Effect<{ url: string; headers: RequestInit["headers"] }, unknown>
   readonly start: () => Effect.Effect<string, Error>
+  readonly restart: () => Effect.Effect<string, unknown>
   readonly status: () => Effect.Effect<string | undefined>
   readonly stop: () => Effect.Effect<void, unknown>
   readonly password: (value?: string) => Effect.Effect<string, unknown>
@@ -21,6 +22,40 @@ export interface Interface {
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/cli/Daemon") {}
+
+export type StartDecision = "reuse" | "spawn" | "replace" | "refuse-active" | "refuse-unknown"
+
+// `activeRuns` is undefined when the active-run probe did not return a verified
+// answer (non-2xx, network error, timeout, or an unparseable body). Unknown is
+// never treated as idle: the service is neither stopped nor silently reused.
+export function decideStart(input: {
+  registered: boolean
+  sameVersion: boolean
+  compiled: boolean
+  factoryDefault: boolean
+  activeRuns: number | undefined
+}): StartDecision {
+  if (!input.registered) return "spawn"
+  if (input.activeRuns === undefined) return "refuse-unknown"
+  if (input.activeRuns > 0) return input.sameVersion ? "reuse" : "refuse-active"
+  if (input.sameVersion && input.compiled && !input.factoryDefault) return "reuse"
+  return "replace"
+}
+
+// Restart is stop-then-start, so it is refused unless the registered service is
+// verified idle. Explicit `service stop` remains the way to end a service on purpose.
+export function decideRestart(input: {
+  registered: boolean
+  activeRuns: number | undefined
+}): "proceed" | "refuse-active" | "refuse-unknown" {
+  if (!input.registered) return "proceed"
+  if (input.activeRuns === undefined) return "refuse-unknown"
+  if (input.activeRuns > 0) return "refuse-active"
+  return "proceed"
+}
+
+const ACTIVE_PROBE_TIMEOUT = "2 seconds"
+const ActiveBody = Schema.Struct({ data: Schema.Record(Schema.String, Schema.Unknown) })
 
 const Registration = Schema.Struct({
   id: Schema.optional(Schema.String),
@@ -109,14 +144,56 @@ export const layer = Layer.effect(
       )
     })
 
+    // Number of foreground runs the registered server reports as active, or
+    // undefined when the probe fails (callers treat unknown as possibly active).
+    // Verified active-run count for the registered server. Only a 2xx response
+    // whose body decodes to `{ data: {...} }` yields a number. Non-2xx, network
+    // errors (the SDK returns them instead of throwing), timeouts, and bad bodies
+    // all yield undefined, which callers must treat as unknown, never as idle.
+    const probeActiveRuns = (info: Registration | undefined): Effect.Effect<number | undefined> =>
+      info === undefined
+        ? Effect.succeed(undefined)
+        : Effect.gen(function* () {
+            const client = yield* createClient(info.url)
+            const result = yield* Effect.tryPromise({
+              try: () => client.v2.session.active({ signal: AbortSignal.timeout(2_000) }),
+              catch: (cause) => cause,
+            }).pipe(Effect.timeout(ACTIVE_PROBE_TIMEOUT))
+            if (result.error !== undefined || result.response === undefined || !result.response.ok) return undefined
+            const body = yield* Schema.decodeUnknownEffect(ActiveBody)(result.data)
+            return Object.keys(body.data).length
+          }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+
     const start = Effect.fn("cli.daemon.start")(function* () {
       const existing = yield* healthy().pipe(Effect.option)
       const found = Option.getOrUndefined(existing)
       const compiled = path.basename(process.execPath).replace(/\.exe$/, "") !== "bun"
       const factoryDefault =
         process.env.OPENCODE_FACTORY_DEFAULT === "1" || process.env.OPENCODE_FACTORY_DEFAULT === "true"
+      const activeCount = yield* probeActiveRuns(found)
 
-      if (!factoryDefault && found?.version === InstallationVersion && compiled) return found.url
+      const decision = decideStart({
+        registered: found !== undefined,
+        sameVersion: found?.version === InstallationVersion,
+        compiled,
+        factoryDefault,
+        activeRuns: activeCount,
+      })
+      if (decision === "reuse" && found) return found.url
+      if (decision === "refuse-active" && found) {
+        return yield* Effect.fail(
+          new Error(
+            `Background service ${found.version ?? "unknown"} does not match this client and has ${activeCount} active run(s). Wait for them to finish, or run "service stop" to end them explicitly, then start again.`,
+          ),
+        )
+      }
+      if (decision === "refuse-unknown" && found) {
+        return yield* Effect.fail(
+          new Error(
+            "Could not confirm whether the background service has active runs (active-run probe failed). The service was left running. Retry, or run \"service stop\" to end it explicitly.",
+          ),
+        )
+      }
       if (found) yield* stopProcess(found).pipe(Effect.ignore)
 
       const entrypoint = compiled ? undefined : process.argv[1]
@@ -137,6 +214,29 @@ export const layer = Layer.effect(
         Effect.map((info) => info.url),
         Effect.mapError(() => new Error("Failed to start server")),
       )
+    })
+
+    const restart = Effect.fn("cli.daemon.restart")(function* () {
+      const existing = yield* healthy().pipe(Effect.option)
+      const found = Option.getOrUndefined(existing)
+      const activeCount = yield* probeActiveRuns(found)
+      const restartDecision = decideRestart({ registered: found !== undefined, activeRuns: activeCount })
+      if (restartDecision === "refuse-active") {
+        return yield* Effect.fail(
+          new Error(
+            `Background service has ${activeCount} active run(s); restart refused so they are not interrupted. Wait for them to finish, or run "service stop" to end them explicitly.`,
+          ),
+        )
+      }
+      if (restartDecision === "refuse-unknown") {
+        return yield* Effect.fail(
+          new Error(
+            "Could not confirm the background service is idle (active-run probe failed); restart refused and the service was left running. Retry, or run \"service stop\" to end it explicitly.",
+          ),
+        )
+      }
+      yield* stop()
+      return yield* start()
     })
 
     const transport = Effect.fn("cli.daemon.transport")(function* () {
@@ -190,7 +290,7 @@ export const layer = Layer.effect(
       )
     })
 
-    return Service.of({ client, transport, start, status, stop, password, register })
+    return Service.of({ client, transport, start, restart, status, stop, password, register })
   }),
 )
 
