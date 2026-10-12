@@ -7,18 +7,38 @@ import type { Config } from "../../../src/config/config"
 
 import type { MessageV2 } from "../../../src/session/message-v2"
 import { MessageID, PartID } from "../../../src/session/schema"
-import { boundedCleanup } from "./cleanup"
+import { boundedCleanup, CLEANUP_BOUND_MS } from "./cleanup"
 import { call, callAuthProbe, disposeApps } from "./backend"
 import { original } from "./environment"
-import { runtime } from "./runtime"
+import { runtime, type Runtime } from "./runtime"
 import type { ActiveScenario, Options, ProjectOptions, Result, Scenario, ScenarioContext, SeededContext } from "./types"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
-export function runScenario(options: Options) {
+/**
+ * Injection point for the runner's module graph, cleanup bound and log sink.
+ * Production uses defaultRunnerEnv; tests pass fake modules and a short bound to
+ * drive the real scope wiring deterministically.
+ */
+export type RunnerEnv = {
+  modules: () => Promise<Runtime>
+  cleanupBoundMs: number
+  log: (...args: unknown[]) => void
+}
+
+export const defaultRunnerEnv: RunnerEnv = {
+  modules: runtime,
+  cleanupBoundMs: CLEANUP_BOUND_MS,
+  log: (...args) => console.error(...args),
+}
+
+const boundedWith = (env: RunnerEnv, label: string, promise: Promise<unknown>) =>
+  boundedCleanup(label, promise, { boundMs: env.cleanupBoundMs, log: env.log })
+
+export function runScenario(options: Options, env: RunnerEnv = defaultRunnerEnv) {
   return (scenario: Scenario) => {
     if (scenario.kind === "todo") return Effect.succeed({ status: "skip", scenario } as Result)
-    return runActive(options, scenario).pipe(
+    return runActive(options, scenario, env).pipe(
       Effect.timeoutOrElse({
         duration: options.scenarioTimeout,
         orElse: () => Effect.die(new Error(`scenario timed out after ${Duration.format(options.scenarioTimeout)}`)),
@@ -30,18 +50,23 @@ export function runScenario(options: Options) {
   }
 }
 
-function runActive(options: Options, scenario: ActiveScenario) {
+function runActive(options: Options, scenario: ActiveScenario, env: RunnerEnv) {
   if (options.mode === "auth") return runAuth(scenario)
 
-  return withContext(options, scenario, "shared", (ctx) =>
-    Effect.gen(function* () {
-      yield* trace(options, scenario, "request start")
-      const result = yield* call(scenario, ctx)
-      yield* trace(options, scenario, `response ${result.status}`)
-      yield* trace(options, scenario, "expect start")
-      yield* scenario.expect(ctx, ctx.state, result)
-      yield* trace(options, scenario, "expect done")
-    }),
+  return withContext(
+    options,
+    scenario,
+    "shared",
+    (ctx) =>
+      Effect.gen(function* () {
+        yield* trace(options, scenario, "request start")
+        const result = yield* call(scenario, ctx)
+        yield* trace(options, scenario, `response ${result.status}`)
+        yield* trace(options, scenario, "expect start")
+        yield* scenario.expect(ctx, ctx.state, result)
+        yield* trace(options, scenario, "expect done")
+      }),
+    env,
   )
 }
 
@@ -60,17 +85,22 @@ function runAuth(scenario: ActiveScenario) {
   })
 }
 
-function withContext<A, E>(
+/**
+ * Runs `use` inside the scenario context. Verified order (Effect 4, see runner-cleanup.test.ts):
+ *   use -> llm.reset -> resetState (if scenario.reset) -> AppLayer scope close -> tmpdir disposal.
+ * acquireRelease registers the tmpdir release on the enclosing (Effect.scoped) scope, so it runs
+ * last, as it did at base. The AppLayer scope is created here, not by Effect.scoped, so its close is bounded.
+ */
+export function withContext<A, E>(
   options: Options,
   scenario: ActiveScenario,
   label: string,
   use: (ctx: SeededContext<unknown>) => Effect.Effect<A, E>,
+  env: RunnerEnv = defaultRunnerEnv,
 ) {
-  // The AppLayer gets its own scope so its finalizers can be bounded like the
-  // other cleanups. Closing it last keeps the order of the original scope close.
   return Effect.gen(function* () {
     const appScope = yield* Scope.make()
-    return yield* withContextScope(options, scenario, label, appScope, use)
+    return yield* withContextScope(options, scenario, label, appScope, use, env)
   })
 }
 
@@ -80,6 +110,7 @@ function withContextScope<A, E>(
   label: string,
   appScope: Scope.Closeable,
   use: (ctx: SeededContext<unknown>) => Effect.Effect<A, E>,
+  env: RunnerEnv,
 ) {
   return Effect.acquireRelease(
     Effect.gen(function* () {
@@ -87,7 +118,7 @@ function withContextScope<A, E>(
       const llm = scenario.project?.llm ? yield* TestLLMServer : undefined
       const project = scenario.project
       const dir = project
-        ? yield* Effect.promise(async () => (await runtime()).tmpdir(projectOptions(project, llm?.url)))
+        ? yield* Effect.promise(async () => (await env.modules()).tmpdir(projectOptions(project, llm?.url)))
         : undefined
       yield* trace(options, scenario, `${label} context acquire done`)
       return { dir, llm }
@@ -102,7 +133,7 @@ function withContextScope<A, E>(
         // asyncDispose call itself.
         yield* Effect.promise(async () => {
           const disposal = ctx.dir?.[Symbol.asyncDispose]()
-          if (disposal) await boundedCleanup(`${label} tmpdir disposal`, disposal)
+          if (disposal) await boundedWith(env, `${label} tmpdir disposal`, disposal)
         }).pipe(Effect.ignore)
         yield* trace(options, scenario, `${label} tmpdir cleanup done`)
       }),
@@ -110,7 +141,7 @@ function withContextScope<A, E>(
     Effect.flatMap((context) =>
       Effect.gen(function* () {
         yield* trace(options, scenario, `${label} runtime start`)
-        const modules = yield* Effect.promise(() => runtime())
+        const modules = yield* Effect.promise(() => env.modules())
         const app = yield* Layer.buildWithMemoMap(modules.AppLayer, modules.memoMap, appScope)
         yield* trace(options, scenario, `${label} runtime done`)
         const path = context.dir?.path
@@ -219,14 +250,14 @@ function withContextScope<A, E>(
         return result
       }).pipe(Effect.ensuring(context.llm ? context.llm.reset : Effect.void)),
     ),
-    Effect.ensuring(scenario.reset ? resetState : Effect.void),
+    Effect.ensuring(scenario.reset ? resetState(env) : Effect.void),
     Effect.ensuring(
       Effect.gen(function* () {
         yield* trace(options, scenario, `${label} app scope close start`)
         // Closing the scope runs the AppLayer finalizers, which Effect.scoped
         // used to close without any bound. Failures are logged by boundedCleanup.
         yield* Effect.promise(() =>
-          boundedCleanup(`${label} app scope close`, Effect.runPromise(Scope.close(appScope, Exit.void))),
+          boundedWith(env, `${label} app scope close`, Effect.runPromise(Scope.close(appScope, Exit.void))),
         )
         yield* trace(options, scenario, `${label} app scope close done`)
       }),
@@ -298,12 +329,13 @@ function fakeLlmConfig(url: string): Partial<ConfigV1.Info> {
   }
 }
 
-const resetState = Effect.promise(async () => {
-  const modules = await runtime()
-  Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
-  Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
-  await boundedCleanup("disposeApps", disposeApps())
-  await boundedCleanup("disposeAllInstances", modules.disposeAllInstances())
-  await boundedCleanup("resetDatabase", modules.resetDatabase())
-  await Bun.sleep(25)
-})
+const resetState = (env: RunnerEnv) =>
+  Effect.promise(async () => {
+    const modules = await env.modules()
+    Flag.OPENCODE_SERVER_PASSWORD = original.OPENCODE_SERVER_PASSWORD
+    Flag.OPENCODE_SERVER_USERNAME = original.OPENCODE_SERVER_USERNAME
+    await boundedWith(env, "disposeApps", disposeApps())
+    await boundedWith(env, "disposeAllInstances", modules.disposeAllInstances())
+    await boundedWith(env, "resetDatabase", modules.resetDatabase())
+    await Bun.sleep(25)
+  })
