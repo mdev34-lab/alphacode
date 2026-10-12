@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
-import { commitCount, commitsSince, lastTag } from "../src/git"
+import { commitCount, commitsSince, lastTag, tagAtHead } from "../src/git"
 
 function git(cwd: string, ...args: string[]) {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" })
@@ -13,6 +13,8 @@ function git(cwd: string, ...args: string[]) {
 }
 
 describe("git release metadata", () => {
+  // Real git subprocesses (init, commits, two merges): on a contended Windows
+  // runner each spawn costs hundreds of ms, so the 5s default is marginal.
   test("selects stable version tags and reads only first-parent commits", async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-test-"))
     try {
@@ -54,5 +56,31 @@ describe("git release metadata", () => {
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
+
+  test("recognizes a release tag at HEAD and ignores unrelated tags", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-tag-"))
+    try {
+      git(cwd, "init", "--quiet", "--initial-branch=main")
+      git(cwd, "config", "user.name", "AlphaCode Test")
+      git(cwd, "config", "user.email", "alphacode-test@example.com")
+
+      await writeFile(path.join(cwd, "base.txt"), "base\n")
+      git(cwd, "add", "--all")
+      git(cwd, "commit", "--quiet", "-m", "feat: establish history")
+      git(cwd, "tag", "v0.1.0")
+      git(cwd, "tag", "vscode-v9.9.9")
+
+      expect(await tagAtHead("HEAD", cwd)).toBe("v0.1.0")
+
+      await writeFile(path.join(cwd, "next.txt"), "next\n")
+      git(cwd, "add", "--all")
+      git(cwd, "commit", "--quiet", "-m", "fix: move on")
+
+      expect(await tagAtHead("HEAD", cwd)).toBeNull()
+      expect(await tagAtHead("v0.1.0", cwd)).toBe("v0.1.0")
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  }, 30_000)
 })

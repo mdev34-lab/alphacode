@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
-# usage: [VERSION=0.2.0] script/release [auto|patch|minor|major] [--dry-run]
+# usage: script/release [--dry-run]
+#
+# Dispatches the publish workflow on dev. The release version is the one already
+# committed in package.json; bump it first with ./script/bump.ts.
 set -euo pipefail
 
-BUMP=auto
 DRY=false
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=true ;;
-    auto|patch|minor|major) BUMP="$a" ;;
     *)
-      echo "Unknown release argument '$a'; expected auto, patch, minor, major, or --dry-run." >&2
+      echo "Unknown release argument '$a'; expected --dry-run." >&2
       exit 2
       ;;
   esac
 done
 
-args=(gh workflow run publish.yml --ref dev -f "bump=$BUMP" -f "dry_run=$DRY")
-if [[ -n "${VERSION:-}" ]]; then
-  args+=(-f "version=$VERSION")
-fi
-"${args[@]}"
+gh workflow run publish.yml --ref dev -f "dry_run=$DRY"
