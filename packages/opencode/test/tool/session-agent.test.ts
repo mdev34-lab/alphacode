@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit } from "effect"
-import { sessionAgent } from "../../src/session/session-agent"
+import { ROUTING_WINDOW, routedAgent, sessionAgent } from "../../src/session/session-agent"
 import { NotFoundError } from "../../src/storage/storage"
 import type { Session } from "../../src/session/session"
 
@@ -67,5 +67,28 @@ describe("session owner resolution", () => {
     expect((failure as Error).message).toContain("Cannot resolve which reviewer to dispatch")
     expect((failure as Error).message).toContain("gone")
     expect((failure as Error).message).toContain("Resource not found: session")
+  })
+})
+
+describe("routedAgent (shared routing rule)", () => {
+  const user = (agent: string) => ({ info: { role: "user", agent } })
+  const assistant = (agent: string) => ({ info: { role: "assistant", agent } })
+
+  test("pinned owner wins over any window content", () => {
+    expect(routedAgent({ agent: "code" }, [user("work")])).toBe("code")
+  })
+  test("falls back to the newest user message, ignoring newer assistants", () => {
+    expect(routedAgent({}, [user("work"), user("code"), assistant("work-review")])).toBe("code")
+  })
+  test("empty window resolves to no agent", () => {
+    expect(routedAgent({}, [])).toBeUndefined()
+  })
+  test("finish-style slice of full history equals the task-style newest page", () => {
+    // 60 ascending rows: only the last ROUTING_WINDOW are in the routing window,
+    // so a user message older than the window must not route.
+    const history = [user("stale"), ...Array.from({ length: 59 }, () => assistant("work"))]
+    expect(routedAgent({}, history.slice(-ROUTING_WINDOW))).toBeUndefined()
+    const recent = [...history, user("fresh"), assistant("work")]
+    expect(routedAgent({}, recent.slice(-ROUTING_WINDOW))).toBe("fresh")
   })
 })

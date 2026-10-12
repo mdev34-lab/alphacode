@@ -8,6 +8,7 @@ import { Effect, Option, Schema } from "effect"
 import { Todo } from "../session/todo"
 import { Session, readAgentEffort } from "../session/session"
 import { NotFoundError } from "@/storage/storage"
+import { ROUTING_WINDOW, routedAgent } from "../session/session-agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Config } from "@/config/config"
 import { reviewLoopState } from "../session/review-loop"
@@ -308,8 +309,7 @@ export const FinishTool = Tool.define(
                   // (time_created, id) order), keeping this verdict on the
                   // window dispatch actually routes from; reviewLoopState
                   // above still consumes the full history.
-                  const routed =
-                    session.agent ?? messages.slice(-50).findLast((message) => message.info.role === "user")?.info.agent
+                  const routed = routedAgent(session, messages.slice(-ROUTING_WINDOW))
                   const resolved = resolveReviewer("review", routed)
                   const requested = yield* agents.get("review")
                   const reviewer = yield* agents.get(resolved)
