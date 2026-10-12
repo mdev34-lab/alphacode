@@ -194,13 +194,13 @@ describe("QwenWebBrowser lifecycle", () => {
     await browser.close()
     expect(browser.isRunning()).toBe(false)
     expect(context.closed).toBe(true)
-    expect(fs.existsSync(path.join(dir, "alphacode.lock"))).toBe(false)
+    expect(fs.existsSync(path.join(dir, "silvercode.lock"))).toBe(false)
   })
 
   test("stale and self-owned locks do not block launch", async () => {
     for (const pid of ["42424242", String(process.pid)]) {
       const dir = tmpProfile()
-      fs.writeFileSync(path.join(dir, "alphacode.lock"), pid, "utf8")
+      fs.writeFileSync(path.join(dir, "silvercode.lock"), pid, "utf8")
       const context = fakeContext([fakePage()])
       const browser = new QwenWebBrowser({ profileDir: dir, launcher: async () => context })
       await browser.ensure()

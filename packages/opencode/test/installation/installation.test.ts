@@ -73,7 +73,7 @@ describe("installation", () => {
         urls.push(request.url)
         return jsonResponse({ tag_name: "v1.2.3" })
       }),
-    ).effect("reads the AlphaCode release version from GitHub", () =>
+    ).effect("reads the SilverCode release version from GitHub", () =>
       Effect.gen(function* () {
         const result = yield* Installation.use.latest()
         expect(result).toBe("1.2.3")
@@ -97,7 +97,7 @@ describe("installation", () => {
         const error = yield* Effect.flip(Installation.use.upgrade("npm", "9.9.9"))
         expect(error).toBeInstanceOf(Installation.UpgradeFailedError)
         expect(error.stderr).toBe(
-          "AlphaCode is distributed via GitHub Releases. Reinstall: curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/install | bash",
+          "SilverCode is distributed via GitHub Releases. Reinstall: curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/install | bash",
         )
       }),
     )

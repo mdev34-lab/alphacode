@@ -40,7 +40,7 @@ import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import { testEffect } from "./lib/effect"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-test-project-"))
 
 const cassette =
   process.env.RECORD === "true"

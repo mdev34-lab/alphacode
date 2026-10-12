@@ -296,9 +296,9 @@ const REPORT = [
   "### Assessment",
   "**Ready to proceed?** Needs fixes",
   "",
-  "<alphacode-review>",
+  "<silvercode-review>",
   JSON.stringify(REVIEW_REPORT, null, 2),
-  "</alphacode-review>",
+  "</silvercode-review>",
 ].join("\n")
 
 const USER_REQUEST = "fix the off-by-one in the cache key and add a test"

@@ -16,7 +16,7 @@ import { SystemContextRegistry } from "@opencode-ai/core/system-context/registry
 import { location } from "../fixture/location"
 import { testEffect } from "../lib/effect"
 
-const projectDir = mkdtempSync(path.join(tmpdir(), "alphacode-test-project-"))
+const projectDir = mkdtempSync(path.join(tmpdir(), "silvercode-test-project-"))
 
 const directory = AbsolutePath.make(FSUtil.resolve("/repo/packages/core"))
 const projectDirectory = AbsolutePath.make(FSUtil.resolve("/repo"))

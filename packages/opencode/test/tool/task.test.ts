@@ -196,7 +196,7 @@ const REVIEW_REPORT = {
 }
 
 const reviewEnvelope = (report: Record<string, unknown> = REVIEW_REPORT) =>
-  ["<alphacode-review>", JSON.stringify(report, null, 2), "</alphacode-review>"].join("\n")
+  ["<silvercode-review>", JSON.stringify(report, null, 2), "</silvercode-review>"].join("\n")
 
 const REVIEW_ANALYSIS = "### Assessment\n\n**Ready to proceed?** Needs fixes"
 
@@ -834,10 +834,10 @@ describe("tool.task", () => {
       const result = yield* runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`]))
 
       expect(result.output).toContain(REVIEW_ANALYSIS)
-      expect(result.output).toContain("<alphacode-review>")
+      expect(result.output).toContain("<silvercode-review>")
       expect(result.output).toContain('"needs-fixes"')
       // Exactly one canonical envelope is persisted.
-      expect(result.output.match(/<alphacode-review>/g)).toHaveLength(1)
+      expect(result.output.match(/<silvercode-review>/g)).toHaveLength(1)
       // The report is associated with the reviewed revision and the child
       // session so the parent knows which work unit was reviewed.
       expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
@@ -850,7 +850,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const result = yield* runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${reviewEnvelope()}`, "", "   \n"]))
 
-      expect(result.output).toContain("<alphacode-review>")
+      expect(result.output).toContain("<silvercode-review>")
       expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
       expect(result.output).toContain(REVIEW_ANALYSIS)
     }),
@@ -861,7 +861,7 @@ describe("tool.task", () => {
       const result = yield* runReview(reviewRunOps([reviewEnvelope(), "Closing observations after the report."]))
 
       expect(result.output).toContain("Closing observations after the report.")
-      expect(result.output).toContain("<alphacode-review>")
+      expect(result.output).toContain("<silvercode-review>")
       expect(result.metadata.review.report).toEqual(REVIEW_REPORT)
     }),
   )
@@ -874,7 +874,7 @@ describe("tool.task", () => {
       if (!Exit.isFailure(exit)) return
       const error = Cause.pretty(exit.cause)
       expect(error).toContain("Review delivery failed")
-      expect(error).toContain("no <alphacode-review> report envelope was found")
+      expect(error).toContain("no <silvercode-review> report envelope was found")
       // The human-readable analysis is preserved in the failure, bounded.
       expect(error).toContain(REVIEW_ANALYSIS)
     }),
@@ -897,7 +897,7 @@ describe("tool.task", () => {
 
   it.instance("a malformed review report envelope fails delivery explicitly", () =>
     Effect.gen(function* () {
-      const malformed = ["<alphacode-review>", "{ not json", "</alphacode-review>"].join("\n")
+      const malformed = ["<silvercode-review>", "{ not json", "</silvercode-review>"].join("\n")
       const exit = yield* Effect.exit(runReview(reviewRunOps([`${REVIEW_ANALYSIS}\n\n${malformed}`])))
 
       expect(Exit.isFailure(exit)).toBe(true)

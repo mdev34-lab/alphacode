@@ -2,7 +2,7 @@
  * Typed errors for the Qwen Web provider.
  *
  * The transport/session layers throw these; the AI SDK boundary (`sdk.ts`)
- * converts them into `APICallError` so AlphaCode's existing error handling,
+ * converts them into `APICallError` so SilverCode's existing error handling,
  * retry classification and TUI rendering keep working unchanged.
  */
 
@@ -90,7 +90,7 @@ export function challengeError(detail?: string): QwenWebError {
     status: 403,
     message:
       "Qwen is showing a human-verification challenge, which paused this run. " +
-      "AlphaCode never solves challenges automatically. " +
+      "SilverCode never solves challenges automatically. " +
       (detail ?? CHALLENGE_NO_WINDOW_DETAIL),
   })
 }

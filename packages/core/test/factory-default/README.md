@@ -37,7 +37,7 @@ When `factoryDefault` is `true`, the following are suppressed:
 - **Plugins**: No user-configured plugins are loaded
 - **Skills**: No skills are discovered from configured paths/URLs
 
-Built-in AlphaCode functionality remains available:
+Built-in SilverCode functionality remains available:
 - Model/provider mechanism
 - Core tools and features
 - All built-in functionality

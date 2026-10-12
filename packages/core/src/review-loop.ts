@@ -74,7 +74,7 @@ function verdictFromText(text: string) {
  * Read the last explicit assessment from a review report.
  *
  * Reports delivered through the report envelope carry their assessment in the
- * machine-readable `<alphacode-review>` block, which is canonical. A detected
+ * machine-readable `<silvercode-review>` block, which is canonical. A detected
  * but invalid envelope — malformed content, truncated tags, or an unsupported
  * schema version — is a delivery failure: it never falls through to the prose
  * scan, or a broken report could mint a verdict the delivery layer already

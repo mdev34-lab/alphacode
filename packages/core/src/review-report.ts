@@ -6,9 +6,9 @@ import { Option, Schema } from "effect"
  * The Review subagent delivers its canonical result through a tagged,
  * machine-readable report envelope appended after its human-readable analysis:
  *
- * <alphacode-review>
+ * <silvercode-review>
  * { "version": 1, ... }
- * </alphacode-review>
+ * </silvercode-review>
  *
  * Delivery extracts this envelope from the complete child output instead of
  * trusting the last text part, which a trailing empty text part can erase.
@@ -16,9 +16,20 @@ import { Option, Schema } from "effect"
  * protocol: duplicated structured output is tolerated rather than turned into
  * another delivery failure, and render() normalizes the persisted result back
  * to a single canonical envelope.
+ *
+ * Envelopes written before the product rename are still recognized, so reports
+ * persisted by older sessions — and integrations that still build the old
+ * literal — keep parsing instead of failing as missing. Only the canonical tag
+ * is ever emitted or advertised.
  */
 
-export const TAG = "alphacode-review"
+export const TAG = "silvercode-review"
+
+/** Envelope tags written before the rename that are still accepted; never emitted. */
+export const LEGACY_TAGS = ["alphacode-review"] as const
+
+/** Every accepted envelope tag, canonical first. `extract` matches all of them. */
+export const TAGS: readonly string[] = [TAG, ...LEGACY_TAGS]
 
 /** Bumped only for breaking envelope changes; older versions are rejected clearly. */
 export const VERSION = 1
@@ -75,19 +86,26 @@ const SCHEMA_HINT =
  * copy is more robust than failing the delivery. The remaining text, including
  * any superseded envelope copies, is returned as the human-readable analysis.
  * A review that completes without a parseable version-1 envelope is a delivery
- * failure, never an empty successful result.
+ * failure, never an empty successful result. A pre-rename envelope is delivered
+ * exactly like a canonical one: the last complete envelope wins across tag
+ * spellings, so mixed text cannot resolve to a different report than the one
+ * the reviewer wrote last.
  */
 export function extract(chunks: readonly (string | undefined)[]): Delivery {
   const text = chunks.filter((chunk): chunk is string => typeof chunk === "string").join("\n")
-  const matches = [...text.matchAll(new RegExp(`<${TAG}>([\\s\\S]*?)</${TAG}>`, "g"))]
+  // The backreference pairs a closing tag with its own opening tag, so a
+  // mismatched pair (silvercode open, alphacode close) is not a complete
+  // envelope and stays a delivery failure instead of parsing half a report.
+  const matches = [...text.matchAll(new RegExp(`<(${TAGS.join("|")})>([\\s\\S]*?)</\\1>`, "g"))]
   const last = matches.at(-1)
   if (!last) {
     const analysis = text.trim()
-    if (text.includes(`<${TAG}>`))
+    const opened = TAGS.find((tag) => text.includes(`<${tag}>`))
+    if (opened !== undefined)
       return {
         ok: false,
         analysis,
-        failure: { reason: "malformed", message: `the <${TAG}> envelope has an opening tag but no closing tag` },
+        failure: { reason: "malformed", message: `the <${opened}> envelope has an opening tag but no closing tag` },
       }
     return { ok: false, analysis, failure: { reason: "missing", message: `no <${TAG}> report envelope was found` } }
   }
@@ -97,7 +115,7 @@ export function extract(chunks: readonly (string | undefined)[]): Delivery {
     .filter((part) => part.length > 0)
     .join("\n\n")
 
-  const inner = (last[1] ?? "").trim()
+  const inner = (last[2] ?? "").trim()
   const parsed = Option.getOrUndefined(decodeJson(inner))
   if (!isRecord(parsed))
     return {

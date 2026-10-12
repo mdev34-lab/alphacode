@@ -1,4 +1,4 @@
-# alphacode
+# silvercode
 
 The open source AI coding agent.
 
@@ -8,7 +8,7 @@ The open source AI coding agent.
 ## Installation
 
 > [!NOTE]
-> **This is the AlphaCode fork.** It is distributed through this repository's GitHub Releases and the install script only; it is not published to npm or other package registries.
+> **This is the SilverCode fork.** It is distributed through this repository's GitHub Releases and the install script only; it is not published to npm or other package registries.
 
 ```bash
 curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/install | bash
@@ -17,11 +17,11 @@ curl -fsSL https://github.com/mdev34-lab/alphacode/releases/latest/download/inst
 To build from source:
 
 ```bash
-git clone https://github.com/mdev34-lab/alphacode.git
-cd alphacode
+git clone https://github.com/mdev34-lab/alphacode.git silvercode
+cd silvercode
 bun install
 ./packages/opencode/script/build.ts --single
-# binary: ./packages/opencode/dist/alphacode-<platform>/bin/alphacode (e.g. linux-x64, darwin-arm64)
+# binary: ./packages/opencode/dist/silvercode-ai-<platform>/bin/silvercode (e.g. linux-x64, darwin-arm64)
 ```
 
-> **Note:** the executable is now named `alphacode`. Config and data paths (`~/.opencode`) are unchanged.
+> **Note:** the executable is now named `silvercode`. Config and data paths (`~/.opencode`) are unchanged.

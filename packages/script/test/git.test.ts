@@ -14,11 +14,11 @@ function git(cwd: string, ...args: string[]) {
 
 describe("git release metadata", () => {
   test("selects stable version tags and reads only first-parent commits", async () => {
-    const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-test-"))
+    const cwd = await mkdtemp(path.join(tmpdir(), "silvercode-git-test-"))
     try {
       git(cwd, "init", "--quiet", "--initial-branch=main")
-      git(cwd, "config", "user.name", "AlphaCode Test")
-      git(cwd, "config", "user.email", "alphacode-test@example.com")
+      git(cwd, "config", "user.name", "SilverCode Test")
+      git(cwd, "config", "user.email", "silvercode-test@example.com")
 
       await writeFile(path.join(cwd, "base.txt"), "base\n")
       git(cwd, "add", "--all")

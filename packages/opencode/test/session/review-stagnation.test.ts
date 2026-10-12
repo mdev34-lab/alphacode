@@ -427,7 +427,7 @@ describe("review stagnation nudge contract", () => {
     expect(nudge).toContain("call `finish` now with the findings already established")
     // Review finish calls without the envelope are rejected, so the recovery
     // names the requirement instead of inviting another rejected call.
-    expect(nudge).toContain("<alphacode-review>")
+    expect(nudge).toContain("<silvercode-review>")
     expect(nudge).toContain("Do not answer it conversationally")
     // Provider-neutral by construction: no model or provider is named.
     expect(nudge).not.toContain("Nex")
@@ -455,9 +455,9 @@ function envelope(assessment: "approved" | "needs-fixes", summary: string) {
   return [
     `Assessment: ${assessment === "approved" ? "Approved" : "Needs fixes"}`,
     "",
-    "<alphacode-review>",
+    "<silvercode-review>",
     JSON.stringify({ version: 1, revision: "uncommitted", assessment, summary, findings: [] }, null, 2),
-    "</alphacode-review>",
+    "</silvercode-review>",
   ].join("\n")
 }
 
@@ -617,7 +617,7 @@ describe("ReviewStagnation.reviewStagnationBackstop", () => {
       // The completion reuses the established report verbatim: its summary,
       // its findings, and one canonical envelope.
       expect(backstop?.result).toContain(c.want.summary)
-      expect(backstop?.result).toContain("<alphacode-review>")
+      expect(backstop?.result).toContain("<silvercode-review>")
     })
   }
 })
@@ -834,7 +834,7 @@ function report(assessment: "approved" | "needs-fixes", summary: string) {
     "### Assessment",
     `Assessment: ${assessment === "approved" ? "Approved" : "Needs fixes"}`,
     "",
-    "<alphacode-review>",
+    "<silvercode-review>",
     JSON.stringify(
       {
         version: 1,
@@ -857,7 +857,7 @@ function report(assessment: "approved" | "needs-fixes", summary: string) {
       null,
       2,
     ),
-    "</alphacode-review>",
+    "</silvercode-review>",
   ].join("\n")
 }
 
@@ -921,7 +921,7 @@ it.instance(
       const finishes = finishParts(messages)
       expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
       if (finishes[0]?.state.status === "completed") {
-        expect(finishes[0].state.output).toContain("<alphacode-review>")
+        expect(finishes[0].state.output).toContain("<silvercode-review>")
         // The model's own finish, not the stagnation backstop.
         expect(finishes[0].state.input.result).toBe(REPEAT)
       }
@@ -973,9 +973,9 @@ it.instance(
       expect(finishes.map((part) => part.state.status)).toEqual(["completed"])
       expect(finishParts([result])).toHaveLength(1)
       if (finishes[0]?.state.status === "completed") {
-        expect(finishes[0].state.output).toContain("<alphacode-review>")
+        expect(finishes[0].state.output).toContain("<silvercode-review>")
         expect(finishes[0].state.output).toContain("Edge cases untested")
-        expect(finishes[0].state.input.result).toContain("<alphacode-review>")
+        expect(finishes[0].state.input.result).toContain("<silvercode-review>")
       }
     }),
   20_000,
@@ -1027,7 +1027,7 @@ it.instance(
       expect(finishParts([result])).toHaveLength(1)
       if (finishes[0]?.state.status === "completed") {
         expect(finishes[0].state.output).toContain("Edge cases untested")
-        expect(finishes[0].state.input.result).toContain("<alphacode-review>")
+        expect(finishes[0].state.input.result).toContain("<silvercode-review>")
       }
     }),
   20_000,

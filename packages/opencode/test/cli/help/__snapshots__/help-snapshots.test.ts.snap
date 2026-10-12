@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode acp --help 1`] = `
-"alphacode acp
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode acp --help 1`] = `
+"silvercode acp
 
 start ACP (Agent Client Protocol) server
 
@@ -15,23 +15,23 @@ Options:
       --hostname     hostname to listen on                           [string] [default: "127.0.0.1"]
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
-      --mdns-domain  custom domain name for mDNS service (default: opencode.local)
-                                                                [string] [default: "opencode.local"]
+      --mdns-domain  custom domain name for mDNS service (default: silvercode.local)
+                                                              [string] [default: "silvercode.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]
       --cwd          working directory [string] [default: "<HOME>"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp --help 1`] = `
-"alphacode mcp
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp --help 1`] = `
+"silvercode mcp
 
 manage MCP (Model Context Protocol) servers
 
 Commands:
-  alphacode mcp add [name]     add an MCP server
-  alphacode mcp list           list MCP servers and their status                       [aliases: ls]
-  alphacode mcp auth [name]    authenticate with an OAuth-enabled MCP server
-  alphacode mcp logout [name]  remove OAuth credentials for an MCP server
-  alphacode mcp debug <name>   debug OAuth connection for an MCP server
+  silvercode mcp add [name]     add an MCP server
+  silvercode mcp list           list MCP servers and their status                      [aliases: ls]
+  silvercode mcp auth [name]    authenticate with an OAuth-enabled MCP server
+  silvercode mcp logout [name]  remove OAuth credentials for an MCP server
+  silvercode mcp debug <name>   debug OAuth connection for an MCP server
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -41,10 +41,10 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode attach --help 1`] = `
-"alphacode attach <url>
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode attach --help 1`] = `
+"silvercode attach <url>
 
-attach to a running alphacode server
+attach to a running silvercode server
 
 Positionals:
   url  http://localhost:4096                                                     [string] [required]
@@ -67,10 +67,10 @@ Options:
       --replay-limit  cap visible mini replay to the newest N messages                      [number]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode run --help 1`] = `
-"alphacode run [message..]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode run --help 1`] = `
+"silvercode run [message..]
 
-run alphacode with a message
+run silvercode with a message
 
 Positionals:
   message  message to send                                                     [array] [default: []]
@@ -92,7 +92,7 @@ Options:
                                           [string] [choices: "default", "json"] [default: "default"]
   -f, --file         file(s) to attach to message                                            [array]
       --title        title for the session (uses truncated prompt if no value provided)     [string]
-      --attach       attach to a running alphacode server (e.g., http://localhost:4096)     [string]
+      --attach       attach to a running silvercode server (e.g., http://localhost:4096)    [string]
   -p, --password     basic auth password (defaults to OPENCODE_SERVER_PASSWORD)             [string]
   -u, --username     basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode')
                                                                                             [string]
@@ -107,25 +107,25 @@ Options:
                                                                           [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode debug --help 1`] = `
-"alphacode debug
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode debug --help 1`] = `
+"silvercode debug
 
 debugging and troubleshooting tools
 
 Commands:
-  alphacode debug config        show resolved configuration
-  alphacode debug lsp           LSP debugging utilities
-  alphacode debug rg            ripgrep debugging utilities
-  alphacode debug file          file system debugging utilities
-  alphacode debug scrap         list all known projects
-  alphacode debug skill         list all available skills
-  alphacode debug snapshot      snapshot debugging utilities
-  alphacode debug startup       print startup timing
-  alphacode debug agent <name>  show agent configuration details
-  alphacode debug v2            debug v2 catalog and built-in plugins
-  alphacode debug info          show debug information
-  alphacode debug paths         show global paths (data, config, cache, state)
-  alphacode debug wait          wait indefinitely (for debugging)
+  silvercode debug config        show resolved configuration
+  silvercode debug lsp           LSP debugging utilities
+  silvercode debug rg            ripgrep debugging utilities
+  silvercode debug file          file system debugging utilities
+  silvercode debug scrap         list all known projects
+  silvercode debug skill         list all available skills
+  silvercode debug snapshot      snapshot debugging utilities
+  silvercode debug startup       print startup timing
+  silvercode debug agent <name>  show agent configuration details
+  silvercode debug v2            debug v2 catalog and built-in plugins
+  silvercode debug info          show debug information
+  silvercode debug paths         show global paths (data, config, cache, state)
+  silvercode debug wait          wait indefinitely (for debugging)
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -135,15 +135,15 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers --help 1`] = `
-"alphacode providers
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers --help 1`] = `
+"silvercode providers
 
 manage AI providers and credentials
 
 Commands:
-  alphacode providers list               list providers and credentials                [aliases: ls]
-  alphacode providers login [url]        log in to a provider
-  alphacode providers logout [provider]  log out from a configured provider
+  silvercode providers list               list providers and credentials               [aliases: ls]
+  silvercode providers login [url]        log in to a provider
+  silvercode providers logout [provider]  log out from a configured provider
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -153,14 +153,14 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent --help 1`] = `
-"alphacode agent
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode agent --help 1`] = `
+"silvercode agent
 
 manage agents
 
 Commands:
-  alphacode agent create  create a new agent
-  alphacode agent list    list all available agents
+  silvercode agent create  create a new agent
+  silvercode agent list    list all available agents
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -170,10 +170,10 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode upgrade --help 1`] = `
-"alphacode upgrade [target]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode upgrade --help 1`] = `
+"silvercode upgrade [target]
 
-upgrade alphacode to the latest or a specific version
+upgrade silvercode to the latest or a specific version
 
 Positionals:
   target  version to upgrade to, for ex '0.1.48' or 'v0.1.48'                               [string]
@@ -186,10 +186,10 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode uninstall --help 1`] = `
-"alphacode uninstall
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode uninstall --help 1`] = `
+"silvercode uninstall
 
-uninstall alphacode and remove all related files
+uninstall silvercode and remove all related files
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -203,10 +203,10 @@ Options:
   -f, --force        skip confirmation prompts                            [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode serve --help 1`] = `
-"alphacode serve
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode serve --help 1`] = `
+"silvercode serve
 
-starts a headless alphacode server
+starts a headless silvercode server
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -218,42 +218,42 @@ Options:
       --hostname     hostname to listen on                           [string] [default: "127.0.0.1"]
       --mdns         enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
-      --mdns-domain  custom domain name for mDNS service (default: opencode.local)
-                                                                [string] [default: "opencode.local"]
+      --mdns-domain  custom domain name for mDNS service (default: silvercode.local)
+                                                              [string] [default: "silvercode.local"]
       --cors         additional domains to allow for CORS                      [array] [default: []]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode web --help 1`] = `
-"     ▄      ▄                      ▄     
- ▀▀█ █ █▀▀█ █▀▀▄  ▀▀█ █▀▀▀ █▀▀█ █▀▀█ █▀▀█
-█▀▀█ █ █  █ █  █ █▀▀█ █    █  █ █  █ █▀▀▀
-▀▀▀▀ ▀ █▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode web --help 1`] = `
+"      ▄    ▄                               ▄
+▄▀▀   ▄    █   █  █ ▄▀▀  █▀▀▄ ▄▀▀  ▄▀▀▄ ▄▀▀█ ▄▀▀
+ ▀▀▄  █    █   █  █ █▀▀▀ █    █    █  █ █  █ █▀▀▀
+▀▀▀   ▀    ▀    ▀▀   ▀▀  ▀     ▀▀   ▀▀   ▀▀▀  ▀▀
 
 Commands:
-  alphacode completion          generate shell completion script
-  alphacode acp                 start ACP (Agent Client Protocol) server
-  alphacode mcp                 manage MCP (Model Context Protocol) servers
-  alphacode [project]           start alphacode tui                                        [default]
-  alphacode attach <url>        attach to a running alphacode server
-  alphacode run [message..]     run alphacode with a message
-  alphacode debug               debugging and troubleshooting tools
-  alphacode providers           manage AI providers and credentials                  [aliases: auth]
-  alphacode agent               manage agents
-  alphacode upgrade [target]    upgrade alphacode to the latest or a specific version
-  alphacode uninstall           uninstall alphacode and remove all related files
-  alphacode serve               starts a headless alphacode server
-  alphacode models [provider]   list all available models
-  alphacode stats               show token usage and cost statistics
-  alphacode export [sessionID]  export session data as JSON
-  alphacode import <file>       import session data from JSON file or URL
-  alphacode github              manage GitHub agent
-  alphacode pr <number>         fetch and checkout a GitHub PR branch, then run alphacode
-  alphacode session             manage sessions
-  alphacode plugin <module>     install plugin and update config                     [aliases: plug]
-  alphacode db                  database tools
+  silvercode completion          generate shell completion script
+  silvercode acp                 start ACP (Agent Client Protocol) server
+  silvercode mcp                 manage MCP (Model Context Protocol) servers
+  silvercode [project]           start silvercode tui                                      [default]
+  silvercode attach <url>        attach to a running silvercode server
+  silvercode run [message..]     run silvercode with a message
+  silvercode debug               debugging and troubleshooting tools
+  silvercode providers           manage AI providers and credentials                 [aliases: auth]
+  silvercode agent               manage agents
+  silvercode upgrade [target]    upgrade silvercode to the latest or a specific version
+  silvercode uninstall           uninstall silvercode and remove all related files
+  silvercode serve               starts a headless silvercode server
+  silvercode models [provider]   list all available models
+  silvercode stats               show token usage and cost statistics
+  silvercode export [sessionID]  export session data as JSON
+  silvercode import <file>       import session data from JSON file or URL
+  silvercode github              manage GitHub agent
+  silvercode pr <number>         fetch and checkout a GitHub PR branch, then run silvercode
+  silvercode session             manage sessions
+  silvercode plugin <module>     install plugin and update config                    [aliases: plug]
+  silvercode db                  database tools
 
 Positionals:
-  project  path to start alphacode in                                                       [string]
+  project  path to start silvercode in                                                      [string]
 
 Options:
   -h, --help             show help                                                         [boolean]
@@ -265,8 +265,8 @@ Options:
       --hostname         hostname to listen on                       [string] [default: "127.0.0.1"]
       --mdns             enable mDNS service discovery (defaults hostname to 0.0.0.0)
                                                                           [boolean] [default: false]
-      --mdns-domain      custom domain name for mDNS service (default: opencode.local)
-                                                                [string] [default: "opencode.local"]
+      --mdns-domain      custom domain name for mDNS service (default: silvercode.local)
+                                                              [string] [default: "silvercode.local"]
       --cors             additional domains to allow for CORS                  [array] [default: []]
   -m, --model            model to use in the format of provider/model                       [string]
   -c, --continue         continue the last session                                         [boolean]
@@ -288,8 +288,8 @@ Options:
 "
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode models --help 1`] = `
-"alphacode models [provider]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode models --help 1`] = `
+"silvercode models [provider]
 
 list all available models
 
@@ -306,8 +306,8 @@ Options:
       --refresh     refresh the models cache from models.dev                               [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode stats --help 1`] = `
-"alphacode stats
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode stats --help 1`] = `
+"silvercode stats
 
 show token usage and cost statistics
 
@@ -324,8 +324,8 @@ Options:
       --project     filter by project (default: all projects, empty string: current project)[string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode export --help 1`] = `
-"alphacode export [sessionID]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode export --help 1`] = `
+"silvercode export [sessionID]
 
 export session data as JSON
 
@@ -341,8 +341,8 @@ Options:
       --sanitize    redact sensitive transcript and file data                              [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode import --help 1`] = `
-"alphacode import <file>
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode import --help 1`] = `
+"silvercode import <file>
 
 import session data from JSON file or URL
 
@@ -357,14 +357,14 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github --help 1`] = `
-"alphacode github
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode github --help 1`] = `
+"silvercode github
 
 manage GitHub agent
 
 Commands:
-  alphacode github install  install the GitHub agent
-  alphacode github run      run the GitHub agent
+  silvercode github install  install the GitHub agent
+  silvercode github run      run the GitHub agent
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -374,10 +374,10 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode pr --help 1`] = `
-"alphacode pr <number>
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode pr --help 1`] = `
+"silvercode pr <number>
 
-fetch and checkout a GitHub PR branch, then run alphacode
+fetch and checkout a GitHub PR branch, then run silvercode
 
 Positionals:
   number  PR number to checkout                                                  [number] [required]
@@ -390,14 +390,14 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session --help 1`] = `
-"alphacode session
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode session --help 1`] = `
+"silvercode session
 
 manage sessions
 
 Commands:
-  alphacode session list                list sessions
-  alphacode session delete <sessionID>  delete a session
+  silvercode session list                list sessions
+  silvercode session delete <sessionID>  delete a session
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -407,8 +407,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode plugin --help 1`] = `
-"alphacode plugin <module>
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode plugin --help 1`] = `
+"silvercode plugin <module>
 
 install plugin and update config
 
@@ -425,14 +425,14 @@ Options:
   -f, --force       replace existing plugin version                       [boolean] [default: false]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db --help 1`] = `
-"alphacode db
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode db --help 1`] = `
+"silvercode db
 
 database tools
 
 Commands:
-  alphacode db [query]     open an interactive sqlite3 shell or run a query                [default]
-  alphacode db path        print the database path
+  silvercode db [query]     open an interactive sqlite3 shell or run a query               [default]
+  silvercode db path        print the database path
 
 Positionals:
   query  SQL query to execute                                                               [string]
@@ -446,8 +446,8 @@ Options:
       --format      Output format                 [string] [choices: "json", "tsv"] [default: "tsv"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp list --help 1`] = `
-"alphacode mcp list
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp list --help 1`] = `
+"silvercode mcp list
 
 list MCP servers and their status
 
@@ -459,8 +459,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp add --help 1`] = `
-"alphacode mcp add [name]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp add --help 1`] = `
+"silvercode mcp add [name]
 
 add an MCP server
 
@@ -478,13 +478,13 @@ Options:
       --header      HTTP header for a remote MCP server (KEY=VALUE)                          [array]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp auth --help 1`] = `
-"alphacode mcp auth [name]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp auth --help 1`] = `
+"silvercode mcp auth [name]
 
 authenticate with an OAuth-enabled MCP server
 
 Commands:
-  alphacode mcp auth list  list OAuth-capable MCP servers and their auth status        [aliases: ls]
+  silvercode mcp auth list  list OAuth-capable MCP servers and their auth status       [aliases: ls]
 
 Positionals:
   name  name of the MCP server                                                              [string]
@@ -497,8 +497,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode mcp logout --help 1`] = `
-"alphacode mcp logout [name]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode mcp logout --help 1`] = `
+"silvercode mcp logout [name]
 
 remove OAuth credentials for an MCP server
 
@@ -513,8 +513,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers list --help 1`] = `
-"alphacode providers list
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers list --help 1`] = `
+"silvercode providers list
 
 list providers and credentials
 
@@ -526,13 +526,13 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers login --help 1`] = `
-"alphacode providers login [url]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers login --help 1`] = `
+"silvercode providers login [url]
 
 log in to a provider
 
 Positionals:
-  url  alphacode auth provider                                                              [string]
+  url  silvercode auth provider                                                             [string]
 
 Options:
   -h, --help        show help                                                              [boolean]
@@ -544,8 +544,8 @@ Options:
   -m, --method      login method label (skips method selection)                             [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode providers logout --help 1`] = `
-"alphacode providers logout [provider]
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode providers logout --help 1`] = `
+"silvercode providers logout [provider]
 
 log out from a configured provider
 
@@ -560,8 +560,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent create --help 1`] = `
-"alphacode agent create
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode agent create --help 1`] = `
+"silvercode agent create
 
 create a new agent
 
@@ -580,8 +580,8 @@ Options:
   -m, --model                 model to use in the format of provider/model                  [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode agent list --help 1`] = `
-"alphacode agent list
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode agent list --help 1`] = `
+"silvercode agent list
 
 list all available agents
 
@@ -593,8 +593,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session list --help 1`] = `
-"alphacode session list
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode session list --help 1`] = `
+"silvercode session list
 
 list sessions
 
@@ -608,8 +608,8 @@ Options:
       --format      output format             [string] [choices: "table", "json"] [default: "table"]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session delete --help 1`] = `
-"alphacode session delete <sessionID>
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode session delete --help 1`] = `
+"silvercode session delete <sessionID>
 
 delete a session
 
@@ -624,8 +624,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github install --help 1`] = `
-"alphacode github install
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode github install --help 1`] = `
+"silvercode github install
 
 install the GitHub agent
 
@@ -637,8 +637,8 @@ Options:
       --pure        run without external plugins                                           [boolean]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode github run --help 1`] = `
-"alphacode github run
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode github run --help 1`] = `
+"silvercode github run
 
 run the GitHub agent
 
@@ -652,8 +652,8 @@ Options:
       --token       GitHub personal access token (github_pat_********)                      [string]"
 `;
 
-exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode db path --help 1`] = `
-"alphacode db path
+exports[`silvercode CLI help-text snapshots every documented command emits stable help text: silvercode db path --help 1`] = `
+"silvercode db path
 
 print the database path
 

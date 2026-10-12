@@ -1,7 +1,7 @@
 /**
  * AI SDK `LanguageModelV3` implementation for the Qwen Web provider.
  *
- * This is the only module AlphaCode's LLM layer talks to: it converts AI SDK
+ * This is the only module SilverCode's LLM layer talks to: it converts AI SDK
  * calls into incremental turns on the provider's persistent thread and maps
  * the canonical webchat events (text / thinking / tool-call / usage / finish)
  * onto AI SDK stream parts. All browser and streaming details stay behind the
@@ -483,7 +483,7 @@ function aborted(): QwenWebError {
   return error
 }
 
-/** Map provider errors onto `APICallError` for AlphaCode's error pipeline. */
+/** Map provider errors onto `APICallError` for SilverCode's error pipeline. */
 export function toApiError(error: unknown, modelId: string): APICallError {
   if (error instanceof APICallError) return error
   if (isAbortLike(error)) {

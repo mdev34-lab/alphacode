@@ -13,23 +13,30 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(LayerNode.compile(Git.node))
 
 describe("Git", () => {
-  it.live("clones a remote and reads checkout metadata", () =>
-    withRemote((fixture) =>
-      Effect.gen(function* () {
-        const git = yield* Git.Service
-        const target = AbsolutePath.make(path.join(fixture.root, "checkout"))
-        const repository = yield* git.repo.clone({ remote: fixture.remote, directory: target })
+  it.live(
+    "clones a remote and reads checkout metadata",
+    () =>
+      withRemote((fixture) =>
+        Effect.gen(function* () {
+          const git = yield* Git.Service
+          const target = AbsolutePath.make(path.join(fixture.root, "checkout"))
+          const repository = yield* git.repo.clone({ remote: fixture.remote, directory: target })
 
-        expect(yield* git.remote.get(repository)).toBe(fixture.remote)
-        expect(yield* git.history.head(repository)).toBeString()
-        expect(yield* git.history.branch(repository)).toBe("main")
-        expect(yield* git.history.defaultRemoteBranch(repository)).toBe("main")
-        expect(repository.worktree).toBe(target)
-        expect(repository.gitDirectory).toBe(AbsolutePath.make(path.join(target, ".git")))
-        expect(repository.commonDirectory).toBe(repository.gitDirectory)
-        expect(yield* read(path.join(target, "README.md"))).toBe("one\n")
-      }),
-    ),
+          expect(yield* git.remote.get(repository)).toBe(fixture.remote)
+          expect(yield* git.history.head(repository)).toBeString()
+          expect(yield* git.history.branch(repository)).toBe("main")
+          expect(yield* git.history.defaultRemoteBranch(repository)).toBe("main")
+          expect(repository.worktree).toBe(target)
+          expect(repository.gitDirectory).toBe(AbsolutePath.make(path.join(target, ".git")))
+          expect(repository.commonDirectory).toBe(repository.gitDirectory)
+          expect(yield* read(path.join(target, "README.md"))).toBe("one\n")
+        }),
+      ),
+    // Windows CI spends seconds spawning git for the fixture, remote, and
+    // clone; this test had no explicit budget, so it inherited Bun's 5s
+    // default and failed there. Same assertion, more generous budget — the
+    // sibling test below already does this.
+    15_000,
   )
 
   it.live(

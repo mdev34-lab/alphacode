@@ -2,11 +2,11 @@
  * Patchright Chromium lifecycle for the Qwen Web provider.
  *
  * One persistent browser context owns the user's Qwen session:
- * - the profile lives under AlphaCode's data dir (never in the repo),
+ * - the profile lives under SilverCode's data dir (never in the repo),
  * - a single main page serves all generations (streams multiplex by id),
  * - crashes / disconnects are detected and recovered by recreating the
  *   page or relaunching the browser,
- * - a lockfile coordinates multiple AlphaCode processes sharing the
+ * - a lockfile coordinates multiple SilverCode processes sharing the
  *   profile (Chromium itself refuses a second instance on one profile).
  *
  * Nothing here launches a browser at import time. The browser starts lazily
@@ -107,7 +107,7 @@ export function profileExists(profileDir?: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// AlphaCode-owned profile metadata (login state; never credentials)
+// SilverCode-owned profile metadata (login state; never credentials)
 // ---------------------------------------------------------------------------
 
 export interface QwenWebProfileMetadata {
@@ -220,7 +220,7 @@ async function acquireProfileLock(profileDir: string, timeoutMs: number, signal?
         code: "browser_error",
         retryable: false,
         message:
-          `Another AlphaCode process (pid ${owner}) is using the Qwen browser profile at ${profileDir}. ` +
+          `Another SilverCode process (pid ${owner}) is using the Qwen browser profile at ${profileDir}. ` +
           `Wait for it to exit, or set ${QWEN_WEB_ENV.profileDir} to use a separate profile.`,
       })
     }
@@ -256,7 +256,7 @@ async function defaultLauncher(profileDir: string, options: QwenWebLaunchOptions
       code: "browser_error",
       retryable: false,
       cause: error,
-      message: "The `patchright` package could not be loaded. Reinstall AlphaCode dependencies and try again.",
+      message: "The `patchright` package could not be loaded. Reinstall SilverCode dependencies and try again.",
     })
   }
   try {

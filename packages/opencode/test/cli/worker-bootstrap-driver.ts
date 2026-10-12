@@ -17,7 +17,7 @@ rmSync(heapFile, { force: true })
 const worker = new Worker(new URL("../../src/cli/tui/worker.ts", import.meta.url), {
   env: {
     ...process.env,
-    ...(marker ? { ALPHACODE_TUI_WORKER: "1" } : {}),
+    ...(marker ? { SILVERCODE_TUI_WORKER: "1" } : {}),
   },
 })
 
