@@ -6,7 +6,7 @@ import os from "os"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
 import { SessionRevert } from "./revert"
-import { Session } from "./session"
+import { Session, readAgentEffort } from "./session"
 import { Agent } from "../agent/agent"
 import { isReviewAgent } from "../agent/review-agents"
 import { Provider } from "@/provider/provider"
@@ -51,6 +51,7 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { FinishTool, readTermination } from "@/tool/finish"
 import PROMPT_REVIEW_LOOP from "./prompt/review-loop.txt"
 import FINISH_NUDGE from "./prompt/finish-nudge.txt"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 import REVIEW_STAGNATION_NUDGE from "./prompt/review-stagnation-nudge.txt"
 import { ReviewStagnation } from "./review-stagnation"
 import { SessionRunState } from "./run-state"
@@ -89,6 +90,25 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "image/png",
   "image/webp",
 ])
+
+// The resolved two-switch process instructions (effort → review passes and
+// validation gate) injected alongside the review-loop prompt. The text mirrors
+// what finish enforces: no unconditional mandatory review, no configurable
+// extra knobs, and honest delivery labels at every level.
+const EFFORT_PROCESS: Record<AgentEffort.Level, string> = {
+  fast: [
+    "## Agent effort: fast (review passes: off, validation gate: minimal)",
+    "No independent review is required for this turn's work: self-check inline and finish when done. Declare minimal validation evidence (syntax/smoke where applicable) on finish. Deliver with an honest unreviewed status unless an independent review actually happened — finish never upgrades an unreviewed result to approved.",
+  ].join("\n\n"),
+  medium: [
+    "## Agent effort: medium (review passes: at most 2, validation gate: standard)",
+    'For work that changes files, finish requires at least one independent synchronous review (`subagent_type: "review"`, `background: false`) before delivery when a reviewer can run. Only blocking findings (Critical/Important, or a Needs-fixes report with no findings) or work landed after the last review require another pass, bounded by two completed passes; minor findings are logged, not re-litigated. After the budget, finish delivers with an honest exhausted/findings-open status rather than looping, and repeated finish calls never skip a required review. Declare standard validation evidence (relevant tests) on finish.',
+  ].join("\n\n"),
+  thorough: [
+    "## Agent effort: thorough (review passes: until clean, validation gate: full)",
+    "Finish keeps declining until a clean, current independent review exists: address blocking findings and re-review; any write after an approved review makes the tree stale and needs a fresh pass. There is no pass cap. If the reviewer genuinely cannot run, a successful finish remains blocked; only a declared failure can deliver as review-blocked, while a depth-limited child hands its unreviewed writes to its parent as review-pending. Neither outcome is approval. Declare full validation evidence (tests, typecheck, parity as applicable) on finish; incomplete or failed evidence is reported honestly.",
+  ].join("\n\n"),
+}
 
 const STRUCTURED_OUTPUT_DESCRIPTION = `Use this tool to return your final response in the requested structured format.
 
@@ -1617,6 +1637,11 @@ const layer = Layer.effect(
               .defaultInfo()
               .pipe(Effect.map((info) => info.name === agent.name && agent.mode !== "subagent"))
               .pipe(Effect.catchCause(() => Effect.succeed(false)))
+            // Resolve the effective effort exactly like finish does:
+            // session-persisted selection, then configuration, then medium.
+            const effortConfig = yield* config.get()
+            const configEffort = typeof effortConfig.agent?.effort === "string" ? effortConfig.agent.effort : undefined
+            const effort = AgentEffort.resolve(readAgentEffort(session.metadata), AgentEffort.resolve(configEffort))
             const system = [
               ...env,
               ...instructions,
@@ -1624,6 +1649,9 @@ const layer = Layer.effect(
               ...(toolOverview ? [toolOverview] : []),
               ...(skills ? [skills] : []),
               ...(isDefaultPrimary ? [PROMPT_REVIEW_LOOP] : []),
+              // Reviewer sessions keep their own structured-report contract and
+              // must not recursively review themselves.
+              ...(isReviewAgent(agent.name) ? [] : [EFFORT_PROCESS[effort]]),
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

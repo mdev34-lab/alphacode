@@ -4,10 +4,10 @@ import { FinishTool, deliveredReason, readTermination, type TerminationReason } 
 import DESCRIPTION from "./task.txt"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ReviewReport } from "@opencode-ai/core/review-report"
-import { hasFileWrites, REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
+import { declaresFileWrites, hasFileWrites, REVIEW_LOOP_METADATA } from "@opencode-ai/core/review-loop"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { BackgroundJob } from "@/background/job"
-import { Session } from "@/session/session"
+import { Session, readAgentEffort, withAgentEffort } from "@/session/session"
 import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
@@ -18,6 +18,7 @@ import { Config } from "@/config/config"
 import { Effect, Exit, Option, Ref, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
@@ -64,6 +65,10 @@ const BaseParameterFields = {
 
 export const Parameters = Schema.Struct({
   ...BaseParameterFields,
+  effort: Schema.optional(AgentEffort.Level).annotate({
+    description:
+      "Override the agent effort policy for this task (fast, medium, or thorough). Omitted means: reuse this child's persisted selection on resume, otherwise inherit the parent/root selection, otherwise the configured agent.effort, otherwise medium. The selection persists on the child session and applies to its finish checkpoint.",
+  }),
   background: Schema.optional(Schema.Boolean).annotate({
     description:
       "Run the agent asynchronously (default: true). The tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. Set to false to run synchronously and wait for the result.",
@@ -284,6 +289,27 @@ export const TaskTool = Tool.define(
           ],
         }))
 
+      // Effective effort for the child: explicit override, then this child's
+      // persisted selection (resume of an owned child only), then the parent's
+      // persisted level, then the root's, then configuration, then medium. A
+      // child owned by another parent is neither read nor written here — its
+      // selection belongs to the parent that created it.
+      const owned = session === undefined || session.parentID === ctx.sessionID
+      const persisted = owned ? readAgentEffort(nextSession.metadata) : undefined
+      const configEffort = typeof cfg.agent?.effort === "string" ? cfg.agent.effort : undefined
+      const effort = AgentEffort.resolve(
+        params.effort ?? persisted ?? readAgentEffort(parent.metadata) ?? readAgentEffort(current.metadata),
+        AgentEffort.resolve(configEffort),
+      )
+      // Persist the resolved level before execution so both foreground and
+      // background runs (and every resume) observe the same selection.
+      if (owned && persisted !== effort) {
+        yield* sessions.setMetadata({
+          sessionID: nextSession.id,
+          metadata: withAgentEffort(nextSession.metadata ?? {}, effort),
+        })
+      }
+
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
         Effect.orDie,
@@ -299,6 +325,11 @@ export const TaskTool = Tool.define(
         parentSessionId: ctx.sessionID,
         sessionId: nextSession.id,
         model,
+        // A foreign child's selection belongs to the parent that created it:
+        // it is neither read nor written here, so publishing a level would
+        // claim a governance this dispatch does not have. Owned children
+        // persisted the level above, so theirs is honest to record.
+        ...(owned ? { effort } : {}),
         ...(runInBackground ? { background: true } : {}),
       }
 
@@ -388,6 +419,10 @@ export const TaskTool = Tool.define(
       // propagated - so this site is not protecting the publish; it is naming
       // the failure once, with the child's session, instead of letting it fall
       // through to that generic log.
+      // Whether this child wrote files, from its history. Declared writes count
+      // whether the child is a review run or not: #233 hands a review run's writes
+      // back to the parent as unreviewed work, so they are never dropped here.
+      const wroteFiles = yield* Ref.make(false)
       const unsubscribeWrites = yield* events.listen((event) => {
         if (event.type !== SessionV1.Event.PartUpdated.type) return Effect.void
         const data = event.data as { sessionID?: unknown; part?: SessionV1.Part }
@@ -419,6 +454,7 @@ export const TaskTool = Tool.define(
         })
 
         yield* projectWrites(result.parts)
+        yield* Ref.set(wroteFiles, result.parts.some((part) => declaresFileWrites(part)))
         const finish = result.parts.findLast(
           (item): item is SessionV1.ToolPart =>
             item.type === "tool" && item.tool === FinishTool.id && item.state.status === "completed",
@@ -487,6 +523,7 @@ export const TaskTool = Tool.define(
         // the child finishes. `ctx.agent` is not a candidate: on the subtask path
         // it is the child's agent.
         const parentAgent = yield* parentAgentOf
+        const wrote = yield* Ref.get(wroteFiles)
         yield* ops
           .prompt({
             sessionID: ctx.sessionID,
@@ -510,6 +547,10 @@ export const TaskTool = Tool.define(
                     : text,
                   termination,
                 }),
+                // The notification itself carries the child's delegated writes
+                // so the parent's review accounting cannot approve a tree the
+                // child changed.
+                ...(wrote ? { metadata: { [REVIEW_LOOP_METADATA]: { writesFiles: true } } } : {}),
               },
             ],
           })
@@ -639,6 +680,7 @@ export const TaskTool = Tool.define(
             )
             if (result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
+            const wrote = yield* Ref.get(wroteFiles)
             // Cancellation is a delivery, not a tool failure: the parent is
             // blocked on this call, and a free-form failure would leave it
             // re-deriving what happened from prose. The same envelope the
@@ -648,6 +690,7 @@ export const TaskTool = Tool.define(
                 title: params.description,
                 metadata: {
                   ...metadata,
+                  ...(wrote ? { [REVIEW_LOOP_METADATA]: { writesFiles: true } } : {}),
                   termination: { reason: "cancelled" },
                 },
                 output: renderOutput({

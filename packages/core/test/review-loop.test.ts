@@ -340,6 +340,18 @@ describe("review loop - conservative task evidence", () => {
     expect(state.verdict).toBe("cap")
     expect(state.reviewInProgress).toBe(false)
   })
+  // An approval covers only the tree it reviewed. Work after it, then an errored
+  // attempt (which clears the work flag), must not revive the approval.
+  test("an errored attempt after later work does not revive an earlier approval", () => {
+    const state = reviewLoopState(
+      [userMessage, editMessage, reviewMessage(), editMessage, reviewMessage({ status: "error" })],
+      { effort: "medium" },
+    )
+    expect(state.reviews).toBe(2)
+    expect(state.lastReviewVerdict).toBeUndefined()
+    expect(state.verdict).not.toBe("approved")
+  })
+
   test("errored review stays unapproved before cap", () => {
     const state = reviewLoopState([userMessage, editMessage, reviewMessage({ status: "error" })], 2)
     expect(state.reviews).toBe(1)
