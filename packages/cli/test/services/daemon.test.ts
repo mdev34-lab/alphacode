@@ -238,7 +238,7 @@ describe("daemon start/restart: verified active-run boundary (integration)", () 
     test(`unknown probe (${item.name}): version mismatch start/transport/restart refuse`, async () => {
       await withRegisteredService(item.active, "0.0.0-old", async ({ requests }) => {
         for (const operation of ["start", "transport", "restart"] as const) {
-          const result = await runDaemon((daemon) => daemon[operation]())
+          const result = await runDaemon<unknown, unknown>((daemon) => daemon[operation]())
           expect(result.ok).toBe(false)
           if (!result.ok) expect(result.message).toContain("Could not confirm")
         }
