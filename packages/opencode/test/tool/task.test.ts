@@ -2256,11 +2256,9 @@ const reverseGateNode = LayerNode.make({
   layer: Layer.sync(ReverseGate, () => ({})),
   deps: [],
 })
-const reverseBase = LayerNode.make({
-  name: "@opencode/Session.reverseBase",
-  layer: Session.node.implementation!,
-  deps: Session.node.dependencies as unknown as [LayerNode.Node<never>],
-}) as unknown as LayerNode.Node<Session.Service>
+// Preserve the real node's service, implementation, dependency array and types.
+// Only its resolver identity changes, preventing the replacement from cycling.
+const reverseBase = { ...Session.node, name: "@opencode/Session.reverseBase" }
 const reverseSession = LayerNode.make({
   service: Session.Service,
   layer: Layer.effect(
@@ -2299,6 +2297,9 @@ itReverse.instance("child write projection preserves completion committed after 
     const { chat, assistant } = yield* seed()
     const sessions = yield* Session.Service
     const reverseGate = yield* ReverseGate
+    expect(reverseBase.dependencies).toBe(Session.node.dependencies)
+    expect(reverseBase.implementation).toBe(Session.node.implementation)
+    expect(reverseBase.service).toBe(Session.node.service)
     const tool = yield* TaskTool
     const def = yield* tool.init()
     const running: SessionV1.ToolPart = {
