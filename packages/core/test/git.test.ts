@@ -86,11 +86,21 @@ async function initRepo(directory: string) {
 }
 
 describe("Git worktrees", () => {
-  it.live("creates, lists, and removes linked worktrees", () =>
-    Effect.gen(function* () {
+  it.live("creates, lists, and removes linked worktrees", () => {
+    // Phase markers for the Windows CI flake: if the test hangs again, the last
+    // marker before the timeout names the stuck phase.
+    const startedAt = Date.now()
+    const phase = (name: string) =>
+      Effect.sync(() => console.error(`[git-worktree-test] phase=${name} elapsedMs=${Date.now() - startedAt}`))
+    return Effect.gen(function* () {
+      yield* phase("init")
       const root = yield* Effect.acquireRelease(
         Effect.promise(() => tmpdir()),
-        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+        (dir) =>
+          Effect.gen(function* () {
+            yield* Effect.promise(() => dir[Symbol.asyncDispose]())
+            yield* phase("cleanup")
+          }),
       )
       yield* Effect.promise(() => initRepo(root.path))
       const directory = AbsolutePath.make(yield* Effect.promise(() => fs.realpath(root.path)))
@@ -103,6 +113,7 @@ describe("Git worktrees", () => {
       if (!repo) throw new Error("Repository not found")
 
       yield* git.worktree.create({ repository: repo, directory: worktree })
+      yield* phase("create")
 
       expect((yield* git.worktree.list(repo)).some((entry) => entry.directory.endsWith("-git-worktree"))).toBe(true)
       const linked = yield* git.repo.discover(worktree)
@@ -110,10 +121,12 @@ describe("Git worktrees", () => {
       expect(linked?.commonDirectory).toBe(repo.commonDirectory)
       expect(linked?.gitDirectory).not.toBe(repo.gitDirectory)
       if (!linked) throw new Error("Linked worktree not found")
+      yield* phase("list")
       yield* git.worktree.remove({ repository: linked, directory: worktree, force: false })
       expect((yield* git.worktree.list(repo)).some((entry) => entry.directory.endsWith("-git-worktree"))).toBe(false)
-    }),
-  )
+      yield* phase("remove")
+    })
+  }, 30_000)
 })
 
 describe("Git trees", () => {
