@@ -357,6 +357,10 @@ const layer = Layer.effect(
         }
 
         for (const [rawKey, value] of Object.entries(cfg.agent ?? {})) {
+          // The reserved scalar `agent.effort` entry selects the effort policy;
+          // it is a setting, never a named agent, so it is excluded from
+          // enumeration here (and from provider routing entirely).
+          if (typeof value === "string") continue
           // `agent: { build: ... }` from an existing config still configures the
           // renamed `work` agent. Unlike lookups (which prefer a real `build`
           // agent when one already exists), this config key is always treated

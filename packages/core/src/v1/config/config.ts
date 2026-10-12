@@ -1,6 +1,7 @@
 export * as ConfigV1 from "./config"
 
 import { Schema } from "effect"
+import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 import { NonNegativeInt, PositiveInt, type DeepMutable } from "../../schema"
 import { ConfigExperimental } from "../../config/experimental"
 import { ConfigReference } from "../../config/reference"
@@ -125,10 +126,23 @@ export const Info = Schema.Struct({
         title: Schema.optional(ConfigAgentV1.Info),
         summary: Schema.optional(ConfigAgentV1.Info),
         compaction: Schema.optional(ConfigAgentV1.Info),
+        // The reserved effort policy: a scalar level, or — for legacy
+        // compatibility — a named agent literally called `effort` defined as an
+        // object. The two are distinguished by shape at every consumer; the
+        // scalar form is never enumerated as a named agent.
+        effort: Schema.optional(Schema.Union([AgentEffort.Level, ConfigAgentV1.Info])),
       }),
-      [Schema.Record(Schema.String, ConfigAgentV1.Info)],
+      // StructWithRest intersects declared properties with the rest record for
+      // every key, so the rest value type must admit the scalar effort policy
+      // as well. Declared agent keys still require ConfigAgentV1.Info via their
+      // property signature, so only undeclared keys can resolve to a level and
+      // agent enumeration filters scalar values out.
+      [Schema.Record(Schema.String, Schema.Union([ConfigAgentV1.Info, AgentEffort.Level]))],
     ),
-  ).annotate({ description: "Agent configuration, see https://opencode.ai/docs/agents" }),
+  ).annotate({
+    description:
+      "Agent configuration, see https://opencode.ai/docs/agents. The reserved scalar `effort` entry selects the agent effort policy (fast | medium | thorough) and is not a named agent.",
+  }),
   provider: Schema.optional(Schema.Record(Schema.String, ConfigProviderV1.Info)).annotate({
     description: "Custom provider configurations and model overrides",
   }),

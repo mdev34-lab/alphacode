@@ -137,13 +137,34 @@ describe("review loop prompt contract", () => {
     const prompt = await readPrompt("review-loop.txt")
 
     expect(prompt).toContain("After every Work pass made in response to findings, return to Review")
-    expect(prompt).toContain("Do not call `finish` until a later review explicitly approves")
-    expect(prompt).toContain("review-cap")
+    expect(prompt).toContain("Prefer not to call `finish` until a later review explicitly approves")
+    // The pass budget belongs to the effort policy; the old fixed `review-cap`
+    // termination is gone from the prompt contract.
+    expect(prompt).toContain("The effort policy owns the pass budget")
+    expect(prompt).toContain("`budget-exhausted` or `findings-open` status — never as approved")
+    expect(prompt).not.toContain("review-cap")
   })
 
-  // #231: the policy used to call review guidance and let a second finish
-  // skip it. It now states the requirement and names the only runtime outcomes
-  // that end it, none of which the model can choose.
+  test("makes finish the only enforcement checkpoint for the review requirement", async () => {
+    const prompt = await readPrompt("review-loop.txt")
+
+    expect(prompt).toContain("`finish` is the only enforcement checkpoint")
+    expect(prompt).toContain("Repeated `finish` calls never waive a required review")
+    expect(prompt).not.toContain("Review is guidance, not an enforcement gate")
+    expect(prompt).not.toContain("explicitly skip review")
+    expect(prompt).not.toContain("Mandatory Review Loop")
+  })
+
+  test("finish nudge preserves the review recommendation and forbids a skip path", async () => {
+    const nudge = await readPrompt("finish-nudge.txt")
+
+    expect(nudge).toContain("explicit Approved review from the Review subagent")
+    expect(nudge).toContain('`subagent_type: "review"` and `background: false`')
+    expect(nudge).toContain("latest review returned `Needs fixes`")
+    expect(nudge).toContain("repeating `finish` does not skip it")
+    expect(nudge).not.toContain("review-cap")
+  })
+
   test("presents review as a requirement with no skip path", async () => {
     const prompt = (await readPrompt("review-loop.txt")).replace(/\s+/g, " ")
 
@@ -152,7 +173,7 @@ describe("review loop prompt contract", () => {
     // #233 replaced the runtime waiver with three outcomes, none of which is a
     // skip: the attempt cap, a child's unreviewed handoff, and a blocked
     // dispatch that only an honest failure may report.
-    expect(prompt).toContain("`review-cap`")
+    expect(prompt).toContain("`budget-exhausted`")
     expect(prompt).toContain("`review-pending`")
     expect(prompt).toContain("`review-blocked`")
     expect(prompt).toContain("None of these outcomes means the work was approved")
@@ -168,7 +189,7 @@ describe("review loop prompt contract", () => {
     expect(nudge).toContain('`subagent_type: "review"` and `background: false`')
     expect(nudge).toContain("latest review returned `Needs fixes`")
     expect(nudge).toContain("calling `finish` again without running the Review subagent is declined again")
-    expect(nudge).toContain("review-cap")
+    expect(nudge).toContain("budget-exhausted")
     expect(nudge).not.toMatch(/explicitly skip review|strongly recommended/)
   })
 
@@ -178,7 +199,7 @@ describe("review loop prompt contract", () => {
     expect(description).toContain("finish requires an explicit Approved review of that work from the Review subagent")
     expect(description).toContain('`subagent_type: "review"` and `background: false`')
     expect(description).toContain("Retrying finish does not skip review")
-    expect(description).toContain("`review-cap`")
+    expect(description).toContain("`budget-exhausted`")
     // #233: the waiver is gone from the tool description too. A dispatch that
     // cannot run blocks success and only an honest failure may report it.
     expect(description).toContain("`review-blocked`")
@@ -229,11 +250,9 @@ describe("review loop prompt contract", () => {
 
     expect(finish).toContain("ctx.waitForOtherTools ?? Effect.void")
     expect(finish).toContain(".messages({ sessionID: ctx.sessionID })")
-    // #233: the decline is still a failed tool call, and a session that cannot
-    // dispatch the reviewer says so in the same failure instead of completing.
-    expect(finish).toContain("new ToolFailure({")
-    expect(finish).toContain("gateError.message")
-    expect(finish).toContain("Review blocked (")
+    expect(finish).toContain(
+      'return yield* Effect.fail(new ToolFailure({ message: outcome.feedback ?? "Review required." }))',
+    )
     expect(finish).not.toContain("Effect.orDie")
     expect(finish).not.toContain('termination: "blocked"')
   })

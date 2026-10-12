@@ -13,11 +13,17 @@ export const Event = PermissionV1.Event
 // Deliberately generous: long enough for a human watching the TUI to answer,
 // short enough that an unattended run does not hang on a prompt nobody sees.
 const DEFAULT_TIMEOUT_SECONDS = 45
+export interface DeniesInput {
+  readonly permission: string
+  readonly patterns: readonly string[]
+  readonly ruleset: PermissionV1.Ruleset
+}
 
 export interface Interface {
   readonly ask: (input: PermissionV1.AskInput) => Effect.Effect<void, PermissionV1.Error>
   readonly reply: (input: PermissionV1.ReplyInput) => Effect.Effect<void, PermissionV1.NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<PermissionV1.Request>>
+  readonly denies: (input: DeniesInput) => Effect.Effect<boolean>
 }
 
 // Outcomes a registered request can settle with. `DeniedError` is absent because a
@@ -44,6 +50,22 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
       pattern: "*",
     }
   )
+}
+
+/**
+ * ask()'s per-pattern decision over the SAME ruleset ordering: the caller's
+ * ruleset first, the instance-approved always-allow grants last, so a granted
+ * always can mask a ruleset deny exactly as ask() decides it. Pure and
+ * readonly: it never prompts and never mutates approvals. ask() and
+ * denies() both consume this so their verdicts cannot drift apart.
+ */
+function assess(
+  permission: string,
+  patterns: readonly string[],
+  ruleset: PermissionV1.Ruleset,
+  approved: PermissionV1.Ruleset,
+): PermissionV1.Rule[] {
+  return patterns.map((pattern) => evaluate(permission, pattern, ruleset, approved))
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Permission") {}
@@ -79,9 +101,12 @@ const layer = Layer.effect(
       const { ruleset, ...request } = input
       let needsAsk = false
 
-      for (const pattern of request.patterns) {
-        const rule = evaluate(request.permission, pattern, ruleset, approved)
-        yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
+      for (const [index, rule] of assess(request.permission, request.patterns, ruleset, approved).entries()) {
+        yield* Effect.logInfo("evaluated", {
+          permission: request.permission,
+          pattern: request.patterns[index],
+          action: rule,
+        })
         if (rule.action === "deny") {
           return yield* new PermissionV1.DeniedError({
             ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
@@ -229,7 +254,18 @@ const layer = Layer.effect(
       return Array.from(pending.values(), (item) => item.info)
     })
 
-    return Service.of({ ask, reply, list })
+    // The readonly half of ask(): the same (ruleset, approved) evaluation
+    // through the same shared decision helper, returning ask()'s deny verdict
+    // without ever prompting or mutating approvals. Callers that must know
+    // whether a dispatch would be denied right now — finish's reviewer
+    // availability check — consult this instead of the static evaluate, which
+    // cannot see the instance-approved grants that ask() applies last.
+    const denies = Effect.fn("Permission.denies")(function* (input: DeniesInput) {
+      const { approved } = yield* InstanceState.get(state)
+      return assess(input.permission, input.patterns, input.ruleset, approved).some((rule) => rule.action === "deny")
+    })
+
+    return Service.of({ ask, reply, list, denies })
   }),
 )
 

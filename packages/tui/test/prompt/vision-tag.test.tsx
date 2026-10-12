@@ -429,6 +429,13 @@ describe("prompt vision tag", () => {
       expect(highIdx).toBeGreaterThan(providerIdx)
       expect(visionIdx).toBeGreaterThan(highIdx)
 
+      // The process-effort label (medium by default) is a separate label on
+      // the same meta row: effort and explicit HIGH thinking are both shown
+      // and stay distinct.
+      const highRow = frame.split("\n").find((line) => line.includes("VisionCapableModel")) ?? ""
+      expect(highRow).toContain("· medium")
+      expect(highRow).toContain("· high")
+
       // Set variant to "medium" on text-only model -> "medium" visible, "vision" absent
       setup.getLocal().model.set({ providerID: "test-provider", modelID: "text-model" })
       setup.getLocal().model.variant.set("medium")
@@ -438,6 +445,10 @@ describe("prompt vision tag", () => {
       expect(frame).toContain("TextOnlyModel")
       expect(frame).toContain("medium")
       expect(frame).not.toContain("vision")
+      // Effort and thinking both read "medium" on this row: two distinct
+      // labels are present even though the words match.
+      const textRow = frame.split("\n").find((line) => line.includes("TextOnlyModel")) ?? ""
+      expect(textRow.match(/medium/g)?.length).toBe(2)
 
       const textModelIdx = frame.indexOf("TextOnlyModel")
       const textProvIdx = frame.indexOf("TestProvider")
@@ -455,7 +466,11 @@ describe("prompt vision tag", () => {
       expect(frame).toContain("VisionCapableModel")
       expect(frame).toContain("vision")
       expect(frame).not.toContain("high")
-      expect(frame).not.toContain("medium")
+      // Only the separate process-effort label still reads "medium": the
+      // thinking tag itself is gone from the row (a leaked variant label
+      // would make the row carry "medium" twice).
+      const clearedRow = frame.split("\n").find((line) => line.includes("VisionCapableModel")) ?? ""
+      expect(clearedRow.match(/medium/g)?.length).toBe(1)
 
       const visionModelIdx = frame.indexOf("VisionCapableModel")
       const visionProvIdx = frame.indexOf("TestProvider")

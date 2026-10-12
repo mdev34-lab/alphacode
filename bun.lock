@@ -491,6 +491,7 @@
       "dependencies": {
         "@opencode-ai/core": "workspace:*",
         "@opencode-ai/plugin": "workspace:*",
+        "@opencode-ai/schema": "workspace:*",
         "@opencode-ai/sdk": "workspace:*",
         "@opentui/core": "catalog:",
         "@opentui/keymap": "catalog:",

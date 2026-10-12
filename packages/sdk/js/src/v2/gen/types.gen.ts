@@ -1958,7 +1958,8 @@ export type Config = {
     title?: AgentConfig
     summary?: AgentConfig
     compaction?: AgentConfig
-    [key: string]: AgentConfig | undefined
+    effort?: AgentEffortLevel | AgentConfig
+    [key: string]: AgentConfig | AgentEffortLevel | AgentConfig | AgentEffortLevel | AgentConfig | undefined
   }
   provider?: {
     [key: string]: ProviderConfig
@@ -3862,6 +3863,8 @@ export type ConfigV2ReferenceLocal = {
   description?: string
   hidden?: boolean
 }
+
+export type AgentEffortLevel = "fast" | "medium" | "thorough"
 
 export type PolicyEffect = "allow" | "deny"
 
