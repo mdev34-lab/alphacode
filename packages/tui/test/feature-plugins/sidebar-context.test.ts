@@ -85,3 +85,21 @@ describe("sidebar context usage + bar (#241)", () => {
     expect(glyphs).toBe("█".repeat(CONTEXT_BAR_WIDTH))
   })
 })
+
+
+describe("sidebar context zero-output usage", () => {
+  test("completed input-only turn is measured instead of unknown", () => {
+    expect(contextUsageFrom([assistant({ tokens: { input: 30000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } })],
+      () => ({ limit: { context: 200000 } }))).toEqual({ status: "known", tokens: 30000, percent: 15 })
+  })
+  test("latest input-only turn replaces older output-bearing usage", () => {
+    expect(contextUsageFrom([assistant(), assistant({ id: "latest", tokens: { input: 184000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } })],
+      () => ({ limit: { context: 200000 } }))).toEqual({ status: "known", tokens: 184000, percent: 92 })
+  })
+  test("cache/reasoning-only usage counts, all-zero placeholder stays unknown", () => {
+    expect(contextUsageFrom([assistant({ tokens: { input: 0, output: 0, reasoning: 5, cache: { read: 10, write: 5 } } })],
+      () => ({ limit: { context: 100 } }))).toEqual({ status: "known", tokens: 20, percent: 20 })
+    expect(contextUsageFrom([assistant({ time: { created: 0 }, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } })],
+      () => ({ limit: { context: 100 } }))).toEqual({ status: "unknown", tokens: 0 })
+  })
+})

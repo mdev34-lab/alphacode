@@ -44,7 +44,11 @@ export function contextBarGlyphs(usage: ContextUsage): string {
 }
 
 export function contextUsageFrom(messages: readonly AssistantMessage[], findModel: (providerID: string, modelID: string) => { limit: { context: number } } | undefined): ContextUsage {
-  const last = messages.findLast((item): item is AssistantMessage => item.role === "assistant" && item.tokens.output > 0)
+  // Input, reasoning and cache usage are measured even when output is zero.
+  // Do not treat an all-zero placeholder as a measured empty context.
+  const last = messages.findLast((item): item is AssistantMessage => item.role === "assistant" &&
+    [item.tokens.input, item.tokens.output, item.tokens.reasoning, item.tokens.cache.read, item.tokens.cache.write]
+      .some((tokens) => tokens > 0))
   if (!last) return { status: "unknown", tokens: 0 }
 
   const tokens =
