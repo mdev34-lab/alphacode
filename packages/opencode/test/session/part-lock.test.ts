@@ -74,7 +74,7 @@ it.live("part lock keeps queued waiters serialized while older tails settle", ()
     yield* Deferred.succeed(secondRelease, undefined)
     yield* Fiber.join(second)
     yield* Fiber.join(third)
-    yield* flush
+    yield* awaitEmpty(lock)
     expect(order).toEqual(["first", "other", "second", "third"])
     expect(lock.size()).toBe(0)
   }),
@@ -117,7 +117,7 @@ it.live("part lock cancellation of a queued waiter cannot bypass the active owne
     yield* Deferred.succeed(release, undefined)
     yield* Fiber.join(owner)
     yield* Fiber.join(next)
-    yield* flush
+    yield* awaitEmpty(lock)
     expect(order).toEqual(["owner", "next"])
     expect(lock.size()).toBe(0)
   }),
@@ -176,7 +176,7 @@ it.live("cancelling a middle waiter keeps a newer queued tail registered", () =>
     yield* Fiber.join(owner)
     yield* Fiber.join(next)
     yield* Fiber.join(last)
-    yield* flush
+    yield* awaitEmpty(lock)
     expect(order).toEqual(["next", "last"])
     expect(lock.size()).toBe(0)
   }),
