@@ -261,7 +261,7 @@ describe("tool.finish – effort-labelled delivery", () => {
           "task",
           { subagent_type: "review", background: false },
           [
-            "<alphacode-review>",
+            "<silvercode-review>",
             JSON.stringify({
               version: 1,
               revision: "uncommitted",
@@ -269,7 +269,7 @@ describe("tool.finish – effort-labelled delivery", () => {
               summary: "clean",
               findings: [],
             }),
-            "</alphacode-review>",
+            "</silvercode-review>",
           ].join("\n"),
         )
         const tool = yield* FinishTool
@@ -677,7 +677,7 @@ describe("tool.finish – newest-50 routing window parity with task dispatch", (
   // window. These fixtures push the newest user row outside that window the
   // way a long turn does: one user message, then >50 assistant rows.
   const APPROVED = [
-    "<alphacode-review>",
+    "<silvercode-review>",
     JSON.stringify({
       version: 1,
       revision: "uncommitted",
@@ -685,7 +685,7 @@ describe("tool.finish – newest-50 routing window parity with task dispatch", (
       summary: "clean",
       findings: [],
     }),
-    "</alphacode-review>",
+    "</silvercode-review>",
   ].join("\n")
 
   it.instance(

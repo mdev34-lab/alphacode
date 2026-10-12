@@ -33,7 +33,7 @@ const args = hideBin(process.argv)
 
 function show(out: string) {
   const text = out.trimStart()
-  if (!text.startsWith("alphacode ")) {
+  if (!text.startsWith("silvercode ")) {
     process.stderr.write(UI.logo() + EOL + EOL)
     process.stderr.write(text + EOL)
     return
@@ -43,7 +43,7 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("alphacode")
+  .scriptName("silvercode")
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")

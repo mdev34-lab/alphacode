@@ -84,7 +84,7 @@ interface Sandbox {
 }
 
 async function makeSandbox(): Promise<Sandbox> {
-  const dir = await mkdtemp(path.join(tmpdir(), "alphacode-release-flow-"))
+  const dir = await mkdtemp(path.join(tmpdir(), "silvercode-release-flow-"))
   const origin = path.join(dir, "origin.git")
   const work = path.join(dir, "work")
   const state = path.join(dir, "ghstate")
@@ -96,8 +96,8 @@ async function makeSandbox(): Promise<Sandbox> {
 
   git(dir, "init", "--quiet", "--bare", origin)
   git(dir, "clone", "--quiet", origin, work)
-  git(work, "config", "user.name", "AlphaCode Test")
-  git(work, "config", "user.email", "alphacode-test@example.com")
+  git(work, "config", "user.name", "SilverCode Test")
+  git(work, "config", "user.email", "silvercode-test@example.com")
   git(work, "checkout", "--quiet", "-b", "dev")
   await writeFile(path.join(work, "seed.txt"), "seed\n")
   git(work, "add", "--all")
@@ -118,7 +118,7 @@ async function makeSandbox(): Promise<Sandbox> {
 function flowEnv(sandbox: Sandbox, extra: Record<string, string> = {}) {
   const env: Record<string, string> = { ...process.env } as Record<string, string>
   for (const name of Object.keys(env)) {
-    if (/^(ALPHACODE|OPENCODE)_/.test(name) || name.startsWith("GITHUB_")) delete env[name]
+    if (/^(SILVERCODE|ALPHACODE|OPENCODE)_/.test(name) || name.startsWith("GITHUB_")) delete env[name]
   }
   const pathed = withPathPrefix(env, sandbox.bin)
   return {
@@ -126,7 +126,7 @@ function flowEnv(sandbox: Sandbox, extra: Record<string, string> = {}) {
     GH_STUB_STATE: sandbox.state.replace(/\\/g, "/"),
     GH_STUB_ORIGIN: sandbox.origin.replace(/\\/g, "/"),
     GITHUB_ACTIONS: "true",
-    GH_REPO: "stub/alphacode",
+    GH_REPO: "stub/silvercode",
     GITHUB_OUTPUT: sandbox.out,
     RUNNER_TEMP: sandbox.dir,
     ...extra,
@@ -204,7 +204,7 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
         expect(output).toContain("version=0.1.0")
         expect(output).toContain(`release_id=${release?.databaseId}`)
         expect(output).toContain("tag=v0.1.0")
-        expect(output).toContain("repo=stub/alphacode")
+        expect(output).toContain("repo=stub/silvercode")
 
         // The build job's checkout of the tag succeeds against the remote.
         const checkout = Bun.spawnSync(
@@ -368,22 +368,22 @@ describe("release lifecycle with stubbed gh and a real git remote", () => {
 
 describe("release archive upload", () => {
   const allTargets = [
-    { name: "alphacode-linux-arm64", os: "linux" },
-    { name: "alphacode-linux-x64", os: "linux" },
-    { name: "alphacode-linux-x64-baseline", os: "linux" },
-    { name: "alphacode-linux-arm64-musl", os: "linux" },
-    { name: "alphacode-linux-x64-musl", os: "linux" },
-    { name: "alphacode-linux-x64-baseline-musl", os: "linux" },
-    { name: "alphacode-darwin-arm64", os: "darwin" },
-    { name: "alphacode-darwin-x64", os: "darwin" },
-    { name: "alphacode-darwin-x64-baseline", os: "darwin" },
-    { name: "alphacode-windows-arm64", os: "win32" },
-    { name: "alphacode-windows-x64", os: "win32" },
-    { name: "alphacode-windows-x64-baseline", os: "win32" },
+    { name: "silvercode-ai-linux-arm64", os: "linux" },
+    { name: "silvercode-ai-linux-x64", os: "linux" },
+    { name: "silvercode-ai-linux-x64-baseline", os: "linux" },
+    { name: "silvercode-ai-linux-arm64-musl", os: "linux" },
+    { name: "silvercode-ai-linux-x64-musl", os: "linux" },
+    { name: "silvercode-ai-linux-x64-baseline-musl", os: "linux" },
+    { name: "silvercode-ai-darwin-arm64", os: "darwin" },
+    { name: "silvercode-ai-darwin-x64", os: "darwin" },
+    { name: "silvercode-ai-darwin-x64-baseline", os: "darwin" },
+    { name: "silvercode-ai-windows-arm64", os: "win32" },
+    { name: "silvercode-ai-windows-x64", os: "win32" },
+    { name: "silvercode-ai-windows-x64-baseline", os: "win32" },
   ]
 
   async function makeUploadSandbox() {
-    const dir = await mkdtemp(path.join(tmpdir(), "alphacode-upload-"))
+    const dir = await mkdtemp(path.join(tmpdir(), "silvercode-upload-"))
     const state = path.join(dir, "ghstate")
     const bin = path.join(dir, "bin")
     await mkdir(path.join(state, "releases"), { recursive: true })
@@ -403,7 +403,7 @@ describe("release archive upload", () => {
   async function runUpload(sandbox: { dir: string; state: string }, tag: string, archives: string[]) {
     const runner = [
       `import { uploadReleaseArchives } from ${JSON.stringify(path.join(repoRoot, "packages/script/src/artifacts.ts"))}`,
-      `await uploadReleaseArchives(${JSON.stringify(tag)}, ${JSON.stringify(archives)}, "stub/alphacode")`,
+      `await uploadReleaseArchives(${JSON.stringify(tag)}, ${JSON.stringify(archives)}, "stub/silvercode")`,
     ].join("\n")
     const env: Record<string, string> = { ...process.env } as Record<string, string>
     const proc = Bun.spawn(["bun", "-e", runner], {
@@ -421,21 +421,21 @@ describe("release archive upload", () => {
   }
 
   test("linux targets are tarballs, every other target is a zip", () => {
-    expect(archiveName({ name: "alphacode-linux-x64", os: "linux" })).toBe("alphacode-linux-x64.tar.gz")
-    expect(archiveName({ name: "alphacode-darwin-arm64", os: "darwin" })).toBe("alphacode-darwin-arm64.zip")
-    expect(archiveName({ name: "alphacode-windows-x64", os: "win32" })).toBe("alphacode-windows-x64.zip")
-    expect(archivePath({ name: "alphacode-linux-x64", os: "linux" })).toBe("./dist/alphacode-linux-x64.tar.gz")
+    expect(archiveName({ name: "silvercode-ai-linux-x64", os: "linux" })).toBe("silvercode-ai-linux-x64.tar.gz")
+    expect(archiveName({ name: "silvercode-ai-darwin-arm64", os: "darwin" })).toBe("silvercode-ai-darwin-arm64.zip")
+    expect(archiveName({ name: "silvercode-ai-windows-x64", os: "win32" })).toBe("silvercode-ai-windows-x64.zip")
+    expect(archivePath({ name: "silvercode-ai-linux-x64", os: "linux" })).toBe("./dist/silvercode-ai-linux-x64.tar.gz")
   })
 
   test("a single-target linux build uploads its tarball and never touches the zip glob", async () => {
     const sandbox = await makeUploadSandbox()
     try {
-      const target = { name: "alphacode-linux-x64", os: "linux" }
+      const target = { name: "silvercode-ai-linux-x64", os: "linux" }
       await Bun.write(path.join(sandbox.dir, "dist", archiveName(target)), "archive")
       const run = await runUpload(sandbox, "v0.1.0", [archivePath(target)])
       expectOk(run)
       const uploaded = await readFile(path.join(sandbox.state, "uploads"), "utf8")
-      expect(uploaded.trim().split("\n")).toEqual(["./dist/alphacode-linux-x64.tar.gz"])
+      expect(uploaded.trim().split("\n")).toEqual(["./dist/silvercode-ai-linux-x64.tar.gz"])
     } finally {
       await sandbox.cleanup()
     }
@@ -462,9 +462,9 @@ describe("release archive upload", () => {
   test("a missing archive is a build failure, not a silent skip", async () => {
     const sandbox = await makeUploadSandbox()
     try {
-      const run = await runUpload(sandbox, "v0.1.0", ["./dist/alphacode-linux-x64.tar.gz"])
+      const run = await runUpload(sandbox, "v0.1.0", ["./dist/silvercode-ai-linux-x64.tar.gz"])
       expect(run.exitCode).not.toBe(0)
-      expect(run.stderr).toContain("Release archive missing on disk: ./dist/alphacode-linux-x64.tar.gz")
+      expect(run.stderr).toContain("Release archive missing on disk: ./dist/silvercode-ai-linux-x64.tar.gz")
     } finally {
       await sandbox.cleanup()
     }

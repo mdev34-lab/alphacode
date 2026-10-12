@@ -162,7 +162,7 @@ describe("createTuiAttention", () => {
       notification: true,
       sound: false,
     })
-    expect(renderer.notifications).toEqual([{ title: "opencode", message: "focused" }])
+    expect(renderer.notifications).toEqual([{ title: "silvercode", message: "focused" }])
   })
 
   test("notification can deliver while focused when requested", async () => {
@@ -177,7 +177,7 @@ describe("createTuiAttention", () => {
       sound: true,
     })
     expect(audio.playCalls).toBe(1)
-    expect(renderer.notifications).toEqual([{ title: "opencode", message: "hello" }])
+    expect(renderer.notifications).toEqual([{ title: "silvercode", message: "hello" }])
   })
 
   test("notifies while blurred", async () => {
@@ -185,12 +185,12 @@ describe("createTuiAttention", () => {
     const attention = createTuiAttention({ renderer, config: config(), audio: new FakeAudioEngine() })
     renderer.emit("blur")
 
-    expect(await attention.notify({ title: "opencode", message: "hello", sound: false })).toEqual({
+    expect(await attention.notify({ title: "silvercode", message: "hello", sound: false })).toEqual({
       ok: true,
       notification: true,
       sound: false,
     })
-    expect(renderer.notifications).toEqual([{ title: "opencode", message: "hello" }])
+    expect(renderer.notifications).toEqual([{ title: "silvercode", message: "hello" }])
   })
 
   test("when requested, blurred-only calls do not notify or play sound while focused", async () => {
@@ -239,7 +239,7 @@ describe("createTuiAttention", () => {
       notification: true,
       sound: true,
     })
-    expect(renderer.notifications).toEqual([{ title: "opencode", message: "hello again" }])
+    expect(renderer.notifications).toEqual([{ title: "silvercode", message: "hello again" }])
   })
 
   test("can disable notification per call while still playing sound", async () => {

@@ -23,7 +23,7 @@ env:
 jobs:
   version:
     runs-on: ubuntu-latest
-    if: github.repository == 'mdev34-lab/alphacode'
+    if: github.repository_owner == 'mdev34-lab'
     steps:
       - name: Only release from dev
         if: ${{ !inputs.dry_run && github.ref != 'refs/heads/dev' }}
@@ -62,8 +62,8 @@ jobs:
       - name: Build all targets and upload archives to the draft release
         run: ./packages/opencode/script/build.ts
         env:
-          ALPHACODE_VERSION: ${{ needs.version.outputs.version }}
-          ALPHACODE_RELEASE: "1"
+          SILVERCODE_VERSION: ${{ needs.version.outputs.version }}
+          SILVERCODE_RELEASE: "1"
       - name: Attach install script
         run: gh release upload "${{ needs.version.outputs.tag }}" ./install --clobber
 

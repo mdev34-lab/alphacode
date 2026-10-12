@@ -82,6 +82,8 @@ for (const item of targets) {
       windows: {},
     },
     define: {
+      SILVERCODE_VERSION: `'${Script.version}'`,
+      SILVERCODE_CHANNEL: `'${Script.channel}'`,
       ALPHACODE_VERSION: `'${Script.version}'`,
       ALPHACODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_VERSION: `'${Script.version}'`,

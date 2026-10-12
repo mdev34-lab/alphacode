@@ -1,6 +1,6 @@
 /**
  * Every agent that reviews completed work and therefore must deliver its result
- * through a `<alphacode-review>` report envelope.
+ * through a `<silvercode-review>` report envelope.
  *
  * The set is the single source of truth for the report gate, which is applied in
  * three places: the finish tool (refuses to complete a run without a parseable

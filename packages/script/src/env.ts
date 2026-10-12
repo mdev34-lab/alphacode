@@ -1,17 +1,18 @@
 import { parseVersion, type BumpInput } from "./version"
 
 /**
- * AlphaCode release environment variables.
+ * SilverCode release environment variables.
  *
- * `ALPHACODE_*` is the documented interface. The `OPENCODE_*` names survive as
- * compatibility aliases for inherited OpenCode tooling (nix derivations, older
- * workflow snippets), but they must never disagree with the AlphaCode name.
+ * `SILVERCODE_*` is the documented interface. The pre-rename `ALPHACODE_*` names
+ * and the inherited `OPENCODE_*` names survive as compatibility aliases (older
+ * workflow snippets, nix derivations), but they must never disagree with the
+ * SilverCode name.
  */
 export const ENV_NAMES = {
-  version: ["ALPHACODE_VERSION", "OPENCODE_VERSION"],
-  bump: ["ALPHACODE_BUMP", "OPENCODE_BUMP"],
-  channel: ["ALPHACODE_CHANNEL", "OPENCODE_CHANNEL"],
-  release: ["ALPHACODE_RELEASE", "ALPHACODE_RELEASE_ID", "OPENCODE_RELEASE", "OPENCODE_RELEASE_ID"],
+  version: ["SILVERCODE_VERSION", "ALPHACODE_VERSION", "OPENCODE_VERSION"],
+  bump: ["SILVERCODE_BUMP", "ALPHACODE_BUMP", "OPENCODE_BUMP"],
+  channel: ["SILVERCODE_CHANNEL", "ALPHACODE_CHANNEL", "OPENCODE_CHANNEL"],
+  release: ["SILVERCODE_RELEASE", "SILVERCODE_RELEASE_ID", "ALPHACODE_RELEASE", "ALPHACODE_RELEASE_ID", "OPENCODE_RELEASE", "OPENCODE_RELEASE_ID"],
 } as const
 
 export type Env = Record<string, string | undefined>
@@ -88,7 +89,7 @@ export function resolveRelease(env: Env): boolean {
 
 /**
  * Fails when the release flags contradict each other (for example a new
- * `ALPHACODE_RELEASE=false` next to an inherited `OPENCODE_RELEASE_ID`). Call
+ * `SILVERCODE_RELEASE=false` next to an inherited `OPENCODE_RELEASE_ID`). Call
  * before doing anything release-shaped so the conflict cannot be ignored.
  */
 export function assertNoReleaseConflict(env: Env = process.env as Env): void {

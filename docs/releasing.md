@@ -1,4 +1,4 @@
-# Releasing AlphaCode
+# Releasing SilverCode
 
 Releases are GitHub Releases built from tags. The release version is committed to the
 repository before the release is cut: no release step rewrites history and nothing
@@ -13,11 +13,11 @@ and is checked against it:
 | --- | --- | --- |
 | `package.json` (root) | `0.1.0` | `./script/bump.ts` is the only writer |
 | `packages/opencode/package.json` (executable) | `0.1.0` | `./script/bump.ts`, `./script/release-check.ts` |
-| Build / runtime (`alphacode --version`) | `0.1.0` | release guard in `@opencode-ai/script`, `--version` smoke test in `script/build.ts` |
+| Build / runtime (`silvercode --version`) | `0.1.0` | release guard in `@opencode-ai/script`, `--version` smoke test in `script/build.ts` |
 | Git tag | `v0.1.0` | `./script/release-check.ts --tag v0.1.0` (runs in the publish workflow) |
 
 A release build is always built from the exact tag, so a clean checkout of `vX.Y.Z`
-reports `X.Y.Z` both from package metadata and from `alphacode --version`.
+reports `X.Y.Z` both from package metadata and from `silvercode --version`.
 
 `0.1.0` is the inherited baseline. Local-only builds that were never committed, tagged
 or released stay that way - no historical releases are manufactured for them.
@@ -67,7 +67,7 @@ reuses someone else's tag.
   the last `vX.Y.Z` tag.
 - `X.Y.Z`: explicit target version.
 
-`auto` needs a previous tag, so the first AlphaCode release must be an explicit
+`auto` needs a previous tag, so the first SilverCode release must be an explicit
 `patch`, `minor`, `major`, or `X.Y.Z`. `./script/bump.ts` refuses to move the version
 backwards, to bump to a prerelease, or to reuse a version that already has a tag.
 
@@ -99,7 +99,7 @@ actually matches root `package.json`. A tag that disagrees with the package meta
 fails the build instead of silently lending it release semantics, and a checkout of a
 tag with uncommitted changes reports `X.Y.Z+<sha>.dirty` (never the exact release
 version), so a modified tree can never pass as the published artifact. Explicit
-configuration (`ALPHACODE_CHANNEL`, `ALPHACODE_VERSION`, `ALPHACODE_BUMP`) keeps its own
+configuration (`SILVERCODE_CHANNEL`, `SILVERCODE_VERSION`, `SILVERCODE_BUMP`) keeps its own
 semantics; the release guard still gates any actual publish.
 
 `--tag` declares which release is being built; it never stands in for a missing one.
@@ -113,7 +113,7 @@ Unknown flags are errors, not fallbacks: `./script/bump.ts patch --dry-rnu` and
 less strict - or, worse, a real write.
 
 A development build can never publish a release: the build only uploads artifacts when
-`ALPHACODE_RELEASE` is set, and `@opencode-ai/script` refuses to start a release build
+`SILVERCODE_RELEASE` is set, and `@opencode-ai/script` refuses to start a release build
 whose version is not the exact, stable, committed package version, whose HEAD is not the
 matching release tag, or whose tree is dirty. `./script/bump.ts` validates and rewrites
 root `package.json` and `packages/opencode/package.json` together: both are read and
@@ -123,17 +123,18 @@ checked before either is written, so a half-bumped tree is impossible.
 
 | Variable | Meaning |
 | --- | --- |
-| `ALPHACODE_VERSION` | Version to build/embed; in a release build it must equal `package.json`. Implies the `latest` channel: combining it with an explicit non-`latest` channel is an error |
-| `ALPHACODE_BUMP` | `auto`, `patch`, `minor` or `major`; forces the release channel |
-| `ALPHACODE_CHANNEL` | `latest` for release builds; anything else is a development build |
-| `ALPHACODE_RELEASE` | Truthy to attach build artifacts to the release |
-| `ALPHACODE_RELEASE_ID` | Release database id; treated as a release signal |
+| `SILVERCODE_VERSION` | Version to build/embed; in a release build it must equal `package.json`. Implies the `latest` channel: combining it with an explicit non-`latest` channel is an error |
+| `SILVERCODE_BUMP` | `auto`, `patch`, `minor` or `major`; forces the release channel |
+| `SILVERCODE_CHANNEL` | `latest` for release builds; anything else is a development build |
+| `SILVERCODE_RELEASE` | Truthy to attach build artifacts to the release |
+| `SILVERCODE_RELEASE_ID` | Release database id; treated as a release signal |
 
-The inherited `OPENCODE_VERSION`, `OPENCODE_BUMP`, `OPENCODE_CHANNEL` and
-`OPENCODE_RELEASE_ID` names are still accepted as compatibility aliases (the nix
-derivation uses them), but setting an alias and its `ALPHACODE_*` name to different
+The pre-rename `ALPHACODE_*` names and the inherited `OPENCODE_VERSION`, `OPENCODE_BUMP`,
+`OPENCODE_CHANNEL` and `OPENCODE_RELEASE_ID` names are still accepted as compatibility
+aliases (the nix derivation uses the `OPENCODE_*` ones), but setting an alias and its
+`SILVERCODE_*` name to different
 values is an error, not a silent choice. That includes release signals that contradict
-each other: a new `ALPHACODE_RELEASE=false` beside an inherited `OPENCODE_RELEASE_ID`
+each other: a new `SILVERCODE_RELEASE=false` beside an inherited `OPENCODE_RELEASE_ID`
 fails the build instead of publishing on the strength of the inherited variable. Clear
 one of them.
 
@@ -146,7 +147,7 @@ is a build artifact, never a release, and is rejected everywhere a release is ex
 git checkout v<version>            # detached HEAD: the exact tagged commit, clean tree
 ./script/release-check.ts --tag v<version>
 cd packages/opencode && bun run script/build.ts --single
-./dist/alphacode-linux-x64/bin/alphacode --version   # prints <version>
+./dist/silvercode-ai-linux-x64/bin/silvercode --version   # prints <version>
 ```
 
 The first two commands are the same ones the `build` job runs, so a release that cannot

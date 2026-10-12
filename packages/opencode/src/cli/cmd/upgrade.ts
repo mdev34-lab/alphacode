@@ -6,7 +6,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 
 export const UpgradeCommand = {
   command: "upgrade [target]",
-  describe: "upgrade alphacode to the latest or a specific version",
+  describe: "upgrade silvercode to the latest or a specific version",
   builder: (yargs: Argv) => {
     return yargs.positional("target", {
       describe: "version to upgrade to, for ex '0.1.48' or 'v0.1.48'",
@@ -31,7 +31,7 @@ export const UpgradeCommand = {
     const target = args.target ? args.target.replace(/^v/, "") : await Installation.latest()
 
     if (InstallationVersion === target) {
-      prompts.log.warn(`opencode upgrade skipped: ${target} is already installed`)
+      prompts.log.warn(`silvercode upgrade skipped: ${target} is already installed`)
       prompts.outro("Done")
       return
     }

@@ -16,11 +16,11 @@ describe("git release metadata", () => {
   // Real git subprocesses (init, commits, two merges): on a contended Windows
   // runner each spawn costs hundreds of ms, so the 5s default is marginal.
   test("selects stable version tags and reads only first-parent commits", async () => {
-    const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-test-"))
+    const cwd = await mkdtemp(path.join(tmpdir(), "silvercode-git-test-"))
     try {
       git(cwd, "init", "--quiet", "--initial-branch=main")
-      git(cwd, "config", "user.name", "AlphaCode Test")
-      git(cwd, "config", "user.email", "alphacode-test@example.com")
+      git(cwd, "config", "user.name", "SilverCode Test")
+      git(cwd, "config", "user.email", "silvercode-test@example.com")
 
       await writeFile(path.join(cwd, "base.txt"), "base\n")
       git(cwd, "add", "--all")
@@ -59,11 +59,11 @@ describe("git release metadata", () => {
   }, 30_000)
 
   test("recognizes a release tag at HEAD and ignores unrelated tags", async () => {
-    const cwd = await mkdtemp(path.join(tmpdir(), "alphacode-git-tag-"))
+    const cwd = await mkdtemp(path.join(tmpdir(), "silvercode-git-tag-"))
     try {
       git(cwd, "init", "--quiet", "--initial-branch=main")
-      git(cwd, "config", "user.name", "AlphaCode Test")
-      git(cwd, "config", "user.email", "alphacode-test@example.com")
+      git(cwd, "config", "user.name", "SilverCode Test")
+      git(cwd, "config", "user.email", "silvercode-test@example.com")
 
       await writeFile(path.join(cwd, "base.txt"), "base\n")
       git(cwd, "add", "--all")

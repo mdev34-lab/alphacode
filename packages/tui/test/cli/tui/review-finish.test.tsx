@@ -37,7 +37,7 @@ let partSeq = 0
 const nextPartID = () => `prt_review_${partSeq++}`
 
 function envelope(report: Record<string, unknown>): string {
-  return `<alphacode-review>\n${JSON.stringify(report, null, 2)}\n</alphacode-review>`
+  return `<silvercode-review>\n${JSON.stringify(report, null, 2)}\n</silvercode-review>`
 }
 
 const ANALYSIS = "## Review\n\nI checked the diff against the brief.\n\n### Assessment\n\nAssessment: Needs fixes\n\nReasoning: Two issues need attention before merge.\n"
@@ -115,7 +115,7 @@ describe("review finish parsing", () => {
     expect(parsed?.report.summary).toBe("Two issues need attention before merge.")
     expect(parsed?.report.findings).toHaveLength(3)
     expect(parsed?.analysis).toContain("## Review")
-    expect(parsed?.analysis).not.toContain("alphacode-review")
+    expect(parsed?.analysis).not.toContain("silvercode-review")
   })
 
   test("leaves plain finish results untouched", () => {
@@ -125,14 +125,14 @@ describe("review finish parsing", () => {
   })
 
   test("rejects truncated, malformed, and unsupported envelopes", () => {
-    expect(parseReviewReport("analysis\n<alphacode-review>\n{ truncated")).toBeUndefined()
+    expect(parseReviewReport("analysis\n<silvercode-review>\n{ truncated")).toBeUndefined()
     expect(
       parseReviewReport(envelope({ version: 2, revision: "uncommitted", assessment: "approved", summary: "s", findings: [] })),
     ).toBeUndefined()
     expect(
       parseReviewReport(envelope({ version: 1, revision: "uncommitted", assessment: "maybe", summary: "s", findings: [] })),
     ).toBeUndefined()
-    expect(parseReviewReport("not json at all\n<alphacode-review>\nnot json\n</alphacode-review>")).toBeUndefined()
+    expect(parseReviewReport("not json at all\n<silvercode-review>\nnot json\n</silvercode-review>")).toBeUndefined()
   })
 
   test("the last complete envelope wins", () => {
@@ -337,7 +337,7 @@ describe("review finish rendering", () => {
     expect(frame).toContain("src/util.ts:10")
     expect(frame).toContain("Raw review report")
     // ...instead of the raw envelope dump.
-    expect(frame).not.toContain("alphacode-review")
+    expect(frame).not.toContain("silvercode-review")
     expect(frame).not.toContain('"assessment"')
     expect(frame).not.toContain("Task completed")
     // The block above can only appear if Finish's <Show> callback child
@@ -360,7 +360,7 @@ describe("review finish rendering", () => {
     expect(critical).toBeLessThan(important)
     expect(important).toBeLessThan(minor)
     // No raw JSON in the default view.
-    expect(frame).not.toContain("alphacode-review")
+    expect(frame).not.toContain("silvercode-review")
   })
 
   test("keeps finding details collapsed until the block is expanded", async () => {

@@ -159,7 +159,7 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
     void Promise.resolve()
       .then(() => options.onExit?.(exit))
       .catch((error) => {
-        log(`[alphacode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
+        log(`[silvercode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
       })
   }
 
@@ -188,7 +188,7 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
 
       if (crash && restarts < maxRestarts) {
         restarts += 1
-        log(`[alphacode] Bun worker crashed (${describeExit(exit)}); restarting (${restarts}/${maxRestarts})...`)
+        log(`[silvercode] Bun worker crashed (${describeExit(exit)}); restarting (${restarts}/${maxRestarts})...`)
         const cycle: RestartCycle = { waiters: queuedWaiters }
         queuedWaiters = []
         openCycles.push(cycle)
@@ -209,7 +209,7 @@ export function createWorkerProcess(target: string, options: WorkerProcessOption
               settleCycle((waiter) => waiter.reject(failure))
               if (replacement !== current || terminal || stopping) return
               terminal = true
-              log(`[alphacode] worker restart hook failed: ${failure.message}`)
+              log(`[silvercode] worker restart hook failed: ${failure.message}`)
               replacement?.disconnect()
               replacement?.kill("SIGTERM")
             },
@@ -269,7 +269,7 @@ function createThreadWorker(target: string, options: WorkerProcessOptions = {}):
     void Promise.resolve()
       .then(() => options.onExit?.({ code: 1, signal: null }))
       .catch((error) => {
-        log(`[alphacode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
+        log(`[silvercode] worker exit hook failed: ${error instanceof Error ? error.message : String(error)}`)
       })
   }
   return transport
@@ -289,7 +289,7 @@ export function createTuiWorker(target: string, options: WorkerProcessOptions = 
     // A thread worker must also not receive the process-message RPC mode
     // (`Rpc.listenProcess`) — there is no `process.send` in a thread, so
     // worker.ts picks the thread transport from that absence.
-    ALPHACODE_TUI_WORKER: "1",
+    SILVERCODE_TUI_WORKER: "1",
   }
   if (compiled) {
     return createThreadWorker(target, { ...options, env })

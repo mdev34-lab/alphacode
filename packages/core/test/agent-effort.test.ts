@@ -70,9 +70,9 @@ function evaluate(effort: AgentEffort.Level, state: ReviewLoopState, reviewerAva
 
 function envelope(assessment: "approved" | "needs-fixes", findings: ReadonlyArray<Record<string, unknown>> = []) {
   return [
-    "<alphacode-review>",
+    "<silvercode-review>",
     JSON.stringify({ version: 1, revision: "uncommitted", assessment, summary: "assessment", findings }),
-    "</alphacode-review>",
+    "</silvercode-review>",
   ].join("\n")
 }
 

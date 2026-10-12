@@ -8,7 +8,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 
 // The daemon state directory is resolved from XDG_STATE_HOME when the module is
 // first imported, so the isolated directory must be set before the import.
-const stateHome = mkdtempSync(path.join(tmpdir(), "alphacode-daemon-test-"))
+const stateHome = mkdtempSync(path.join(tmpdir(), "silvercode-daemon-test-"))
 process.env.XDG_STATE_HOME = stateHome
 const serverFile = path.join(stateHome, "opencode", "server.json")
 const markerScript = path.join(stateHome, "spawn-marker.js")
@@ -27,7 +27,7 @@ beforeAll(async () => {
   // records that a spawn happened and exits, instead of starting a real server.
   writeFileSync(
     markerScript,
-    'require("fs").writeFileSync(process.env.ALPHACODE_TEST_MARK, process.argv.slice(2).join(" "))\n',
+    'require("fs").writeFileSync(process.env.SILVERCODE_TEST_MARK, process.argv.slice(2).join(" "))\n',
   )
 })
 
@@ -168,9 +168,9 @@ async function withRegisteredService(
   const child = Bun.spawn(["sleep", "30"], { stdio: ["ignore", "ignore", "ignore"] })
   writeRegistration({ version, url, pid: child.pid })
   const originalArgv1 = process.argv[1]
-  const originalMark = process.env.ALPHACODE_TEST_MARK
+  const originalMark = process.env.SILVERCODE_TEST_MARK
   process.argv[1] = markerScript
-  process.env.ALPHACODE_TEST_MARK = markerOut
+  process.env.SILVERCODE_TEST_MARK = markerOut
   rmSync(markerOut, { force: true })
   const originalRegistration = readFileSync(serverFile, "utf8")
   try {
@@ -181,8 +181,8 @@ async function withRegisteredService(
     expect(readFileSync(serverFile, "utf8")).toBe(originalRegistration)
   } finally {
     process.argv[1] = originalArgv1
-    if (originalMark === undefined) delete process.env.ALPHACODE_TEST_MARK
-    else process.env.ALPHACODE_TEST_MARK = originalMark
+    if (originalMark === undefined) delete process.env.SILVERCODE_TEST_MARK
+    else process.env.SILVERCODE_TEST_MARK = originalMark
     child.kill()
     server.stop(true)
     rmSync(serverFile, { force: true })
@@ -257,8 +257,8 @@ describe("daemon start/restart: verified active-run boundary (integration)", () 
 
   test("verified idle zero, version mismatch: start replaces (old process killed, new spawn attempted)", async () => {
     const originalArgv1 = process.argv[1]
-    const originalMark = process.env.ALPHACODE_TEST_MARK
-    process.env.ALPHACODE_TEST_MARK = markerOut
+    const originalMark = process.env.SILVERCODE_TEST_MARK
+    process.env.SILVERCODE_TEST_MARK = markerOut
     process.argv[1] = markerScript
     rmSync(markerOut, { force: true })
     const server = fakeServer({ kind: "ok", runs: 0 })
@@ -276,15 +276,15 @@ describe("daemon start/restart: verified active-run boundary (integration)", () 
       server.stop(true)
       rmSync(serverFile, { force: true })
       process.argv[1] = originalArgv1
-      if (originalMark === undefined) delete process.env.ALPHACODE_TEST_MARK
-      else process.env.ALPHACODE_TEST_MARK = originalMark
+      if (originalMark === undefined) delete process.env.SILVERCODE_TEST_MARK
+      else process.env.SILVERCODE_TEST_MARK = originalMark
     }
   }, 60_000)
 
   test("verified idle zero, version mismatch: restart stops the old process and spawns a new one", async () => {
     const originalArgv1 = process.argv[1]
-    const originalMark = process.env.ALPHACODE_TEST_MARK
-    process.env.ALPHACODE_TEST_MARK = markerOut
+    const originalMark = process.env.SILVERCODE_TEST_MARK
+    process.env.SILVERCODE_TEST_MARK = markerOut
     process.argv[1] = markerScript
     rmSync(markerOut, { force: true })
     const server = fakeServer({ kind: "ok", runs: 0 })
@@ -301,8 +301,8 @@ describe("daemon start/restart: verified active-run boundary (integration)", () 
       server.stop(true)
       rmSync(serverFile, { force: true })
       process.argv[1] = originalArgv1
-      if (originalMark === undefined) delete process.env.ALPHACODE_TEST_MARK
-      else process.env.ALPHACODE_TEST_MARK = originalMark
+      if (originalMark === undefined) delete process.env.SILVERCODE_TEST_MARK
+      else process.env.SILVERCODE_TEST_MARK = originalMark
     }
   }, 60_000)
 

@@ -40,7 +40,7 @@ if (process.env.DRY_RUN !== "1" && process.env.GITHUB_ACTIONS !== "true") {
   throw new Error("Refusing to create a release outside the publish workflow. Use DRY_RUN=1 ./script/version.ts to preview.")
 }
 
-const repo = process.env.GH_REPO ?? "mdev34-lab/alphacode"
+const repo = process.env.GH_REPO ?? "mdev34-lab/silvercode"
 const sha = (await $`git rev-parse ${process.env.GITHUB_SHA ?? "HEAD"}`.text()).trim()
 
 interface ReleaseState {
@@ -88,7 +88,7 @@ const notes = previousTag
       { repo, prev: previousTag, next: tag },
     )
   : "Initial tracked release."
-const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/alphacode-release-notes.txt`
+const notesFile = `${process.env.RUNNER_TEMP ?? "/tmp"}/silvercode-release-notes.txt`
 await Bun.write(notesFile, notes)
 
 const writeOutput = async (values: string[]) => {

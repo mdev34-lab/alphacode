@@ -103,17 +103,17 @@ export function make(
   const initialize = Effect.fn("ACP.initialize")(function* (params: InitializeRequest) {
     const started = performance.now()
     const authMethod: AuthMethod = {
-      description: "Run `opencode auth login` in the terminal",
-      name: "Login with opencode",
+      description: "Run `silvercode auth login` in the terminal",
+      name: "Login with silvercode",
       id: AuthMethodID,
     }
 
     if (params.clientCapabilities?._meta?.["terminal-auth"] === true) {
       authMethod._meta = {
         "terminal-auth": {
-          command: "opencode",
+          command: "silvercode",
           args: ["auth", "login"],
-          label: "alphacode Login",
+          label: "silvercode Login",
         },
       }
     }
@@ -139,7 +139,7 @@ export function make(
       },
       authMethods: [authMethod],
       agentInfo: {
-        name: "alphacode",
+        name: "silvercode",
         version: InstallationVersion,
       },
     }
@@ -885,7 +885,7 @@ const promptResponse = Effect.fn("ACP.promptResponse")(function* (
 
 function promptErrorMessage(error: AssistantError) {
   if ("message" in error.data && typeof error.data.message === "string") return error.data.message
-  return "alphacode prompt failed"
+  return "silvercode prompt failed"
 }
 
 function sendUsageUpdate(
@@ -1078,7 +1078,7 @@ function fromUnknownError(error: unknown, service?: string): Error {
   if (isAuthRequired(error)) {
     return new ACPError.AuthRequiredError({ providerId: findProviderID(error) })
   }
-  return new ACPError.ServiceFailureError({ safeMessage: "alphacode service failure", service })
+  return new ACPError.ServiceFailureError({ safeMessage: "silvercode service failure", service })
 }
 
 function isACPError(error: unknown): error is Error {

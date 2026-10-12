@@ -1,6 +1,6 @@
 # Qwen Web Provider (`qwen-web`)
 
-Native AlphaCode provider for the normal Qwen web app at
+Native SilverCode provider for the normal Qwen web app at
 `https://chat.qwen.ai/`. It drives the user's own authenticated browser
 session through a persistent Patchright/Chromium profile and talks to the
 same web endpoints the Qwen frontend uses. No API keys, no OAuth client
@@ -24,7 +24,7 @@ secrets, no Qwen Code quota.
 ## Architecture
 
 ```
-AlphaCode session
+SilverCode session
   -> packages/opencode/src/provider/provider.ts   (catalog entry + custom loader)
   -> qwen-web/sdk.ts                              (LanguageModelV3)
   -> qwen-web/session.ts                          (chat create / generation / stop)
@@ -49,9 +49,9 @@ Module layout (`src/provider/qwen-web/`):
 | `upload`      | STS credentials + OSS upload for multimodal parts                     |
 | `catalog`     | Live `/api/models` mapping, fallback list, TTL cache                  |
 | `sdk`         | `LanguageModelV3` (`doGenerate`/`doStream`, warnings, cancellation)   |
-| `plugin`      | AlphaCode auth/provider plugin hooks (browser login flow)             |
+| `plugin`      | SilverCode auth/provider plugin hooks (browser login flow)             |
 
-### AlphaCode wiring
+### SilverCode wiring
 
 - `src/provider/provider.ts`: imports the qwen-web entry, registers a
   bundled lazy loader (`"qwen-web": () => import("./qwen-web")`), injects
@@ -75,12 +75,12 @@ evidence it was set up (`shouldAutoloadQwenWeb`):
 
 ## Auth
 
-Login happens in the real Qwen login page; AlphaCode never asks for or
+Login happens in the real Qwen login page; SilverCode never asks for or
 stores Qwen passwords, MFA codes, CAPTCHA answers, or recovery codes.
 
 Flow (`qwen-web/plugin.ts`, `qwen-web/browser.ts`):
 
-1. `alphacode providers login` (or the TUI auth picker) invokes the
+1. `silvercode providers login` (or the TUI auth picker) invokes the
    `QwenWebAuthPlugin` authorize callback.
 2. A headed Chromium window opens on the Qwen login page when no display
    is detected the flow predicts headed mode; an already-headless
@@ -91,16 +91,16 @@ Flow (`qwen-web/plugin.ts`, `qwen-web/browser.ts`):
    the profile and records the auth marker.
 5. Subsequent runs reuse the persistent profile silently in headless mode.
 
-Profile layout (under the AlphaCode data dir):
+Profile layout (under the SilverCode data dir):
 
 ```
 <data>/qwen-web/browser-profile/
   metadata.json   # { authenticated, userId?, savedAt }
-  alphacode.lock  # cross-process lock (30s wait budget)
+  silvercode.lock  # cross-process lock (30s wait budget)
   <chromium files>
 ```
 
-⚠️ **Security note: the browser profile IS credential material.** It contains the authenticated Qwen session (cookies, localStorage, sessionStorage). Anyone with filesystem access to `<data>/qwen-web/browser-profile/` can impersonate the Qwen session. Treat it as you would an API key or OAuth token. The lockfile (`alphacode.lock`) prevents concurrent corruption but does not protect against malicious local access.
+⚠️ **Security note: the browser profile IS credential material.** It contains the authenticated Qwen session (cookies, localStorage, sessionStorage). Anyone with filesystem access to `<data>/qwen-web/browser-profile/` can impersonate the Qwen session. Treat it as you would an API key or OAuth token. The lockfile (`silvercode.lock`) prevents concurrent corruption but does not protect against malicious local access.
 
 Foreign navigations are healed: `ensureOnOrigin` steers stray pages back
 to `https://chat.qwen.ai` before any request.
@@ -122,9 +122,9 @@ Base origin `https://chat.qwen.ai`, JSON over page-context `fetch`:
 - Generations run on fresh ephemeral chats by default
   (`QWEN_WEB_CHAT_MODE=temp`); `thread` mode reuses a persistent thread.
   **`thread` mode is explicit opt-in:** it shares the same upstream Qwen
-  conversation across AlphaCode turns. This is intended for workflows that
+  conversation across SilverCode turns. This is intended for workflows that
   deliberately want to reuse Qwen's conversation memory; it is NOT the
-  default because it can leak context between unrelated AlphaCode sessions
+  default because it can leak context between unrelated SilverCode sessions
   using the same Qwen account.
 - Cancellation propagates `AbortSignal` end to end: SDK -> session ->
   in-page `AbortController` registry plus an upstream stop request.
@@ -252,10 +252,10 @@ Gates (all green on the feature branch):
 ## Manual test plan (requires a user Qwen login)
 
 1. `bunx patchright install chromium`.
-2. `alphacode providers login`, pick Qwen Web, log in normally in the
+2. `silvercode providers login`, pick Qwen Web, log in normally in the
    opened window; confirm the profile authenticates and persists.
-3. `alphacode models qwen-web` shows live models after login.
-4. `alphacode run -m qwen-web/qwen-turbo "say hi"` streams a reply.
+3. `silvercode models qwen-web` shows live models after login.
+4. `silvercode run -m qwen-web/qwen-turbo "say hi"` streams a reply.
 5. Tool loop: ask it to read then edit a file; confirm `<qw_call>`
    round-trips and visible progress.
 6. Attach an image; confirm STS upload + vision answer on a vision model.
@@ -267,7 +267,7 @@ Gates (all green on the feature branch):
 ## Security
 
 - Secrets boundary: only the auth marker (not credentials) is stored by
-  AlphaCode; cookies/tokens never leave the Chromium profile.
+  SilverCode; cookies/tokens never leave the Chromium profile.
 - Debug logs redact `token=`/`bearer`/cookie-shaped values.
 - Uploads and page requests stay in first-party `chat.qwen.ai` context;
   no cookie exfiltration to server-side fetch.

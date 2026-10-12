@@ -1244,7 +1244,7 @@ export function Session() {
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
-          {/* AlphaCode docks the sidebar on the left; it must stay the first child of the row. */}
+          {/* SilverCode docks the sidebar on the left; it must stay the first child of the row. */}
           <Show when={sidebarVisible()}>
             <Switch>
               <Match when={wide()}>
@@ -2158,7 +2158,7 @@ function Finish(props: ToolProps) {
   const ctx = use()
   const result = createMemo(() => finishResult(props.input, props.output))
   // A completed review subagent delivers its report through a tagged
-  // `<alphacode-review>` envelope in the finish result. Render that
+  // `<silvercode-review>` envelope in the finish result. Render that
   // structurally instead of dumping the raw JSON; only a completed part
   // qualifies, since a running finish can still be declined by the review
   // gate and must not pre-announce its verdict.
@@ -2275,7 +2275,7 @@ export function finishToolView(
  * Parse a finish result into the review report it carries, when it does.
  * Detection reuses the runtime's canonical extractor (`ReviewReport.extract`)
  * instead of re-parsing the envelope ad hoc, so the display cannot drift from
- * the delivery protocol: only a complete, version-1 `<alphacode-review>`
+ * the delivery protocol: only a complete, version-1 `<silvercode-review>`
  * envelope resolves to a report, and the surrounding text is returned as the
  * human-readable analysis. Anything else — a plain finish, a truncated or
  * malformed envelope — stays a plain finish result.

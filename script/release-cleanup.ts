@@ -16,7 +16,7 @@ const tag = process.argv[2]
 if (!tag || !/^v\d+\.\d+\.\d+$/.test(tag)) {
   throw new Error("usage: ./script/release-cleanup.ts vX.Y.Z")
 }
-const repo = process.env.GH_REPO ?? "mdev34-lab/alphacode"
+const repo = process.env.GH_REPO ?? "mdev34-lab/silvercode"
 
 const view = await $`gh release view ${tag} --json isDraft --repo ${repo}`.nothrow().quiet()
 if (view.exitCode === 0) {

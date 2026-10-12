@@ -19,7 +19,7 @@ import pkg from "../package.json"
 if (Script.release) {
   if (Script.preview) {
     throw new Error(
-      `Refusing to publish a preview build (channel "${Script.channel}"). Build from the release tag or set ALPHACODE_CHANNEL=latest.`,
+      `Refusing to publish a preview build (channel "${Script.channel}"). Build from the release tag or set SILVERCODE_CHANNEL=latest.`,
     )
   }
   const packageVersion = Script.packageVersion
@@ -167,8 +167,8 @@ for (const item of targets) {
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       target: name.replace(pkg.name, "bun") as any,
-      outfile: `dist/${name}/bin/alphacode`,
-      execArgv: [`--user-agent=alphacode/${Script.version}`, "--use-system-ca", "--"],
+      outfile: `dist/${name}/bin/silvercode`,
+      execArgv: [`--user-agent=silvercode/${Script.version}`, "--use-system-ca", "--"],
       windows: {},
     },
     files: {
@@ -177,8 +177,10 @@ for (const item of targets) {
     entrypoints: ["./src/index.ts", workerPath, treeSitterWorkerPath],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
-      // ALPHACODE_* is the AlphaCode runtime version; OPENCODE_* stays as the
-      // inherited alias so unchanged OpenCode code keeps resolving its globals.
+      // SILVERCODE_* is the SilverCode runtime version; ALPHACODE_* (pre-rename) and
+      // OPENCODE_* stay as aliases so unchanged OpenCode code keeps resolving its globals.
+      SILVERCODE_VERSION: `'${Script.version}'`,
+      SILVERCODE_CHANNEL: `'${Script.channel}'`,
       ALPHACODE_VERSION: `'${Script.version}'`,
       ALPHACODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_VERSION: `'${Script.version}'`,
@@ -194,7 +196,7 @@ for (const item of targets) {
 
   // Smoke test: only run if binary is for current platform
   if (item.os === process.platform && item.arch === process.arch && !item.abi) {
-    const binaryPath = `dist/${name}/bin/alphacode`
+    const binaryPath = `dist/${name}/bin/silvercode`
     console.log(`Running smoke test: ${binaryPath} --version`)
     try {
       const versionOutput = await $`${binaryPath} --version`.text()

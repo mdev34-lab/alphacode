@@ -177,7 +177,7 @@ export const Script = {
   },
 }
 console.log(
-  `alphacode script`,
+  `silvercode script`,
   JSON.stringify(
     { channel: CHANNEL, version: VERSION, packageVersion: PACKAGE_VERSION, preview: IS_PREVIEW, release: RELEASE, team },
     null,

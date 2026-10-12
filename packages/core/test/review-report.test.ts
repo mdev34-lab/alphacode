@@ -27,6 +27,11 @@ const report: ReviewReport.Info = {
 }
 
 function envelope(overrides: Record<string, unknown> = {}, body: Record<string, unknown> = report) {
+  return `<silvercode-review>\n${JSON.stringify({ ...body, ...overrides }, null, 2)}\n</silvercode-review>`
+}
+
+/** The pre-rename literal, exactly as integration fixtures written before the rename build it. */
+function legacyEnvelope(overrides: Record<string, unknown> = {}, body: Record<string, unknown> = report) {
   return `<alphacode-review>\n${JSON.stringify({ ...body, ...overrides }, null, 2)}\n</alphacode-review>`
 }
 
@@ -38,6 +43,66 @@ describe("review report extraction", () => {
     if (!delivered.ok) return
     expect(delivered.report).toEqual(report)
     expect(delivered.analysis).toBe("### Issues\n\n- Important: swallowed error")
+  })
+
+  test("1a. legacy pre-rename envelopes from older sessions still deliver", () => {
+    const delivery = ReviewReport.extract([`### Issues\n\n- Important: swallowed error\n\n${legacyEnvelope()}`])
+    expect(delivery.ok).toBe(true)
+    if (!delivery.ok) return
+    expect(delivery.report).toEqual(report)
+    expect(delivery.analysis).toBe("### Issues\n\n- Important: swallowed error")
+  })
+
+  test("1b. canonical emission is unchanged: envelope() still writes the silvercode tag", () => {
+    expect(ReviewReport.envelope(report)).toBe(
+      `<silvercode-review>\n${JSON.stringify(report, null, 2)}\n</silvercode-review>`,
+    )
+  })
+
+  test("1c. the missing-envelope failure keeps naming the canonical tag", () => {
+    // The other suites assert this exact phrase; compatibility must not reword it.
+    const delivery = ReviewReport.extract(["Looks good overall."])
+    expect(delivery.ok).toBe(false)
+    if (delivery.ok) return
+    expect(delivery.failure.reason).toBe("missing")
+    expect(delivery.failure.message).toBe("no <silvercode-review> report envelope was found")
+  })
+
+  test("1d. a truncated legacy opening tag stays an explicit failure that names the tag", () => {
+    const delivery = ReviewReport.extract([`Assessment: Approved\n\n<alphacode-review>\n{"version": 1}\n`])
+    expect(delivery.ok).toBe(false)
+    if (delivery.ok) return
+    expect(delivery.failure.reason).toBe("malformed")
+    expect(delivery.failure.message).toContain("<alphacode-review>")
+  })
+
+  test("1e. tags never pair across spellings", () => {
+    const delivery = ReviewReport.extract([`<silvercode-review>\n{"version": 1}\n</alphacode-review>`])
+    expect(delivery.ok).toBe(false)
+    if (delivery.ok) return
+    expect(delivery.failure.reason).toBe("malformed")
+    expect(delivery.failure.message).toContain("<silvercode-review>")
+  })
+
+  test("1f. mixed sessions: the last complete envelope wins across tag spellings", () => {
+    const legacyThenCanonical = ReviewReport.extract([
+      legacyEnvelope({}, { ...report, summary: "legacy copy" }),
+      envelope({}, { ...report, summary: "canonical copy" }),
+    ])
+    expect(legacyThenCanonical.ok).toBe(true)
+    if (!legacyThenCanonical.ok) return
+    expect(legacyThenCanonical.report.summary).toBe("canonical copy")
+    // The superseded envelope of either spelling stays in the human-readable analysis.
+    expect(legacyThenCanonical.analysis).toContain("legacy copy")
+
+    const canonicalThenLegacy = ReviewReport.extract([
+      envelope({}, { ...report, summary: "canonical copy" }),
+      legacyEnvelope({}, { ...report, summary: "legacy copy" }),
+    ])
+    expect(canonicalThenLegacy.ok).toBe(true)
+    if (!canonicalThenLegacy.ok) return
+    expect(canonicalThenLegacy.report.summary).toBe("legacy copy")
+    expect(canonicalThenLegacy.analysis).toContain("canonical copy")
   })
 
   test("2. multiple text parts followed by an empty text part still deliver the report", () => {
@@ -64,11 +129,11 @@ describe("review report extraction", () => {
   })
 
   test("5. malformed report envelope is an explicit delivery failure", () => {
-    const notJson = ReviewReport.extract([`<alphacode-review>not json at all</alphacode-review>`])
+    const notJson = ReviewReport.extract([`<silvercode-review>not json at all</silvercode-review>`])
     expect(notJson.ok).toBe(false)
     if (!notJson.ok) expect(notJson.failure.reason).toBe("malformed")
 
-    const truncated = ReviewReport.extract([`<alphacode-review>\n{"version": 1}\n`])
+    const truncated = ReviewReport.extract([`<silvercode-review>\n{"version": 1}\n`])
     expect(truncated.ok).toBe(false)
     if (!truncated.ok) expect(truncated.failure.reason).toBe("malformed")
 
@@ -95,7 +160,7 @@ describe("review report extraction", () => {
     expect(delivery.analysis).toContain("Detailed analysis.")
     expect(delivery.analysis).toContain("Assessment: Needs fixes")
     expect(delivery.analysis).toContain("postscript")
-    expect(delivery.analysis).not.toContain("<alphacode-review>")
+    expect(delivery.analysis).not.toContain("<silvercode-review>")
     expect(delivery.report).toEqual(report)
   })
 
@@ -134,6 +199,64 @@ describe("review report extraction", () => {
   })
 })
 
+/**
+ * Mixed integration simulation: the merged tree ships a core that emits the
+ * post-rename tag while integration-only suites written before the rename
+ * build the old literal and resolve it through the shared extractor. Both
+ * spellings have to parse with one parser — renaming those fixtures instead
+ * would hide the compatibility contract this block pins.
+ */
+describe("rename compatibility with pre-rename integration fixtures", () => {
+  // Byte-for-byte the shape `packages/tui/test/cli/tui/review-finish.test.tsx` builds.
+  function preRenameEnvelope(body: Record<string, unknown>): string {
+    return `<alphacode-review>\n${JSON.stringify(body, null, 2)}\n</alphacode-review>`
+  }
+
+  const fixture: ReviewReport.Info = {
+    version: 1,
+    revision: "uncommitted",
+    assessment: "needs-fixes",
+    summary: "Two issues need attention before merge.",
+    findings: [
+      { severity: "minor", title: "Unused variable", file: "src/util.ts", line: 10 },
+      { severity: "critical", title: "SQL injection risk", file: "src/db.ts", line: 42 },
+    ],
+  }
+
+  test("a pre-rename integration fixture parses through the shared extractor", () => {
+    const delivery = ReviewReport.extract([`## Review\n\nI checked the diff.\n\n${preRenameEnvelope(fixture)}`])
+    expect(delivery.ok).toBe(true)
+    if (!delivery.ok) return
+    expect(delivery.report).toEqual(fixture)
+    expect(delivery.analysis).toBe("## Review\n\nI checked the diff.")
+  })
+
+  test("mixed fixtures in one session: the post-rename envelope wins when it comes last", () => {
+    const delivery = ReviewReport.extract([
+      preRenameEnvelope(fixture),
+      `<silvercode-review>\n${JSON.stringify({ ...fixture, assessment: "approved" }, null, 2)}\n</silvercode-review>`,
+    ])
+    expect(delivery.ok).toBe(true)
+    if (!delivery.ok) return
+    expect(delivery.report.assessment).toBe("approved")
+    expect(delivery.analysis).toContain("Two issues need attention before merge.")
+  })
+
+  test("a legacy delivery normalizes to the canonical tag on render", () => {
+    const delivery = ReviewReport.extract([`Analysis.\n\n${preRenameEnvelope(fixture)}`])
+    expect(delivery.ok).toBe(true)
+    if (!delivery.ok) return
+    const rendered = ReviewReport.render(delivery)
+    expect(rendered).toContain("<silvercode-review>")
+    expect(rendered).not.toContain("<alphacode-review>")
+    const reparsed = ReviewReport.extract([rendered])
+    expect(reparsed.ok).toBe(true)
+    if (!reparsed.ok) return
+    expect(reparsed.report).toEqual(fixture)
+    expect(reparsed.analysis).toBe(delivery.analysis)
+  })
+})
+
 describe("review report rendering", () => {
   test("rendered output round-trips through extraction and keeps the analysis", () => {
     expect(delivered.ok).toBe(true)
@@ -149,7 +272,7 @@ describe("review report rendering", () => {
   test("delivery failure messages are explicit and preserve a bounded analysis", () => {
     const message = ReviewReport.failureMessage({
       sessionID: "ses_review",
-      failure: { reason: "missing", message: "no <alphacode-review> report envelope was found" },
+      failure: { reason: "missing", message: "no <silvercode-review> report envelope was found" },
       analysis: "x".repeat(2000),
     })
     expect(message).toContain("Review delivery failed")
@@ -169,15 +292,23 @@ describe("verdict parsing with the report envelope", () => {
     ).toBe("approved")
   })
 
+  test("a legacy envelope's assessment is canonical over contradicting prose", () => {
+    expect(
+      parseReviewVerdict(
+        `Assessment: Needs fixes\n\n${legacyEnvelope({}, { ...report, assessment: "approved", findings: [] })}`,
+      ),
+    ).toBe("approved")
+  })
+
   test("a detected-but-invalid envelope never falls back to prose parsing", () => {
     // Malformed JSON in the envelope + contradicting prose assessment.
     expect(
-      parseReviewVerdict(`Assessment: Approved\n\n<alphacode-review>{ not json </alphacode-review>`),
+      parseReviewVerdict(`Assessment: Approved\n\n<silvercode-review>{ not json </silvercode-review>`),
     ).toBeUndefined()
     // Unsupported schema version + contradicting prose assessment.
     expect(parseReviewVerdict(`Assessment: Approved\n\n${envelope({ version: 2 })}`)).toBeUndefined()
     // Opening tag without a closing tag + contradicting prose assessment.
-    expect(parseReviewVerdict(`Assessment: Approved\n\n<alphacode-review>\n{"version": 1}\n`)).toBeUndefined()
+    expect(parseReviewVerdict(`Assessment: Approved\n\n<silvercode-review>\n{"version": 1}\n`)).toBeUndefined()
     // Wrong envelope shape + contradicting prose assessment.
     expect(
       parseReviewVerdict(`Assessment: Approved\n\n${envelope({}, { version: 1, revision: "x", assessment: "maybe" })}`),

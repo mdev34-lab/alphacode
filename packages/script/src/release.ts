@@ -31,7 +31,7 @@ export interface ReleaseFacts {
   packageVersion: string
   /** `packages/opencode/package.json` version: the executable package metadata. */
   executableVersion?: string
-  /** Version reported at runtime (`alphacode --version` / `Script.version`). */
+  /** Version reported at runtime (`silvercode --version` / `Script.version`). */
   runtimeVersion?: string
   /** Git tag the release is built from, e.g. `v0.1.1`. */
   tag?: string

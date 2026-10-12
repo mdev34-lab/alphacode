@@ -36,7 +36,7 @@ import { DialogProvider } from "../../../src/ui/dialog"
 import { ToastProvider } from "../../../src/ui/toast"
 
 /**
- * AlphaCode docks the session sidebar on the left instead of the right.
+ * SilverCode docks the session sidebar on the left instead of the right.
  *
  * The harness mounts the real `<Session />` route inside the app's provider
  * tree and mocks nothing but the HTTP boundary. Placement is then measured on

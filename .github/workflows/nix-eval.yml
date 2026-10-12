@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   nix-eval:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout repository
@@ -38,7 +38,7 @@ jobs:
           nix flake show --all-systems
 
           SYSTEMS="x86_64-linux aarch64-linux x86_64-darwin aarch64-darwin"
-          PACKAGES="alphacode"
+          PACKAGES="silvercode"
 
           echo ""
           echo "=== Evaluating packages for all systems ==="

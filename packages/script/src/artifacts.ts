@@ -10,7 +10,7 @@ import { $ } from "bun"
  */
 
 export interface ArchiveTarget {
-  /** Target directory name under `dist/`, e.g. `alphacode-linux-x64`. */
+  /** Target directory name under `dist/`, e.g. `silvercode-ai-linux-x64`. */
   name: string
   /** Target operating system as built (`linux`, `darwin`, `win32`). */
   os: string

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "alphacode",
+  "name": "silvercode",
   "description": "AI-powered development tool",
   "private": true,
   "version": "0.1.0",

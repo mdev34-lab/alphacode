@@ -38,6 +38,14 @@ const cleanEnv = (extra: Record<string, string> = {}) => {
 }
 
 describe("release environment", () => {
+  test("reads SILVERCODE_* first; ALPHACODE_* and OPENCODE_* stay accepted aliases", () => {
+    expect(resolveEnv({ SILVERCODE_VERSION: "0.1.1" }).version).toBe("0.1.1")
+    expect(resolveEnv({ SILVERCODE_VERSION: "0.1.1", ALPHACODE_VERSION: "0.1.1" }).version).toBe("0.1.1")
+    expect(() => resolveEnv({ SILVERCODE_VERSION: "0.1.1", ALPHACODE_VERSION: "0.2.0" })).toThrow(EnvConflictError)
+    expect(() => resolveRelease({ SILVERCODE_RELEASE: "false", ALPHACODE_RELEASE: "1" })).toThrow(EnvConflictError)
+    expect(resolveEnv({ SILVERCODE_RELEASE: "1" }).release).toBe(true)
+  })
+
   test("reads ALPHACODE_* and falls back to the OPENCODE_* alias", () => {
     expect(resolveEnv({ ALPHACODE_VERSION: "0.1.1" }).version).toBe("0.1.1")
     expect(resolveEnv({ OPENCODE_VERSION: "v0.1.1" }).version).toBe("0.1.1")

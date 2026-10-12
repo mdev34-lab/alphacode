@@ -99,7 +99,7 @@ describe("deriveCapabilities", () => {
 })
 
 describe("mapRecordToModel", () => {
-  test("maps onto the AlphaCode model shape", () => {
+  test("maps onto the SilverCode model shape", () => {
     const model = mapRecordToModel({
       id: "qwen3-max",
       name: "Qwen3 Max",
