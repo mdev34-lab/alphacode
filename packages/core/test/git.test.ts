@@ -6,7 +6,7 @@ import { Effect } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Git } from "@opencode-ai/core/git"
 import { AbsolutePath, RelativePath } from "@opencode-ai/core/schema"
-import { branch, commit, gitRemote } from "./fixture/git"
+import { withRemote } from "./fixture/git"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
@@ -48,12 +48,12 @@ describe("Git", () => {
           const target = AbsolutePath.make(path.join(fixture.root, "checkout"))
           const repository = yield* git.repo.clone({ remote: fixture.remote, directory: target })
 
-          yield* Effect.promise(() => commit(fixture.source, "two\n", "second"))
+          yield* Effect.promise(() => fixture.commit("two\n", "second"))
           yield* git.sync.fetchRemotes(repository)
           yield* git.sync.resetHard(repository, "origin/main")
           expect(yield* read(path.join(target, "README.md"))).toBe("two\n")
 
-          yield* Effect.promise(() => branch(fixture.source, "feature/docs", "feature\n"))
+          yield* Effect.promise(() => fixture.branch("feature/docs", "feature\n"))
           yield* git.sync.fetchBranch(repository, { branch: "feature/docs" })
           yield* git.sync.checkoutRemoteBranch(repository, { branch: "feature/docs" })
           yield* git.sync.resetHard(repository, "origin/feature/docs")
@@ -67,17 +67,6 @@ describe("Git", () => {
     15_000,
   )
 })
-
-function withRemote<A, E, R>(body: (fixture: Awaited<ReturnType<typeof gitRemote>>) => Effect.Effect<A, E, R>) {
-  return Effect.acquireUseRelease(
-    Effect.promise(async () => {
-      const root = await tmpdir()
-      return { root, fixture: await gitRemote(root.path) }
-    }),
-    (input) => body(input.fixture),
-    (input) => Effect.promise(() => input.root[Symbol.asyncDispose]()),
-  )
-}
 
 function read(file: string) {
   return Effect.promise(() => fs.readFile(file, "utf8")).pipe(Effect.map((content) => content.replace(/\r\n/g, "\n")))
