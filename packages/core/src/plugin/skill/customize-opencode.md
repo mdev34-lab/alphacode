@@ -440,6 +440,13 @@ When a user's config is broken and opencode won't start, these env vars help:
 - `OPENCODE_DISABLE_EXTERNAL_SKILLS=1`,
   `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1`: skip the external skill scans under
   `~/.claude/` and `~/.agents/`.
+- `OPENCODE_DISABLE_CONFIG_DEP_INSTALL=1`: skip the background
+  `@opencode-ai/plugin` install that every instance boot forks per config
+  directory. Meant for hermetic tests and CI: the install is real registry
+  network I/O, and a stalled registry wedges instance disposal (scope close
+  awaits the uncancelable install fiber), hanging a gate until its outer
+  timeout. The HTTP API exerciser sets this for exactly that reason. Leave it
+  unset in normal use so plugin dependencies stay current.
 
 ## When proposing edits
 
