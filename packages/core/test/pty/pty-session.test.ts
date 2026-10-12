@@ -51,18 +51,36 @@ const createPty = Effect.fn("PtySessionTest.createPty")(function* (command: stri
   )
 })
 
+// process.kill(pid, 0) does not prove liveness by itself: it throws ESRCH
+// when no such process exists, but EPERM when the process exists and we
+// merely lack permission to signal it. Distinguish both explicitly and fail
+// loudly on anything else instead of recording it as a state.
+// /proc/<pid>/stat wraps the command name (comm) in parentheses, and comm
+// itself may contain spaces or parentheses. Every field after the LAST ")"
+// on the line is the state char followed by numeric fields, so the last ")"
+// unambiguously terminates comm - splitting there is the robust parse.
+const parseProcStat = (stat: string): string => {
+  const close = stat.lastIndexOf(")")
+  if (close === -1) return "malformed: missing comm terminator"
+  const state = stat.slice(close + 2).split(" ")[0]
+  return state === "" ? "malformed: missing state field" : state
+}
+
 const probeNativeExit = (pid: number) => {
   const result: Record<string, unknown> = { pid }
   try {
     process.kill(pid, 0)
     result.signal0 = "alive"
   } catch (error) {
-    result.signal0 = (error as { code?: string }).code ?? String(error)
+    const code = (error as { code?: string }).code
+    if (code === "EPERM") result.signal0 = "alive (EPERM: exists, not signalable)"
+    else if (code === "ESRCH") result.signal0 = "not running (ESRCH)"
+    else throw new Error(`probeNativeExit: unexpected kill(${pid}, 0) error: ${code ?? String(error)}`)
   }
   if (process.platform === "linux") {
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
-      result.procState = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0]
+      result.procState = parseProcStat(stat)
     } catch (error) {
       result.procState = `unreadable: ${(error as { code?: string }).code ?? String(error)}`
     }
@@ -79,6 +97,23 @@ const probePtyExit = (pty: { get: (id: PtyID) => Effect.Effect<Pty.Info, unknown
         : "session not found"
     const native = yield* Effect.sync(() => probeNativeExit(info.pid))
     return { native, service }
+  })
+
+// Drain leftover events for diagnostics, bounded. The limit is checked BEFORE
+// each poll, so the (max+1)th event is never consumed: if more remain, they
+// stay in the queue and limitReached reports it instead of dropping them.
+const drainPending = (events: Queue.Queue<PtyEvent>, id: PtyID, max = 1000) =>
+  Effect.gen(function* () {
+    const pending: Array<PtyEvent["type"]> = []
+    let drained = 0
+    while (drained < max) {
+      const next = yield* Queue.poll(events)
+      if (next._tag === "None") break
+      drained++
+      if (next.value.id === id) pending.push(next.value.type)
+    }
+    const limitReached = drained >= max && (yield* Queue.size(events)) > 0
+    return { pending, drained, limitReached }
   })
 
 const waitForEvents = (
@@ -99,14 +134,12 @@ const waitForEvents = (
       duration: "15 seconds",
       orElse: () =>
         Effect.gen(function* () {
-          const pending: Array<PtyEvent["type"]> = []
-          for (let next = yield* Queue.poll(events); next._tag === "Some"; next = yield* Queue.poll(events)) {
-            if (next.value.id === id) pending.push(next.value.type)
-          }
-          const observation: Record<string, unknown> = { id, received: [...picked], pendingInQueue: pending }
+          const { pending, drained, limitReached } = yield* drainPending(events, id)
+          const observation: Record<string, unknown> = { id, received: [...picked], pendingInQueue: pending, drained }
+          if (limitReached) observation.note = `drain limit reached, ${drained} events drained, more pending`
           if (probe) {
-            const result = yield* probe.pipe(Effect.option)
-            observation.probe = result._tag === "Some" ? result.value : "probe failed"
+            const result = yield* probe.pipe(Effect.exit)
+            observation.probe = Exit.isSuccess(result) ? result.value : `probe failed: ${Cause.pretty(result.cause)}`
           }
           console.log("[pty-observe] timeout waiting for pty events", JSON.stringify(observation))
           return yield* Effect.fail(new Error("timeout waiting for pty events"))
@@ -256,6 +289,34 @@ describe("pty", () => {
         expect(Cause.squash(result.cause)).toMatchObject({ _tag: "Pty.ExitedError", ptyID: info.id })
     }),
     { timeout: 20000 },
+  )
+})
+
+describe("pty probe diagnostics", () => {
+  const ev = (n: number): PtyEvent[] => Array.from({ length: n }, () => ({ type: "created", id: "pty_a" as PtyID }))
+  const drain = (n: number) =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<PtyEvent>()
+      yield* Queue.offerAll(events, ev(n))
+      const result = yield* drainPending(events, "pty_a" as PtyID, 1000)
+      return { ...result, left: yield* Queue.size(events) }
+    })
+
+  it.live("drain consumes exactly the limit and keeps the rest queued", () =>
+    Effect.gen(function* () {
+      expect(yield* drain(999)).toMatchObject({ drained: 999, limitReached: false, left: 0 })
+      expect(yield* drain(1000)).toMatchObject({ drained: 1000, limitReached: false, left: 0 })
+      expect(yield* drain(1001)).toMatchObject({ drained: 1000, limitReached: true, left: 1 })
+      expect(yield* drain(1500)).toMatchObject({ drained: 1000, limitReached: true, left: 500 })
+    }),
+  )
+
+  it.live("probeNativeExit throws on unexpected kill errors and Effect.exit keeps the cause", () =>
+    Effect.gen(function* () {
+      const exit = yield* Effect.sync(() => probeNativeExit(Number.NaN)).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("unexpected kill(NaN, 0) error")
+    }),
   )
 })
 
