@@ -82,10 +82,6 @@ function invocations(): Invocation[] {
   return found
 }
 
-// `  silvercode mcp add [name]     add an MCP server   [aliases: ls]`
-const DOCUMENTED = /^\s+silvercode ((?:[a-z][a-z0-9-]*)(?: [a-z][a-z0-9-]*)*)\b(?![^[]*\[aliases:)/gm
-const ALIAS = /\[aliases: ([^\]]+)\]/g
-
 /// Every command path yargs documents in `help`. Aliases become extra paths so
 /// `silvercode auth list` validates against `providers list [aliases: auth]`.
 function documented(help: string): string[] {
