@@ -436,6 +436,16 @@ const layer = Layer.effect(
           yield* ensureGitignore(dir).pipe(Effect.orDie)
 
           if (!Flag.OPENCODE_DISABLE_CONFIG_DEP_INSTALL) {
+            // Bound the background install (design proposal: 60s, override with
+            // OPENCODE_CONFIG_DEP_INSTALL_TIMEOUT_MS). A stalled registry install must
+            // not keep waitForDependencies — and therefore plugin loading and instance
+            // disposal — waiting indefinitely. Effect.timeout interrupts the install
+            // fiber on expiry; Npm.reify aborts its Arborist signal on interruption and
+            // releases the install lock, so the bounded fiber leaves no orphan work
+            // behind. Warn-and-continue is safe here: this install only pre-seeds
+            // @opencode-ai/plugin for config dirs; plugin resolution still installs and
+            // reports per-plugin requirements (PluginLoader) when plugins actually load.
+            const timeoutMs = Flag.OPENCODE_CONFIG_DEP_INSTALL_TIMEOUT_MS
             const dep = yield* npmSvc
               .install(dir, {
                 add: [
@@ -446,6 +456,13 @@ const layer = Layer.effect(
                 ],
               })
               .pipe(
+                Effect.timeout(Duration.millis(timeoutMs)),
+                Effect.catchTag("TimeoutError", () =>
+                  Effect.logWarning("background dependency install timed out, continuing without it", {
+                    dir,
+                    timeoutMs,
+                  }),
+                ),
                 Effect.exit,
                 Effect.tap((exit) =>
                   Exit.isFailure(exit)

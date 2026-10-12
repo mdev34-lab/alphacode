@@ -4,7 +4,7 @@ import path from "path"
 import { mergeDeep, unique } from "remeda"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Context, Effect, Fiber, Layer } from "effect"
+import { Cause, Context, Duration, Effect, Fiber, Layer } from "effect"
 import { ConfigParse } from "@/config/parse"
 import * as ConfigPaths from "@/config/paths"
 import { migrateTuiConfig } from "./tui-migrate"
@@ -233,8 +233,12 @@ const layer = Layer.effect(
     const data = yield* loadState({ directory })
     const deps = yield* Effect.forEach(
       data.dirs,
-      (dir) =>
-        npm
+      (dir) => {
+        // Same bounded policy as the server config loader: a stalled registry
+        // install must not keep waitForDependencies (or scope close, which
+        // interrupts forkScoped fibers) waiting on it.
+        const timeoutMs = Flag.OPENCODE_CONFIG_DEP_INSTALL_TIMEOUT_MS
+        return npm
           .install(dir, {
             add: [
               {
@@ -243,7 +247,17 @@ const layer = Layer.effect(
               },
             ],
           })
-          .pipe(Effect.forkScoped),
+          .pipe(
+            Effect.timeout(Duration.millis(timeoutMs)),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.logWarning("background dependency install timed out, continuing without it", {
+                dir,
+                timeoutMs,
+              }),
+            ),
+            Effect.forkScoped,
+          )
+      },
       {
         concurrency: "unbounded",
       },
