@@ -70,10 +70,16 @@ for (const item of [
     } as unknown as TuiPluginApi
     await plugin.tui(api, undefined, {
       id: plugin.id,
-      specifier: plugin.id,
-      source: "config",
-      root: "/tmp",
-    } as Parameters<typeof plugin.tui>[2])
+      source: "internal",
+      spec: plugin.id,
+      target: plugin.id,
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    })
     const app = await testRender(() => view(), { width: 40, height: 6 })
     try {
       await app.renderOnce()
