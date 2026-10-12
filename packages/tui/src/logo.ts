@@ -12,10 +12,7 @@
 //   _  full-cell shadow (letter counter)
 //   ^  foreground upper half over a shadow lower half (crossbar)
 //   ~  shadow upper half over the terminal background (open counter)
-export const logo = {
-  left: ["      ▄    ▄                 ", "▄▀▀   ▄    █   █  █ ▄^^  █▀▀▄", " ▀▀▄  █    █   █  █ █^^▀ █   ", "▀▀▀   ▀    ▀    ▀▀   ▀▀  ▀   "],
-  right: ["             ▄     ", "▄^^  ▄^^▄ ▄^^█ ▄^^ ", "█__  █__█ █__█ █^^▀", " ▀▀   ▀▀   ▀▀▀  ▀▀ "],
-}
+export const logo = {"left": [" ▄▄▄ ▄ ▄ ▄  ▄  ▄▄  ▄▄▄ ", "█    ▄ █ █  █ █  █ █  ▀", " ▀▀▄ █ █ █  █ █▀▀▀ █   ", "▄▄▄▀ █ █  ▀▄▀ ▀▄▄▄ █   ", "                       "], "right": [" ▄▄▄  ▄▄     ▄  ▄▄ ", "█___ █__█  ▄▄█ █__█", "█    █  █ █__█ █▀▀▀", "▀▄▄▄ ▀▄▄▀ ▀▄▄█ ▀▄▄▄", "                   "]}
 
 // Compact mark used by the run splash: the leading "s" of the wordmark.
 export const badge = logo.left.map((row) => row.slice(0, 4))
