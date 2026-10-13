@@ -4753,3 +4753,166 @@ noLLMServer.instance(
     }),
   30_000,
 )
+
+// ESC recovery (issue #292): an interrupted turn stays in history, and the next
+// prompt in the same session starts a fresh run.
+
+const expectFreshRun = Effect.fn("test.expectFreshRun")(function* (
+  chatID: SessionID,
+  result: SessionV1.WithParts,
+  interruptedIDs: string[],
+) {
+  expect(result.info.role).toBe("assistant")
+  if (result.info.role !== "assistant") return
+  expect(result.info.error).toBeUndefined()
+  expect(result.info.finish).toBe("stop")
+  expect(interruptedIDs).not.toContain(result.info.id)
+  expect(result.parts.some((p) => p.type === "text" && p.text === "fresh")).toBe(true)
+  const status = yield* SessionStatus.Service
+  expect((yield* status.get(chatID)).type).toBe("idle")
+  const msgs = yield* MessageV2.filterCompactedEffect(chatID)
+  const aborted = msgs.filter((m) => m.info.role === "assistant" && m.info.error?.name === "MessageAbortedError")
+  expect(aborted.map((m) => m.info.id)).toEqual(interruptedIDs)
+})
+
+const abortedIDs = (chatID: SessionID) =>
+  Effect.gen(function* () {
+    const msgs = yield* MessageV2.filterCompactedEffect(chatID)
+    return msgs
+      .filter((m) => m.info.role === "assistant" && m.info.error?.name === "MessageAbortedError")
+      .map((m) => m.info.id as string)
+  })
+
+it.instance(
+  "prompt after cancel during streaming starts a fresh run and keeps the interrupted entry",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      yield* llm.hang
+      yield* user(chat.id, "first")
+      const first = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      yield* waitForBusy(chat.id)
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.await(first)
+      const interrupted = yield* abortedIDs(chat.id)
+      expect(interrupted).toHaveLength(1)
+
+      yield* llm.text("fresh")
+      yield* user(chat.id, "second")
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      yield* expectFreshRun(chat.id, result, interrupted)
+      expect(yield* llm.hits).toHaveLength(2)
+    }),
+  10_000,
+)
+
+it.instance(
+  "repeated cancel and prompt cycles never poison the next run",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      for (let i = 0; i < 3; i++) {
+        yield* llm.hang
+        yield* user(chat.id, `prompt ${i}`)
+        const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+        yield* llm.wait(i + 1)
+        yield* waitForBusy(chat.id)
+        // A second ESC while the first is still being handled is a no-op.
+        yield* prompt.cancel(chat.id)
+        yield* prompt.cancel(chat.id)
+        yield* Fiber.await(run)
+        expect(yield* abortedIDs(chat.id)).toHaveLength(i + 1)
+      }
+      const interrupted = yield* abortedIDs(chat.id)
+      yield* llm.text("fresh")
+      yield* user(chat.id, "final")
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      yield* expectFreshRun(chat.id, result, interrupted)
+    }),
+  15_000,
+)
+
+it.instance(
+  "prompt after cancel during tool work starts a fresh run",
+  () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "work",
+        noReply: true,
+        parts: [{ type: "text", text: "run bash" }],
+      })
+      yield* llm.tool("bash", { command: "sleep 30", timeout: 30_000, workdir: path.resolve(dir) })
+      const run = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      yield* pollWithTimeout(
+        Effect.gen(function* () {
+          const msgs = yield* MessageV2.filterCompactedEffect(chat.id)
+          const assistant = msgs.findLast((item) => item.info.role === "assistant")
+          const tool = assistant ? toolPart(assistant.parts) : undefined
+          if (tool?.state.status === "running") return true
+        }),
+        "timed out waiting for the bash tool to run",
+      )
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.await(run)
+      const interrupted = yield* abortedIDs(chat.id)
+      expect(interrupted.length).toBeLessThanOrEqual(1)
+
+      yield* llm.text("fresh")
+      const result = yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "work",
+        parts: [{ type: "text", text: "again" }],
+      })
+      yield* expectFreshRun(chat.id, result, interrupted)
+    }),
+  { git: true },
+  30_000,
+)
+
+it.instance(
+  "queued prompts are released by cancel and the next prompt runs once",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      yield* llm.hang
+      yield* user(chat.id, "first")
+      const a = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* llm.wait(1)
+      yield* user(chat.id, "queued")
+      const b = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* Effect.sleep(50)
+      yield* prompt.cancel(chat.id)
+      const [exitA, exitB] = yield* Effect.all([Fiber.await(a), Fiber.await(b)])
+      expect(Exit.isSuccess(exitA)).toBe(true)
+      expect(Exit.isSuccess(exitB)).toBe(true)
+      const interrupted = yield* abortedIDs(chat.id)
+      expect(interrupted).toHaveLength(1)
+
+      yield* llm.text("fresh")
+      yield* user(chat.id, "after")
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      yield* expectFreshRun(chat.id, result, interrupted)
+      // One hung request plus exactly one fresh run: no duplicate loops.
+      expect(yield* llm.hits).toHaveLength(2)
+    }),
+  10_000,
+)
