@@ -65,7 +65,13 @@ export class CorrectedError extends Schema.TaggedErrorClass<CorrectedError>()("P
 
 export class BlockedError extends Schema.TaggedErrorClass<BlockedError>()("PermissionV2.BlockedError", {
   rules: Permission.Ruleset,
-}) {}
+}) {
+  override get message(): string {
+    const rule = this.rules.find((rule) => rule.effect === "deny") ?? this.rules.at(-1)
+    if (!rule) return "Permission blocked by configured rules"
+    return `Permission blocked by rule: ${JSON.stringify(rule)}`
+  }
+}
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("PermissionV2.NotFoundError", {
   requestID: ID,
@@ -148,10 +154,6 @@ const layer = Layer.effect(
       return input.resources.some((resource) => evaluate(input.action, resource, rules).effect === "deny")
     }
 
-    function relevant(input: AssertInput, rules: Permission.Ruleset) {
-      return rules.filter((rule) => Wildcard.match(input.action, rule.action))
-    }
-
     const evaluateInput = EffectRuntime.fnUntraced(function* (input: AssertInput) {
       const rules = yield* configured(input.sessionID, input.agent)
       if (denied(input, rules)) return { effect: "deny" as const, rules }
@@ -200,7 +202,7 @@ const layer = Layer.effect(
           const result = yield* evaluateInput(input)
           if (result.effect === "deny") {
             return yield* new BlockedError({
-              rules: relevant(input, result.rules),
+              rules: input.resources.map((resource) => evaluate(input.action, resource, result.rules)),
             })
           }
           if (result.effect === "allow") return
