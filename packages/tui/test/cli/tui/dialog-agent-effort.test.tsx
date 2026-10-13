@@ -531,6 +531,39 @@ describe("agent effort selector", () => {
     }
   })
 
+  test("home submit inherits the chosen effort and seeds it before the new session syncs", async () => {
+    const harness = await mountEffort({
+      route: { type: "home" },
+      model: "test-provider/variant-model",
+      children: () => <Prompt />,
+    })
+    try {
+      harness.dialog.replace(() => <DialogAgentEffort />)
+      await frameWhere(harness.app, (f) => f.includes("Agent effort"), "effort selector")
+      harness.app.mockInput.pressArrow("down")
+      harness.app.mockInput.pressArrow("down")
+      harness.app.mockInput.pressEnter()
+      await wait(() => harness.local.effort.current() === "thorough")
+      await harness.app.renderOnce()
+      harness.app.mockInput.typeText("Check the project")
+      await frameWhere(harness.app, (f) => f.includes("Check the project"), "home prompt")
+      harness.app.mockInput.pressEnter()
+      await wait(() => harness.creates.length === 1)
+      expect(harness.creates[0].metadata).toEqual({ agentEffort: "thorough" })
+      await wait(() => harness.route.data.type === "session")
+      const sessionID = harness.route.data.type === "session" ? harness.route.data.sessionID : ""
+      expect(sessionID).toBe("ses_created_1")
+      // The create response has not been emitted as a session.updated event.
+      // Only the seeded overlay can show the inherited level on this route.
+      expect(harness.sync.session.get(sessionID)).toBeUndefined()
+      expect(harness.local.effort.scoped()).toBe(true)
+      expect(harness.local.effort.current()).toBe("thorough")
+      expect(harness.updates).toEqual([])
+    } finally {
+      await harness.dispose()
+    }
+  })
+
   test("a failed home default write is visible and keeps the selection consistent", async () => {
     const shared = await tmpdir()
     // A directory where the default file belongs makes every write fail.
