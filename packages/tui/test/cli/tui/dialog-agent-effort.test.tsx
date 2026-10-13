@@ -1,10 +1,10 @@
 /** @jsxImportSource @opentui/solid */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { TextareaRenderable } from "@opentui/core"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { onCleanup, onMount, type JSX } from "solid-js"
-import { mkdir } from "node:fs/promises"
+import { chmod, mkdir } from "node:fs/promises"
 import { tmpdir } from "../../fixture/fixture"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../../fixture/tui-sdk"
@@ -140,6 +140,7 @@ async function mountEffort(input: {
   model: string
   children: () => JSX.Element
   agentVariant?: string
+  configEffort?: "fast" | null
   // Hold every session.update PATCH until the test releases it.
   gated?: boolean
   // Reuse a state directory (restart coverage); a fresh tmpdir is created otherwise.
@@ -164,7 +165,7 @@ async function mountEffort(input: {
   const gates: Array<(outcome: "ok" | "fail") => void> = []
 
   const calls = createFetch((url) => {
-    if (url.pathname === "/config") return json({ agent: { effort: "fast" } })
+    if (url.pathname === "/config") return json(input.configEffort === null ? {} : { agent: { effort: "fast" } })
     if (url.pathname === "/config/providers") return json(providersPayload())
     if (url.pathname === "/agent") return json(agentsPayload(input.agentVariant, agentModel))
     if (url.pathname === "/api/agent") {
@@ -363,12 +364,12 @@ function chipHex(app: Setup, level: string) {
 }
 
 /** Waits for a persisted JSON file to appear, then returns it. */
-async function fileJson(file: string): Promise<unknown> {
+async function fileJson(file: string, level?: string): Promise<unknown> {
   for (let pass = 0; pass < 300; pass++) {
     const value = await Bun.file(file)
       .json()
       .catch(() => undefined)
-    if (value !== undefined) return value
+    if (value !== undefined && (!level || (value as { agentEffort?: string } | null)?.agentEffort === level)) return value
     await Bun.sleep(10)
   }
   throw new Error(`timed out waiting for ${file}`)
@@ -554,6 +555,136 @@ describe("agent effort selector", () => {
       await shared[Symbol.asyncDispose]()
     }
   })
+
+  test.each(["{", '{"agentEffort":"invalid"}', "{}", "null", "[]"])(
+    "warns about corrupt or invalid stored defaults (%s) and keeps the config fallback",
+    async (content) => {
+      await using shared = await tmpdir()
+      await Bun.write(`${shared.path}/effort.json`, content)
+      const harness = await mountEffort({
+        route: { type: "home" },
+        model: "test-provider/variant-model",
+        children: () => <Prompt />,
+        state: shared.path,
+      })
+      try {
+        await frameWhere(harness.app, (f) => f.includes("Failed to load the agent effort default"), "load warning")
+        expect(harness.local.effort.current()).toBe("fast")
+        expect(harness.local.effort.newSessionMetadata()).toBeUndefined()
+        harness.local.effort.set("thorough")
+        expect(await fileJson(`${shared.path}/effort.json`, "thorough")).toEqual({ agentEffort: "thorough" })
+      } finally {
+        await harness.dispose()
+      }
+    },
+  )
+
+  test.skipIf(process.platform === "win32")("warns about an unreadable stored default and keeps the medium fallback", async () => {
+    await using shared = await tmpdir()
+    const file = `${shared.path}/effort.json`
+    await Bun.write(file, '{"agentEffort":"thorough"}')
+    await chmod(file, 0)
+    const harness = await mountEffort({
+      route: { type: "home" },
+      model: "test-provider/variant-model",
+      children: () => <Prompt />,
+      state: shared.path,
+      configEffort: null,
+    })
+    try {
+      await frameWhere(harness.app, (f) => f.includes("Failed to load the agent effort default"), "permission warning")
+      expect(harness.local.effort.current()).toBe("medium")
+      expect(harness.local.effort.newSessionMetadata()).toBeUndefined()
+    } finally {
+      await chmod(file, 0o600)
+      await harness.dispose()
+    }
+  })
+
+  test("a missing stored default is silent and does not block the first write", async () => {
+    await using shared = await tmpdir()
+    const harness = await mountEffort({
+      route: { type: "home" },
+      model: "test-provider/variant-model",
+      children: () => <Prompt />,
+      state: shared.path,
+    })
+    try {
+      harness.local.effort.set("thorough")
+      expect(await fileJson(`${shared.path}/effort.json`)).toEqual({ agentEffort: "thorough" })
+      await harness.app.renderOnce()
+      expect(harness.app.captureCharFrame()).not.toContain("Failed to load the agent effort default")
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  test.each(["before selection", "after queued selection"])(
+    "orders a deferred initial read %s before writes and rolls back to the latest saved value",
+    async (ordering) => {
+      await using shared = await tmpdir()
+      const file = `${shared.path}/effort.json`
+      await Bun.write(file, '{"agentEffort":"medium"}')
+      const persistence = await import("../../../src/util/persistence")
+      const readJson = persistence.readJson
+      const writeJsonAtomic = persistence.writeJsonAtomic
+      let release!: (value: unknown) => void
+      const initialRead = new Promise<unknown>((resolve) => {
+        release = resolve
+      })
+      const reads = spyOn(persistence, "readJson").mockImplementation(<T,>(path: string): Promise<T> =>
+        path === file ? (initialRead as Promise<T>) : readJson<T>(path),
+      )
+      const written: unknown[] = []
+      const writes = spyOn(persistence, "writeJsonAtomic").mockImplementation(async (path, value) => {
+        if (path !== file) return writeJsonAtomic(path, value)
+        written.push(value)
+        if (written.length === 2) throw new Error("write failed")
+        await writeJsonAtomic(path, value)
+      })
+      const harness = await mountEffort({
+        route: { type: "home" },
+        model: "test-provider/variant-model",
+        children: () => <Prompt />,
+        state: shared.path,
+      })
+      try {
+        if (ordering === "before selection") {
+          release({ agentEffort: "medium" })
+          await wait(() => harness.local.effort.current() === "medium")
+        }
+        harness.local.effort.set("thorough")
+        expect(harness.local.effort.current()).toBe("thorough")
+        if (ordering === "after queued selection") {
+          // Give a wrongly unordered write time to complete before releasing
+          // the stale snapshot. The correct implementation must still wait.
+          await Bun.sleep(30)
+          expect(written).toEqual([])
+          expect(await Bun.file(file).json()).toEqual({ agentEffort: "medium" })
+          release({ agentEffort: "medium" })
+        }
+        await wait(() => written.length === 1)
+        expect(await fileJson(file, "thorough")).toEqual({ agentEffort: "thorough" })
+        expect(harness.local.effort.current()).toBe("thorough")
+        harness.local.effort.set("fast")
+        await frameWhere(harness.app, (f) => f.includes("Failed to save the agent effort default"), "write warning")
+        expect(written).toEqual([{ agentEffort: "thorough" }, { agentEffort: "fast" }])
+        expect(harness.local.effort.current()).toBe("thorough")
+        expect(harness.local.effort.newSessionMetadata()).toEqual({ agentEffort: "thorough" })
+        expect(await Bun.file(file).json()).toEqual({ agentEffort: "thorough" })
+        // A failed write must not poison the queue for the next selection.
+        harness.local.effort.set("medium")
+        await wait(() => written.length === 3)
+        expect(await fileJson(file, "medium")).toEqual({ agentEffort: "medium" })
+        expect(harness.local.effort.current()).toBe("medium")
+      } finally {
+        reads.mockRestore()
+        writes.mockRestore()
+        release({ agentEffort: "medium" })
+        await harness.dispose()
+      }
+    },
+  )
 
   test("a home default leaves the sessions that carry their own selection alone", async () => {
     const shared = await tmpdir()

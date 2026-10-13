@@ -644,26 +644,32 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const [stored, setStored] = createSignal<Level | undefined>()
       let persisted: Level | undefined
       let touched = false
-      let defaultWrites: Promise<void> = Promise.resolve()
       let defaultSequence = 0
 
-      void readJson<unknown>(defaultFile)
+      let defaultWrites = readJson<unknown>(defaultFile)
         .then((value) => {
           const level = metadataLevel(value)
-          if (!level) return
+          if (!level) throw new Error("Invalid agent effort default")
           persisted = level
           // A selection made while the file was still loading wins over the
           // file: the user's choice is newer than what was on disk.
           if (!touched) setStored(level)
         })
-        .catch(() => {})
+        .catch((error) => {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return
+          toast.show({
+            variant: "warning",
+            message: `Failed to load the agent effort default: ${errorMessage(error)}`,
+            duration: 3000,
+          })
+        })
 
       function persistDefault(level: Level) {
         touched = true
         setStored(level)
         const attempt = ++defaultSequence
-        // Serialize default writes so two rapid selections persist in order
-        // and the last choice is what the file ends up holding.
+        // Wait for the initial read before writing so it cannot replace a
+        // newer rollback baseline. Then persist rapid selections in order.
         const write = defaultWrites.then(() => writeJsonAtomic(defaultFile, effortRecord(level)))
         defaultWrites = write.catch(() => {})
         write.then(
