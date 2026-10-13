@@ -2217,7 +2217,7 @@ describe("tool.task - storage failures", () => {
               extra: {
                 promptOps: {
                   ...stubOps(),
-                  prompt: (input) =>
+                  prompt: (input: SessionPrompt.PromptInput) =>
                     outcome === "defect" ? Effect.die(taskError) : Effect.succeed(reply(input, "done")),
                 },
               },
