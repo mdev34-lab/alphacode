@@ -58,6 +58,12 @@ export const Info = Schema.Struct({
   options: Schema.Record(Schema.String, Schema.Unknown),
   steps: Schema.optional(Schema.Finite),
   finishTool: Schema.optional(Schema.Boolean),
+  /**
+   * Opt-in for synchronous (foreground) delegation. `false` means callers
+   * delegating to this agent wait for its result by default; `true` and unset
+   * mean the subagent always runs as a background job.
+   */
+  background: Schema.optional(Schema.Boolean),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -284,6 +290,8 @@ const layer = Layer.effect(
             description: `Code reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files (implementation, fix, refactor, or feature), before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
             prompt: PROMPT_REVIEW,
             options: {},
+            // Mandatory review must deliver its verdict before the parent can finish.
+            background: false,
             mode: "subagent",
             native: true,
           },
@@ -296,6 +304,8 @@ const layer = Layer.effect(
             description: `Work reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements for general workspace tasks: file operations, configuration, documents, and mixed non-repository work. Applies the same standard as the code reviewers - spec compliance, correctness, tests, types, integration, regressions, and project conventions - judged against the workspace rather than a repository. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files in a general workspace context, before claiming completion, and whenever the user explicitly asks for a review. Not for conversational turns that changed no files.`,
             prompt: PROMPT_WORK_REVIEW,
             options: {},
+            // Mandatory review must deliver its verdict before the parent can finish.
+            background: false,
             mode: "subagent",
             native: true,
           },
@@ -305,6 +315,8 @@ const layer = Layer.effect(
             description: `Code reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, types, integration, regressions, and project conventions. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files in a software repository context, before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
             prompt: PROMPT_CODE_REVIEW,
             options: {},
+            // Mandatory review must deliver its verdict before the parent can finish.
+            background: false,
             mode: "subagent",
             native: true,
           },
@@ -392,6 +404,7 @@ const layer = Layer.effect(
           item.name = value.name ?? item.name
           item.steps = value.steps ?? item.steps
           item.finishTool = value.finishTool ?? item.finishTool
+          item.background = value.background ?? item.background
           item.options = mergeDeep(item.options, value.options ?? {})
           item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
         }

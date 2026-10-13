@@ -199,23 +199,27 @@ const cfg = {
   },
 }
 
-const useServerConfig = Effect.gen(function* () {
-  const { directory: dir } = yield* TestInstance
-  const llm = yield* TestLLMServer
-  const fs = yield* FSUtil.Service
-  yield* fs.writeWithDirs(
-    path.join(dir, "opencode.json"),
-    JSON.stringify({
-      $schema: "https://opencode.ai/config.json",
-      ...cfg,
-      provider: {
-        ...cfg.provider,
-        test: { ...cfg.provider.test, options: { ...cfg.provider.test.options, baseURL: llm.url } },
-      },
-    }),
-  )
-  return { dir, llm }
-})
+const serverConfig = (agents: Record<string, object> = {}) =>
+  Effect.gen(function* () {
+    const { directory: dir } = yield* TestInstance
+    const llm = yield* TestLLMServer
+    const fs = yield* FSUtil.Service
+    yield* fs.writeWithDirs(
+      path.join(dir, "opencode.json"),
+      JSON.stringify({
+        $schema: "https://opencode.ai/config.json",
+        ...cfg,
+        agent: { ...cfg.agent, ...agents },
+        provider: {
+          ...cfg.provider,
+          test: { ...cfg.provider.test, options: { ...cfg.provider.test.options, baseURL: llm.url } },
+        },
+      }),
+    )
+    return { dir, llm }
+  })
+
+const useServerConfig = serverConfig()
 
 const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string, agent = "work") {
   const session = yield* Session.Service
@@ -602,3 +606,67 @@ it.instance(
     }),
   15_000,
 )
+
+// No reviewer opt-in in these configs. Exercise the real model/tool pipeline,
+// including a failed premature finish, routing, report delivery, and approval.
+for (const [parent, reviewer] of [
+  ["work", "work-review"],
+  ["code", "code-review"],
+  ["custom", "review"],
+]) {
+  for (const effort of ["medium", "thorough"] as const) {
+    it.instance(
+      `default ${reviewer} delivers review before ${parent} finishes (${effort})`,
+      () =>
+        Effect.gen(function* () {
+          const { dir, llm } = yield* serverConfig({ [parent]: { finishTool: true } })
+          const sessions = yield* Session.Service
+          const prompt = yield* SessionPrompt.Service
+          const chat = yield* sessions.create({
+            title: "Pinned",
+            agent: parent,
+            metadata: { agentEffort: effort },
+            permission: [{ permission: "*", pattern: "*", action: "allow" }],
+          })
+          const parentMatch = (hit: { body: unknown }) => !reviewerMatch(hit)
+          yield* llm.pushMatch(
+            parentMatch,
+            reply().tool("write", { filePath: path.join(dir, "result.txt"), content: "verified work" }),
+          )
+          yield* llm.pushMatch(parentMatch, reply().tool("finish", { reason: "success", result: "premature" }))
+          yield* llm.pushMatch(
+            parentMatch,
+            reply().tool("task", { description: "Review file", subagent_type: "review", prompt: "Review result.txt" }),
+          )
+          const report = `<silvercode-review>\n${JSON.stringify({ ...REVIEW_REPORT, assessment: "approved", summary: "No findings.", findings: [] })}\n</silvercode-review>`
+          yield* llm.pushMatch(reviewerMatch, reply().tool("finish", { reason: "success", result: report }))
+          yield* llm.pushMatch(parentMatch, reply().tool("finish", { reason: "success", result: "reviewed work" }))
+          yield* user(chat.id, "write result.txt and review it", parent)
+          yield* prompt.loop({ sessionID: chat.id })
+          const history = yield* sessions.messages({ sessionID: chat.id })
+          const tools = history
+            .flatMap((message) => message.parts)
+            .filter((part): part is SessionV1.ToolPart => part.type === "tool")
+          expect(tools.find((part) => part.tool === "write")?.state.status).toBe("completed")
+          const finishes = tools.filter((part) => part.tool === "finish")
+          expect(finishes.map((part) => part.state.status)).toEqual(["error", "completed"])
+          const task = tools.find((part) => part.tool === "task")
+          expect(task?.state.status).toBe("completed")
+          if (task?.state.status !== "completed") return
+          expect(task.state.metadata.background).toBe(false)
+          const child = yield* sessions.get(SessionID.make(task.state.metadata.sessionId))
+          expect(child.agent).toBe(reviewer)
+          expect(task.state.metadata.review.report.assessment).toBe("approved")
+          const last = finishes.at(-1)
+          if (last?.state.status !== "completed") return
+          expect(last.state.metadata.review).toMatchObject({
+            effort,
+            disposition: "reviewed",
+            termination: "approved",
+            reviews: 1,
+          })
+        }),
+      20_000,
+    )
+  }
+}

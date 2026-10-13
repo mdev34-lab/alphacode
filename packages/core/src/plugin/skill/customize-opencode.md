@@ -238,6 +238,7 @@ Two ways to define an agent. Use the file form for anything non-trivial.
       "mode": "subagent",
       "model": "anthropic/claude-sonnet-4-6",
       "permission": { "edit": "deny", "bash": "ask" },
+      "background": false,
       "prompt": "You are a strict PR reviewer..."
     }
   }
@@ -269,8 +270,41 @@ frontmatter.
 `mode` is one of `"primary"`, `"subagent"`, `"all"`.
 
 Allowed top-level frontmatter fields: `name, model, variant, description, mode,
-hidden, color, steps, options, permission, disable, temperature, top_p`. Any
-unknown field is silently routed into `options`.
+hidden, color, steps, options, permission, disable, temperature, top_p,
+background`. Any unknown field is silently routed into `options`.
+
+### Subagent execution mode
+
+Subagents run in the background: the tool that delegated to them returns
+immediately and the parent is notified when a result lands. Waiting for a
+subagent's result is opt-in per agent, not per call: only an agent whose config
+sets `background: false` may run in its parent's foreground, and for that agent
+synchronous execution is the default unless the caller explicitly asks for
+`background: true`. This keeps one stuck subagent from blocking the agent that
+delegated to it.
+
+```json
+{
+  "agent": {
+    "review": { "background": false }
+  }
+}
+```
+
+`background: true` is the default, so it only appears in config to undo an
+earlier opt-in (project config overrides global config).
+
+A generic `review` request is routed to the parent's specialist reviewer
+(`work-review`, `code-review`). The agent that actually runs decides the mode; the
+requested name (`review`) applies only when that agent says nothing, so
+`agent: { review: { background: false } }` covers every reviewer while
+`agent: { work-review: { background: true } }` cancels it for Work specifically.
+
+Reviewers also interact with the review loop's `finish` gate, which accepts only a
+verdict delivered in the foreground. A review that ran in the background never
+satisfies it, so the first `finish` for that work is declined with a nudge and the
+next is honoured as an explicit skip; set `background: false` on the reviewer to
+keep that gate enforceable.
 
 To disable a built-in agent: `agent: { work: { disable: true } }`, or in a
 file, `disable: true` in frontmatter.

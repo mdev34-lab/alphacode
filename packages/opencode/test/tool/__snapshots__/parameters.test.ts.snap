@@ -302,7 +302,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "background": {
-      "description": "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
+      "description": "Whether to run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. An omitted value runs in the background unless the agent is configured with \`background: false\` in opencode.json, which makes the tool wait for the result. Set true to force a background launch for such an agent; setting false on any other agent still launches it in the background.",
       "type": "boolean",
     },
     "command": {
@@ -311,6 +311,15 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
     },
     "description": {
       "description": "A short (3-5 words) description of the task",
+      "type": "string",
+    },
+    "effort": {
+      "description": "Override the agent effort policy for this task (fast, medium, or thorough). Omitted means: reuse this child's persisted selection on resume, otherwise inherit the parent/root selection, otherwise the configured agent.effort, otherwise medium. The selection persists on the child session and applies to its finish checkpoint.",
+      "enum": [
+        "fast",
+        "medium",
+        "thorough",
+      ],
       "type": "string",
     },
     "prompt": {
