@@ -4760,7 +4760,7 @@ noLLMServer.instance(
 const expectFreshRun = Effect.fn("test.expectFreshRun")(function* (
   chatID: SessionID,
   result: SessionV1.WithParts,
-  interruptedIDs: string[],
+  interruptedIDs: MessageID[],
 ) {
   expect(result.info.role).toBe("assistant")
   if (result.info.role !== "assistant") return
@@ -4780,7 +4780,7 @@ const abortedIDs = (chatID: SessionID) =>
     const msgs = yield* MessageV2.filterCompactedEffect(chatID)
     return msgs
       .filter((m) => m.info.role === "assistant" && m.info.error?.name === "MessageAbortedError")
-      .map((m) => m.info.id as string)
+      .map((m) => m.info.id)
   })
 
 it.instance(
