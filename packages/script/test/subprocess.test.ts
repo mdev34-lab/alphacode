@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { describe, expect, test } from "bun:test"
 import {
+  assertNoCleanupFailures,
   describeSubprocess,
   expectSubprocessOk,
   git,
@@ -145,5 +146,43 @@ describe("subprocess diagnostics", () => {
     expect(stillThere).toBe(false)
     // force:true means a missing directory is not an error and must not throw.
     await expect(removeFixture(path.join(tmpdir(), "silvercode-subprocess-missing-xyz"))).resolves.toBeUndefined()
+  })
+
+  test("removeFixture records a cleanup failure and assertNoCleanupFailures surfaces it once", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "silvercode-subprocess-fixture-"))
+    try {
+      const busy = Object.assign(new Error("resource busy or locked"), { code: "EBUSY", syscall: "rmdir", path: dir })
+      const originalError = console.error
+      console.error = () => {}
+      try {
+        await removeFixture(dir, async () => {
+          throw busy
+        })
+      } finally {
+        console.error = originalError
+      }
+      expect(() => assertNoCleanupFailures()).toThrow("EBUSY")
+      // The recorded failure is cleared once reported.
+      expect(() => assertNoCleanupFailures()).not.toThrow()
+    } finally {
+      await removeFixture(dir)
+      assertNoCleanupFailures()
+    }
+  })
+
+  test("classify separates startup faults, runtime faults and Ctrl+C", () => {
+    const text = (exitCode: number) => describeSubprocess(record({ exitCode, ok: false }))
+    expect(text(-1073741502)).toContain("process-startup fault")
+    expect(text(-1073741819)).not.toContain("never executed the program")
+    expect(text(-1073741510)).toContain("not a process-startup fault")
+    expect(describeSubprocess(record({ exitCode: 3, ok: false }))).toContain("inconclusive")
+  })
+
+  test("the async runner folds a signal kill into 128+signo and reports the signal", async () => {
+    if (process.platform === "win32") return
+    const killed = await runAsync(["sh", "-c", "kill -TERM $$"])
+    expect(killed.ok).toBe(false)
+    expect(killed.exitCode).toBe(143)
+    expect(killed.signalCode).toBe("SIGTERM")
   })
 })

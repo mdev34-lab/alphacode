@@ -1,12 +1,13 @@
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { archiveName, archivePath } from "../src/artifacts"
 import {
   describeSubprocess,
   expectSubprocessOk,
   git,
+  assertNoCleanupFailures,
   removeFixture,
   runAsync,
   runSync,
@@ -169,6 +170,8 @@ const stubLog = async (sandbox: Sandbox) => {
 async function gh(sandbox: Sandbox, ...args: string[]) {
   return runAsync(ghCommand(sandbox.bin, args), { cwd: sandbox.work, env: flowEnv(sandbox) })
 }
+
+afterEach(() => assertNoCleanupFailures())
 
 describe("release lifecycle with stubbed gh and a real git remote", () => {
   test(

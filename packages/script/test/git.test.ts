@@ -1,9 +1,11 @@
 import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { commitCount, commitsSince, lastTag, tagAtHead } from "../src/git"
-import { git, removeFixture } from "./helpers/subprocess"
+import { assertNoCleanupFailures, git, removeFixture } from "./helpers/subprocess"
+
+afterEach(() => assertNoCleanupFailures())
 
 describe("git release metadata", () => {
   // Real git subprocesses (init, commits, two merges): on a contended Windows

@@ -14,7 +14,9 @@ import path from "node:path"
  *   - a signal kill, where Bun reports `exitCode: null` and a `signalCode`;
  *   - a host process-startup fault, reported as a negative NTSTATUS exit code
  *     (for example -1073741502 == 0xC0000142 STATUS_DLL_INIT_FAILED, seen in
- *     the same failing job's annotation), where the child never runs;
+ *     the same failing job's annotation), where the child never runs. Other
+ *     NTSTATUS codes (access violation, heap corruption) are runtime faults that
+ *     happen after the program started and may still have written output;
  *   - a spawn error (ENOENT/EACCES), where `Bun.spawn*` throws and there is no
  *     subprocess at all.
  *
@@ -22,8 +24,9 @@ import path from "node:path"
  * stdout/stderr for one subprocess and renders all of it on failure, so a
  * recurrence names its own cause instead of showing a bare `128` or a blank
  * `... failed:`. The `signature:` line is stable across failures so a cascade
- * can be correlated at a glance: identical signatures mean the later failures
- * share one cause, differing ones mean they merely follow the first.
+ * can be correlated at a glance. Identical signatures only group failures of the
+ * same class (exit code, signal, spawn error, output emptiness); they point to a
+ * common failure class worth investigating and do not prove a shared root cause.
  *
  * These helpers never retry, never relax an assertion and never change a
  * timeout. A non-zero exit, a signal or a spawn error still fails the test; the
@@ -56,7 +59,7 @@ export type SubprocessRecord = {
   ok: boolean
 }
 
-/** Host-level Windows process faults, reported as negative NTSTATUS exit codes. */
+/** Windows NTSTATUS exit codes (negative as signed ints) with a name for the log. */
 const NTSTATUS: Record<number, string> = {
   0xc0000005: "STATUS_ACCESS_VIOLATION",
   0xc0000008: "STATUS_INVALID_HANDLE",
@@ -69,6 +72,14 @@ const NTSTATUS: Record<number, string> = {
   0xc0000374: "STATUS_HEAP_CORRUPTION",
   0xc0000409: "STATUS_STACK_BUFFER_OVERRUN",
 }
+
+/**
+ * NTSTATUS codes where the OS failed the child before it executed the program,
+ * so empty stderr is expected. Runtime faults (access violation, heap
+ * corruption, stack overrun) and a console Ctrl+C exit happen after the program
+ * started and are deliberately excluded.
+ */
+const STARTUP_FAULTS = new Set([0xc0000135, 0xc0000139, 0xc0000142, 0xc0000145])
 
 /** Runs a command synchronously and records every diagnostic field. */
 export function runSync(cmd: string[], opts: { cwd?: string } = {}): SubprocessRecord {
@@ -108,8 +119,11 @@ export function runSync(cmd: string[], opts: { cwd?: string } = {}): SubprocessR
  * Runs a command asynchronously and records every diagnostic field.
  *
  * `exitCode` is the awaited `exited` status, exactly the value the fixtures
- * asserted on before; a terminating signal is folded into it as 128+signo and
- * is also reported verbatim in `signalCode`.
+ * asserted on before. Verified on Bun 1.3.14: a terminating signal resolves
+ * `exited` to 128+signo (SIGTERM gives 143) and the signal name is also reported
+ * in `signalCode`. The async `Subprocess` has no `exitedDueToTimeout` or
+ * `exitedDueToMaxBuffer` fields (only `spawnSync` results do), so both stay
+ * `false` here.
  */
 export async function runAsync(
   cmd: string[],
@@ -171,17 +185,30 @@ export function expectSubprocessOk(record: SubprocessRecord, context?: string): 
  * are a plausible shared cause for later spawn faults. This records the exact
  * fs error and what is still on disk rather than guessing. It never rethrows:
  * cleanup runs in a `finally`, and throwing here would mask the assertion that
- * actually failed in the test body.
+ * actually failed in the test body. Instead the failure is recorded and
+ * surfaced by `assertNoCleanupFailures()`, which test files call from an
+ * `afterEach` hook so a leaked fixture fails the test without hiding the body's
+ * own error.
  */
-export async function removeFixture(dir: string): Promise<void> {
+export async function removeFixture(dir: string, remove: typeof rm = rm): Promise<void> {
   try {
-    await rm(dir, { recursive: true, force: true })
+    await remove(dir, { recursive: true, force: true })
   } catch (error) {
     const remaining = await inspectRemaining(dir)
-    console.error(
-      `[fixture-cleanup] failed to remove ${dir}\n${describeError(error)}\nremaining entries:\n${remaining}`,
-    )
+    const message = `[fixture-cleanup] failed to remove ${dir}\n${describeError(error)}\nremaining entries:\n${remaining}`
+    console.error(message)
+    cleanupFailures.push(message)
   }
+}
+
+const cleanupFailures: string[] = []
+
+/** Throws (and clears) any fixture cleanup failures recorded since the last call. */
+export function assertNoCleanupFailures(): void {
+  if (cleanupFailures.length === 0) return
+  const message = cleanupFailures.join("\n\n")
+  cleanupFailures.length = 0
+  throw new Error(`fixture cleanup failed; a leaked fixture can cascade into later tests\n${message}`)
 }
 
 /** Renders one subprocess record as a complete, greppable diagnostic block. */
@@ -258,14 +285,20 @@ function classify(record: SubprocessRecord): string {
     return `the executable could not be spawned (${record.spawnError.code ?? "error"}); the child never ran, so empty output is expected. This is a PATH/permissions/host fault, not a git error.`
   }
   const unsigned = record.exitCode === null ? null : record.exitCode >>> 0
-  if (unsigned !== null && unsigned >= 0xc0000000) {
+  if (unsigned !== null && STARTUP_FAULTS.has(unsigned)) {
     return `the child failed at the Windows OS level (${formatExitCode(record.exitCode)}) and never executed the program; empty stderr is expected. This is a host/runner process-startup fault, not a git error.`
+  }
+  if (unsigned === 0xc000013a) {
+    return `the child exited with STATUS_CONTROL_C_EXIT (${formatExitCode(record.exitCode)}); the program was running and was interrupted (console Ctrl+C), which is not a process-startup fault.`
+  }
+  if (unsigned !== null && unsigned >= 0xc0000000) {
+    return `the child exited with a Windows NTSTATUS failure code (${formatExitCode(record.exitCode)}); this is a fault in or around the running program (it may have started), so stderr may be incomplete. Not necessarily a startup fault.`
   }
   if (record.signalCode !== null) {
     return `the child was killed by ${record.signalCode} before it reported an exit status; a killed process may write nothing, so empty stderr is expected and is not a git error.`
   }
   if (record.exitCode !== 0 && record.stderr.trim() === "" && record.stdout.trim() === "") {
-    return `the child exited ${record.exitCode} but wrote nothing to stdout or stderr; git prints "fatal:" to stderr on a real error, so a silent non-zero exit points to a host/process fault rather than a git-level failure.`
+    return `the child exited ${record.exitCode} but wrote nothing to stdout or stderr; git prints "fatal:" to stderr on a real error, so a silent non-zero exit is inconclusive: it may be a host/process fault, but a git-level failure cannot be ruled out.`
   }
   if (record.exitCode !== 0) {
     return `the child exited ${record.exitCode} and reported on stderr; this is a program-level failure (git prints the reason in the stderr block above).`
