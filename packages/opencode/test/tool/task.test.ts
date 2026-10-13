@@ -2143,6 +2143,205 @@ describe("tool.task", () => {
   )
 })
 
+describe("tool.task - storage failures", () => {
+  for (const outcome of ["completed", "defect"] as const) {
+    it.instance(`history recovery failure propagates after ${outcome} and unsubscribes`, () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const events = yield* EventV2Bridge.Service
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
+        const historyError = new Error("History storage defect")
+        const taskError = new Error("Child execution defect")
+        let unsubscribed = 0
+        let recovered = 0
+        let runExit: Exit.Exit<string, unknown> | undefined
+        const tool = yield* TaskTool.pipe(
+          Effect.provideService(Session.Service, {
+            ...sessions,
+            messages: (input) => {
+              if (input.sessionID !== child.id) return sessions.messages(input)
+              recovered++
+              return Effect.die(historyError)
+            },
+          }),
+          Effect.provideService(EventV2Bridge.Service, {
+            ...events,
+            listen: (listener) =>
+              events.listen(listener).pipe(
+                Effect.map((unsubscribe) =>
+                  unsubscribe.pipe(
+                    Effect.andThen(
+                      Effect.sync(() => {
+                        unsubscribed++
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+          }),
+          Effect.provideService(BackgroundJob.Service, {
+            ...jobs,
+            start: (input) =>
+              jobs.start({
+                ...input,
+                run: input.run.pipe(
+                  Effect.onExit((exit) =>
+                    Effect.sync(() => {
+                      runExit = exit
+                    }),
+                  ),
+                ),
+              }),
+          }),
+        )
+        const def = yield* tool.init()
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect",
+              prompt: "inspect",
+              subagent_type: "general",
+              task_id: child.id,
+              background: false,
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "work",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+              extra: {
+                promptOps: {
+                  ...stubOps(),
+                  prompt: (input: SessionPrompt.PromptInput) =>
+                    outcome === "defect" ? Effect.die(taskError) : Effect.succeed(reply(input, "done")),
+                },
+              },
+            },
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(recovered).toBe(1)
+        expect(unsubscribed).toBe(1)
+        expect((yield* jobs.get(child.id))?.status).toBe("error")
+        expect(runExit && Exit.isFailure(runExit)).toBe(true)
+        if (!runExit || Exit.isSuccess(runExit)) return
+        expect(runExit.cause.reasons).toContainEqual(expect.objectContaining({ _tag: "Die", defect: historyError }))
+        if (outcome === "defect") {
+          expect(runExit.cause.reasons).toContainEqual(expect.objectContaining({ _tag: "Die", defect: taskError }))
+          expect(runExit.cause.reasons).toHaveLength(2)
+        }
+        if (outcome === "completed" && Exit.isFailure(exit)) {
+          expect(Cause.pretty(exit.cause)).toContain(historyError.message)
+        }
+      }),
+    )
+  }
+
+  for (const failure of ["storage", "not-found-defect"] as const) {
+    it.instance(`resume ${failure} does not replace or mutate the requested child`, () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({
+          parentID: chat.id,
+          title: "Existing child",
+          metadata: { effort: "fast" },
+        })
+        const before = yield* sessions.get(child.id)
+        const error =
+          failure === "storage" ? new Error("Resume storage defect") : new NotFoundError({ message: "NotFound defect" })
+        let created = 0
+        let metadataWrites = 0
+        let prompted = 0
+        const tool = yield* TaskTool.pipe(
+          Effect.provideService(Session.Service, {
+            ...sessions,
+            get: (id) => (id === child.id ? Effect.die(error) : sessions.get(id)),
+            create: (input) => {
+              created++
+              return sessions.create(input)
+            },
+            setMetadata: (input) => {
+              metadataWrites++
+              return sessions.setMetadata(input)
+            },
+          }),
+        )
+        const def = yield* tool.init()
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect",
+              prompt: "inspect",
+              subagent_type: "general",
+              task_id: child.id,
+              effort: "thorough",
+              background: false,
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "work",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+              extra: { promptOps: stubOps({ onPrompt: () => prompted++ }) },
+            },
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit))
+          expect(exit.cause.reasons).toContainEqual(expect.objectContaining({ _tag: "Die", defect: error }))
+        expect(created).toBe(0)
+        expect(metadataWrites).toBe(0)
+        expect(prompted).toBe(0)
+        expect(yield* sessions.get(child.id)).toEqual(before)
+        expect((yield* sessions.children(chat.id)).map((child) => child.id)).toEqual([child.id])
+      }),
+    )
+  }
+
+  it.instance("resume typed NotFound creates a child for a genuinely missing task", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const missing = SessionID.make("ses_missing_storage_test")
+      const lookup = yield* sessions.get(missing).pipe(Effect.exit)
+      expect(Exit.isFailure(lookup)).toBe(true)
+      if (Exit.isFailure(lookup))
+        expect(lookup.cause.reasons).toContainEqual(
+          expect.objectContaining({ _tag: "Fail", error: expect.any(NotFoundError) }),
+        )
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        { description: "inspect", prompt: "inspect", subagent_type: "general", task_id: missing, background: false },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "work",
+          abort: new AbortController().signal,
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+          extra: { promptOps: stubOps() },
+        },
+      )
+      const children = yield* sessions.children(chat.id)
+      expect(children).toHaveLength(1)
+      expect(result.metadata.sessionId).toBe(children[0]?.id)
+      expect(result.metadata.sessionId).not.toBe(missing)
+      expect(result.output).toContain('state="completed"')
+    }),
+  )
+})
+
 describe("tool.task - child write handoff", () => {
   for (const outcome of ["completed", "error", "background"] as const) {
     it.instance(`projects child writes before ${outcome} delivery`, () =>

@@ -15,10 +15,11 @@ import { isReviewAgent, resolveReviewer } from "../agent/review-agents"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Option, Ref, Schema, Scope } from "effect"
+import { Cause, Effect, Exit, Option, Ref, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { AgentEffort } from "@opencode-ai/schema/agent-effort"
+import { NotFoundError } from "@/storage/storage"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
@@ -252,7 +253,9 @@ export const TaskTool = Tool.define(
       }
 
       const session = params.task_id
-        ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        ? yield* sessions
+            .get(SessionID.make(params.task_id))
+            .pipe(Effect.catchIf(NotFoundError.isInstance, () => Effect.succeed(undefined)))
         : undefined
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
@@ -594,13 +597,15 @@ export const TaskTool = Tool.define(
       const runWithEvidence = () =>
         runTask().pipe(
           Effect.onInterrupt(() => ops.cancel(nextSession.id)),
-          Effect.ensuring(
+          Effect.onExit((exit) =>
             Effect.gen(function* () {
               const history = yield* sessions.messages({ sessionID: nextSession.id })
               yield* projectWrites(history.flatMap((message) => message.parts))
             }).pipe(
+              // Effect v4 finalizer failures replace the original cause unless
+              // it is combined explicitly. Neither failure is recoverable here.
               Effect.catchCause((cause) =>
-                Effect.logError("Child write evidence history unavailable", { sessionID: nextSession.id, cause }),
+                Effect.failCause(Exit.isFailure(exit) ? Cause.combine(exit.cause, cause) : cause),
               ),
               Effect.ensuring(unsubscribeWrites),
             ),
