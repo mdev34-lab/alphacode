@@ -103,7 +103,12 @@ const waitLocksReleased = (state: string) =>
     }),
   )
 
-describe("Npm.install cancellation", () => {
+// TEMPORARY CI bisection probe (issue #271): Windows unit runs failed twice
+// with unreadable logs; skipping this file on Windows isolates whether the
+// fake-Arborist module mock is the culprit before choosing the final fix.
+const describeNotWin = process.platform === "win32" ? describe.skip : describe
+
+describeNotWin("Npm.install cancellation", () => {
   // 30s budget: the test runs two full install cycles (NpmConfig.load + flock
   // + reify each), which is far slower on Windows CI (NTFS + Defender) than
   // bun's 5s default allows.
