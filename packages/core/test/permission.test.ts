@@ -154,7 +154,24 @@ describe("PermissionV2", () => {
       yield* setRules([{ action: "read", resource: "*", effect: "deny" }])
       const blocked = yield* service.assert(assertion()).pipe(Effect.flip)
       expect(blocked).toBeInstanceOf(PermissionV2.BlockedError)
+      expect(blocked.message).toContain("Permission blocked by rule:")
+      expect(blocked.message).toContain('"action":"read"')
       expect(yield* service.list()).toEqual([])
+    }),
+  )
+
+  it.effect("blocked message names the effective deny rule, not an unrelated later rule", () =>
+    Effect.gen(function* () {
+      yield* setup([
+        { action: "read", resource: "/secret", effect: "deny" },
+        { action: "read", resource: "/public", effect: "allow" },
+      ])
+      const service = yield* PermissionV2.Service
+      const blocked = yield* service.assert(assertion({ resources: ["/secret"] })).pipe(Effect.flip)
+      expect(blocked).toBeInstanceOf(PermissionV2.BlockedError)
+      expect(blocked.message).toContain('"resource":"/secret"')
+      expect(blocked.message).toContain('"effect":"deny"')
+      expect(blocked.message).not.toContain("/public")
     }),
   )
 
