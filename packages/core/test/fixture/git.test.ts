@@ -28,6 +28,30 @@ describe("Git fixture", () => {
     expect(await fs.readFile(path.join(fixture.source, "README.md"), "utf8")).toBe("one\n")
   })
 
+  test("drops settled promises after repeated successful and failed processes", async () => {
+    await using root = await tmpdir()
+    const processes = gitProcesses()
+    const fixture = await gitRemote(processes, root.path)
+
+    expect(processes.tracked).toBe(0)
+    try {
+      for (let index = 0; index < 20; index++) {
+        await fixture.git(fixture.source, "rev-parse", "--verify", "HEAD")
+        expect(processes.tracked).toBe(0)
+        const failed = fixture.git(fixture.source, "rev-parse", "--verify", "refs/heads/missing").then(
+          () => false,
+          () => true,
+        )
+        expect(processes.tracked).toBe(1)
+        expect(await failed).toBe(true)
+        expect(processes.tracked).toBe(0)
+        expect(processes.pending).toBe(0)
+      }
+    } finally {
+      await processes.settle()
+    }
+  })
+
   test("cancels its own setup when the budget expires", async () => {
     await using root = await tmpdir()
     const processes = gitProcesses()
@@ -69,10 +93,12 @@ describe("Git fixture", () => {
       () => true,
     )
     expect(processes.pending).toBe(1)
+    expect(processes.tracked).toBe(1)
 
     await processes.settle()
 
     expect(processes.pending).toBe(0)
+    expect(processes.tracked).toBe(0)
     // Whoever started the process still sees the cancellation; teardown does not
     // let it resurface as an unhandled rejection.
     expect(await canceled).toBe(true)

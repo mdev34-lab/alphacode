@@ -122,6 +122,9 @@ export function gitProcesses() {
     get pending() {
       return children.size
     },
+    get tracked() {
+      return finished.size
+    },
     run(cwd: string, args: string[], options?: { signal?: AbortSignal }) {
       const done = new Promise<void>((resolve, reject) => {
         const child = execFile("git", args, { cwd, signal: options?.signal }, (error) => {
@@ -133,7 +136,17 @@ export function gitProcesses() {
       })
       // A cancellation nobody awaits any more, because the test that started it
       // is already over, must not come back as an unhandled rejection.
-      finished.add(done.catch(() => undefined))
+      // Keep only unsettled promises, and observe both outcomes without changing
+      // the result returned to the caller. Teardown still awaits every live child.
+      const observed = done.then(
+        () => {
+          finished.delete(observed)
+        },
+        () => {
+          finished.delete(observed)
+        },
+      )
+      finished.add(observed)
       return done
     },
     async settle() {
