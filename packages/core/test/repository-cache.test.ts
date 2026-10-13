@@ -8,8 +8,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Global } from "@opencode-ai/core/global"
 import { Repository } from "@opencode-ai/core/repository"
 import { RepositoryCache } from "@opencode-ai/core/repository-cache"
-import { branch, git, gitRemote } from "./fixture/git"
-import { tmpdir } from "./fixture/tmpdir"
+import { withRemote } from "./fixture/git"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(Layer.empty)
@@ -56,7 +55,7 @@ describe("RepositoryCache", () => {
         const cache = yield* RepositoryCache.Service
         const initial = yield* cache.ensure({ reference: fixture.reference })
         yield* Effect.promise(async () => {
-          await git(initial.localPath, "config", "remote.origin.url", "https://github.com/other/repo.git")
+          await fixture.git(initial.localPath, "config", "remote.origin.url", "https://github.com/other/repo.git")
           await fs.writeFile(path.join(initial.localPath, "stale.txt"), "stale")
         })
 
@@ -72,7 +71,7 @@ describe("RepositoryCache", () => {
   it.live("keeps branch checkouts isolated from branchless refreshes", () =>
     withRemote((fixture) =>
       Effect.gen(function* () {
-        yield* Effect.promise(() => branch(fixture.source, "feature", "two\n"))
+        yield* Effect.promise(() => fixture.branch("feature", "two\n"))
         const cache = yield* RepositoryCache.Service
 
         const featured = yield* cache.ensure({ reference: fixture.reference, branch: "feature" })
@@ -95,7 +94,9 @@ describe("RepositoryCache", () => {
   it.live("does not mistake an enclosing repository for the cache checkout", () =>
     withRemote((fixture) =>
       Effect.gen(function* () {
-        yield* Effect.promise(() => git(fixture.root, "clone", fixture.remote, path.join(fixture.root, "repos")))
+        yield* Effect.promise(() =>
+          fixture.git(fixture.root, "clone", fixture.remote, path.join(fixture.root, "repos")),
+        )
 
         const result = yield* (yield* RepositoryCache.Service).ensure({ reference: fixture.reference })
 
@@ -132,17 +133,6 @@ function cacheLayer(root: string) {
   return AppNodeBuilder.build(RepositoryCache.node, [
     [Global.node, Global.layerWith({ state: path.join(root, "state"), repos: path.join(root, "repos") })],
   ])
-}
-
-function withRemote<A, E, R>(body: (fixture: Awaited<ReturnType<typeof gitRemote>>) => Effect.Effect<A, E, R>) {
-  return Effect.acquireUseRelease(
-    Effect.promise(async () => {
-      const root = await tmpdir()
-      return { root, fixture: await gitRemote(root.path) }
-    }),
-    (input) => body(input.fixture),
-    (input) => Effect.promise(() => input.root[Symbol.asyncDispose]()),
-  )
 }
 
 function read(file: string) {
