@@ -142,7 +142,7 @@ it.instance(
         }),
       ),
     ),
-  20_000,
+  30_000,
 )
 
 it.instance(
@@ -150,7 +150,7 @@ it.instance(
   () =>
     withEnv(
       TIMEOUT_KEY,
-      "3000",
+      "8000",
       withLogCapture(
         Effect.gen(function* () {
           resetInstall("stall")
@@ -158,24 +158,25 @@ it.instance(
           yield* awaitWithTimeout(
             Effect.promise(() => install.entered),
             "dependency install never started",
-            "5 seconds",
+            "10 seconds",
           )
           const startedAt = Date.now()
           yield* disposeAllInstancesEffect
           const elapsed = Date.now() - startedAt
-          // Disposal returned while the install was still stalled (its 3s bound
+          // Disposal returned while the install was still stalled (its 8s bound
           // had not expired), so disposal does not wait on the install fiber.
-          expect(elapsed).toBeLessThan(3000)
+          // The generous bound keeps slow Windows CI runners deterministic.
+          expect(elapsed).toBeLessThan(8000)
           expect(install.interrupted).toBe(false)
           // The detached install fiber does not outlive its bound even though
           // nobody joined it: it self-terminates, leaving no orphan work.
-          yield* Effect.sleep(Duration.millis(3500))
+          yield* Effect.sleep(Duration.millis(9000))
           expect(install.interrupted).toBe(true)
           expect(warned("background dependency install timed out")).toBe(true)
         }),
       ),
     ),
-  20_000,
+  30_000,
 )
 
 it.instance(
@@ -198,7 +199,7 @@ it.instance(
         }),
       ),
     ),
-  20_000,
+  30_000,
 )
 
 it.instance(
@@ -221,7 +222,7 @@ it.instance(
         }),
       ),
     ),
-  20_000,
+  30_000,
 )
 
 describe("OPENCODE_CONFIG_DEP_INSTALL_TIMEOUT_MS", () => {

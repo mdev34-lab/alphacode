@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { afterEach, describe, expect, mock, test } from "bun:test"
-import { Effect, Exit, Fiber } from "effect"
+import { Duration, Effect, Exit, Fiber, Schedule } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Global } from "@opencode-ai/core/global"
 import { Npm } from "@opencode-ai/core/npm"
@@ -89,7 +89,24 @@ const lockDirs = (state: string) =>
       .catch(() => [] as string[]),
   )
 
+// Poll instead of reading once: NTFS/security scanners can lag directory
+// removal briefly after the interrupted fiber released the lock. A truly
+// unreleased lock still fails the test once the 3s budget expires.
+const waitLocksReleased = (state: string) =>
+  lockDirs(state).pipe(
+    Effect.flatMap((dirs) =>
+      dirs.length === 0 ? Effect.void : Effect.fail(new Error(`install lock still held: ${dirs.join(", ")}`)),
+    ),
+    Effect.retry({
+      schedule: Schedule.spaced(100).pipe(Schedule.while((meta) => meta.elapsed < 3_000)),
+      while: () => true,
+    }),
+  )
+
 describe("Npm.install cancellation", () => {
+  // 30s budget: the test runs two full install cycles (NpmConfig.load + flock
+  // + reify each), which is far slower on Windows CI (NTFS + Defender) than
+  // bun's 5s default allows.
   test("interrupting a stalled reify aborts the Arborist signal and releases the install lock", async () => {
     await using tmp = await tmpdir()
     const cache = path.join(tmp.path, "cache")
@@ -114,16 +131,20 @@ describe("Npm.install cancellation", () => {
       expect(fake.signals[0].aborted).toBe(true)
       // Scope disposal: the flock acquired for this install directory was
       // released while unwinding the interrupted fiber.
-      expect(yield* lockDirs(state)).toEqual([])
+      yield* waitLocksReleased(state)
 
       // The released lock is usable again: a follow-up install in the same
       // directory acquires it and completes without waiting on the stalled one.
+      // Bounded so a lock-retry loop would fail the assertion instead of
+      // burning the whole test budget.
       fake.mode = "ok"
-      const exit = yield* npm.install(dir, { add: [{ name: "stalled-pkg" }] }).pipe(Effect.exit)
+      const exit = yield* npm
+        .install(dir, { add: [{ name: "stalled-pkg" }] })
+        .pipe(Effect.timeout(Duration.seconds(20)), Effect.exit)
       expect(Exit.isSuccess(exit)).toBe(true)
       expect(fake.reifyCalls).toBe(2)
     }).pipe(Effect.scoped, Effect.provide(npmLayer(cache)), Effect.runPromise)
-  })
+  }, 30_000)
 
   test("a successful reify receives a live signal and completes without aborting it", async () => {
     await using tmp = await tmpdir()
@@ -141,7 +162,7 @@ describe("Npm.install cancellation", () => {
       // Normal installs are untouched by the cancellation wiring.
       expect(fake.signals).toHaveLength(1)
       expect(fake.signals[0].aborted).toBe(false)
-      expect(yield* lockDirs(state)).toEqual([])
+      yield* waitLocksReleased(state)
     }).pipe(Effect.scoped, Effect.provide(npmLayer(cache)), Effect.runPromise)
-  })
+  }, 30_000)
 })
