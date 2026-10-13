@@ -97,10 +97,9 @@ const run = (mode: "ok" | "fail" | "stall", timeoutMs: string) =>
           const layer = TuiConfig.node
           yield* TuiConfig.Service.use((svc) => svc.waitForDependencies()).pipe(
             Effect.provide(
-              LayerNode.compile(layer, [
-                [Npm.node, npmMock],
-                [CurrentWorkingDirectory, Layer.succeed(CurrentWorkingDirectory, test.directory)],
-              ]),
+              LayerNode.compile(layer, [[Npm.node, npmMock]]).pipe(
+                Layer.provide(Layer.succeed(CurrentWorkingDirectory, test.directory)),
+              ),
             ),
             Effect.provide(Logger.layer([captureLog])),
           )
