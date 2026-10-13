@@ -4,7 +4,7 @@ import path from "path"
 import { mergeDeep, unique } from "remeda"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Context, Duration, Effect, Fiber, Layer } from "effect"
+import { Cause, Context, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import { ConfigParse } from "@/config/parse"
 import * as ConfigPaths from "@/config/paths"
 import { migrateTuiConfig } from "./tui-migrate"
@@ -255,6 +255,13 @@ const layer = Layer.effect(
                 timeoutMs,
               }),
             ),
+            Effect.exit,
+            Effect.tap((exit) =>
+              Exit.isFailure(exit)
+                ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
+                : Effect.void,
+            ),
+            Effect.asVoid,
             Effect.forkScoped,
           )
       },
