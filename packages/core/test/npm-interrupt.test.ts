@@ -1,4 +1,5 @@
 import fs from "fs/promises"
+import net from "net"
 import path from "path"
 import { afterEach, describe, expect, mock, test } from "bun:test"
 import { Duration, Effect, Exit, Fiber, Schedule } from "effect"
@@ -8,13 +9,18 @@ import { Npm } from "@opencode-ai/core/npm"
 import { tmpdir } from "./fixture/tmpdir"
 
 // Regression coverage for issue #271: a stalled registry install must be
-// cancellable. These tests stand in for a stalled registry with a fake
-// Arborist whose reify never settles on its own and rejects when its
-// AbortSignal fires, mirroring make-fetch-happen's behavior.
+// cancellable. The fake-Arborist tests stand in for a stalled registry with a
+// reify that never settles on its own and rejects when its AbortSignal fires,
+// mirroring make-fetch-happen's behavior; the stalled-registry test below
+// drives the real Arborist stack against a local TCP blackhole.
 
-const realArborist = await import("@npmcli/arborist")
+// Capture the real constructor by value BEFORE registering the module mock:
+// bun's mock.module retroactively patches already-imported namespaces, so a
+// `realArborist.Arborist` property read at call time would resolve to the
+// mock itself and recurse until the stack overflows (observed on Windows CI).
+const RealArborist = (await import("@npmcli/arborist")).Arborist
 
-type ArboristOptions = ConstructorParameters<typeof realArborist.Arborist>[0]
+type ArboristOptions = ConstructorParameters<typeof RealArborist>[0]
 
 const fake = {
   armed: false,
@@ -70,7 +76,7 @@ const pickSignal = (opts: unknown) =>
 void mock.module("@npmcli/arborist", () => ({
   Arborist: function Arborist(opts: ArboristOptions) {
     if (fake.armed) return new FakeArborist(opts)
-    return new realArborist.Arborist(opts)
+    return new RealArborist(opts)
   },
 }))
 
@@ -103,12 +109,7 @@ const waitLocksReleased = (state: string) =>
     }),
   )
 
-// TEMPORARY CI bisection probe (issue #271): Windows unit runs failed twice
-// with unreadable logs; skipping this file on Windows isolates whether the
-// fake-Arborist module mock is the culprit before choosing the final fix.
-const describeNotWin = process.platform === "win32" ? describe.skip : describe
-
-describeNotWin("Npm.install cancellation", () => {
+describe("Npm.install cancellation", () => {
   // 30s budget: the test runs two full install cycles (NpmConfig.load + flock
   // + reify each), which is far slower on Windows CI (NTFS + Defender) than
   // bun's 5s default allows.
@@ -170,4 +171,76 @@ describeNotWin("Npm.install cancellation", () => {
       yield* waitLocksReleased(state)
     }).pipe(Effect.scoped, Effect.provide(npmLayer(cache)), Effect.runPromise)
   }, 30_000)
+})
+
+const waitSocketsClosed = (sockets: Set<net.Socket>) =>
+  Effect.sync(() => sockets.size).pipe(
+    Effect.flatMap((size) =>
+      size === 0 ? Effect.void : Effect.fail(new Error(`registry sockets still open after interrupt: ${size}`)),
+    ),
+    Effect.retry({
+      schedule: Schedule.spaced(100).pipe(Schedule.while((meta) => meta.elapsed < 5_000)),
+      while: () => true,
+    }),
+  )
+
+describe("Npm.install stalled registry", () => {
+  // Deterministic stalled registry against the real Arborist stack: a local
+  // TCP server that accepts connections and never replies. No module mocks —
+  // the rendezvous is the registry socket itself, so this runs on every
+  // platform. Interrupting the install must abort the in-flight registry
+  // fetch (sockets destroyed via Npm.reify's AbortSignal) and release the
+  // install flock, leaving no orphan work behind.
+  test("interrupting a real install stalled on the registry cancels in-flight sockets and releases the lock", async () => {
+    await using tmp = await tmpdir()
+    const cache = path.join(tmp.path, "cache")
+    const state = path.join(cache, "state")
+    const dir = path.join(tmp.path, "project")
+    await fs.mkdir(dir)
+
+    const sockets = new Set<net.Socket>()
+    let notifyConnected: (() => void) | undefined
+    const connected = new Promise<void>((resolve) => {
+      notifyConnected = resolve
+    })
+    const server = net.createServer((socket) => {
+      sockets.add(socket)
+      socket.on("close", () => {
+        sockets.delete(socket)
+      })
+      socket.on("error", () => {})
+      notifyConnected?.()
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(0, "127.0.0.1", resolve)
+    })
+    const address = server.address()
+    if (address === null || typeof address === "string") throw new Error("expected a TCP port")
+    await fs.writeFile(path.join(dir, ".npmrc"), `registry=http://127.0.0.1:${address.port}/\n`)
+
+    try {
+      await Effect.gen(function* () {
+        const npm = yield* Npm.Service
+        const fiber = yield* Effect.forkScoped(npm.install(dir, { add: [{ name: "stalled-pkg" }] }))
+        // Rendezvous: Arborist has actually begun registry work against the
+        // stalled registry, so the interrupt below cannot race ahead of it.
+        yield* Effect.promise(() => connected).pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.seconds(20),
+            orElse: () => Effect.die(new Error("stalled registry never received a connection")),
+          }),
+        )
+        yield* Fiber.interrupt(fiber)
+        // Actual cancellation of in-flight Arborist work: the abort signal
+        // destroys the stalled registry sockets instead of leaving them open.
+        yield* waitSocketsClosed(sockets)
+        // Scope disposal: the install flock was released while unwinding.
+        yield* waitLocksReleased(state)
+      }).pipe(Effect.scoped, Effect.provide(npmLayer(cache)), Effect.runPromise)
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  }, 45_000)
 })
