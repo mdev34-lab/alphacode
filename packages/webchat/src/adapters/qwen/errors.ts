@@ -169,6 +169,29 @@ export function isQuotaMessage(message: string): boolean {
   return QUOTA_PATTERNS.some((pattern) => normalized.includes(pattern))
 }
 
+/** Canonical `upstreamCode` stamped on a "chat is still generating" rejection. */
+export const CHAT_IN_PROGRESS_UPSTREAM_CODE = "chat_in_progress"
+
+/** True when an error reports that the upstream chat is still generating. */
+export function isChatInProgressError(input: unknown): boolean {
+  return QwenWebError.isInstance(input) && input.upstreamCode === CHAT_IN_PROGRESS_UPSTREAM_CODE
+}
+
+/**
+ * Terminal state once the bounded wait for an in-progress chat ran out. Not
+ * retryable: an outer retry would resubmit the same request while the earlier
+ * generation may still be running.
+ */
+export function chatInProgressExhaustedError(input: { status?: number; attempts: number }): QwenWebError {
+  return new QwenWebError({
+    code: "upstream_error",
+    retryable: false,
+    status: input.status,
+    upstreamCode: CHAT_IN_PROGRESS_UPSTREAM_CODE,
+    message: `Qwen is still generating a previous response in this chat. The request was re-sent ${input.attempts} time(s) and rejected each time; it was not accepted upstream. Wait for the generation to finish (or stop it in the Qwen web UI), then send the message again.`,
+  })
+}
+
 /** Canonical `upstreamCode` stamped on every stale/missing-chat error. */
 export const STALE_CHAT_UPSTREAM_CODE = "chat_not_exist"
 
@@ -392,7 +415,7 @@ export function classifyJsonError(raw: string, status: number): QwenWebError | u
       code: "upstream_error",
       retryable: true,
       status,
-      upstreamCode: "chat_in_progress",
+      upstreamCode: CHAT_IN_PROGRESS_UPSTREAM_CODE,
       message: "Qwen reports the chat is still generating. Retry shortly.",
     })
   }
