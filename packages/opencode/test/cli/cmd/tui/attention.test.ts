@@ -586,4 +586,56 @@ describe("native attention delivery", () => {
     expect(renderer.notifications).toHaveLength(0)
     expect(audio.playCalls).toBe(0)
   })
+
+  test("disposal aborts all pending helpers and ignores late success", async () => {
+    const renderer = new FakeRenderer()
+    const audio = new FakeAudioEngine()
+    const signals: AbortSignal[] = []
+    const completions: ((ok: boolean) => void)[] = []
+    const attention = createTuiAttention({
+      renderer,
+      audio,
+      config: config({ notification_backend: "auto" }),
+      nativeNotification: (_title, _message, signal) => {
+        signals.push(signal!)
+        return new Promise<boolean>((resolve) => completions.push(resolve))
+      },
+    })
+    renderer.emit("blur")
+    const results = [
+      attention.notify({ message: "One", sound: false }),
+      attention.notify({ message: "Two", sound: false }),
+    ]
+    expect(signals).toHaveLength(2)
+    expect(signals.every((signal) => !signal.aborted)).toBe(true)
+    attention.dispose()
+    attention.dispose()
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    completions.forEach((complete) => complete(true))
+    for (const result of await Promise.all(results)) {
+      expect(result).toEqual({ ok: false, notification: false, sound: false, skipped: "renderer_destroyed" })
+    }
+    expect(renderer.notifications).toHaveLength(0)
+    expect(audio.playCalls).toBe(0)
+  })
+
+  test("ignores late native success when the renderer was destroyed", async () => {
+    const renderer = new FakeRenderer()
+    let complete!: (ok: boolean) => void
+    const attention = createTuiAttention({
+      renderer,
+      config: config({ notification_backend: "auto" }),
+      nativeNotification: () =>
+        new Promise<boolean>((resolve) => {
+          complete = resolve
+        }),
+    })
+    renderer.emit("blur")
+    const result = attention.notify({ message: "Done", sound: false })
+    renderer.isDestroyed = true
+    complete(true)
+    expect(await result).toEqual({ ok: false, notification: false, sound: false, skipped: "renderer_destroyed" })
+    expect(renderer.notifications).toHaveLength(0)
+    attention.dispose()
+  })
 })

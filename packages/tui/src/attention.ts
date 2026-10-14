@@ -121,6 +121,7 @@ export function createTuiAttention(input: {
 }): TuiAttentionHost {
   let focus: FocusState = "unknown"
   let disposed = false
+  const lifetime = new AbortController()
   let activePackID: string | undefined
   const packs = new Map<string, RegisteredSoundPack>([[BUILTIN_PACK.id, BUILTIN_PACK]])
   const audio = input.audio ?? TuiAudio
@@ -157,7 +158,7 @@ export function createTuiAttention(input: {
           console.debug("failed to load attention sound", { file, error })
           return null
         })
-        if (disposed) return false
+        if (disposed || input.renderer.isDestroyed) return false
         if (current == null) continue
         if (audio.play(current, { volume }) != null) return true
       }
@@ -185,7 +186,7 @@ export function createTuiAttention(input: {
         const backend = input.config.attention.notification_backend
         const nativeTask =
           shouldNotify && backend !== "terminal"
-            ? (input.nativeNotification ?? notifyNative)(title, message).catch(() => false)
+            ? (input.nativeNotification ?? notifyNative)(title, message, lifetime.signal).catch(() => false)
             : Promise.resolve(false)
         const volume = soundVolume(request, input.config)
         const requestedSound = typeof request.sound === "object" ? request.sound : undefined
@@ -198,6 +199,7 @@ export function createTuiAttention(input: {
             : await playSound(soundName, volume)
 
         const native = await nativeTask
+        if (disposed || input.renderer.isDestroyed) return skipped("renderer_destroyed")
         // Focus or renderer lifetime can change while a native helper is running.
         const terminal =
           shouldNotify &&
@@ -273,6 +275,7 @@ export function createTuiAttention(input: {
     dispose() {
       if (disposed) return
       disposed = true
+      lifetime.abort()
       input.renderer.off("focus", onFocus)
       input.renderer.off("blur", onBlur)
     },

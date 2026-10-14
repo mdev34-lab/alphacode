@@ -27,7 +27,7 @@ const macScript = `on run argv
   display notification (item 2 of argv) with title (item 1 of argv)
 end run`
 
-type NotificationCommand = { cmd: string[]; env?: Record<string, string | undefined> }
+type NotificationCommand = { cmd: string[]; env: Record<string, string> }
 
 export function notificationCommand(
   title: string,
@@ -37,6 +37,31 @@ export function notificationCommand(
 ): NotificationCommand | undefined {
   // A remote TUI must notify the client terminal, not the server's desktop.
   if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) return
+  // Only helper discovery, OS runtime and desktop-session variables are needed.
+  // Windows environment names are case-insensitive; retain their original casing.
+  const keys =
+    platform === "win32"
+      ? ["path", "systemroot", "windir", "temp", "tmp"]
+      : platform === "darwin"
+        ? ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "__CF_USER_TEXT_ENCODING"]
+        : [
+            "PATH",
+            "HOME",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "XAUTHORITY",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+          ]
+  const helperEnv = Object.fromEntries(
+    Object.entries(env).filter(
+      (entry): entry is [string, string] =>
+        entry[1] !== undefined && keys.includes(platform === "win32" ? entry[0].toLowerCase() : entry[0]),
+    ),
+  )
   if (platform === "win32") {
     return {
       cmd: [
@@ -50,28 +75,38 @@ export function notificationCommand(
         "-EncodedCommand",
         Buffer.from(windowsScript, "utf16le").toString("base64"),
       ],
-      env: { ...env, SILVERCODE_NOTIFICATION: Buffer.from(JSON.stringify({ title, message })).toString("base64") },
+      env: {
+        ...helperEnv,
+        SILVERCODE_NOTIFICATION: Buffer.from(JSON.stringify({ title, message })).toString("base64"),
+      },
     }
   }
-  if (platform === "darwin") return { cmd: ["osascript", "-e", macScript, "--", title, message] }
+  if (platform === "darwin") return { cmd: ["osascript", "-e", macScript, "--", title, message], env: helperEnv }
   if (platform === "linux" && (env.DISPLAY || env.WAYLAND_DISPLAY)) {
-    return { cmd: ["notify-send", "--app-name=silvercode", "--hint=boolean:suppress-sound:true", "--", title, message] }
+    return {
+      cmd: ["notify-send", "--app-name=silvercode", "--hint=boolean:suppress-sound:true", "--", title, message],
+      env: helperEnv,
+    }
   }
 }
 
-export async function notifyNative(title: string, message: string) {
+export async function notifyNative(title: string, message: string, signal?: AbortSignal) {
+  if (signal?.aborted) return false
   const command = notificationCommand(title, message)
   if (!command) return false
   try {
     const child = Bun.spawn(command.cmd, {
       env: command.env,
+      signal,
+      killSignal: "SIGKILL",
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
       timeout: 10_000,
       windowsHide: true,
     })
-    return (await child.exited) === 0
+    const exitCode = await child.exited
+    return !signal?.aborted && exitCode === 0
   } catch {
     // Missing notify-send, disabled desktop services, etc. are a normal fallback.
     return false

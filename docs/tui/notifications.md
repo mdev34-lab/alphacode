@@ -39,6 +39,10 @@ SSH sessions never send native notifications on the remote desktop. They keep
 terminal delivery in auto mode. Native helper failures and missing tools are
 nonfatal. Helper processes have a ten-second timeout, do not inherit terminal
 input/output, and receive notification text as data, never interpolated commands.
+Helpers receive only allowlisted OS/runtime and desktop-session environment
+variables, not application credentials. Disposing the attention host aborts any
+pending helper and ignores late results. This cannot retract a notification that
+the OS already accepted before disposal.
 
 The built-in plugin notifies only after the terminal has reported blur. Focused
 or unknown focus remains silent; terminals without focus reporting may therefore
