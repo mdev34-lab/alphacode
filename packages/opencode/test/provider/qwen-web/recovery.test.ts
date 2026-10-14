@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import os from "os"
 import path from "path"
-import { isStaleChatError } from "@opencode-ai/webchat/adapters/qwen/errors"
+import { QwenWebError, isStaleChatError } from "@opencode-ai/webchat/adapters/qwen/errors"
 import { QwenWebSession } from "@opencode-ai/webchat/adapters/qwen/session"
 import { ThreadStore } from "@opencode-ai/webchat/store"
 import type { QwenWebTransport } from "@opencode-ai/webchat/adapters/qwen/transport"
@@ -49,6 +49,7 @@ interface State {
   chatsCreated: number
   completionsCalled: number
   stops: string[]
+  stopGate?: Promise<unknown>
   aborts: number
   newChatIds: string[]
 }
@@ -68,6 +69,7 @@ function scriptedTransport(results: CompletionResult[], state: State): QwenWebTr
   return {
     requestJson: async (_method: string, requestPath: string) => {
       state.stops.push(requestPath)
+      await state.stopGate
       return { status: 200, statusText: "OK", contentType: "application/json", body: "{}" }
     },
     requestStream: async () => {
@@ -462,5 +464,128 @@ describe("honest empty and truncated answers (issue 232)", () => {
     expect(error.code).toBe("invalid_response")
     expect(error.message).toContain("<empty body>")
     expect(error.message?.toLowerCase()).not.toContain("login")
+  })
+})
+
+const IN_PROGRESS_JSON = JSON.stringify({
+  success: false,
+  data: { code: "Bad_Request", details: "The chat is in progress!" },
+})
+
+function sessionWithBackoff(results: CompletionResult[], state: State, backoff: number[]): QwenWebSession {
+  const store = new ThreadStore({
+    file: path.join(os.tmpdir(), `qwen-webchat-inprogress-${Math.random().toString(36).slice(2)}.json`),
+  })
+  return new QwenWebSession({ transport: scriptedTransport(results, state), store, inProgressBackoffMs: backoff })
+}
+
+describe("chat still generating (issue 244)", () => {
+  test("recovers when the upstream generation completes during the bounded wait", async () => {
+    const state = newState()
+    const session = sessionWithBackoff(
+      [
+        { kind: "json", status: 400, body: IN_PROGRESS_JSON },
+        { kind: "json", status: 400, body: IN_PROGRESS_JSON },
+        { kind: "sse", lines: [CREATED("r2", "chat-a"), text("Done", "r2"), DONE] },
+      ],
+      state,
+      [1, 1, 1],
+    )
+    const thread = await seededThread(session, { providerId: "chat-a", responseId: "r1" })
+
+    const events = await drain(session.runTurn({ thread, content: "next step" }))
+
+    expect(events.some((event) => event.type === "error")).toBe(false)
+    expect(events.some((event) => event.type === "finish")).toBe(true)
+    expect(state.completionsCalled).toBe(3)
+    expect(state.chatsCreated).toBe(0)
+    expect(thread.providerId).toBe("chat-a")
+    expect(thread.messages.filter((message) => message.content.includes("next step"))).toHaveLength(1)
+    expect(thread.messages.at(-1)?.providerState).toEqual({ responseId: "r2" })
+  })
+
+  test("ends in a bounded, non-retryable terminal error and rolls the request back", async () => {
+    const state = newState()
+    const session = sessionWithBackoff([{ kind: "json", status: 400, body: IN_PROGRESS_JSON }], state, [1, 1])
+    const thread = await seededThread(session, { providerId: "chat-a", responseId: "r1" })
+
+    const failure = await drain(session.runTurn({ thread, content: "next step" })).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(QwenWebError.isInstance(failure)).toBe(true)
+    const error = failure as QwenWebError
+    expect(error.upstreamCode).toBe("chat_in_progress")
+    expect(error.retryable).toBe(false)
+    expect(state.completionsCalled).toBe(3)
+    expect(state.chatsCreated).toBe(0)
+    expect(thread.providerId).toBe("chat-a")
+    expect(thread.messages.some((message) => message.content.includes("next step"))).toBe(false)
+  })
+
+  test("aborting during the wait stops re-sending and rolls the request back", async () => {
+    const state = newState()
+    const session = sessionWithBackoff([{ kind: "json", status: 400, body: IN_PROGRESS_JSON }], state, [60_000])
+    const thread = await seededThread(session, { providerId: "chat-a", responseId: "r1" })
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 20)
+
+    const failure = await drain(session.runTurn({ thread, content: "next step", signal: controller.signal })).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(QwenWebError.isInstance(failure) && failure.code === "aborted").toBe(true)
+    expect(state.completionsCalled).toBe(1)
+    expect(thread.messages.some((message) => message.content.includes("next step"))).toBe(false)
+  })
+
+  test("asks the upstream once to stop the earlier generation when its id is known", async () => {
+    const state = newState()
+    const session = sessionWithBackoff(
+      [
+        { kind: "sse", lines: [CREATED("r-prev", "chat-a"), text("part", "r-prev"), DONE] },
+        { kind: "json", status: 400, body: IN_PROGRESS_JSON },
+        { kind: "json", status: 400, body: IN_PROGRESS_JSON },
+        { kind: "sse", lines: [CREATED("r3", "chat-a"), text("ok", "r3"), DONE] },
+      ],
+      state,
+      [1, 1, 1],
+    )
+    const thread = await seededThread(session, { providerId: "chat-a" })
+    await drain(session.runTurn({ thread, content: "first" }))
+    await drain(session.runTurn({ thread, content: "second" }))
+
+    expect(state.stops.filter((p) => p.includes("/completions/stop"))).toHaveLength(1)
+    expect(state.completionsCalled).toBe(4)
+  })
+
+  test("aborting while the stop request is pending does not wait for it", async () => {
+    const state = newState()
+    state.stopGate = new Promise(() => {}) // the stop request never returns
+    const session = sessionWithBackoff(
+      [
+        { kind: "sse", lines: [CREATED("r-prev", "chat-a"), text("part", "r-prev"), DONE] },
+        { kind: "json", status: 400, body: IN_PROGRESS_JSON },
+      ],
+      state,
+      [1, 1],
+    )
+    const thread = await seededThread(session, { providerId: "chat-a" })
+    await drain(session.runTurn({ thread, content: "first" }))
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 20)
+    const started = Date.now()
+
+    const failure = await drain(session.runTurn({ thread, content: "second", signal: controller.signal })).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+
+    expect(QwenWebError.isInstance(failure) && failure.code === "aborted").toBe(true)
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(state.stops.filter((p) => p.includes("/completions/stop"))).toHaveLength(1)
+    expect(thread.messages.some((message) => message.content.includes("second"))).toBe(false)
   })
 })

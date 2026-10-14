@@ -33,6 +33,7 @@ import {
   CHALLENGE_NO_WINDOW_DETAIL,
   CHALLENGE_WINDOW_OPEN_DETAIL,
   QwenWebError,
+  chatInProgressExhaustedError,
   abortedError,
   challengeError,
   classifyJsonError,
@@ -41,6 +42,7 @@ import {
   classifyTruncatedJson,
   emptyResponseError,
   isAbortLike,
+  isChatInProgressError,
   isHtmlBody,
   isStaleChatError,
   isStallTimeout,
@@ -87,6 +89,8 @@ export interface QwenWebSessionOptions {
   toolMode?: QwenWebToolMode
   /** Persistence for threads; defaults to the data dir. Tests inject a temp store. */
   store?: ThreadStore
+  /** Waits (ms) between re-sends while Qwen reports the chat is still generating. Tests inject short ones. */
+  inProgressBackoffMs?: readonly number[]
 }
 
 /**
@@ -125,6 +129,47 @@ export interface QwenWebTurnInput extends WebChatTurnInput {
   recoveryFiles?: (signal?: AbortSignal) => Promise<QwenWebFileEntry[] | undefined>
 }
 
+/**
+ * Bounded waits (ms) between re-sends of a request Qwen rejected because the
+ * chat is still generating. A rejected request never started upstream, so
+ * re-sending it cannot duplicate a turn. Total wait is capped at 14 seconds.
+ */
+const DEFAULT_IN_PROGRESS_BACKOFF_MS: readonly number[] = [2_000, 4_000, 8_000]
+
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(abortedError())
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortedError())
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal?.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+function raceAbort<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work
+  if (signal.aborted) return Promise.reject(abortedError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortedError())
+    signal.addEventListener("abort", onAbort, { once: true })
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(value)
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
 export class QwenWebSession implements WebChatProvider {
   readonly id = "qwen-web"
   private readonly transport: QwenWebTransport
@@ -132,8 +177,12 @@ export class QwenWebSession implements WebChatProvider {
   private readonly toolMode: QwenWebToolMode
   private readonly store: ThreadStore
   private readonly running = new Set<string>()
+  private readonly inProgressBackoffMs: readonly number[]
+  /** Latest upstream response id seen per chat; lets a stuck chat be stopped once. */
+  private readonly lastResponseByChat = new Map<string, string>()
 
   constructor(options?: QwenWebSessionOptions) {
+    this.inProgressBackoffMs = options?.inProgressBackoffMs ?? DEFAULT_IN_PROGRESS_BACKOFF_MS
     this.transport = options?.transport ?? sharedTransport()
     this.chatMode = options?.chatMode ?? readChatModeDefault()
     this.toolMode = options?.toolMode ?? readToolModeDefault()
@@ -322,6 +371,7 @@ export class QwenWebSession implements WebChatProvider {
     const model = thread.model
 
     const toolMode = this.toolMode
+    const lastResponseByChat = this.lastResponseByChat
     const tools = input.tools ?? []
     const declaredTools = new Set(tools.map((tool) => tool.name))
     const nativeTools = toolMode === "native" ? toNativeTools(tools) : undefined
@@ -380,6 +430,8 @@ export class QwenWebSession implements WebChatProvider {
       // dead chat is handled below without a blind retry.
       let setupError: unknown
       let staleChat = false
+      let inProgressWaits = 0
+      let stopRequested = false
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
           const chatCreatedNow = !chatId
@@ -420,6 +472,41 @@ export class QwenWebSession implements WebChatProvider {
           if (isStaleChatError(error)) {
             staleChat = true
             break
+          }
+          // Chat still generating: wait a bounded number of times (without
+          // consuming the setup-retry counter), ask the upstream once to stop
+          // the earlier generation when its id is known, then end terminally.
+          if (isChatInProgressError(error)) {
+            const wait = this.inProgressBackoffMs[inProgressWaits]
+            if (wait === undefined) {
+              setupError = chatInProgressExhaustedError({
+                status: (error as QwenWebError).status,
+                attempts: inProgressWaits,
+              })
+              break
+            }
+            const earlier = chatId ? this.lastResponseByChat.get(chatId) : undefined
+            if (!stopRequested && chatId && earlier) {
+              stopRequested = true
+              // The stop request can take up to its own 15s timeout; the caller's
+              // abort must not wait for it.
+              try {
+                await raceAbort(this.stopGeneration(chatId, earlier, () => {}), signal)
+              } catch (abort) {
+                setupError = abort
+                break
+              }
+            }
+            inProgressWaits++
+            debug("session", "chat still generating; waiting before re-sending", { wait, n: inProgressWaits })
+            try {
+              await sleepAbortable(wait, signal)
+            } catch (abort) {
+              setupError = abort
+              break
+            }
+            attempt--
+            continue
           }
           if (attempt === 2 || !isPreStreamRetryable(error)) break
           debug("session", "turn setup failed; retrying once", {
@@ -515,6 +602,7 @@ export class QwenWebSession implements WebChatProvider {
           case "response-created":
             if (!responseId) {
               responseId = event.responseId
+              if (chatId) lastResponseByChat.set(chatId, event.responseId)
               emitted = true
               yield { type: "response-metadata", responseId: event.responseId }
               // Adopt the authoritative upstream chat id once: when it
