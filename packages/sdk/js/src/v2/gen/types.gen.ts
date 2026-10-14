@@ -1711,6 +1711,7 @@ export type AgentConfig = {
   steps?: number
   maxSteps?: number
   finishTool?: boolean
+  background?: boolean
   permission?: PermissionConfig
   [key: string]:
     | unknown
@@ -2391,6 +2392,7 @@ export type Agent = {
   }
   steps?: number
   finishTool?: boolean
+  background?: boolean
 }
 
 export type LspStatus = {
