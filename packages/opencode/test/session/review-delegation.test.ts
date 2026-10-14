@@ -241,6 +241,45 @@ const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: strin
   return msg
 })
 
+// The Review Loop policy and effort block are a nudge that appears once the
+// session has written files (the finish gate enforces the requirement either
+// way). Seed an earlier turn whose completed edit declared a file write.
+const seedPriorWrite = Effect.fn("test.seedPriorWrite")(function* (sessionID: SessionID) {
+  const session = yield* Session.Service
+  const earlier = yield* user(sessionID, "earlier request")
+  const assistant: SessionV1.Assistant = {
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID: earlier.id,
+    sessionID,
+    mode: "work",
+    agent: "work",
+    cost: 0,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ref.modelID,
+    providerID: ref.providerID,
+    time: { created: Date.now() },
+  }
+  yield* session.updateMessage(assistant)
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: assistant.id,
+    sessionID,
+    type: "tool",
+    callID: "call-seed-edit",
+    tool: "edit",
+    state: {
+      status: "completed",
+      input: {},
+      output: "ok",
+      title: "edit",
+      metadata: { reviewLoop: { writesFiles: true } },
+      time: { start: Date.now(), end: Date.now() },
+    },
+  } as SessionV1.ToolPart)
+})
+
 const bodyString = (hit: { body: unknown }) => JSON.stringify(hit.body)
 
 const toolNames = (hit: { body: unknown }) =>
@@ -367,6 +406,7 @@ it.instance(
         permission: [{ permission: "*", pattern: "*", action: "allow" }],
       })
       yield* llm.hang
+      yield* seedPriorWrite(chat.id)
       yield* user(chat.id, "fix the off-by-one in the cache key")
       const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
       yield* awaitWithTimeout(llm.wait(1), "timed out waiting for the model request", "10 seconds")
@@ -411,6 +451,98 @@ it.instance(
   15_000,
 )
 
+// Activation: a fresh session does not carry the Review Loop policy; the
+// request right after the first file write does (and keeps the effort block).
+it.instance(
+  "review policy appears on the request after the session's first file write",
+  () =>
+    Effect.gen(function* () {
+      const { llm, dir } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      yield* llm.tool("write", { filePath: `${dir}/first-write.txt`, content: "hello" })
+      yield* llm.hang
+      yield* user(chat.id, "create first-write.txt")
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(2), "timed out waiting for the post-write request", "10 seconds")
+
+      const hits = (yield* llm.hits).filter((hit) => !reviewerMatch(hit) && bodyString(hit).includes("You are opencode"))
+      expect(hits.length).toBeGreaterThanOrEqual(2)
+      expect(bodyString(hits[0])).not.toContain("## Review Loop")
+      expect(bodyString(hits[0])).not.toContain("## Agent effort")
+      expect(bodyString(hits[1])).toContain("## Review Loop")
+      expect(bodyString(hits[1])).toContain("## Agent effort")
+
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.await(fiber)
+    }),
+  20_000,
+)
+
+// Compaction can remove the write markers from the visible history; a
+// compacted session keeps the policy on.
+it.instance(
+  "review policy stays on for a compacted session",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Pinned",
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      })
+      const session = yield* Session.Service
+      const compactionUser = yield* user(chat.id, "compact")
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: compactionUser.id,
+        sessionID: chat.id,
+        type: "compaction",
+        auto: false,
+      } as SessionV1.CompactionPart)
+      const summary: SessionV1.Assistant = {
+        id: MessageID.ascending(),
+        role: "assistant",
+        parentID: compactionUser.id,
+        sessionID: chat.id,
+        mode: "compaction",
+        agent: "compaction",
+        summary: true,
+        finish: "stop",
+        cost: 0,
+        path: { cwd: "/tmp", root: "/tmp" },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        modelID: ref.modelID,
+        providerID: ref.providerID,
+        time: { created: Date.now() },
+      }
+      yield* session.updateMessage(summary)
+      yield* session.updatePart({
+        id: PartID.ascending(),
+        messageID: summary.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "Summary of earlier work.",
+      })
+      yield* llm.hang
+      yield* user(chat.id, "continue")
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(1), "timed out waiting for the model request", "10 seconds")
+
+      const hit = (yield* llm.hits).find((h) => !reviewerMatch(h) && bodyString(h).includes("You are opencode"))
+      expect(bodyString(hit ?? { body: {} })).toContain("## Review Loop")
+
+      yield* prompt.cancel(chat.id)
+      yield* Fiber.await(fiber)
+    }),
+  20_000,
+)
+
 // Provider prompts must route explicit review requests to the review subagent
 // instead of telling the model to review the code itself.
 it.effect("gpt provider prompt routes review requests through the review subagent", () =>
@@ -446,6 +578,7 @@ it.instance(
       })
       yield* scriptPolicyFollowingModel
 
+      yield* seedPriorWrite(chat.id)
       yield* user(chat.id, "fix the off-by-one in the cache key and add a test")
       const result = yield* prompt.loop({ sessionID: chat.id })
       expect(result.info.role).toBe("assistant")
@@ -585,12 +718,14 @@ it.instance(
       expect(result.info.role).toBe("assistant")
 
       const hits = yield* llm.hits
-      const parentHits = hits.filter(policyMatch)
+      const parentHits = hits.filter(noPolicyMatch)
       expect(parentHits).toHaveLength(1)
 
-      // The carve-out instruction reached the model on this trivial turn.
+      // Before any file write the Review Loop policy is not sent (no tokens
+      // spent on it); the todo scope contract still is.
       const body = bodyString(parentHits[0] ?? { body: {} })
-      expect(body).toContain("does not apply to turns with no file changes")
+      expect(body).toContain("## Todo as scope contract")
+      expect(body).not.toContain("## Review Loop")
 
       // Nothing dispatched a reviewer and no review nudge was injected: the
       // only parts are the user's greeting and the assistant's reply.

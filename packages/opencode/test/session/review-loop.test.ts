@@ -136,7 +136,7 @@ describe("review loop prompt contract", () => {
 
     expect(prompt).toContain("## Todo as scope contract")
     expect(prompt).toContain(
-      "At the start of ANY task — review, audit, question, debugging session, not just implementation — write the task's scope as todo items BEFORE your first tool call.",
+      "At the start of any task, write its scope as todo items before your first tool call.",
     )
     expect(prompt).toContain("The todo list IS the task's scope.")
     expect(prompt).toContain("Doing out-of-scope work silently and then reverting it is forbidden.")

@@ -59,20 +59,20 @@ const BaseParameterFields = {
   subagent_type: Schema.String.annotate({ description: "The type of specialized agent to use for this task" }),
   task_id: Schema.optional(Schema.String).annotate({
     description:
-      "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+      "Resume a previous subagent session by its task_id",
   }),
-  command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
+  command: Schema.optional(Schema.String).annotate({ description: "Triggering command" }),
 }
 
 export const Parameters = Schema.Struct({
   ...BaseParameterFields,
   effort: Schema.optional(AgentEffort.Level).annotate({
     description:
-      "Override the agent effort policy for this task (fast, medium, or thorough). Omitted means: reuse this child's persisted selection on resume, otherwise inherit the parent/root selection, otherwise the configured agent.effort, otherwise medium. The selection persists on the child session and applies to its finish checkpoint.",
+      "Override the child's effort policy; omit to inherit.",
   }),
   background: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Whether to run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. An omitted value runs in the background unless the agent is configured with `background: false` in opencode.json, which makes the tool wait for the result. Set true to force a background launch for such an agent; setting false on any other agent still launches it in the background.",
+      "Run asynchronously and get notified on completion (default). Agents configured with `background: false` in opencode.json run in the foreground and wait for the result; true forces a background launch; false on any other agent still launches it in the background.",
   }),
 })
 
