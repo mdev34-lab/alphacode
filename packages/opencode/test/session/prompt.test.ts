@@ -682,7 +682,9 @@ it.instance(
 
       const hits = yield* llm.hits
       const body = JSON.stringify(hits[0]?.body)
-      expect(body).toContain("## Review Loop")
+      // The scope contract is injected for the default primary only; the Review
+      // Loop policy itself waits until the session has written files.
+      expect(body).not.toContain("## Review Loop")
       expect(body).toContain("## Todo as scope contract")
       expect(body).toContain("first tool call")
       yield* Fiber.interrupt(fiber)

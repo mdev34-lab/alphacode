@@ -45,11 +45,11 @@ export type TerminationReason = Schema.Schema.Type<typeof TerminationReason>
 export const Parameters = Schema.Struct({
   reason: Reason.annotate({
     description:
-      "Why the agent is ending this turn: success when the task is complete, waiting_for_subagent when yielding the turn while background subagents you launched are still running (main session only — a subagent's run ends at its yield, so it must deliver its own result), subagent_wait when progress depends on a subagent that will not report back on its own, or failure when the task could not be completed.",
+      "Why the turn ends: success, waiting_for_subagent (main session only), subagent_wait, or failure.",
   }),
   result: Schema.String.annotate({
     description:
-      "The final result of the task: a concise summary of what was accomplished, presented to the user as the task outcome.",
+      "Concise summary of the outcome, shown to the user.",
   }),
   validation: Schema.optional(
     Schema.Struct({
@@ -63,7 +63,7 @@ export const Parameters = Schema.Struct({
     }),
   ).annotate({
     description:
-      "Optional agent-reported validation evidence: one entry per check. finish records it and never executes checks itself.",
+      "Optional validation evidence, one entry per check.",
   }),
 })
 

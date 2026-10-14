@@ -278,7 +278,7 @@ const layer = Layer.effect(
               }),
               user,
             ),
-            description: `Fast, read-only by default agent for extracting relevant context from available sources. Use this to quickly find files by patterns (e.g. "src/components/**/*.tsx"), search code for keywords, or answer questions about the codebase with high signal and minimal output. Specify thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions. User permission config can override defaults, so this is read-only by default, not a hard sandbox.`,
+            description: `Fast, read-only agent for finding files, searching code and answering codebase questions. Specify thoroughness: "quick", "medium" or "very thorough".`,
             prompt: PROMPT_EXPLORE,
             options: {},
             mode: "subagent",
@@ -287,7 +287,7 @@ const layer = Layer.effect(
           review: {
             name: "review",
             permission: Permission.merge(defaults, reviewPermissions, user),
-            description: `Code reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, and style. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files (implementation, fix, refactor, or feature), before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
+            description: `Code reviewer. Use this proactively, without being asked, after any unit of work that changed files and when the user asks for a review.`,
             prompt: PROMPT_REVIEW,
             options: {},
             // Mandatory review must deliver its verdict before the parent can finish.
@@ -301,7 +301,7 @@ const layer = Layer.effect(
             // The three reviewers enforce the same standard at the same
             // permission boundary; they differ only in the domain they are
             // pointed at, so this description must not advertise a weaker bar.
-            description: `Work reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements for general workspace tasks: file operations, configuration, documents, and mixed non-repository work. Applies the same standard as the code reviewers - spec compliance, correctness, tests, types, integration, regressions, and project conventions - judged against the workspace rather than a repository. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files in a general workspace context, before claiming completion, and whenever the user explicitly asks for a review. Not for conversational turns that changed no files.`,
+            description: `Work reviewer. Use this proactively, without being asked, after any unit of work that changed files and when the user asks for a review.`,
             prompt: PROMPT_WORK_REVIEW,
             options: {},
             // Mandatory review must deliver its verdict before the parent can finish.
@@ -312,7 +312,7 @@ const layer = Layer.effect(
           "code-review": {
             name: "code-review",
             permission: Permission.merge(defaults, reviewPermissions, user),
-            description: `Code reviewer with plan-equivalent inspection permissions, including bash for reproducing and verifying runtime behavior. Verifies completed work against its requirements and this repository's quality standards: spec compliance, correctness, tests, types, integration, regressions, and project conventions. Reports findings with severities (Critical/Important/Minor) and an Approved/Needs-fixes verdict. Use this proactively, without being asked: after completing any unit of work that changed files in a software repository context, before claiming completion, and whenever the user explicitly asks for a code review. Not for conversational turns that changed no files.`,
+            description: `Code reviewer. Use this proactively, without being asked, after any unit of work that changed files and when the user asks for a review.`,
             prompt: PROMPT_CODE_REVIEW,
             options: {},
             // Mandatory review must deliver its verdict before the parent can finish.

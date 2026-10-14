@@ -50,6 +50,15 @@ import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { FinishTool, readTermination } from "@/tool/finish"
 import PROMPT_REVIEW_LOOP from "./prompt/review-loop.txt"
+import { declaresFileWrites } from "@opencode-ai/core/review-loop"
+
+// The todo scope contract is always sent. The Review Loop policy and the effort
+// block are a nudge that appears once the session has written files; before
+// that, `finish` (the enforcement checkpoint) carries the same requirement in
+// its description and decline feedback, so the gate is unchanged.
+const REVIEW_LOOP_SPLIT = PROMPT_REVIEW_LOOP.indexOf("## Review Loop")
+const PROMPT_SCOPE_CONTRACT = PROMPT_REVIEW_LOOP.slice(0, REVIEW_LOOP_SPLIT).trimEnd()
+const PROMPT_REVIEW_POLICY = PROMPT_REVIEW_LOOP.slice(REVIEW_LOOP_SPLIT)
 import FINISH_NUDGE from "./prompt/finish-nudge.txt"
 import { AgentEffort } from "@opencode-ai/schema/agent-effort"
 import REVIEW_STAGNATION_NUDGE from "./prompt/review-stagnation-nudge.txt"
@@ -98,15 +107,15 @@ const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
 const EFFORT_PROCESS: Record<AgentEffort.Level, string> = {
   fast: [
     "## Agent effort: fast (review passes: off, validation gate: minimal)",
-    "No independent review is required for this turn's work: self-check inline and finish when done. Declare minimal validation evidence (syntax/smoke where applicable) on finish. Deliver with an honest unreviewed status unless an independent review actually happened — finish never upgrades an unreviewed result to approved.",
+    "No independent review is required: self-check inline and finish. Declare minimal validation evidence on finish. The result is delivered as unreviewed unless a review actually happened; finish never upgrades it to approved.",
   ].join("\n\n"),
   medium: [
     "## Agent effort: medium (review passes: at most 2, validation gate: standard)",
-    'For work that changes files, finish requires at least one independent synchronous review (`subagent_type: "review"`, `background: false`) before delivery when a reviewer can run. Only blocking findings (Critical/Important, or a Needs-fixes report with no findings) or work landed after the last review require another pass, bounded by two completed passes; minor findings are logged, not re-litigated. After the budget, finish delivers with an honest exhausted/findings-open status rather than looping, and repeated finish calls never skip a required review. Declare standard validation evidence (relevant tests) on finish.',
+    'For work that changes files, finish requires at least one independent synchronous review (`subagent_type: "review"`, `background: false`) when a reviewer can run. Only blocking findings (Critical/Important, or a Needs-fixes report with no findings) or work landed after the last review need another pass, bounded by two; minor findings are logged. After the budget, finish delivers with an honest exhausted/findings-open status and repeated finish calls never skip a required review. Declare standard validation evidence (relevant tests) on finish.',
   ].join("\n\n"),
   thorough: [
     "## Agent effort: thorough (review passes: until clean, validation gate: full)",
-    "Finish keeps declining until a clean, current independent review exists: address blocking findings and re-review; any write after an approved review makes the tree stale and needs a fresh pass. There is no pass cap. If the reviewer genuinely cannot run, a successful finish remains blocked; only a declared failure can deliver as review-blocked, while a depth-limited child hands its unreviewed writes to its parent as review-pending. Neither outcome is approval. Declare full validation evidence (tests, typecheck, parity as applicable) on finish; incomplete or failed evidence is reported honestly.",
+    "Finish keeps declining until a clean, current independent review exists: fix blocking findings and re-review; any write after an approval needs a fresh pass. No pass cap. If the reviewer cannot run, only a declared failure delivers as review-blocked (a depth-limited child hands unreviewed writes to its parent as review-pending); neither is approval. Declare full validation evidence (tests, typecheck, parity as applicable) on finish.",
   ].join("\n\n"),
 }
 
@@ -1642,16 +1651,26 @@ const layer = Layer.effect(
             const effortConfig = yield* config.get()
             const configEffort = typeof effortConfig.agent?.effort === "string" ? effortConfig.agent.effort : undefined
             const effort = AgentEffort.resolve(readAgentEffort(session.metadata), AgentEffort.resolve(configEffort))
+            // Compaction can drop the write markers from the visible history, so a
+            // compacted session keeps the policy on: it was long enough to compact.
+            const sessionWroteFiles = msgs.some(
+              (msg) =>
+                (msg.info.role === "assistant" && msg.info.summary === true) ||
+                msg.parts.some(
+                  (part) => part.type === "compaction" || declaresFileWrites(part as Parameters<typeof declaresFileWrites>[0]),
+                ),
+            )
             const system = [
               ...env,
               ...instructions,
               ...(mcpInstructions ? [mcpInstructions] : []),
               ...(toolOverview ? [toolOverview] : []),
               ...(skills ? [skills] : []),
-              ...(isDefaultPrimary ? [PROMPT_REVIEW_LOOP] : []),
+              ...(isDefaultPrimary ? [PROMPT_SCOPE_CONTRACT] : []),
+              ...(isDefaultPrimary && sessionWroteFiles ? [PROMPT_REVIEW_POLICY] : []),
               // Reviewer sessions keep their own structured-report contract and
               // must not recursively review themselves.
-              ...(isReviewAgent(agent.name) ? [] : [EFFORT_PROCESS[effort]]),
+              ...(isReviewAgent(agent.name) || !sessionWroteFiles ? [] : [EFFORT_PROCESS[effort]]),
             ]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

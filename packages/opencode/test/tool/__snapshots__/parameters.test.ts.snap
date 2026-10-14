@@ -78,7 +78,7 @@ exports[`tool parameters JSON Schema (wire shape) glob 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "path": {
-      "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter "undefined" or "null" - simply omit it for the default behavior. Must be a valid directory path if provided.",
+      "description": "Directory to search; omit for the working directory.",
       "type": "string",
     },
     "pattern": {
@@ -302,11 +302,11 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "background": {
-      "description": "Whether to run the agent asynchronously: the tool returns immediately and you are notified when it completes. DO NOT sleep, poll, or proactively check on its progress. An omitted value runs in the background unless the agent is configured with \`background: false\` in opencode.json, which makes the tool wait for the result. Set true to force a background launch for such an agent; setting false on any other agent still launches it in the background.",
+      "description": "Run asynchronously and get notified on completion (default). Agents configured with \`background: false\` in opencode.json run in the foreground and wait for the result; true forces a background launch; false on any other agent still launches it in the background.",
       "type": "boolean",
     },
     "command": {
-      "description": "The command that triggered this task",
+      "description": "Triggering command",
       "type": "string",
     },
     "description": {
@@ -314,7 +314,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "effort": {
-      "description": "Override the agent effort policy for this task (fast, medium, or thorough). Omitted means: reuse this child's persisted selection on resume, otherwise inherit the parent/root selection, otherwise the configured agent.effort, otherwise medium. The selection persists on the child session and applies to its finish checkpoint.",
+      "description": "Override the child's effort policy; omit to inherit.",
       "enum": [
         "fast",
         "medium",
@@ -331,7 +331,7 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
       "type": "string",
     },
     "task_id": {
-      "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+      "description": "Resume a previous subagent session by its task_id",
       "type": "string",
     },
   },
