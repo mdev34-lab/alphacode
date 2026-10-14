@@ -136,7 +136,11 @@ function tryOpenlessBlock(
   return undefined
 }
 
-const PARAMETER_PATTERN = /<parameter=([A-Za-z_][\w-]*)>([\s\S]*?)<\/parameter>/g
+/**
+ * Built per call: the `exec` loop in `tryParameterBlock` moves `lastIndex`,
+ * so a shared module-level instance would carry state between calls.
+ */
+const parameterPattern = () => /<parameter=([A-Za-z_][\w-]*)>([\s\S]*?)<\/parameter>/g
 const XML_CALL_START = /<function=([^>\s]+)>\s*(?=<parameter=)/g
 const HYBRID_CALL_START = /\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*\{\s*"([A-Za-z_][\w-]*)"\s*:\s*"/g
 const FUNCTION_OPEN = "<function="
@@ -240,9 +244,10 @@ function tryParameterBlock(text: string, ctx: ParameterContext): ParameterBlock 
       args[hybrid[2]!] = text.slice(valueStart, firstEnd).replace(/\r?\n$/, "")
       end = firstEnd + "</parameter>".length
     }
-    PARAMETER_PATTERN.lastIndex = end
+    const parameters = parameterPattern()
+    parameters.lastIndex = end
     let gapFrom = end
-    for (let m = PARAMETER_PATTERN.exec(text); m; m = PARAMETER_PATTERN.exec(text)) {
+    for (let m = parameters.exec(text); m; m = parameters.exec(text)) {
       // Only whitespace may sit between parameters; anything else is not this call.
       if (text.slice(gapFrom, m.index).trim() !== "") break
       args[m[1]!] = parameterValue(m[2]!)

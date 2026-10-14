@@ -405,6 +405,10 @@ export class QwenWebSession implements WebChatProvider {
     // Drop every local binding to a confirmed-dead upstream chat: future
     // turns must neither address it (chat id) nor chain onto it (parent ids).
     const clearChatBinding = () => {
+      // The stop bookkeeping follows the binding: a response id recorded for
+      // a discarded chat must never be used against a later chat.
+      if (chatId) lastResponseByChat.delete(chatId)
+      if (thread.providerId) lastResponseByChat.delete(thread.providerId)
       thread.providerId = undefined
       chatId = undefined
       for (const message of thread.messages) {
@@ -614,8 +618,12 @@ export class QwenWebSession implements WebChatProvider {
                   from: thread.providerId?.slice(0, 12),
                   to: event.chatId.slice(0, 12),
                 })
+                // Re-key the stop bookkeeping too: this response belongs to
+                // the chat future turns will address, not to the stale id.
+                if (chatId) lastResponseByChat.delete(chatId)
                 chatId = event.chatId
                 thread.providerId = event.chatId
+                lastResponseByChat.set(chatId, event.responseId)
               }
             }
             return

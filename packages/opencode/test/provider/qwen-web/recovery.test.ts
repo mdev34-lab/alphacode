@@ -49,6 +49,7 @@ interface State {
   chatsCreated: number
   completionsCalled: number
   stops: string[]
+  stopBodies: Array<Record<string, unknown>>
   stopGate?: Promise<unknown>
   aborts: number
   newChatIds: string[]
@@ -60,6 +61,7 @@ function newState(): State {
     chatsCreated: 0,
     completionsCalled: 0,
     stops: [],
+    stopBodies: [],
     aborts: 0,
     newChatIds: ["fresh-1", "fresh-2", "fresh-3"],
   }
@@ -67,8 +69,9 @@ function newState(): State {
 
 function scriptedTransport(results: CompletionResult[], state: State): QwenWebTransport {
   return {
-    requestJson: async (_method: string, requestPath: string) => {
+    requestJson: async (_method: string, requestPath: string, options?: { body?: string }) => {
       state.stops.push(requestPath)
+      if (options?.body) state.stopBodies.push(JSON.parse(options.body) as Record<string, unknown>)
       await state.stopGate
       return { status: 200, statusText: "OK", contentType: "application/json", body: "{}" }
     },
@@ -587,5 +590,56 @@ describe("chat still generating (issue 244)", () => {
     expect(Date.now() - started).toBeLessThan(1000)
     expect(state.stops.filter((p) => p.includes("/completions/stop"))).toHaveLength(1)
     expect(thread.messages.some((message) => message.content.includes("second"))).toBe(false)
+  })
+
+  test("a discarded chat's response id is never reused for the stop request", async () => {
+    const state = newState()
+    // The fresh chat comes back with the very id that was just discarded.
+    state.newChatIds = ["chat-a"]
+    const session = sessionWithBackoff(
+      [
+        { kind: "sse", lines: [CREATED("r-prev", "chat-a"), text("partial", "r-prev"), STALE_EVENT] },
+        { kind: "json", status: 400, body: IN_PROGRESS_JSON },
+        { kind: "sse", lines: [CREATED("r2", "chat-a"), text("ok", "r2"), DONE] },
+      ],
+      state,
+      [1, 1, 1],
+    )
+    const thread = await seededThread(session, { providerId: "chat-a" })
+    await drain(session.runTurn({ thread, content: "first" }))
+    expect(thread.providerId).toBeUndefined() // the dead chat was unbound
+
+    const events = await drain(session.runTurn({ thread, content: "second" }))
+
+    expect(events.some((event) => event.type === "error")).toBe(false)
+    expect(state.chatsCreated).toBe(1)
+    expect(state.completionsCalled).toBe(3)
+    // Nothing is known about the new chat's generation, so nothing is stopped:
+    // `r-prev` belonged to the binding that was dropped with the dead chat.
+    expect(state.stops.filter((p) => p.includes("/completions/stop"))).toHaveLength(0)
+  })
+
+  test("the stop request follows an adopted upstream chat id", async () => {
+    const state = newState()
+    const session = sessionWithBackoff(
+      [
+        { kind: "sse", lines: [CREATED("r1", "c2-migrated"), text("hi", "r1"), DONE] },
+        { kind: "json", status: 400, body: IN_PROGRESS_JSON },
+        { kind: "sse", lines: [CREATED("r2", "c2-migrated"), text("again", "r2"), DONE] },
+      ],
+      state,
+      [1, 1, 1],
+    )
+    const thread = await seededThread(session, { providerId: "c1" })
+    await drain(session.runTurn({ thread, content: "first" }))
+    expect(thread.providerId).toBe("c2-migrated")
+
+    await drain(session.runTurn({ thread, content: "second" }))
+
+    const stops = state.stops.filter((p) => p.includes("/completions/stop"))
+    expect(stops).toHaveLength(1)
+    expect(stops[0]).toContain("chat_id=c2-migrated")
+    expect(state.stopBodies).toEqual([{ chat_id: "c2-migrated", response_id: "r1" }])
+    expect(state.completionsCalled).toBe(3)
   })
 })
