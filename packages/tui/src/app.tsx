@@ -740,7 +740,10 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         name: "effort.list",
         title: "Switch agent effort",
         category: "Agent",
-        slashName: "agent-effort",
+        // Agent effort is a review-rigor dial, so it keeps its own `/effort`
+        // name: `/variants` (plural) stays the model thinking selector.
+        slashName: "effort",
+        slashAliases: ["agent-effort"],
         run: () => {
           dialog.replace(() => <DialogAgentEffort />)
         },
